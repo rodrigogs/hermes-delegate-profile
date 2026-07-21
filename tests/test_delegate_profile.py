@@ -238,3 +238,221 @@ def test_e2e_cross_profile_spawn():
     assert out["profile"] == target
     assert "result" in out
     assert isinstance(out["elapsed_s"], (int, float))
+
+
+# ===========================================================================
+# Hardening: process-tree lifecycle, watchdog ladder, classification, pool
+# (appended block — see top of file for imports/plugin loading)
+# ===========================================================================
+import signal
+import subprocess
+import time as _time
+
+
+# ---------------------------------------------------------------------------
+# Timeout-ladder resolution + ordering invariant
+# ---------------------------------------------------------------------------
+def test_ladder_defaults():
+    ttfb, idle, hard, grace = dp._resolve_ladder(300)
+    assert (ttfb, idle, hard, grace) == (60.0, 180.0, 300.0, 10.0)
+
+
+def test_ladder_clamps_under_hard_ceiling():
+    """idle/ttfb can never exceed the hard ceiling — a 30s ceiling shrinks both."""
+    ttfb, idle, hard, _ = dp._resolve_ladder(30)
+    assert hard == 30.0
+    assert idle <= hard
+    assert ttfb <= idle
+
+
+def test_ladder_env_overrides(monkeypatch):
+    monkeypatch.setenv("HERMES_DELEGATE_PROFILE_TTFB", "5")
+    monkeypatch.setenv("HERMES_DELEGATE_PROFILE_IDLE", "20")
+    monkeypatch.setenv("HERMES_DELEGATE_PROFILE_KILL_GRACE", "3")
+    ttfb, idle, hard, grace = dp._resolve_ladder(300)
+    assert (ttfb, idle, grace) == (5.0, 20.0, 3.0)
+
+
+def test_ladder_invalid_env_falls_back(monkeypatch):
+    monkeypatch.setenv("HERMES_DELEGATE_PROFILE_IDLE", "not-a-number")
+    _, idle, _, _ = dp._resolve_ladder(300)
+    assert idle == 180.0
+
+
+# ---------------------------------------------------------------------------
+# Failure classification: (reason, returncode) -> (failure_kind, retryable)
+# ---------------------------------------------------------------------------
+def test_classify_success():
+    assert dp._classify("exited", 0) == (None, False)
+
+
+def test_classify_nonzero_exit_not_retryable():
+    assert dp._classify("exited", 1) == ("nonzero_exit", False)
+
+
+def test_classify_hard_timeout_retryable():
+    assert dp._classify("hard_timeout", None) == ("hard_timeout", True)
+
+
+def test_classify_stalls_retryable():
+    assert dp._classify("ttfb_timeout", None) == ("ttfb_stall", True)
+    assert dp._classify("idle_timeout", None) == ("idle_stall", True)
+
+
+def test_classify_signal_death():
+    # POSIX: killed-by-signal shows as negative returncode.
+    assert dp._classify("exited", -signal.SIGKILL) == ("crash_or_oom", True)
+    assert dp._classify("exited", -signal.SIGSEGV) == ("crash", True)
+
+
+# ---------------------------------------------------------------------------
+# Process-tree kill: the CORE fix — grandchildren must not be orphaned.
+# ---------------------------------------------------------------------------
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group test")
+def test_kill_tree_reaps_grandchild():
+    """Spawn parent -> grandchild(sleep 60). _kill_tree must kill BOTH.
+
+    This is the regression guard for the orphan bug: a plain proc.kill()
+    would leave the grandchild alive (reparented to init). We assert the
+    grandchild PID is gone after _kill_tree.
+    """
+    # Parent prints its grandchild's PID, then both sleep.
+    script = "sleep 60 & echo $! ; sleep 60"
+    proc = dp._spawn(["bash", "-c", script], dict(os.environ))
+    pgid = os.getpgid(proc.pid)
+    # Read the grandchild PID the parent just printed.
+    grandchild_pid = int(proc.stdout.readline().strip())
+    # Confirm it's actually alive before we kill.
+    os.kill(grandchild_pid, 0)  # raises if not running
+
+    dp._kill_tree(proc, pgid, grace=3.0)
+
+    # Give the kernel a beat to tear the tree down.
+    deadline = _time.monotonic() + 5
+    alive = True
+    while _time.monotonic() < deadline:
+        try:
+            os.kill(grandchild_pid, 0)
+            _time.sleep(0.1)
+        except ProcessLookupError:
+            alive = False
+            break
+    assert not alive, f"grandchild {grandchild_pid} orphaned — tree-kill failed"
+    assert proc.poll() is not None, "leader not reaped"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group test")
+def test_kill_tree_idempotent_on_dead_proc():
+    """Killing an already-exited process must not raise."""
+    proc = dp._spawn(["bash", "-c", "true"], dict(os.environ))
+    proc.wait(timeout=5)
+    dp._kill_tree(proc, None, grace=1.0)  # should be a no-op, not an error
+
+
+# ---------------------------------------------------------------------------
+# Watchdog: TTFB / idle / hard all fire and tree-kill.
+# ---------------------------------------------------------------------------
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX watchdog test")
+def test_watched_ttfb_timeout():
+    """No output at all -> ttfb_timeout kills it fast (well under idle/hard)."""
+    proc = dp._spawn(["bash", "-c", "sleep 30"], dict(os.environ))
+    pgid = os.getpgid(proc.pid)
+    t0 = _time.monotonic()
+    reason, rc, out, err = dp._run_watched(
+        proc, pgid, ttfb=1.0, idle=10.0, hard=20.0, grace=2.0
+    )
+    assert reason == "ttfb_timeout"
+    assert _time.monotonic() - t0 < 5, "ttfb watchdog too slow"
+    assert proc.poll() is not None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX watchdog test")
+def test_watched_idle_timeout():
+    """Emits one line (clears TTFB), then goes silent -> idle_timeout."""
+    proc = dp._spawn(["bash", "-c", "echo hello; sleep 30"], dict(os.environ))
+    pgid = os.getpgid(proc.pid)
+    reason, rc, out, err = dp._run_watched(
+        proc, pgid, ttfb=10.0, idle=1.0, hard=20.0, grace=2.0
+    )
+    assert reason == "idle_timeout"
+    assert "hello" in out  # partial output preserved
+    assert proc.poll() is not None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX watchdog test")
+def test_watched_hard_timeout_despite_activity():
+    """Chatty child that NEVER idles must still hit the hard ceiling."""
+    # Prints every 0.2s forever -> idle never trips, only the hard ceiling.
+    proc = dp._spawn(
+        ["bash", "-c", "while true; do echo tick; sleep 0.2; done"],
+        dict(os.environ),
+    )
+    pgid = os.getpgid(proc.pid)
+    reason, rc, out, err = dp._run_watched(
+        proc, pgid, ttfb=5.0, idle=5.0, hard=1.0, grace=2.0
+    )
+    assert reason == "hard_timeout"
+    assert proc.poll() is not None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX watchdog test")
+def test_watched_clean_exit_captures_output():
+    """A fast, well-behaved child exits cleanly with full output captured."""
+    proc = dp._spawn(["bash", "-c", "echo line1; echo line2"], dict(os.environ))
+    pgid = os.getpgid(proc.pid)
+    reason, rc, out, err = dp._run_watched(
+        proc, pgid, ttfb=5.0, idle=5.0, hard=10.0, grace=2.0
+    )
+    assert reason == "exited"
+    assert rc == 0
+    assert "line1" in out and "line2" in out
+
+
+# ---------------------------------------------------------------------------
+# Bounded-concurrency pool + live-child registry
+# ---------------------------------------------------------------------------
+def test_pool_caps_concurrency():
+    pool = dp._Pool(max_concurrent=2)
+    assert pool.acquire(0) is True
+    assert pool.acquire(0) is True
+    # Third acquire with a short bounded wait must fail (cap reached).
+    assert pool.acquire(0.2) is False
+    pool.release()
+    assert pool.acquire(0.2) is True
+
+
+def test_pool_release_is_bounded():
+    """Over-release must not silently inflate the cap (BoundedSemaphore)."""
+    pool = dp._Pool(max_concurrent=1)
+    pool.release()  # extra release — must be swallowed, not raise
+    assert pool.acquire(0) is True
+    assert pool.acquire(0.2) is False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group test")
+def test_pool_kill_all_reaps_registered_children():
+    pool = dp._Pool(max_concurrent=4)
+    procs = []
+    for _ in range(2):
+        p = dp._spawn(["bash", "-c", "sleep 30"], dict(os.environ))
+        pool.register(p, os.getpgid(p.pid), {"subagent_id": "t", "profile": "x"})
+        procs.append(p)
+    assert len(pool.snapshot()) == 2
+    pool.kill_all(grace=2.0)
+    for p in procs:
+        assert p.poll() is not None, "kill_all left a child alive"
+    assert pool.snapshot() == []
+
+
+def test_pool_snapshot_shape():
+    pool = dp._Pool(max_concurrent=2)
+
+    class _Fake:
+        pid = 4242
+
+    pool.register(_Fake(), 4242, {"subagent_id": "dp_x", "profile": "coder"})
+    snap = pool.snapshot()
+    assert snap and snap[0]["pid"] == 4242
+    assert snap[0]["profile"] == "coder"
+    pool.unregister(4242)
+    assert pool.snapshot() == []

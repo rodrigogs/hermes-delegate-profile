@@ -24,6 +24,36 @@ Same-profile calls (profile omitted or matching the active profile) fall back
 to the built-in ``delegate_task`` via ``ctx.dispatch_tool`` so the parent
 agent context is wired up correctly.
 
+Stall/orphan hardening
+----------------------
+A delegated ``hermes`` child spawns grandchildren of its own (MCP servers,
+model-stream HTTP clients, LSP servers). A plain ``subprocess.run(timeout=)``
+only SIGKILLs the direct child on timeout — the grandchildren reparent to init
+and live on as orphans, holding sockets and burning API tokens (this is the
+exact "stuck run" failure mode observed in the gateway). This plugin instead:
+
+* spawns each child in its **own process group/session** (``start_new_session``
+  = ``setsid`` on POSIX), so the whole tree shares one PGID;
+* runs a **three-timer watchdog** — time-to-first-output (TTFB), inter-output
+  idle, and an absolute hard ceiling — using a monotonic heartbeat updated by
+  reader threads (the child streams stdout incrementally, so silence is a real
+  liveness signal);
+* on any timeout, **tree-kills** the whole group: ``killpg(SIGTERM)`` → grace →
+  ``killpg(SIGKILL)`` — never orphaning grandchildren;
+* bounds **concurrent** subprocesses and keeps a **live-child registry** so an
+  interpreter exit / crash tree-kills every outstanding subagent (atexit);
+* **classifies** the outcome (``failure_kind`` + ``retryable``) so an
+  orchestrator can decide retry / fallback / give-up.
+
+All thresholds are env-tunable:
+
+  HERMES_DELEGATE_PROFILE_TIMEOUT        hard ceiling seconds (default 300; also the `timeout` arg)
+  HERMES_DELEGATE_PROFILE_TTFB           no-first-output kill seconds (default 60)
+  HERMES_DELEGATE_PROFILE_IDLE           inter-output idle kill seconds (default 180)
+  HERMES_DELEGATE_PROFILE_KILL_GRACE     SIGTERM->SIGKILL grace seconds (default 10)
+  HERMES_DELEGATE_PROFILE_MAX_CONCURRENT max concurrent subprocesses (default 4)
+  HERMES_DELEGATE_PROFILE_QUEUE_WAIT     seconds to wait for a slot; 0 = up to the hard ceiling
+
 Installation:
     hermes plugins install rodrigogs/hermes-delegate-profile
     hermes plugins enable delegate-profile
@@ -31,17 +61,22 @@ Installation:
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+IS_WINDOWS = sys.platform == "win32"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -52,16 +87,50 @@ HERMES_BIN = "hermes"
 # parent's context window.
 _MAX_RESULT_CHARS = 8000
 _MAX_STDERR_CHARS = 2000
+# Per-stream in-memory cap while a child runs, so a chatty/runaway child can't
+# grow the buffer without bound before the hard ceiling reaps it. We keep the
+# TAIL (that's what the result/stderr fields report anyway).
+_OUTPUT_BUFFER_CAP = 1_000_000
 
-# Timeout ladder rungs (see _resolve_timeout).
-_DEFAULT_TIMEOUT_S = 300
+# Timeout ladder defaults (seconds). See module docstring for env overrides.
+# Invariant enforced at resolve time: ttfb < idle <= hard.
+_DEFAULT_TIMEOUT_S = 300      # absolute hard ceiling (also the `timeout` arg)
+_DEFAULT_TTFB_S = 60          # no first byte of output => startup wedged
+_DEFAULT_IDLE_S = 180         # no NEW output for this long => mid-run stall
+_DEFAULT_KILL_GRACE_S = 10    # SIGTERM -> grace -> SIGKILL (supervisord default)
+_DEFAULT_MAX_CONCURRENT = 4   # bounded concurrency (rate-limit friendly)
+_SIGKILL_NUM = 9              # numeric to stay importable on Windows
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Env helpers
 # ---------------------------------------------------------------------------
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        logger.warning("delegate_profile: invalid %s=%r, using %s", name, raw, default)
+        return default
+    return val if val > 0 else default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("delegate_profile: invalid %s=%r, using %s", name, raw, default)
+        return default
+    return val if val > 0 else default
+
+
 def _resolve_timeout(explicit: Any) -> int:
-    """Resolve the effective timeout: explicit arg > env > default.
+    """Resolve the hard-ceiling timeout: explicit arg > env > default.
 
     Invalid values (non-int, <= 0) fall through to the next rung rather than
     raising — the handler must always return a usable int.
@@ -73,18 +142,23 @@ def _resolve_timeout(explicit: Any) -> int:
                 return val
         except (TypeError, ValueError):
             logger.warning("delegate_profile: invalid timeout %r, ignoring", explicit)
-    env_val = os.environ.get("HERMES_DELEGATE_PROFILE_TIMEOUT")
-    if env_val:
-        try:
-            val = int(env_val)
-            if val > 0:
-                return val
-        except (TypeError, ValueError):
-            logger.warning(
-                "delegate_profile: invalid HERMES_DELEGATE_PROFILE_TIMEOUT=%r",
-                env_val,
-            )
-    return _DEFAULT_TIMEOUT_S
+    return _env_int("HERMES_DELEGATE_PROFILE_TIMEOUT", _DEFAULT_TIMEOUT_S)
+
+
+def _resolve_ladder(hard: int) -> Tuple[float, float, float, float]:
+    """Return (ttfb, idle, hard, grace), coerced to a sane, ordered ladder.
+
+    The child cannot legitimately be silent longer than the hard ceiling, and
+    TTFB is meaningless once it exceeds idle, so clamp both under the ceiling
+    and keep ttfb <= idle. This makes the three watchdogs strictly nested.
+    """
+    ttfb = _env_float("HERMES_DELEGATE_PROFILE_TTFB", _DEFAULT_TTFB_S)
+    idle = _env_float("HERMES_DELEGATE_PROFILE_IDLE", _DEFAULT_IDLE_S)
+    grace = _env_float("HERMES_DELEGATE_PROFILE_KILL_GRACE", _DEFAULT_KILL_GRACE_S)
+    hard_f = float(hard)
+    idle = min(idle, hard_f)
+    ttfb = min(ttfb, idle)
+    return ttfb, idle, hard_f, grace
 
 
 def _resolve_hermes_bin() -> str:
@@ -152,6 +226,285 @@ def _list_known_profiles() -> list:
 
 
 # ---------------------------------------------------------------------------
+# Process-tree lifecycle: spawn in own group, tree-kill on stall
+# ---------------------------------------------------------------------------
+def _spawn(cmd: List[str], env: dict) -> subprocess.Popen:
+    """Spawn ``cmd`` in its OWN process group/session.
+
+    POSIX: ``start_new_session=True`` -> the child calls ``setsid()`` before
+    exec, becoming session+group leader (PGID == pid). Every grandchild it
+    spawns inherits that PGID, so a single ``killpg`` reaps the whole tree.
+    (``preexec_fn=os.setsid`` is deliberately NOT used — the stdlib warns it is
+    unsafe with threads, and this handler runs inside a threaded agent.)
+
+    Windows: ``CREATE_NEW_PROCESS_GROUP`` so the tree can be signalled/killed
+    as a unit via taskkill (best-effort; the real deployment is POSIX/WSL).
+    """
+    kwargs: Dict[str, Any] = dict(
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,  # line-buffered so the heartbeat updates per line
+        env=env,
+    )
+    if IS_WINDOWS:
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        kwargs["start_new_session"] = True
+    return subprocess.Popen(cmd, **kwargs)
+
+
+def _kill_tree(proc: subprocess.Popen, pgid: Optional[int], grace: float) -> None:
+    """Terminate the child AND its grandchildren, escalating TERM -> KILL.
+
+    ``pgid`` must be captured at spawn time (``os.getpgid(proc.pid)``) because
+    once the leader is reaped its pgid is no longer resolvable. Every step
+    tolerates a race where the tree already exited.
+    """
+    if proc.poll() is not None:
+        return  # already gone
+
+    if IS_WINDOWS:
+        # No process groups the POSIX way; taskkill /T walks the child tree.
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=max(grace, 5.0),
+            )
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=max(grace, 5.0))
+        except Exception:
+            pass
+        return
+
+    # POSIX: signal the whole group.
+    if pgid is None:
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, OSError):
+            return
+
+    def _signal_group(sig: int) -> bool:
+        try:
+            os.killpg(pgid, sig)
+            return True
+        except ProcessLookupError:
+            return False
+        except OSError as exc:
+            logger.debug("delegate_profile: killpg(%s, %s) failed: %s", pgid, sig, exc)
+            return False
+
+    # Ask nicely, let the tree run its cleanup.
+    _signal_group(signal.SIGTERM)
+    try:
+        proc.wait(timeout=grace)
+        return  # exited within grace
+    except subprocess.TimeoutExpired:
+        pass
+    # Force-kill the whole group, then reap the leader (avoids a zombie).
+    _signal_group(signal.SIGKILL)
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        logger.warning("delegate_profile: pgid %s survived SIGKILL wait", pgid)
+
+
+class _Tail:
+    """Thread-safe bounded buffer that keeps only the last N chars."""
+
+    def __init__(self, cap: int = _OUTPUT_BUFFER_CAP) -> None:
+        self._cap = cap
+        self._parts: List[str] = []
+        self._size = 0
+
+    def append(self, chunk: str) -> None:
+        self._parts.append(chunk)
+        self._size += len(chunk)
+        if self._size > self._cap * 2:
+            # Collapse to the tail so memory stays bounded for chatty children.
+            joined = "".join(self._parts)[-self._cap:]
+            self._parts = [joined]
+            self._size = len(joined)
+
+    def text(self) -> str:
+        return "".join(self._parts)[-self._cap:]
+
+
+def _run_watched(
+    proc: subprocess.Popen,
+    pgid: Optional[int],
+    ttfb: float,
+    idle: float,
+    hard: float,
+    grace: float,
+) -> Tuple[str, Optional[int], str, str]:
+    """Drive ``proc`` under the three-timer watchdog.
+
+    Returns ``(reason, returncode, stdout_tail, stderr_tail)`` where reason is
+    one of ``exited`` | ``ttfb_timeout`` | ``idle_timeout`` | ``hard_timeout``.
+    Reader threads stamp a monotonic heartbeat so the idle timer measures real
+    output silence, not wall-clock. On any non-``exited`` reason the whole
+    process tree is killed before returning.
+    """
+    out_buf, err_buf = _Tail(), _Tail()
+    state_lock = threading.Lock()
+    last_activity = time.monotonic()
+    got_output = False
+
+    def _reader(pipe, buf: _Tail) -> None:
+        nonlocal last_activity, got_output
+        try:
+            while True:
+                line = pipe.readline()
+                if not line:
+                    break
+                buf.append(line)
+                with state_lock:
+                    last_activity = time.monotonic()
+                    got_output = True
+        except (ValueError, OSError):
+            pass  # pipe closed under us (tree killed)
+
+    threads = [
+        threading.Thread(target=_reader, args=(proc.stdout, out_buf), daemon=True),
+        threading.Thread(target=_reader, args=(proc.stderr, err_buf), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+
+    start = time.monotonic()
+    reason = "exited"
+    while proc.poll() is None:
+        now = time.monotonic()
+        with state_lock:
+            idle_for = now - last_activity
+            first = got_output
+        if now - start > hard:
+            reason = "hard_timeout"
+            break
+        if not first and now - start > ttfb:
+            reason = "ttfb_timeout"
+            break
+        if first and idle_for > idle:
+            reason = "idle_timeout"
+            break
+        time.sleep(0.5)
+
+    if reason != "exited":
+        logger.warning(
+            "delegate_profile: killing subprocess tree (pgid=%s) reason=%s",
+            pgid, reason,
+        )
+        _kill_tree(proc, pgid, grace)
+    else:
+        # Ensure the leader is reaped and readers can flush remaining output.
+        try:
+            proc.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            _kill_tree(proc, pgid, grace)
+
+    for t in threads:
+        t.join(timeout=grace + 2)
+
+    return reason, proc.returncode, out_buf.text().strip(), err_buf.text().strip()
+
+
+def _classify(reason: str, returncode: Optional[int]) -> Tuple[Optional[str], bool]:
+    """Map (watchdog reason, exit code) -> (failure_kind, retryable).
+
+    Lets an orchestrator decide retry vs. fallback vs. give-up. ``None`` kind
+    means success. POSIX reports signal death as a NEGATIVE return code.
+    """
+    if reason == "hard_timeout":
+        return "hard_timeout", True          # maybe retry with a longer ceiling
+    if reason == "ttfb_timeout":
+        return "ttfb_stall", True            # startup wedged — usually transient
+    if reason == "idle_timeout":
+        return "idle_stall", True            # dead stream / hung tool — transient
+    # reason == "exited"
+    if returncode == 0:
+        return None, False                   # success
+    if returncode is not None and returncode < 0:
+        sig = -returncode
+        if sig == _SIGKILL_NUM:
+            return "crash_or_oom", True      # OOM-killed (or external kill)
+        return "crash", True                 # SIGSEGV/SIGABRT/... retry once
+    return "nonzero_exit", False             # app-level error — retry repeats it
+
+
+# ---------------------------------------------------------------------------
+# Bounded concurrency + live-child registry (structured-concurrency discipline)
+# ---------------------------------------------------------------------------
+class _Pool:
+    """Caps concurrent subprocesses and tracks live children for cleanup.
+
+    A slot must be acquired before spawning and is released on every exit path.
+    The registry lets a parent interpreter exit (atexit) tree-kill every
+    outstanding subagent so nothing outlives the process — the subprocess
+    analog of a Trio nursery / asyncio TaskGroup.
+    """
+
+    def __init__(self, max_concurrent: int) -> None:
+        self._sem = threading.BoundedSemaphore(max_concurrent)
+        self._live: Dict[int, Tuple[subprocess.Popen, Optional[int], dict]] = {}
+        self._lock = threading.Lock()
+
+    def acquire(self, wait: float) -> bool:
+        # timeout=None blocks forever; a positive value bounds the wait.
+        if wait <= 0:
+            return self._sem.acquire()
+        return self._sem.acquire(timeout=wait)
+
+    def release(self) -> None:
+        try:
+            self._sem.release()
+        except ValueError:
+            pass  # BoundedSemaphore guards against over-release
+
+    def register(self, proc: subprocess.Popen, pgid: Optional[int], meta: dict) -> None:
+        with self._lock:
+            self._live[proc.pid] = (proc, pgid, meta)
+
+    def unregister(self, pid: int) -> None:
+        with self._lock:
+            self._live.pop(pid, None)
+
+    def snapshot(self) -> List[dict]:
+        with self._lock:
+            return [dict(meta, pid=pid) for pid, (_, _, meta) in self._live.items()]
+
+    def kill_all(self, grace: float = _DEFAULT_KILL_GRACE_S) -> None:
+        with self._lock:
+            items = list(self._live.items())
+        for pid, (proc, pgid, _) in items:
+            try:
+                _kill_tree(proc, pgid, grace)
+            except Exception:
+                logger.debug("delegate_profile: kill_all failed for pid %s", pid)
+            self.unregister(pid)
+
+
+_POOL: Optional[_Pool] = None
+_POOL_LOCK = threading.Lock()
+
+
+def _get_pool() -> _Pool:
+    global _POOL
+    with _POOL_LOCK:
+        if _POOL is None:
+            _POOL = _Pool(_env_int("HERMES_DELEGATE_PROFILE_MAX_CONCURRENT",
+                                   _DEFAULT_MAX_CONCURRENT))
+            atexit.register(_POOL.kill_all)
+    return _POOL
+
+
+# ---------------------------------------------------------------------------
 # Tool handler factory
 # ---------------------------------------------------------------------------
 def _make_handler(current_profile: str, dispatch_delegate: Callable) -> Callable:
@@ -168,12 +521,12 @@ def _make_handler(current_profile: str, dispatch_delegate: Callable) -> Callable
         context = (args.get("context") or "").strip()
         profile = (args.get("profile") or "").strip()
         model = (args.get("model") or "").strip()
-        timeout = _resolve_timeout(args.get("timeout"))
+        hard_timeout = _resolve_timeout(args.get("timeout"))
 
         if not goal:
-            return json.dumps({"error": "goal is required"})
+            return json.dumps({"error": "goal is required", "failure_kind": "bad_args"})
         if not profile:
-            return json.dumps({"error": "profile is required"})
+            return json.dumps({"error": "profile is required", "failure_kind": "bad_args"})
 
         # Validate the target profile BEFORE the same-profile shortcut, so a
         # typo produces an instant clear error even when it happens to differ
@@ -183,6 +536,8 @@ def _make_handler(current_profile: str, dispatch_delegate: Callable) -> Callable
             return json.dumps(
                 {
                     "success": False,
+                    "failure_kind": "unknown_profile",
+                    "retryable": False,
                     "error": (
                         f"Profile {profile!r} does not exist. "
                         f"Create it with: hermes profile create {profile}"
@@ -215,10 +570,11 @@ def _make_handler(current_profile: str, dispatch_delegate: Callable) -> Callable
             except Exception as exc:
                 logger.exception("delegate_profile: inline dispatch failed")
                 return json.dumps(
-                    {"error": f"Inline delegation failed: {exc}"}
+                    {"error": f"Inline delegation failed: {exc}",
+                     "failure_kind": "inline_error", "retryable": True}
                 )
 
-        # Cross-profile: spawn a fully independent hermes process.
+        # Cross-profile: spawn a fully independent hermes process tree.
         hermes_bin = _resolve_hermes_bin()
         prompt = f"Context: {context}\n\nTask: {goal}" if context else goal
 
@@ -231,7 +587,9 @@ def _make_handler(current_profile: str, dispatch_delegate: Callable) -> Callable
         env = os.environ.copy()
         # Make the child resolve HERMES_HOME the same way we do, so it finds
         # the real ~/.hermes rather than inheriting any per-session override
-        # that points at a scratch workspace.
+        # that points at a scratch workspace. Passing it explicitly also
+        # silences the runtime's "HERMES_HOME unset, spawner should pass it"
+        # warning (issue #18594).
         if "HERMES_HOME" not in env:
             try:
                 from hermes_constants import get_hermes_home
@@ -239,63 +597,117 @@ def _make_handler(current_profile: str, dispatch_delegate: Callable) -> Callable
                 env["HERMES_HOME"] = str(get_hermes_home())
             except Exception:
                 pass
+        # Keep the child's env self-consistent with the ``-p <profile>`` flag:
+        # without this the child inherits OUR HERMES_PROFILE (the parent's),
+        # which disagrees with the target profile the flag selects. The flag
+        # wins, but an agreeing env avoids any ambiguity in code that reads
+        # HERMES_PROFILE directly.
+        env["HERMES_PROFILE"] = profile
         # Prevent infinite recursion if the child also loads this plugin.
         env["HERMES_DELEGATE_PROFILE_DISABLE"] = "1"
+
+        ttfb, idle, hard, grace = _resolve_ladder(hard_timeout)
+        pool = _get_pool()
+        # Bounded concurrency: wait up to the hard ceiling for a slot, then
+        # refuse rather than blocking the agent forever.
+        queue_wait = _env_float("HERMES_DELEGATE_PROFILE_QUEUE_WAIT", 0.0)
+        if not pool.acquire(queue_wait if queue_wait > 0 else hard):
+            return json.dumps({
+                "success": False,
+                "failure_kind": "at_capacity",
+                "retryable": True,
+                "error": (
+                    "Too many concurrent delegate_profile subprocesses "
+                    f"(cap={_env_int('HERMES_DELEGATE_PROFILE_MAX_CONCURRENT', _DEFAULT_MAX_CONCURRENT)}). "
+                    "Retry shortly or raise HERMES_DELEGATE_PROFILE_MAX_CONCURRENT."
+                ),
+            })
 
         subagent_id = f"dp_{uuid.uuid4().hex[:12]}"
         started_at = time.time()
         logger.info(
-            "delegate_profile: spawning %s (profile=%s, timeout=%ds)",
-            subagent_id, profile, timeout,
+            "delegate_profile: spawning %s (profile=%s, ttfb=%.0fs idle=%.0fs hard=%.0fs)",
+            subagent_id, profile, ttfb, idle, hard,
         )
 
+        proc: Optional[subprocess.Popen] = None
+        pgid: Optional[int] = None
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=env,
+            try:
+                proc = _spawn(cmd, env)
+            except FileNotFoundError:
+                return json.dumps({
+                    "success": False,
+                    "failure_kind": "binary_not_found",
+                    "retryable": False,
+                    "error": (
+                        f"Hermes binary not found: {hermes_bin}. "
+                        f"Ensure hermes is on PATH."
+                    ),
+                })
+            except Exception as exc:
+                logger.exception("delegate_profile: spawn failed")
+                return json.dumps({
+                    "success": False,
+                    "failure_kind": "spawn_error",
+                    "retryable": True,
+                    "error": f"Subprocess spawn error: {exc}",
+                })
+
+            if not IS_WINDOWS:
+                try:
+                    pgid = os.getpgid(proc.pid)
+                except (ProcessLookupError, OSError):
+                    pgid = proc.pid  # setsid guarantees pgid == pid
+            pool.register(proc, pgid, {
+                "subagent_id": subagent_id, "profile": profile,
+                "started_at": started_at,
+            })
+
+            reason, returncode, stdout, stderr = _run_watched(
+                proc, pgid, ttfb, idle, hard, grace,
             )
-        except subprocess.TimeoutExpired:
-            elapsed = time.time() - started_at
+        finally:
+            if proc is not None:
+                # Belt-and-suspenders: never leave a tree behind on any path.
+                _kill_tree(proc, pgid, grace)
+                pool.unregister(proc.pid)
+            pool.release()
+
+        elapsed = round(time.time() - started_at, 1)
+        failure_kind, retryable = _classify(reason, returncode)
+
+        if failure_kind == "hard_timeout":
             return json.dumps({
-                "success": False,
-                "subagent_id": subagent_id,
-                "profile": profile,
+                "success": False, "subagent_id": subagent_id, "profile": profile,
+                "failure_kind": failure_kind, "retryable": retryable,
                 "error": (
-                    f"Timeout after {timeout}s. Raise the `timeout` arg or set "
+                    f"Hard timeout after {int(hard)}s. Raise the `timeout` arg or "
                     f"HERMES_DELEGATE_PROFILE_TIMEOUT."
                 ),
-                "elapsed_s": round(elapsed, 1),
-            })
-        except FileNotFoundError:
-            return json.dumps({
-                "success": False,
-                "error": (
-                    f"Hermes binary not found: {hermes_bin}. "
-                    f"Ensure hermes is on PATH."
-                ),
-            })
-        except Exception as exc:
-            logger.exception("delegate_profile: subprocess failed")
-            return json.dumps({
-                "success": False,
-                "error": f"Subprocess error: {exc}",
-            })
-
-        elapsed = time.time() - started_at
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
-
-        if result.returncode != 0:
-            return json.dumps({
-                "success": False,
-                "subagent_id": subagent_id,
-                "profile": profile,
-                "error": f"Subprocess exited with code {result.returncode}",
+                "elapsed_s": elapsed,
                 "stderr": stderr[-_MAX_STDERR_CHARS:] if stderr else "",
-                "elapsed_s": round(elapsed, 1),
+            })
+        if failure_kind in ("ttfb_stall", "idle_stall"):
+            detail = (
+                f"produced no output within {int(ttfb)}s" if failure_kind == "ttfb_stall"
+                else f"went silent for more than {int(idle)}s"
+            )
+            return json.dumps({
+                "success": False, "subagent_id": subagent_id, "profile": profile,
+                "failure_kind": failure_kind, "retryable": retryable,
+                "error": f"Subagent stalled ({detail}) and was terminated.",
+                "elapsed_s": elapsed,
+                "stderr": stderr[-_MAX_STDERR_CHARS:] if stderr else "",
+                "partial_output": stdout[-_MAX_RESULT_CHARS:] if stdout else "",
+            })
+        if failure_kind is not None:  # crash / crash_or_oom / nonzero_exit
+            return json.dumps({
+                "success": False, "subagent_id": subagent_id, "profile": profile,
+                "failure_kind": failure_kind, "retryable": retryable,
+                "error": f"Subprocess exited abnormally (code {returncode})",
+                "stderr": stderr[-_MAX_STDERR_CHARS:] if stderr else "",
+                "elapsed_s": elapsed,
             })
 
         return json.dumps({
@@ -303,7 +715,7 @@ def _make_handler(current_profile: str, dispatch_delegate: Callable) -> Callable
             "subagent_id": subagent_id,
             "profile": profile,
             "result": stdout[-_MAX_RESULT_CHARS:] if stdout else "(no output)",
-            "elapsed_s": round(elapsed, 1),
+            "elapsed_s": elapsed,
         })
 
     return delegate_profile
@@ -353,7 +765,11 @@ def register(ctx):
             "this when you need process-level isolation (crash safety, "
             "different Hermes version, the target profile's FULL toolset). "
             "For in-process cross-profile delegation, delegate_task(profile=...) "
-            "is faster. Same-profile calls fall back to delegate_task."
+            "is faster. Same-profile calls fall back to delegate_task. The "
+            "subprocess is watchdog-guarded (time-to-first-output, idle, and "
+            "hard-ceiling timeouts) and tree-killed on stall so it can never "
+            "hang or orphan child processes; on failure the result carries a "
+            "`failure_kind` and `retryable` flag."
         ),
         "parameters": {
             "type": "object",
@@ -392,9 +808,12 @@ def register(ctx):
                 "timeout": {
                     "type": "integer",
                     "description": (
-                        "Max seconds to wait for the subprocess. Default: 300 "
-                        "(5 minutes). Override globally with the "
-                        "HERMES_DELEGATE_PROFILE_TIMEOUT env var."
+                        "Absolute hard-ceiling seconds for the subprocess. "
+                        "Default: 300 (5 min). Independent tighter watchdogs "
+                        "also apply: no-first-output (TTFB) and inter-output "
+                        "idle. Override the ceiling globally with "
+                        "HERMES_DELEGATE_PROFILE_TIMEOUT; TTFB/idle via "
+                        "HERMES_DELEGATE_PROFILE_TTFB / _IDLE."
                     ),
                 },
             },
@@ -409,7 +828,7 @@ def register(ctx):
         handler=handler,
         description=(
             "Spawn a subagent under a specific Hermes profile via "
-            "hermes -p <profile> chat -q (subprocess isolation)"
+            "hermes -p <profile> chat -q (watchdog-guarded subprocess isolation)"
         ),
     )
 
