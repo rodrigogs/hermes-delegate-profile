@@ -17,7 +17,7 @@ Architecture:
   to the standard tool.
 
 Installation:
-    cp -r hermes-delegate-profile ~/.hermes/plugins/
+    hermes plugins install rodrigogs/hermes-delegate-profile
     hermes plugins enable delegate-profile
 """
 
@@ -39,6 +39,38 @@ logger = logging.getLogger(__name__)
 HERMES_BIN = "hermes"
 CURRENT_PROFILE = os.environ.get("HERMES_PROFILE", "default")
 
+# Timeout ladder: explicit `timeout` arg > HERMES_DELEGATE_PROFILE_TIMEOUT env
+# > 300s default. The env var lets operators raise the ceiling globally
+# without touching every call site.
+_DEFAULT_TIMEOUT = 300
+
+
+def _resolve_timeout(explicit: Any) -> int:
+    """Resolve the effective timeout from arg, then env, then default.
+
+    Invalid values (non-int, <= 0) fall through to the next rung rather
+    than raising — the tool must always return a usable int.
+    """
+    if explicit is not None and explicit != "":
+        try:
+            val = int(explicit)
+            if val > 0:
+                return val
+        except (TypeError, ValueError):
+            logger.warning("delegate_profile: invalid timeout %r, ignoring", explicit)
+    env_val = os.environ.get("HERMES_DELEGATE_PROFILE_TIMEOUT")
+    if env_val:
+        try:
+            val = int(env_val)
+            if val > 0:
+                return val
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegate_profile: invalid HERMES_DELEGATE_PROFILE_TIMEOUT=%r",
+                env_val,
+            )
+    return _DEFAULT_TIMEOUT
+
 
 def _resolve_hermes_bin() -> str:
     """Find the hermes binary, preferring the one matching our own runtime."""
@@ -48,6 +80,45 @@ def _resolve_hermes_bin() -> str:
         return str(venv_bin)
     # Fall back to PATH
     return HERMES_BIN
+
+
+def _profile_exists(profile: str) -> bool:
+    """Check whether a Hermes profile directory exists.
+
+    Uses the canonical resolver from hermes_cli.profiles when available so we
+    honor HERMES_HOME and the `default` special case. Falls back to a direct
+    path check so the plugin still loads on older/minimal runtimes.
+    """
+    try:
+        from hermes_cli.profiles import profile_exists as _pe
+
+        return bool(_pe(profile))
+    except Exception:
+        # Defensive fallback: resolve HERMES_HOME/profiles/<name> directly.
+        home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+        if profile == "default":
+            return True
+        return (Path(home) / "profiles" / profile).is_dir()
+
+
+def _list_known_profiles() -> list:
+    """Best-effort list of existing profile names, for error messages."""
+    # Prefer the canonical list_profiles() (returns Profile objects with .name).
+    try:
+        from hermes_cli import profiles as _prof
+
+        return [p.name for p in _prof.list_profiles()] or []
+    except Exception:
+        pass
+    # Defensive fallback: scan HERMES_HOME/profiles/<name> directly.
+    try:
+        home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+        pdir = Path(home) / "profiles"
+        if pdir.is_dir():
+            return sorted(p.name for p in pdir.iterdir() if p.is_dir())
+    except Exception:
+        pass
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +136,7 @@ def delegate_profile(args: dict, **kwargs) -> str:
         context: Background info for the subagent
         profile: Hermes profile to use (required)
         model: Optional model override
-        timeout: Max seconds (default 300)
+        timeout: Max seconds (default 300, or HERMES_DELEGATE_PROFILE_TIMEOUT)
 
     Returns:
         JSON string with {success, result, profile, ...}
@@ -74,13 +145,33 @@ def delegate_profile(args: dict, **kwargs) -> str:
     context = args.get("context", "")
     profile = args.get("profile", "")
     model = args.get("model", "")
-    timeout = int(args.get("timeout", 300))
+    timeout = _resolve_timeout(args.get("timeout"))
 
     if not goal:
         return json.dumps({"error": "goal is required"})
 
     if not profile:
         return json.dumps({"error": "profile is required"})
+
+    # Validate the target profile exists BEFORE spawning, so a typo produces
+    # an instant, clear error instead of a confusing subprocess failure.
+    if not _profile_exists(profile):
+        known = _list_known_profiles()
+        hint = (
+            f" Available profiles: {', '.join(known)}" if known else ""
+        )
+        return json.dumps(
+            {
+                "error": (
+                    f"Profile {profile!r} does not exist. "
+                    f"Create it with: hermes profile create {profile}"
+                ),
+                "profile": profile,
+                "available_profiles": known,
+                "hint": hint.strip(),
+            },
+            ensure_ascii=False,
+        )
 
     # If profile matches current, delegate to normal delegate_task
     if profile == CURRENT_PROFILE:
@@ -153,13 +244,19 @@ def delegate_profile(args: dict, **kwargs) -> str:
             "success": False,
             "subagent_id": subagent_id,
             "profile": profile,
-            "error": f"Timeout after {timeout}s",
+            "error": (
+                f"Timeout after {timeout}s. Raise the `timeout` arg or set "
+                f"HERMES_DELEGATE_PROFILE_TIMEOUT."
+            ),
             "elapsed_s": round(elapsed, 1),
         })
     except FileNotFoundError:
         return json.dumps({
             "success": False,
-            "error": f"Hermes binary not found: {hermes_bin}",
+            "error": (
+                f"Hermes binary not found: {hermes_bin}. "
+                f"Ensure hermes is on PATH."
+            ),
         })
     except Exception as exc:
         logger.exception("delegate_profile: unexpected error")
@@ -245,8 +342,8 @@ def register(ctx):
                     "description": (
                         "REQUIRED. Hermes profile name to run the subagent "
                         "under (e.g., 'coder', 'reviewer', 'researcher-a'). "
-                        "The profile must exist. Use 'hermes profile list' "
-                        "to see available profiles."
+                        "The profile must exist (validated before spawn). "
+                        "Use 'hermes profile list' to see available profiles."
                     ),
                 },
                 "model": {
@@ -260,7 +357,8 @@ def register(ctx):
                     "type": "integer",
                     "description": (
                         "Max seconds to wait for the subagent. "
-                        "Default: 300 (5 minutes)."
+                        "Default: 300 (5 minutes). Override globally with "
+                        "the HERMES_DELEGATE_PROFILE_TIMEOUT env var."
                     ),
                 },
             },

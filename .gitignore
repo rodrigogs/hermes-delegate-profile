@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Kanban workspaces created by the Hermes dispatcher (per-task git worktrees)
+.worktrees/
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
