@@ -1,0 +1,9 @@
+name: delegate-profile
+version: "0.1.0"
+description: Extends delegate_task with profile selection — spawn subagents under different Hermes profiles
+author: Rodrigo Gomes da Silva
+provides_tools:
+  - delegate_profile
+provides_hooks:
+  - post_tool_call
+requires_env: []
