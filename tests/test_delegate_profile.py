@@ -2,12 +2,16 @@
 
 Run:
     cd /home/rodrigo/hermes-delegate-profile
-    python3 -m pytest tests/test_delegate_profile.py -v
+    /usr/local/lib/hermes-agent/venv/bin/python -m pytest tests/ -v
 
 These tests exercise the plugin's pure logic (validation, timeout ladder,
 profile-existence checks) WITHOUT spawning real hermes subprocesses for the
 negative paths. One opt-in integration test (gated on DELEGATE_PROFILE_E2E=1)
 does a real cross-profile spawn.
+
+The handler is built by ``_make_handler(current_profile, dispatch_delegate)``
+at register time, so these tests construct it the same way, passing a fake
+``dispatch_delegate`` (records calls) and a fixed ``current_profile``.
 """
 
 import json
@@ -17,8 +21,7 @@ from pathlib import Path
 
 import pytest
 
-# Make the plugin importable: insert the repo root on sys.path so `import
-# __init__` works despite the awkward module name. We import it under an alias.
+# Make the plugin importable despite the awkward ``__init__.py`` module name.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -27,21 +30,37 @@ import importlib.util
 _spec = importlib.util.spec_from_file_location(
     "delegate_profile_plugin", REPO_ROOT / "__init__.py"
 )
+assert _spec is not None and _spec.loader is not None, "could not load plugin spec"
 dp = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(dp)
+
+
+def _make_handler(current_profile="default", captured_dispatch=None):
+    """Build the real handler against a recording dispatch_delegate.
+
+    ``captured_dispatch`` (a list) accumulates the args dicts handed to the
+    inline delegate_task path, so tests can assert on them.
+    """
+    def dispatch_delegate(dt_args):
+        if captured_dispatch is not None:
+            captured_dispatch.append(dt_args)
+        return json.dumps({"success": True, "results": [{"goal": dt_args.get("goal")}]})
+
+    return dp._make_handler(current_profile, dispatch_delegate)
 
 
 # ---------------------------------------------------------------------------
 # Arg validation
 # ---------------------------------------------------------------------------
 def test_missing_goal_returns_error():
-    out = json.loads(dp.delegate_profile({"profile": "coder"}))
+    h = _make_handler()
+    out = json.loads(h({"profile": "coder"}))
     assert out["error"] == "goal is required"
-    assert "success" not in out or out.get("success") is False
 
 
 def test_missing_profile_returns_error():
-    out = json.loads(dp.delegate_profile({"goal": "do something"}))
+    h = _make_handler()
+    out = json.loads(h({"goal": "do something"}))
     assert out["error"] == "profile is required"
 
 
@@ -55,9 +74,8 @@ def test_nonexistent_profile_gives_clear_error(monkeypatch):
     monkeypatch.setattr(
         dp, "_list_known_profiles", lambda: ["coder", "reviewer", "tester"]
     )
-    out = json.loads(
-        dp.delegate_profile({"goal": "review code", "profile": "reviwer"})
-    )
+    h = _make_handler(current_profile="default")
+    out = json.loads(h({"goal": "review code", "profile": "reviwer"}))
     assert out["error"] == (
         "Profile 'reviwer' does not exist. "
         "Create it with: hermes profile create reviwer"
@@ -68,14 +86,50 @@ def test_nonexistent_profile_gives_clear_error(monkeypatch):
     assert "coder" in out["hint"]
 
 
+def test_nonexistent_profile_validated_before_sameprofile_shortcut(monkeypatch):
+    """Even if the typo coincidentally matches current_profile, the existence
+    check runs first — so 'default' on a system with no such dir still errors
+    cleanly (except the real default, which always exists)."""
+    monkeypatch.setattr(dp, "_profile_exists", lambda p: False)
+    monkeypatch.setattr(dp, "_list_known_profiles", lambda: ["coder"])
+    h = _make_handler(current_profile="defualt")
+    out = json.loads(h({"goal": "x", "profile": "defualt"}))
+    assert "does not exist" in out["error"]
+
+
 def test_nonexistent_profile_no_known_profiles(monkeypatch):
     monkeypatch.setattr(dp, "_profile_exists", lambda p: False)
     monkeypatch.setattr(dp, "_list_known_profiles", lambda: [])
-    out = json.loads(
-        dp.delegate_profile({"goal": "x", "profile": "ghost"})
-    )
+    h = _make_handler()
+    out = json.loads(h({"goal": "x", "profile": "ghost"}))
     assert "does not exist" in out["error"]
     assert out["available_profiles"] == []
+    assert "hermes profile list" in out["hint"]
+
+
+# ---------------------------------------------------------------------------
+# Same-profile inline path
+# ---------------------------------------------------------------------------
+def test_same_profile_routes_to_inline_dispatch(monkeypatch):
+    """When profile == current, we must NOT spawn; we route to delegate_task."""
+    monkeypatch.setattr(dp, "_profile_exists", lambda p: True)
+    captured = []
+    h = _make_handler(current_profile="default", captured_dispatch=captured)
+    out = json.loads(h({"goal": "g", "context": "c", "profile": "default", "model": "m"}))
+    assert out["success"] is True
+    # delegate_task was called once with forwarded goal/context/model.
+    assert captured == [{"goal": "g", "context": "c", "model": "m"}]
+
+
+def test_inline_dispatch_failure_returns_error(monkeypatch):
+    monkeypatch.setattr(dp, "_profile_exists", lambda p: True)
+
+    def boom(_args):
+        raise RuntimeError("parent agent not available")
+
+    h = dp._make_handler("default", boom)
+    out = json.loads(h({"goal": "g", "profile": "default"}))
+    assert "Inline delegation failed" in out["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -130,11 +184,16 @@ def test_real_profile_detected():
 
 
 # ---------------------------------------------------------------------------
-# Hermes binary resolution
+# Hermes binary + active profile resolution
 # ---------------------------------------------------------------------------
 def test_resolve_hermes_bin_returns_string():
     bin_path = dp._resolve_hermes_bin()
     assert isinstance(bin_path, str) and len(bin_path) > 0
+
+
+def test_get_active_profile_name_returns_string():
+    name = dp._get_active_profile_name()
+    assert isinstance(name, str) and len(name) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -147,9 +206,7 @@ def test_hook_no_op_for_other_tools(caplog):
 
 def test_hook_warns_on_delegate_task_with_profile(caplog):
     caplog.set_level("WARNING")
-    dp._on_post_tool_call(
-        "delegate_task", {"profile": "coder", "goal": "x"}, "ok"
-    )
+    dp._on_post_tool_call("delegate_task", {"profile": "coder", "goal": "x"}, "ok")
     assert any("delegate_profile" in r.message for r in caplog.records)
 
 
@@ -172,10 +229,10 @@ def test_e2e_cross_profile_spawn():
     target = os.environ.get("DELEGATE_PROFILE_E2E_PROFILE", "tester")
     if not dp._profile_exists(target):
         pytest.skip(f"profile {target!r} does not exist")
+    # current_profile intentionally differs from target to force the spawn path.
+    h = dp._make_handler("default", lambda a: json.dumps({}))
     out = json.loads(
-        dp.delegate_profile(
-            {"goal": "Reply with exactly: PONG", "profile": target, "timeout": 120}
-        )
+        h({"goal": "Reply with exactly: PONG", "profile": target, "timeout": 120})
     )
     assert out.get("success") is True, out
     assert out["profile"] == target

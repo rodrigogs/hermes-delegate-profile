@@ -1,6 +1,9 @@
 name: delegate-profile
-version: "0.1.0"
-description: Extends delegate_task with profile selection — spawn subagents under different Hermes profiles
+version: "0.2.0"
+description: >
+  Subprocess-isolated cross-profile delegation. Spawns a subagent under a
+  different Hermes profile via `hermes -p <profile> chat -q` for a hard
+  process boundary (the built-in delegate_task(profile=...) is in-process).
 author: Rodrigo Gomes da Silva
 provides_tools:
   - delegate_profile

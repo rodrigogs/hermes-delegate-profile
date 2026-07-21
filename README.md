@@ -1,16 +1,36 @@
 # delegate-profile
 
 A [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that adds a
-`delegate_profile` tool for spawning subagents under a **different** Hermes profile.
+`delegate_profile` tool for spawning subagents under a **different** Hermes
+profile as a **fully isolated subprocess**.
 
-The built-in `delegate_task` always runs children under the *same* profile as the
-parent. This plugin lets you pick any profile per subagent so the child inherits
-that profile's config, skills, memories, and model.
+## Why this exists (read this first)
+
+The built-in `delegate_task` **already supports** `profile=` for *in-process*
+cross-profile delegation — it swaps the child's config, secret scope, SOUL, and
+toolsets within the same process. That path is fast.
+
+This plugin is for the **subprocess-isolation** case, where you want a hard
+process boundary around the child:
+
+|                                     | `delegate_task(profile=...)` | `delegate_profile` (this plugin) |
+|-------------------------------------|------------------------------|----------------------------------|
+| Isolation                           | In-process (shared process)  | Separate OS process              |
+| Child crashes parent?               | Yes (same process)           | No (process boundary)            |
+| Child toolset                       | Can only **narrow** parent's | Target profile's **full** toolset|
+| Different Hermes version in child?  | No                           | Yes                              |
+| Overhead                            | Low                          | Process spawn + cold start       |
+| Best for                            | Fast parallel subtasks       | Crash isolation / full toolset   |
+
+Rule of thumb: if you'd be happy running the subagent in the current process,
+use `delegate_task(profile=...)`. If the subprocess boundary itself is the
+point — crash safety, the target profile's full toolset, a different Hermes
+version — use `delegate_profile`.
 
 ```text
-delegate_profile(goal="Review this PR for security issues", profile="reviewer")
-delegate_profile(goal="Implement feature X",              profile="coder")
-delegate_profile(goal="Summarize these papers",            profile="researcher-a", model="anthropic/claude-sonnet-4")
+delegate_profile(goal="Run the firmware flash suite",     profile="firmware-engineer")
+delegate_profile(goal="Review this PR for security",      profile="reviewer")
+delegate_profile(goal="Summarize these papers",           profile="researcher", model="anthropic/claude-sonnet-4")
 ```
 
 ## What it does
@@ -18,13 +38,16 @@ delegate_profile(goal="Summarize these papers",            profile="researcher-a
 - Adds a **`delegate_profile`** tool to the `delegation` toolset.
 - For **cross-profile** calls, spawns a one-shot
   `hermes -p <profile> chat -q "<goal>"` subprocess. The child runs fully
-  isolated under the target profile — its own session, skills, memory, and model.
-- For **same-profile** calls (profile omitted or matching the current profile),
-  transparently falls back to the in-process `delegate_task` so you pay no
-  subprocess overhead.
-- Registers a **`post_tool_call` hook** that logs a warning if `delegate_task`
-  is ever called with a `profile` argument — a nudge to use `delegate_profile`
-  instead, since the built-in tool would silently ignore the parameter.
+  isolated under the target profile — its own process, session, skills,
+  memory, and model.
+- For **same-profile** calls (profile omitted or matching the active profile),
+  transparently routes to the built-in `delegate_task` via `ctx.dispatch_tool`
+  (which wires up `parent_agent`) so you pay no subprocess overhead.
+- **Validates the target profile exists before spawning** — a typo produces an
+  instant, actionable error listing available profiles, not a confusing
+  subprocess failure.
+- Registers a **`post_tool_call` hook** that logs an advisory warning if
+  `delegate_task` is invoked with a `profile` argument.
 
 ## Install
 
@@ -76,26 +99,15 @@ delegate_profile(
 )
 ```
 
-### Parallel batch under different profiles
-
-Call `delegate_profile` multiple times — each runs as an independent
-subprocess under its own profile:
-
-```python
-delegate_profile(goal="Draft Q3 investor update",   profile="writer")
-delegate_profile(goal="Audit last week's deployments", profile="sre")
-delegate_profile(goal="Summarize support tickets",   profile="ops")
-```
-
 ### Parameters
 
 | Parameter  | Type    | Required | Default | Notes |
 |------------|---------|----------|---------|-------|
 | `goal`     | string  | yes      | —       | What the subagent should accomplish. Be self-contained — the child has no context from your session. |
-| `profile`  | string  | yes      | —       | Target Hermes profile name. Must exist (`hermes profile list`). If it matches the current profile, falls back to inline `delegate_task`. |
+| `profile`  | string  | yes      | —       | Target Hermes profile name. Must exist (`hermes profile list`). If it matches the active profile, routes to in-process `delegate_task`. |
 | `context`  | string  | no       | —       | Background info: file paths, error messages, project structure, constraints. |
 | `model`    | string  | no       | profile default | Model override passed as `-m` to the child. |
-| `timeout`  | integer | no       | `300`   | Max seconds to wait for the subprocess. |
+| `timeout`  | integer | no       | `300`   | Max seconds to wait for the subprocess. Override globally via `HERMES_DELEGATE_PROFILE_TIMEOUT`. |
 
 ### Result format
 
@@ -124,42 +136,44 @@ On failure (non-zero exit, timeout, or missing binary):
 }
 ```
 
+For a missing or non-existent profile:
+
+```json
+{
+  "success": false,
+  "error": "Profile 'reviwer' does not exist. Create it with: hermes profile create reviwer",
+  "profile": "reviwer",
+  "available_profiles": ["coder", "reviewer", "tester"],
+  "hint": "Available profiles: coder, reviewer, tester"
+}
+```
+
 For missing required args, returns `{"error": "goal is required"}` or
 `{"error": "profile is required"}`.
 
-## How it differs from `delegate_task`
-
-|                         | `delegate_task`                         | `delegate_profile`                          |
-|-------------------------|-----------------------------------------|---------------------------------------------|
-| Profile                 | Same as parent (always)                 | Any profile (`profile` is required)         |
-| Mechanism               | In-process `ThreadPoolExecutor`         | `hermes -p <profile>` subprocess            |
-| Overhead                | Lower                                   | Slightly higher (process spawn + cold start) |
-| Isolation               | Separate conversation, shared process   | Fully isolated process + profile            |
-| Child capabilities      | Inherits parent's config/skills/model   | Inherits **target** profile's config/skills/memories/model |
-| Best for                | Parallel subtasks in the same session   | Specialized work needing a different persona or model |
-
-Rule of thumb: if you'd be happy running the subagent with the *current*
-profile's settings, use `delegate_task` (faster). If you need the subagent to
-behave like a *different* profile — different SOUL, skills, memory, or default
-model — use `delegate_profile`.
-
 ## How it works
 
-1. Resolves the `hermes` binary (prefers the one in the current venv, falls
-   back to `PATH`).
-2. Builds the prompt as `Context: <context>\n\nTask: <goal>` when `context`
-   is provided, otherwise just `goal`.
-3. Spawns `hermes -p <profile> chat -q "<prompt>"` (plus `-m <model>` when set)
-   with `capture_output=True` and the given `timeout`.
-4. Forwards `HERMES_HOME` so the child resolves profiles from the same place
+1. Resolves the active profile name via Hermes's own `get_active_profile_name()`
+   (falls back to `HERMES_PROFILE` env, then `default`).
+2. Validates the target profile exists (`hermes_cli.profiles.profile_exists`).
+3. If the target **equals** the active profile, routes to `delegate_task`
+   through `ctx.dispatch_tool` (in-process, no spawn).
+4. Otherwise resolves the `hermes` binary (prefers the one in the current
+   venv, falls back to `PATH`), builds the prompt as
+   `Context: <context>\n\nTask: <goal>` when `context` is provided, and
+   spawns `hermes -p <profile> chat -q "<prompt>"` (plus `-m <model>` when set)
+   with `capture_output=True` and the resolved `timeout`.
+5. Forwards `HERMES_HOME` so the child resolves profiles from the same place
    as the parent, and sets `HERMES_DELEGATE_PROFILE_DISABLE=1` to prevent
    recursive delegation inside the child.
-5. Returns a JSON envelope (see [Result format](#result-format)).
+6. Returns a JSON envelope (see [Result format](#result-format)).
 
 The `post_tool_call` hook (`_on_post_tool_call`) is a no-op for every tool
 except `delegate_task`. When `delegate_task` is invoked with a `profile`
-parameter, it emits a `logger.warning` pointing you at `delegate_profile`.
-The hook never blocks or modifies the call — it's purely advisory.
+parameter, it emits a `logger.warning`. The hook never blocks or modifies the
+call — it's purely advisory (the built-in `delegate_task(profile=...)` is a
+legitimate in-process path; the warning is a nudge for callers who actually
+want subprocess isolation).
 
 ## Configuration
 
@@ -168,8 +182,9 @@ variables:
 
 | Variable                          | Default      | Effect |
 |-----------------------------------|--------------|--------|
-| `HERMES_PROFILE`                  | `default`    | Used to detect same-profile calls (inline fallback). |
+| `HERMES_PROFILE`                  | `default`    | Fallback for active-profile detection when Hermes's resolver is unavailable. |
 | `HERMES_HOME`                     | `~/.hermes`  | Forwarded to the child so profiles resolve consistently. |
+| `HERMES_DELEGATE_PROFILE_TIMEOUT` | unset        | Global default timeout (seconds) when no `timeout` arg is passed. |
 | `HERMES_DELEGATE_PROFILE_DISABLE` | unset        | Set to `1` inside spawned children to prevent recursive delegation. |
 
 ## Development
@@ -185,12 +200,26 @@ Plugin layout:
 hermes-delegate-profile/
 ├── plugin.yaml     # manifest (name, version, provides_tools, provides_hooks)
 ├── __init__.py     # register() — registers the tool + post_tool_call hook
-└── README.md       # this file
+├── README.md       # this file
+└── tests/
+    └── test_delegate_profile.py   # pytest suite (20 unit + opt-in E2E)
 ```
 
-`register(ctx)` is called by Hermes at startup. It calls
-`ctx.register_tool(...)` with the `delegate_profile` schema and handler, and
-`ctx.register_hook("post_tool_call", _on_post_tool_call)`.
+### Tests
+
+```bash
+# Unit tests (no subprocess spawns):
+/usr/local/lib/hermes-agent/venv/bin/python -m pytest tests/ -v
+
+# Include the real cross-profile spawn (needs a working model for the target profile):
+DELEGATE_PROFILE_E2E=1 DELEGATE_PROFILE_E2E_PROFILE=tester \
+  /usr/local/lib/hermes-agent/venv/bin/python -m pytest tests/ -v
+```
+
+`register(ctx)` is called by Hermes at startup. It resolves the active profile
+once, builds the handler via `_make_handler(current_profile, dispatch_delegate)`
+(which captures a `dispatch_delegate` closure over `ctx.dispatch_tool`), and
+registers the tool schema + `post_tool_call` hook.
 
 ## License
 
