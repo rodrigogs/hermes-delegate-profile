@@ -1,5 +1,5 @@
 name: delegate-profile
-version: "0.2.0"
+version: "0.3.0"
 description: >
   Subprocess-isolated cross-profile delegation. Spawns a subagent under a
   different Hermes profile via `hermes -p <profile> chat -q` for a hard
