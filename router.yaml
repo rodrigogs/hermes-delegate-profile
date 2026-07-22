@@ -1,0 +1,54 @@
+# router.yaml — the sole policy source, beside delegate_profile.
+# GENERATED from docs/superpowers/specs/2026-07-21-capability-router-design.md
+# v1 — capability-router project
+
+enabled: true
+
+classifier:                       # the judge obeys the blocklist; trusted provider
+  model: glm-5.2
+  provider: zai
+  temperature: 0
+  max_tokens: 128
+  timeout_seconds: 8
+
+fail_safe:                        # timeout / parse-fail / low-conf-at-boundary lands here
+  profile: coder                  # a TRUSTED strong target, NEVER gpt-5.6-sol,
+  model: claude-opus              # and still routed THROUGH the blocklist pre-filter
+  provider: anthropic
+
+blocklist:
+  manual_ban:                     # static, config-owned, always enforced (fail-closed)
+    - { model: gpt-5.6-sol, provider: openai-codex, reason: accept-but-never-stream }
+  fallback_chain: [gpt-5.6-sol, glm-5.2]
+  auto_breaker: { enabled: false }   # DEFERRED — stage exists, engine off
+
+# --- Table 1: ordered, first rule whose ALL when-clauses hold wins. ---
+rules:
+  - id: block-codex-stall               # blocklist deny row sits at the top
+    status: stable
+    when: { model: { in: [gpt-5.6-sol, openai-codex] } }
+    then: { deny: true }                # veto -> fallback_chain climbs
+
+  - id: trivial-mechanical-edit
+    status: stable
+    when: { verb_class: { eq: trivial }, has_code: { eq: true }, size_lines: { lte: 40 } }
+    then: { profile: coder, model: T1 } # route free, NO classifier
+
+  - id: hard-verbs                       # debug/refactor/secure/concurrent/prove/optimize
+    status: stable
+    when: { verb_class: { eq: hard } }
+    then: { profile: coder, model: T4 } # fail TOWARD capability, free
+
+  - id: review-request
+    status: stable
+    when: { keywords: { contains: review } }
+    then: { profile: reviewer, action: classify }  # role known, capability uncertain
+
+default: { action: classify }           # the hybrid switch — never silent
+
+# --- Table 2: tier -> capability. Consumed once; never re-enters Table 1. ---
+tiers:
+  T1: { model: glm-5.2-fast,  provider: zai }
+  T2: { model: glm-5.2,       provider: zai }
+  T3: { model: claude-sonnet, provider: anthropic }
+  T4: { model: claude-opus,   provider: anthropic }

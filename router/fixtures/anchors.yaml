@@ -1,0 +1,20 @@
+# Few-shot classifier anchors — one example per tier (T1-T4).
+# Doubles as regression fixtures for classifier tests.
+# Each anchor: task description → expected tier + confidence.
+
+anchors:
+  - tier: T1
+    description: "Rename getCwd to getCurrentWorkingDirectory across the project"
+    expected: { tier: T1, confidence: high, needs_capability: "mechanical rename, no reasoning" }
+
+  - tier: T2
+    description: "Add a /health endpoint that returns {status: ok} with a 200 status code"
+    expected: { tier: T2, confidence: high, needs_capability: "single file, standard pattern" }
+
+  - tier: T3
+    description: "Refactor the auth middleware to support both JWT and API key auth, update 3 endpoints to use the new pattern"
+    expected: { tier: T3, confidence: high, needs_capability: "multi-file, design choice across 3 endpoints" }
+
+  - tier: T4
+    description: "Debug a race condition where concurrent writes to the user cache cause stale data under load"
+    expected: { tier: T4, confidence: high, needs_capability: "concurrency bug, unknown root cause" }
