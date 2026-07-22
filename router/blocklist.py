@@ -88,9 +88,16 @@ class Blocklist:
     def _match(ban_model: str, ban_provider: str, model: str, provider: str) -> bool:
         """Check if model/provider matches a ban entry.
 
-        An empty ban field matches anything (ban all models from a provider,
-        or ban a model regardless of provider).
+        If the model matches the ban, block regardless of provider
+        (fail-closed — a banned model is banned).
+        An empty ban provider matches any provider.
         """
         model_match = not ban_model or ban_model.lower() == model.lower()
-        provider_match = not ban_provider or ban_provider.lower() == provider.lower()
-        return model_match and provider_match
+        if not model_match:
+            return False
+        # Model matches — block unless provider is specifically non-matching
+        if not ban_provider:
+            return True  # ban all providers for this model
+        if not provider:
+            return True  # fail-closed: if model banned anywhere, block it
+        return ban_provider.lower() == provider.lower()
