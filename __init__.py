@@ -435,7 +435,157 @@ def _classify(reason: str, returncode: Optional[int]) -> Tuple[Optional[str], bo
         if sig == _SIGKILL_NUM:
             return "crash_or_oom", True      # OOM-killed (or external kill)
         return "crash", True                 # SIGSEGV/SIGABRT/... retry once
-    return "nonzero_exit", False             # app-level error — retry repeats it\n\n\ndef _record_breaker_outcome(\n    profile: str,\n    model: str,\n    failure_kind: Optional[str],\n) -> None:\n    \"\"\"Record delegate_profile outcome in the capability router's auto-breaker.\n\n    Fire-and-forget — errors are logged but never propagated. The breaker\n    lives in router/blocklist.py and uses router.yaml config.\n    \"\"\"\n    if not model:\n        return\n    try:\n        from pathlib import Path\n\n        import yaml\n\n        from router.blocklist import Blocklist\n\n        # Resolve router.yaml relative to this plugin's directory\n        plugin_dir = Path(__file__).resolve().parent\n        config_path = plugin_dir / \"router.yaml\"\n        if not config_path.exists():\n            return\n\n        config = yaml.safe_load(config_path.read_text(encoding=\"utf-8\")) or {}\n        blocklist = Blocklist(config)\n\n        # Determine provider from the router config tiers\n        provider = \"\"\n        tiers = config.get(\"tiers\", {})\n        for _tier, tcfg in tiers.items():\n            if tcfg.get(\"model\") == model:\n                provider = tcfg.get(\"provider\", \"\")\n                break\n\n        if failure_kind is not None:\n            blocklist.record_failure(model, provider, failure_kind)\n        else:\n            blocklist.record_success(model, provider)\n    except Exception:\n        pass  # breaker is best-effort, never blocks the tool
+    return "nonzero_exit", False             # app-level error — retry repeats it
+
+
+# ---------------------------------------------------------------------------
+# Capability Router integration
+# ---------------------------------------------------------------------------
+
+_ROUTER_SENTINEL = "HERMES_ROUTER_CLASSIFYING"
+
+
+def _load_router_config() -> Dict[str, Any]:
+    """Load router.yaml from the plugin directory. Returns {} on failure."""
+    try:
+        import yaml
+        plugin_dir = Path(__file__).resolve().parent
+        config_path = plugin_dir / "router.yaml"
+        if not config_path.exists():
+            return {}
+        return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+
+def _make_classify_fn(ctx: Any) -> Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]]:
+    """Build a classify_fn that uses the host's LLM for difficulty classification.
+
+    Returns None if the router is disabled or ctx lacks llm. The classifier
+    pins provider=zai + model=glm-5.2 (trusted-streaming, temp=0, token-capped).
+    Requires allow_provider_override + allow_model_override in plugin config.
+    """
+    config = _load_router_config()
+    if not config.get("enabled", False):
+        return None
+    if ctx is None or not hasattr(ctx, "llm"):
+        return None
+
+    cls_conf = config.get("classifier", {})
+    provider = cls_conf.get("provider", "zai")
+    model = cls_conf.get("model", "glm-5.2")
+    temperature = float(cls_conf.get("temperature", 0))
+    max_tokens = int(cls_conf.get("max_tokens", 128))
+    timeout = int(cls_conf.get("timeout_seconds", 8))
+
+    def classify_fn(task: str, features: Dict[str, Any]) -> Dict[str, Any]:
+        """One-shot LLM difficulty classification. Returns {tier, confidence, ...}."""
+        from router.classify import build_prompt_from_config
+        prompt = build_prompt_from_config(config, task, features)
+        result = ctx.llm.complete(
+            messages=[{"role": "user", "content": prompt}],
+            provider=provider,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            purpose="capability-router.classify",
+        )
+        # Parse JSON response — model may wrap in markdown fences
+        text = result.text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        parsed = json.loads(text)
+        if not isinstance(parsed, dict):
+            raise ValueError("classifier did not return a JSON object")
+        return parsed
+
+    return classify_fn
+
+
+def _route_task(
+    goal: str,
+    requested_model: str,
+    classify_fn: Optional[Callable],
+) -> Optional[Dict[str, Any]]:
+    """Run the capability router on a goal string.
+
+    Returns {profile, model?, provider?} or None if routing failed / router
+    unavailable / blocklist veto / recursion guard active.
+
+    Best-effort: routing failure → caller falls through to normal delegation.
+    Never blocks — all errors are caught.
+    """
+    # Recursion guard: don't re-enter the router during a classifier dispatch
+    if os.environ.get(_ROUTER_SENTINEL):
+        return None
+
+    os.environ[_ROUTER_SENTINEL] = "1"
+    try:
+        from router.adapter import route
+        from router.blocklist import Blocklist
+
+        config = _load_router_config()
+        if not config.get("enabled", False):
+            return None
+
+        blocklist = Blocklist(config)
+        result = route(
+            task=goal,
+            config=config,
+            requested_model=requested_model,
+            classify_fn=classify_fn,
+            blocklist=blocklist,
+        )
+
+        # Blocklist veto or pending classify action → no concrete target
+        if result.get("deny") or result.get("action") == "classify":
+            return None
+
+        # Must have a profile to be useful
+        if not result.get("profile"):
+            return None
+
+        return result
+    except Exception as exc:
+        logger.debug("capability-router: _route_task failed: %s", exc)
+        return None
+    finally:
+        os.environ.pop(_ROUTER_SENTINEL, None)
+
+
+def _record_breaker_outcome(
+    profile: str,
+    model: str,
+    failure_kind: Optional[str],
+) -> None:
+    """Record delegate_profile outcome in the capability router's auto-breaker.
+
+    Fire-and-forget — errors are logged but never propagated. The breaker
+    lives in router/blocklist.py and uses router.yaml config.
+    """
+    if not model:
+        return
+    try:
+        from router.blocklist import Blocklist
+
+        config = _load_router_config()
+        blocklist = Blocklist(config)
+
+        # Determine provider from the router config tiers
+        provider = ""
+        tiers = config.get("tiers", {})
+        for _tier, tcfg in tiers.items():
+            if tcfg.get("model") == model:
+                provider = tcfg.get("provider", "")
+                break
+
+        if failure_kind is not None:
+            blocklist.record_failure(model, provider, failure_kind)
+        else:
+            blocklist.record_success(model, provider)
+    except Exception:
+        pass  # breaker is best-effort, never blocks the tool
 
 
 # ---------------------------------------------------------------------------
@@ -507,14 +657,24 @@ def _get_pool() -> _Pool:
 # ---------------------------------------------------------------------------
 # Tool handler factory
 # ---------------------------------------------------------------------------
-def _make_handler(current_profile: str, dispatch_delegate: Callable) -> Callable:
+def _make_handler(
+    current_profile: str,
+    dispatch_delegate: Callable,
+    ctx: Any = None,
+) -> Callable:
     """Build the delegate_profile tool handler.
 
     Captures the active profile (resolved once at register time) and a
     ``dispatch_delegate`` callable that routes same-profile calls through the
     plugin context's ``dispatch_tool`` — which wires ``parent_agent`` onto the
     call, something a direct ``delegate_task(...)`` import cannot do.
+
+    If ``ctx`` is provided and the capability router is configured, tasks
+    without an explicit profile are routed through the router (Stage 0 +
+    optional Stage 1 classifier) to pick the best profile + model.
     """
+
+    classify_fn = _make_classify_fn(ctx) if ctx is not None else None
 
     def delegate_profile(args: dict, **_kwargs) -> str:
         goal = (args.get("goal") or "").strip()
@@ -525,6 +685,15 @@ def _make_handler(current_profile: str, dispatch_delegate: Callable) -> Callable
 
         if not goal:
             return json.dumps({"error": "goal is required", "failure_kind": "bad_args"})
+
+        # --- Capability router: pick profile+model when not explicitly given ---
+        if (not profile or profile == "auto") and classify_fn is not None:
+            routed = _route_task(goal, model, classify_fn)
+            if routed is not None:
+                profile = routed.get("profile", "") or profile
+                if not model and routed.get("model"):
+                    model = routed["model"]
+
         if not profile:
             return json.dumps({"error": "profile is required", "failure_kind": "bad_args"})
 
@@ -755,7 +924,7 @@ def register(ctx):
     def _dispatch_delegate(dt_args: dict) -> str:
         return ctx.dispatch_tool("delegate_task", dt_args)
 
-    handler = _make_handler(current_profile, _dispatch_delegate)
+    handler = _make_handler(current_profile, _dispatch_delegate, ctx=ctx)
 
     DELEGATE_PROFILE_SCHEMA = {
         "name": "delegate_profile",
@@ -795,10 +964,11 @@ def register(ctx):
                 "profile": {
                     "type": "string",
                     "description": (
-                        "REQUIRED. Hermes profile name to run the subagent "
-                        "under (e.g., 'coder', 'reviewer', 'researcher-a'). "
-                        "The profile must exist (validated before spawn). Use "
-                        "'hermes profile list' to see available profiles."
+                        "Hermes profile name to run the subagent under "
+                        "(e.g., 'coder', 'reviewer', 'researcher-a'). The profile "
+                        "must exist (validated before spawn). Omit or use 'auto' "
+                        "to let the capability router pick the best profile + model "
+                        "based on task difficulty (Stage 0 rules + Stage 1 classifier)."
                     ),
                 },
                 "model": {
@@ -820,7 +990,7 @@ def register(ctx):
                     ),
                 },
             },
-            "required": ["goal", "profile"],
+            "required": ["goal"],
         },
     }
 
