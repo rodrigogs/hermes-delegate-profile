@@ -1,5 +1,5 @@
 {
-  "name": "capability-router",
+  "name": "delegate-profile",
   "label": "Router",
   "description": "Hybrid capability routing — deterministic rules + LLM classifier with blocklist and auto-breaker",
   "icon": "Route",

@@ -2,7 +2,7 @@
  * Capability Router dashboard panel.
  *
  * Uses the official Hermes Plugin SDK (window.__HERMES_PLUGIN_SDK__).
- * API: /api/plugins/capability-router/
+ * API: /api/plugins/delegate-profile/
  */
 (function () {
   "use strict";
@@ -18,7 +18,7 @@
   } = SDK.components;
   const { fetchJSON } = SDK;
 
-  const API = "/api/plugins/capability-router";
+  const API = "/api/plugins/delegate-profile";
 
   const TIER_COLORS = {
     T1: "#3fb950", T2: "#d2991d", T3: "#a371f7", T4: "#f85149",
@@ -316,5 +316,5 @@
     );
   }
 
-  window.__HERMES_PLUGINS__.register("capability-router", RouterPage);
+  window.__HERMES_PLUGINS__.register("delegate-profile", RouterPage);
 })();
