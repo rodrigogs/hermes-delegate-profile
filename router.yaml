@@ -1,0 +1,52 @@
+# router.yaml — the sole policy source, beside delegate_profile.
+# GENERATED from docs/superpowers/specs/2026-07-21-capability-router-design.md
+# v1 — capability-router project
+
+enabled: true
+
+classifier:
+  model: glm-5.2
+  provider: zai
+  temperature: 0
+  max_tokens: 128
+  timeout_seconds: 8
+
+fail_safe:
+  profile: coder
+  model: claude-opus
+  provider: anthropic
+
+blocklist:
+  manual_ban:
+    - { model: gpt-5.6-sol, provider: openai-codex, reason: accept-but-never-stream }
+  fallback_chain: [gpt-5.6-sol, glm-5.2]
+  auto_breaker: { enabled: false }
+
+rules:
+  - id: block-codex-stall
+    status: stable
+    when: { model: { in: [gpt-5.6-sol, openai-codex] } }
+    then: { deny: true }
+
+  - id: trivial-mechanical-edit
+    status: stable
+    when: { verb_class: { eq: trivial }, has_code: { eq: true }, size_lines: { lte: 40 } }
+    then: { profile: coder, model: T1 }
+
+  - id: hard-verbs
+    status: stable
+    when: { verb_class: { eq: hard } }
+    then: { profile: coder, model: T4 }
+
+  - id: review-request
+    status: stable
+    when: { keywords: { contains: review } }
+    then: { profile: reviewer, action: classify }
+
+default: { action: classify }
+
+tiers:
+  T1: { model: glm-5.2-fast,  provider: zai }
+  T2: { model: glm-5.2,       provider: zai }
+  T3: { model: claude-sonnet, provider: anthropic }
+  T4: { model: claude-opus,   provider: anthropic }
