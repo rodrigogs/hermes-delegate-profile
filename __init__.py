@@ -687,7 +687,7 @@ def _make_handler(
             return json.dumps({"error": "goal is required", "failure_kind": "bad_args"})
 
         # --- Capability router: pick profile+model when not explicitly given ---
-        if (not profile or profile == "auto") and classify_fn is not None:
+        if not profile or profile == "auto":
             routed = _route_task(goal, model, classify_fn)
             if routed is not None:
                 profile = routed.get("profile", "") or profile

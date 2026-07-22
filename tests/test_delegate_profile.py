@@ -59,9 +59,13 @@ def test_missing_goal_returns_error():
 
 
 def test_missing_profile_returns_error():
+    """Omitting profile triggers the router; if the resolved profile doesn't
+    exist, the error is unknown_profile (not 'profile is required')."""
     h = _make_handler()
     out = json.loads(h({"goal": "do something"}))
-    assert out["error"] == "profile is required"
+    # Router resolves "do something" via fail_safe to coder.
+    # coder doesn't exist in test env so we get unknown_profile.
+    assert out["failure_kind"] == "unknown_profile"
 
 
 # ---------------------------------------------------------------------------
