@@ -79,7 +79,7 @@ def cmd_lint(args: argparse.Namespace) -> None:
 
 
 def cmd_blocklist(args: argparse.Namespace) -> None:
-    """Show banned models and fallback chain."""
+    """Show banned models, breaker state, and fallback chain."""
     config = load_config(args.config)
     bl = Blocklist(config)
 
@@ -87,6 +87,25 @@ def cmd_blocklist(args: argparse.Namespace) -> None:
     for ban in bl.manual_bans():
         print(f"  - model={ban['model']} provider={ban.get('provider', '*')} "
               f"reason={ban.get('reason', 'none')}")
+
+    # Show breaker cooldowns if enabled
+    if bl.breaker_enabled():
+        status = bl.breaker_status()
+        if status:
+            print(f"\nAuto-breaker cooldowns:")
+            for s in status:
+                remaining = s.get("cooldown_remaining_s", 0)
+                if remaining > 120:
+                    rem_str = f"{remaining/60:.0f}m remaining"
+                elif remaining > 1:
+                    rem_str = f"{remaining:.0f}s remaining"
+                else:
+                    rem_str = "expiring now"
+                print(f"  - model={s['model_key']} state={s['state']} "
+                      f"cooldown={rem_str} backoff={s['backoff_seconds']:.0f}s "
+                      f"last_failure={s.get('last_failure_kind', '-')}")
+        else:
+            print(f"\nAuto-breaker: enabled, no active cooldowns")
 
     print(f"\nFallback chain: {' → '.join(bl.fallback_chain())}")
 

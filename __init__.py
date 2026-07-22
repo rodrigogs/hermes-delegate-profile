@@ -435,7 +435,7 @@ def _classify(reason: str, returncode: Optional[int]) -> Tuple[Optional[str], bo
         if sig == _SIGKILL_NUM:
             return "crash_or_oom", True      # OOM-killed (or external kill)
         return "crash", True                 # SIGSEGV/SIGABRT/... retry once
-    return "nonzero_exit", False             # app-level error — retry repeats it
+    return "nonzero_exit", False             # app-level error — retry repeats it\n\n\ndef _record_breaker_outcome(\n    profile: str,\n    model: str,\n    failure_kind: Optional[str],\n) -> None:\n    \"\"\"Record delegate_profile outcome in the capability router's auto-breaker.\n\n    Fire-and-forget — errors are logged but never propagated. The breaker\n    lives in router/blocklist.py and uses router.yaml config.\n    \"\"\"\n    if not model:\n        return\n    try:\n        from pathlib import Path\n\n        import yaml\n\n        from router.blocklist import Blocklist\n\n        # Resolve router.yaml relative to this plugin's directory\n        plugin_dir = Path(__file__).resolve().parent\n        config_path = plugin_dir / \"router.yaml\"\n        if not config_path.exists():\n            return\n\n        config = yaml.safe_load(config_path.read_text(encoding=\"utf-8\")) or {}\n        blocklist = Blocklist(config)\n\n        # Determine provider from the router config tiers\n        provider = \"\"\n        tiers = config.get(\"tiers\", {})\n        for _tier, tcfg in tiers.items():\n            if tcfg.get(\"model\") == model:\n                provider = tcfg.get(\"provider\", \"\")\n                break\n\n        if failure_kind is not None:\n            blocklist.record_failure(model, provider, failure_kind)\n        else:\n            blocklist.record_success(model, provider)\n    except Exception:\n        pass  # breaker is best-effort, never blocks the tool
 
 
 # ---------------------------------------------------------------------------
@@ -676,6 +676,9 @@ def _make_handler(current_profile: str, dispatch_delegate: Callable) -> Callable
 
         elapsed = round(time.time() - started_at, 1)
         failure_kind, retryable = _classify(reason, returncode)
+
+        # Record outcome in the capability router's auto-breaker (fire-and-forget).
+        _record_breaker_outcome(profile, model, failure_kind)
 
         if failure_kind == "hard_timeout":
             return json.dumps({

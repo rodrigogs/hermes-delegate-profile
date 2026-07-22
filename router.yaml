@@ -20,7 +20,13 @@ blocklist:
   manual_ban:
     - { model: gpt-5.6-sol, provider: openai-codex, reason: accept-but-never-stream }
   fallback_chain: [gpt-5.6-sol, glm-5.2]
-  auto_breaker: { enabled: false }
+  auto_breaker:
+    enabled: true
+    threshold: 5
+    window_seconds: 600
+    base_cooldown_seconds: 60
+    max_cooldown_seconds: 900
+    backoff_multiplier: 2.0
 
 rules:
   - id: block-codex-stall
