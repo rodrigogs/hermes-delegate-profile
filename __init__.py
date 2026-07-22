@@ -896,7 +896,7 @@ def _make_handler(
 # ---------------------------------------------------------------------------
 # Post-tool-call hook
 # ---------------------------------------------------------------------------
-def _on_post_tool_call(tool_name: str, params: dict, result: str) -> None:
+def _on_post_tool_call(tool_name: str, params: dict, result: str, **_kwargs: Any) -> None:
     """Warn when delegate_task is called with a `profile` param.
 
     Advisory only — never blocks. The built-in delegate_task *does* accept
