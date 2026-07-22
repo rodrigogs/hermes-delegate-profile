@@ -1,8 +1,16 @@
 # delegate-profile
 
+[![CI](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml/badge.svg)](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-77%25-yellow)](https://github.com/rodrigogs/hermes-delegate-profile)
+[![Tests](https://img.shields.io/badge/tests-198%20passed-brightgreen)](https://github.com/rodrigogs/hermes-delegate-profile)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://www.python.org/)
+[![Version](https://img.shields.io/badge/version-0.3.0-informational)](https://github.com/rodrigogs/hermes-delegate-profile)
+[![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/rodrigogs/hermes-delegate-profile/blob/main/LICENSE)
+
 A [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that adds a
 `delegate_profile` tool for spawning subagents under a **different** Hermes
-profile as a **fully isolated subprocess**.
+profile as a **fully isolated subprocess** — with an optional **capability router**
+that auto-selects the best profile + model based on task difficulty.
 
 ## Why this exists (read this first)
 
@@ -104,7 +112,7 @@ delegate_profile(
 | Parameter  | Type    | Required | Default | Notes |
 |------------|---------|----------|---------|-------|
 | `goal`     | string  | yes      | —       | What the subagent should accomplish. Be self-contained — the child has no context from your session. |
-| `profile`  | string  | yes      | —       | Target Hermes profile name. Must exist (`hermes profile list`). If it matches the active profile, routes to in-process `delegate_task`. |
+| `profile`  | string  | no       | `auto`  | Target Hermes profile name. Must exist (`hermes profile list`). If omitted or `auto`, the capability router picks the best profile + model based on task difficulty. If it matches the active profile, routes to in-process `delegate_task`. |
 | `context`  | string  | no       | —       | Background info: file paths, error messages, project structure, constraints. |
 | `model`    | string  | no       | profile default | Model override passed as `-m` to the child. |
 | `timeout`  | integer | no       | `300`   | Max seconds to wait for the subprocess. Override globally via `HERMES_DELEGATE_PROFILE_TIMEOUT`. |
@@ -168,6 +176,35 @@ For missing required args, returns `{"error": "goal is required"}` or
    recursive delegation inside the child.
 6. Returns a JSON envelope (see [Result format](#result-format)).
 
+### Capability Router
+
+When `profile` is omitted or set to `auto`, the plugin runs a **capability
+router** that picks the best profile + model for the task:
+
+- **Stage 0 — Deterministic rules:** matches task signals (verb class,
+  code presence, keyword patterns) against user-defined rules in
+  `router.yaml`. Fast, cheap, no LLM call.
+- **Stage 1 — LLM classifier:** fires only when rules can't decide (rules
+  with `action: classify`). Uses a pinned model (glm-5.2/zai, temp=0,
+  token-capped) to classify task difficulty.
+- **Fail-safe:** if the classifier is unavailable, falls back to a trusted
+  strong model from `router.yaml`.
+- **Blocklist:** manual bans + auto-breaker with exponential backoff
+  cooldowns for models that stall repeatedly.
+- **Decision log:** every routing decision is recorded for observability.
+
+Example routing behavior with the default config:
+
+| Task | Router picks |
+|------|-------------|
+| `"Rename getCwd in utils.py"` | `coder` + `glm-5.2-fast` (T1) |
+| `"Debug race condition in pool"` | `coder` + `claude-opus` (T4) |
+| `"Review PR for security"` | `reviewer` + classify (→ fail_safe if no LLM) |
+
+Configure via `router.yaml` — rules, tiers, blocklist, classifier model,
+and fail-safe are all user-editable. Run `python -m router.cli explain "task"`
+to see routing decisions from the CLI.
+
 The `post_tool_call` hook (`_on_post_tool_call`) is a no-op for every tool
 except `delegate_task`. When `delegate_task` is invoked with a `profile`
 parameter, it emits a `logger.warning`. The hook never blocks or modifies the
@@ -192,28 +229,50 @@ variables:
 ```bash
 git clone https://github.com/rodrigogs/hermes-delegate-profile.git
 cd hermes-delegate-profile
+pip install -e ".[dev]"
 ```
 
-Plugin layout:
+Project layout:
 
 ```
 hermes-delegate-profile/
-├── plugin.yaml     # manifest (name, version, provides_tools, provides_hooks)
-├── __init__.py     # register() — registers the tool + post_tool_call hook
-├── README.md       # this file
+├── plugin.yaml          # manifest (name, version, provides_tools, provides_hooks)
+├── __init__.py          # register() — registers the tool + post_tool_call hook
+├── router.yaml          # capability router config (rules, tiers, blocklist)
+├── pyproject.toml       # project metadata + pytest/coverage config
+├── README.md            # this file
+├── LICENSE              # MIT
+├── router/              # capability router library
+│   ├── adapter.py       # Stage 0 → Stage 1 → delegate_profile bridge
+│   ├── signals.py       # task signal extraction
+│   ├── rules.py         # rule matching engine
+│   ├── classify.py      # LLM difficulty classifier
+│   ├── blocklist.py     # manual ban + auto-breaker state machine
+│   ├── breaker.py       # circuit breaker state
+│   ├── cache.py         # exact-hash classifier cache
+│   ├── decision_log.py  # JSONL decision recorder
+│   └── cli.py           # CLI: explain, lint, blocklist, log
+├── dashboard/           # WebUI panel (React + Plugin SDK)
+│   ├── manifest.json
+│   ├── plugin_api.py    # 6 FastAPI routes
+│   └── dist/index.js    # bundled panel code
 └── tests/
-    └── test_delegate_profile.py   # pytest suite (20 unit + opt-in E2E)
+    ├── test_delegate_profile.py
+    ├── test_router_integration.py
+    └── router/          # per-module unit tests
 ```
 
 ### Tests
 
 ```bash
-# Unit tests (no subprocess spawns):
-/usr/local/lib/hermes-agent/venv/bin/python -m pytest tests/ -v
+# All tests:
+pytest tests/ -v
 
-# Include the real cross-profile spawn (needs a working model for the target profile):
-DELEGATE_PROFILE_E2E=1 DELEGATE_PROFILE_E2E_PROFILE=tester \
-  /usr/local/lib/hermes-agent/venv/bin/python -m pytest tests/ -v
+# Router tests only:
+pytest tests/ -v --ignore=tests/test_delegate_profile.py
+
+# With coverage:
+pytest --cov --cov-report=term tests/ -v
 ```
 
 `register(ctx)` is called by Hermes at startup. It resolves the active profile

@@ -1,14 +1,42 @@
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
 *.egg-info/
+dist/
+build/
+eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# pytest
 .pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+coverage.json
 
-# Kanban workspaces created by the Hermes dispatcher (per-task git worktrees)
-.worktrees/
-
-# Editor / OS
-.DS_Store
-*.swp
-.idea/
+# IDE
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project-specific
+.worktrees/
+*.rej
+*.orig
+
+# State files (generated at runtime)
+state/
+*.db
