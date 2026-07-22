@@ -688,18 +688,11 @@ def _make_handler(
 
         # --- Capability router: pick profile+model when not explicitly given ---
         if not profile or profile == "auto":
-            logger.info(
-                "delegate_profile: router triggered (profile=%r, model=%r, classify_fn=%s)",
-                profile, model, "available" if classify_fn is not None else "unavailable",
-            )
             routed = _route_task(goal, model, classify_fn)
-            logger.info("delegate_profile: router result=%s", routed)
             if routed is not None:
                 profile = routed.get("profile", "") or profile
                 if not model and routed.get("model"):
                     model = routed["model"]
-            else:
-                logger.info("delegate_profile: router returned None — falling through")
 
         if not profile:
             return json.dumps({"error": "profile is required", "failure_kind": "bad_args"})
