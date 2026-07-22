@@ -1,0 +1,13 @@
+{
+  "name": "capability-router",
+  "label": "Router",
+  "description": "Hybrid capability routing — deterministic rules + LLM classifier with blocklist and auto-breaker",
+  "icon": "Route",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/router",
+    "position": "after:skills"
+  },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}
