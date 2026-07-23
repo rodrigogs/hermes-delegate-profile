@@ -6,7 +6,7 @@ Wires Stage 0 (blocklist + signals + rules) → Stage 1 (classifier)
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from router.signals import extract
 from router.rules import match, explain as rules_explain, lint as rules_lint
@@ -62,23 +62,11 @@ def route(
     if rule_id is not None and "action" not in output:
         # Concrete route — check session pin upward-only ratchet
         if pin.is_set() and output.get("model"):
-            out_model = output.get("model", "")
-            pin_tier = pin.tier or ""
-            tier_cfg = tiers.get(pin_tier, {})
-            pin_model = tier_cfg.get("model", "")
-            # Only break pin upward for hard verbs (already handled by rules)
-            # For other rules, respect the pin floor
-            if pin_model and out_model != pin_model:
-                # Check if pin tier is higher
-                tier_order = {"glm-5.2-fast": 0, "glm-5.2": 1,
-                             "claude-sonnet": 2, "claude-opus": 3}
-                if tier_order.get(out_model, 0) < tier_order.get(pin_model, 0):
-                    # Pin is higher — use pin's model
-                    output["model"] = pin_model
-                    if "provider" in tier_cfg:
-                        output["provider"] = tier_cfg["provider"]
-                    dlog.record("session_pin", output, matched_rule_id=rule_id,
-                               task_preview=task[:120])
+            output, pin_applied = _apply_session_floor(output, pin, tiers)
+            if pin_applied:
+                dlog.record("session_pin", output, matched_rule_id=rule_id,
+                           task_preview=task[:120])
+                return output
 
         dlog.record(
             _cause_from_rule(rule_id, output), output,
@@ -91,9 +79,16 @@ def route(
         # Check cache first
         cached = cch.get(task)
         if cached:
-            dlog.record("classifier", cached, task_preview=task[:120])
-            # Return with tier resolved
-            return _resolve_output(cached, output, tiers)
+            result = _resolve_output(cached, output, tiers)
+            result, pin_applied = _apply_session_floor(
+                result, pin, tiers, output_tier=cached.get("tier"),
+            )
+            dlog.record(
+                "session_pin" if pin_applied else "classifier",
+                result,
+                task_preview=task[:120],
+            )
+            return result
 
         if classify_fn is None:
             # No classifier available → fail-safe
@@ -116,11 +111,15 @@ def route(
             classifier = Classifier(config)
             final_tier, tier_cfg = classifier.safety_ratchet(tier, confidence)
 
-            # Cache the result
-            cch.set(task, {"tier": final_tier, **tier_cfg})
-
-            # Set session pin
+            # SessionPin is an upward-only floor. A subsequent classifier
+            # answer may be lower, but it must not downgrade this session.
             pin.set(final_tier)
+            effective_tier = pin.tier or final_tier
+            if effective_tier != final_tier:
+                tier_cfg = dict(tiers.get(effective_tier, tier_cfg))
+
+            # Cache the effective result, not the raw classifier answer.
+            cch.set(task, {"tier": effective_tier, **tier_cfg})
 
             # Merge profile from output (role axis) with model from classifier
             result = dict(output)
@@ -155,13 +154,64 @@ def route(
     return result
 
 
+
+_TIER_ORDER = {"T1": 0, "T2": 1, "T3": 2, "T4": 3}
+
+
+def _apply_session_floor(
+    output: Dict[str, Any],
+    pin: SessionPin,
+    tiers: Dict[str, Dict[str, Any]],
+    *,
+    output_tier: Optional[str] = None,
+) -> Tuple[Dict[str, Any], bool]:
+    """Apply a SessionPin floor to a resolved routing result.
+
+    A model can appear in direct-rule, classifier, or cache output. The
+    session guarantee is independent of that source: whenever both capability
+    tiers are known and the candidate is below the pin, return the pin tier.
+    Unknown concrete models are left untouched because their relative capacity
+    cannot be determined safely.
+    """
+    pin_tier = pin.tier
+    pin_cfg = tiers.get(pin_tier or "", {})
+    pin_model = pin_cfg.get("model")
+    if not pin_tier or not pin_model:
+        return output, False
+
+    if output_tier is None:
+        output_model = output.get("model")
+        output_tier = next(
+            (
+                name for name, cfg in tiers.items()
+                if cfg.get("model") == output_model
+            ),
+            None,
+        )
+
+    # A concrete model outside the policy table has no comparable capability
+    # rank. Preserve it rather than guessing it is below the current floor.
+    if output_tier not in _TIER_ORDER or pin_tier not in _TIER_ORDER:
+        return output, False
+    if _TIER_ORDER[output_tier] >= _TIER_ORDER[pin_tier]:
+        return output, False
+
+    result = dict(output)
+    result["model"] = pin_model
+    if "provider" in pin_cfg:
+        result["provider"] = pin_cfg["provider"]
+    return result, True
+
+
 def _cause_from_rule(rule_id: str, output: Dict[str, Any]) -> str:
     """Map rule to cause label."""
     if output.get("deny"):
         return "blocklist_veto"
     if "keyword" in rule_id.lower() or "review" in rule_id.lower():
         return "keyword_match"
-    if "size" in rule_id.lower() or "trivial" in rule_id.lower():
+    if "size" in rule_id.lower():
+        return "size_rule"
+    if "code" in rule_id.lower() or "trivial" in rule_id.lower():
         return "has_code_rule"
     return "default_fallthrough"
 

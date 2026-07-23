@@ -187,10 +187,13 @@ def _get_active_profile_name() -> str:
 def _profile_exists(profile: str) -> bool:
     """Return True if the named profile directory exists.
 
-    Uses the canonical resolver (honors HERMES_HOME, the ``default`` special
-    case) with a defensive fallback so the plugin still loads on older or
-    minimal runtimes.
+    ``default`` is Hermes's implicit profile, not a physical directory. Treat
+    it as valid before consulting the runtime resolver, which may report False
+    when a profile-scoped HERMES_HOME is active.
     """
+    if profile == "default":
+        return True
+
     try:
         from hermes_cli.profiles import profile_exists
 
@@ -254,6 +257,22 @@ def _spawn(cmd: List[str], env: dict) -> subprocess.Popen:
     return subprocess.Popen(cmd, **kwargs)
 
 
+def _close_pipes(proc: subprocess.Popen) -> None:
+    """Close captured stdout/stderr pipes after the child has been reaped.
+
+    ``Popen.wait()`` reaps the process but deliberately leaves the parent-side
+    file descriptors open. This leaks descriptors in long-lived agents and
+    becomes a ResourceWarning failure under strict pytest settings.
+    """
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is None:
+            continue
+        try:
+            pipe.close()
+        except (OSError, ValueError):
+            pass
+
+
 def _kill_tree(proc: subprocess.Popen, pgid: Optional[int], grace: float) -> None:
     """Terminate the child AND its grandchildren, escalating TERM -> KILL.
 
@@ -262,6 +281,7 @@ def _kill_tree(proc: subprocess.Popen, pgid: Optional[int], grace: float) -> Non
     tolerates a race where the tree already exited.
     """
     if proc.poll() is not None:
+        _close_pipes(proc)
         return  # already gone
 
     if IS_WINDOWS:
@@ -281,6 +301,7 @@ def _kill_tree(proc: subprocess.Popen, pgid: Optional[int], grace: float) -> Non
             proc.wait(timeout=max(grace, 5.0))
         except Exception:
             pass
+        _close_pipes(proc)
         return
 
     # POSIX: signal the whole group.
@@ -288,6 +309,7 @@ def _kill_tree(proc: subprocess.Popen, pgid: Optional[int], grace: float) -> Non
         try:
             pgid = os.getpgid(proc.pid)
         except (ProcessLookupError, OSError):
+            _close_pipes(proc)
             return
 
     def _signal_group(sig: int) -> bool:
@@ -304,6 +326,7 @@ def _kill_tree(proc: subprocess.Popen, pgid: Optional[int], grace: float) -> Non
     _signal_group(signal.SIGTERM)
     try:
         proc.wait(timeout=grace)
+        _close_pipes(proc)
         return  # exited within grace
     except subprocess.TimeoutExpired:
         pass
@@ -313,6 +336,8 @@ def _kill_tree(proc: subprocess.Popen, pgid: Optional[int], grace: float) -> Non
         proc.wait(timeout=grace)
     except subprocess.TimeoutExpired:
         logger.warning("delegate_profile: pgid %s survived SIGKILL wait", pgid)
+    finally:
+        _close_pipes(proc)
 
 
 class _Tail:
@@ -411,6 +436,7 @@ def _run_watched(
 
     for t in threads:
         t.join(timeout=grace + 2)
+    _close_pipes(proc)
 
     return reason, proc.returncode, out_buf.text().strip(), err_buf.text().strip()
 

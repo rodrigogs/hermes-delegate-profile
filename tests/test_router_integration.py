@@ -16,9 +16,63 @@ import pytest
 
 # The plugin __init__.py lives in a directory with a hyphen, which is not a
 # valid Python module name. Import it dynamically via importlib.util.
+import copy
 import importlib.util
 
 _PLUGIN_INIT = Path(__file__).resolve().parent.parent / "__init__.py"
+
+# Integration tests cover the plugin bridge, not the mutable production policy.
+# Keep the expected routing contract hermetic: router.yaml can evolve with the
+# live model roster without making these unit-level assertions flaky.
+_TEST_ROUTER_CONFIG = {
+    "enabled": True,
+    "classifier": {
+        "model": "glm-5.2",
+        "provider": "zai",
+        "temperature": 0,
+        "max_tokens": 128,
+        "timeout_seconds": 8,
+    },
+    "fail_safe": {"profile": "coder", "model": "claude-opus", "provider": "anthropic"},
+    "blocklist": {
+        "manual_ban": [
+            {"model": "gpt-5.6-sol", "provider": "openai-codex", "reason": "test-ban"}
+        ],
+        "fallback_chain": ["gpt-5.6-sol", "glm-5.2"],
+        "auto_breaker": {"enabled": False},
+    },
+    "rules": [
+        {
+            "id": "trivial-mechanical-edit",
+            "status": "stable",
+            "when": {
+                "verb_class": {"eq": "trivial"},
+                "has_code": {"eq": True},
+                "size_lines": {"lte": 40},
+            },
+            "then": {"profile": "coder", "model": "T1"},
+        },
+        {
+            "id": "hard-verbs",
+            "status": "stable",
+            "when": {"verb_class": {"eq": "hard"}},
+            "then": {"profile": "coder", "model": "T4"},
+        },
+        {
+            "id": "review-request",
+            "status": "stable",
+            "when": {"keywords": {"contains": "review"}},
+            "then": {"profile": "reviewer", "action": "classify"},
+        },
+    ],
+    "default": {"action": "classify"},
+    "tiers": {
+        "T1": {"model": "glm-5.2-fast", "provider": "zai"},
+        "T2": {"model": "glm-5.2", "provider": "zai"},
+        "T3": {"model": "claude-sonnet", "provider": "anthropic"},
+        "T4": {"model": "claude-opus", "provider": "anthropic"},
+    },
+}
 
 # The plugin imports from router/ which needs the plugin dir on sys.path
 _PLUGIN_DIR = str(Path(__file__).resolve().parent.parent)
@@ -34,6 +88,13 @@ def dp():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+@pytest.fixture(autouse=True)
+def isolated_router_config(dp):
+    """Give each bridge test a fresh, stable router policy."""
+    with patch.object(dp, "_load_router_config", return_value=copy.deepcopy(_TEST_ROUTER_CONFIG)):
+        yield
 
 
 # ---------------------------------------------------------------------------

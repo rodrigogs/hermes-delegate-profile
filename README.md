@@ -1,8 +1,8 @@
 # delegate-profile
 
 [![CI](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml/badge.svg)](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/coverage-77%25-yellow)](https://github.com/rodrigogs/hermes-delegate-profile)
-[![Tests](https://img.shields.io/badge/tests-198%20passed-brightgreen)](https://github.com/rodrigogs/hermes-delegate-profile)
+[![Coverage](https://img.shields.io/badge/branch%20coverage-96.2%25-brightgreen)](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-251%20passed-brightgreen)](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://www.python.org/)
 [![Version](https://img.shields.io/badge/version-0.3.0-informational)](https://github.com/rodrigogs/hermes-delegate-profile)
 [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/rodrigogs/hermes-delegate-profile/blob/main/LICENSE)
@@ -48,9 +48,10 @@ delegate_profile(goal="Summarize these papers",           profile="researcher", 
   `hermes -p <profile> chat -q "<goal>"` subprocess. The child runs fully
   isolated under the target profile — its own process, session, skills,
   memory, and model.
-- For **same-profile** calls (profile omitted or matching the active profile),
+- For **same-profile** calls (when an explicit profile matches the active profile),
   transparently routes to the built-in `delegate_task` via `ctx.dispatch_tool`
-  (which wires up `parent_agent`) so you pay no subprocess overhead.
+  (which wires up `parent_agent`) so you pay no subprocess overhead. Omit
+  `profile` or pass `auto` to use the capability router instead.
 - **Validates the target profile exists before spawning** — a typo produces an
   instant, actionable error listing available profiles, not a confusing
   subprocess failure.

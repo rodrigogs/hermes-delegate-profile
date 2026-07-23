@@ -410,6 +410,7 @@ def test_watched_clean_exit_captures_output():
     assert reason == "exited"
     assert rc == 0
     assert "line1" in out and "line2" in out
+    assert proc.stdout.closed and proc.stderr.closed
 
 
 # ---------------------------------------------------------------------------

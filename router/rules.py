@@ -138,24 +138,38 @@ def lint(config: Dict[str, Any]) -> List[str]:
     """
     errors: List[str] = []
 
+    # yaml.safe_load() may legally yield scalars, lists, or None. Lint is the
+    # fail-closed boundary for that external input: return diagnostics rather
+    # than leaking a Python type error through the CLI.
+    if not isinstance(config, dict):
+        return ["router.yaml root must be a mapping"]
     if not config:
         return ["router.yaml not loaded or empty"]
 
     if "default" not in config:
         errors.append("missing mandatory 'default' routing")
 
-    if "tiers" not in config or not isinstance(config["tiers"], dict):
+    tiers_cfg = config.get("tiers")
+    if not isinstance(tiers_cfg, dict):
         errors.append("missing 'tiers' mapping")
+        tiers_cfg = {}
     else:
         for tn in ("T1", "T2", "T3", "T4"):
-            if tn not in config["tiers"]:
+            if tn not in tiers_cfg:
                 errors.append(f"missing tier {tn}")
 
-    rules: List[Dict[str, Any]] = config.get("rules", [])
+    rules_raw = config.get("rules", [])
+    if not isinstance(rules_raw, list):
+        errors.append("'rules' must be a list")
+        return errors
+    rules: List[Dict[str, Any]] = rules_raw
     # Empty rules with a default is valid — everything falls through to default.
 
     seen_ids: Set[str] = set()
     for i, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            errors.append(f"rule[{i}] must be a mapping")
+            continue
         rid = rule.get("id")
         if not rid:
             errors.append(f"rule[{i}] missing 'id'")
@@ -198,7 +212,6 @@ def lint(config: Dict[str, Any]) -> List[str]:
                 model_val = then[key]
                 if isinstance(model_val, str) and model_val.startswith("T"):
                     tn = model_val
-                    tiers_cfg = config.get("tiers", {})
                     if tn not in tiers_cfg:
                         errors.append(f"rule '{rid}': 'then.model' references unknown tier '{tn}'")
             if key == "deny" and not isinstance(then[key], bool):
@@ -209,7 +222,19 @@ def lint(config: Dict[str, Any]) -> List[str]:
     for i in range(len(rules)):
         for j in range(i + 1, len(rules)):
             ri, rj = rules[i], rules[j]
-            if _is_shadowed(ri.get("when", {}), rj.get("when", {})):
+            # Invalid rows were reported above; skip them during the derived
+            # shadow analysis so one malformed row cannot mask other errors.
+            if not isinstance(ri, dict) or not isinstance(rj, dict):
+                continue
+            # Missing ids are already validation errors above; do not turn a
+            # useful lint report into a KeyError during shadow analysis.
+            if not ri.get("id") or not rj.get("id"):
+                continue
+            earlier_when = ri.get("when")
+            later_when = rj.get("when")
+            if not isinstance(earlier_when, dict) or not isinstance(later_when, dict):
+                continue
+            if _is_shadowed(earlier_when, later_when):
                 errors.append(
                     f"rule '{rj['id']}' is shadowed by earlier rule '{ri['id']}'"
                 )
