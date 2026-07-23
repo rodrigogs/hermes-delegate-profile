@@ -1,8 +1,8 @@
 # delegate-profile
 
 [![CI](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml/badge.svg)](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/branch%20coverage-97.3%25-brightgreen)](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-260%20passed-brightgreen)](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/branch%20coverage-98.3%25-brightgreen)](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-263%20passed-brightgreen)](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://www.python.org/)
 [![Version](https://img.shields.io/badge/version-0.3.0-informational)](https://github.com/rodrigogs/hermes-delegate-profile)
 [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/rodrigogs/hermes-delegate-profile/blob/main/LICENSE)

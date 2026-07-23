@@ -202,8 +202,6 @@ def _profile_exists(profile: str) -> bool:
         try:
             from hermes_constants import get_hermes_home
 
-            if profile == "default":
-                return True
             return (get_hermes_home() / "profiles" / profile).is_dir()
         except Exception:
             return False  # safer to refuse to spawn than to guess

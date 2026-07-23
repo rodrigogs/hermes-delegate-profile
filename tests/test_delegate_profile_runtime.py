@@ -233,6 +233,97 @@ def test_register_dispatches_same_profile_through_context(monkeypatch):
     assert result == {"name": "delegate_task", "goal": "task"}
 
 
+def test_list_known_profiles_and_windows_kill_failures(monkeypatch, tmp_path):
+    import types
+
+    profiles = types.ModuleType("hermes_cli.profiles")
+    profiles.list_profiles = lambda: []
+    cli_package = types.ModuleType("hermes_cli")
+    cli_package.profiles = profiles
+    monkeypatch.setitem(sys.modules, "hermes_cli", cli_package)
+    monkeypatch.setitem(sys.modules, "hermes_cli.profiles", profiles)
+    assert _dp._list_known_profiles() == []
+
+    monkeypatch.delitem(sys.modules, "hermes_cli.profiles")
+    monkeypatch.delitem(sys.modules, "hermes_cli")
+    constants = types.ModuleType("hermes_constants")
+    constants.get_hermes_home = lambda: tmp_path
+    monkeypatch.setitem(sys.modules, "hermes_constants", constants)
+    assert _dp._list_known_profiles() == []
+
+    class Proc:
+        pid = 42
+        stdout = None
+        stderr = None
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            raise RuntimeError("already gone")
+
+        def wait(self, _timeout):
+            raise RuntimeError("already gone")
+
+    monkeypatch.setattr(_dp, "IS_WINDOWS", True)
+    monkeypatch.setattr(_dp.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("taskkill")))
+    _dp._kill_tree(Proc(), None, 0.1)
+
+
+def test_run_watched_tolerates_closed_pipes_and_late_reap(monkeypatch):
+    class Pipe:
+        def readline(self):
+            raise ValueError("closed")
+
+        def close(self):
+            pass
+
+    class Proc:
+        stdout = Pipe()
+        stderr = Pipe()
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout):
+            raise _dp.subprocess.TimeoutExpired("cmd", timeout)
+
+    killed = []
+    monkeypatch.setattr(_dp, "IS_WINDOWS", False)
+    monkeypatch.setattr(_dp, "_kill_tree", lambda *_args: killed.append(True))
+    result = _dp._run_watched(Proc(), 1, 0.1, 0.1, 0.1, 0.01)
+    assert result[0] == "exited"
+    assert killed == [True]
+
+def test_cross_profile_survives_missing_pgid_and_breaker_scans_later_tier(monkeypatch):
+    record_outcome = _dp._record_breaker_outcome
+    handler, _pool = _cross_handler(monkeypatch, ("exited", 0, "done", ""))
+    monkeypatch.setattr(_dp, "IS_WINDOWS", False)
+    monkeypatch.setattr(_dp.os, "getpgid", lambda _pid: (_ for _ in ()).throw(OSError("gone")))
+    assert json.loads(handler({"goal": "task", "profile": "child"}))["success"] is True
+
+    calls = []
+
+    class Blocklist:
+        def __init__(self, _config):
+            pass
+
+        def record_success(self, *args):
+            calls.append(args)
+
+    import router.blocklist
+    monkeypatch.setattr(_dp, "_record_breaker_outcome", record_outcome)
+    monkeypatch.setattr(router.blocklist, "Blocklist", Blocklist)
+    monkeypatch.setattr(
+        _dp,
+        "_load_router_config",
+        lambda: {"tiers": {"T1": {"model": "other"}, "T2": {"model": "m", "provider": "later"}}},
+    )
+    _dp._record_breaker_outcome("child", "m", None)
+    assert calls == [("m", "later")]
+
+
 class FakeProcess:
     pid = 4321
 
