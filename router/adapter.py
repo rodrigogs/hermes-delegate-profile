@@ -8,12 +8,22 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from router.signals import extract
-from router.rules import match, explain as rules_explain, lint as rules_lint
-from router.blocklist import Blocklist
-from router.classify import Classifier
-from router.cache import Cache, SessionPin
-from router.decision_log import DecisionLog
+from .signals import extract
+from .rules import match, explain as rules_explain, lint as rules_lint
+from .blocklist import Blocklist
+from .classify import Classifier
+from .cache import Cache, SessionPin
+from .decision_log import DecisionLog
+
+
+def _copy_fallbacks(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy validated cross-rail targets without sharing mutable config rows."""
+    fallback = source.get("fallback")
+    if isinstance(fallback, list):
+        target["fallback"] = [
+            dict(item) for item in fallback if isinstance(item, dict)
+        ]
+    return target
 
 
 def _fail_safe_result(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -143,6 +153,7 @@ def route(
             result.pop("action", None)
             result["model"] = tier_cfg.get("model")
             result.setdefault("provider", tier_cfg.get("provider"))
+            _copy_fallbacks(result, tier_cfg)
             if "profile" not in result:
                 result["profile"] = "coder"
 
@@ -207,6 +218,7 @@ def _apply_session_floor(
     result["model"] = pin_model
     if "provider" in pin_cfg:
         result["provider"] = pin_cfg["provider"]
+    _copy_fallbacks(result, pin_cfg)
     return result, True
 
 
@@ -220,6 +232,8 @@ def _cause_from_rule(rule_id: str, output: Dict[str, Any]) -> str:
         return "size_rule"
     if "code" in rule_id.lower() or "trivial" in rule_id.lower():
         return "has_code_rule"
+    if "hard" in rule_id.lower():
+        return "hard_rule"
     return "default_fallthrough"
 
 
@@ -235,6 +249,7 @@ def _resolve_output(
         result["model"] = classifier_result["model"]
     if "provider" in classifier_result:
         result.setdefault("provider", classifier_result["provider"])
+    _copy_fallbacks(result, classifier_result)
     if "profile" not in result:
         result["profile"] = "coder"
     return result

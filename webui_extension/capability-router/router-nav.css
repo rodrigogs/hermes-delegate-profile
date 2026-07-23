@@ -1,0 +1,23 @@
+.capability-router-nav{color:#8fb2ff!important}.capability-router-nav:hover{color:#b7ccff!important;background:rgba(95,135,225,.14)!important}.capability-router-nav-label{display:none}.sidebar-nav .capability-router-nav-label{display:inline}@media(max-width:900px){.sidebar-nav .capability-router-nav-label{display:none}}
+.capability-router-panel .cr-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 22px;border-bottom:1px solid var(--border)}
+.capability-router-panel .cr-title{margin:0;font-size:18px}
+.capability-router-panel .cr-refresh{padding:6px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer}
+.capability-router-panel .cr-refresh:hover{background:var(--hover-bg)}
+.capability-router-panel .cr-refresh:focus-visible,.capability-router-panel .cr-trace-input:focus-visible,.capability-router-panel .cr-trace-run:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.capability-router-panel .cr-body{padding:18px 22px;display:flex;flex-direction:column;gap:16px;overflow:auto}
+.capability-router-panel .cr-card{border:1px solid var(--border);border-radius:12px;background:var(--surface)}
+.capability-router-panel .cr-card-title{padding:10px 14px;font-weight:600;border-bottom:1px solid var(--border)}
+.capability-router-panel .cr-card-body{padding:12px 14px;display:flex;flex-direction:column;gap:6px}
+.capability-router-panel .cr-kv{display:flex;justify-content:space-between;gap:16px;font-size:13px}
+.capability-router-panel .cr-k{color:var(--muted)}
+.capability-router-panel .cr-v{color:var(--text);text-align:right;word-break:break-word}
+.capability-router-panel .cr-rule{display:flex;justify-content:space-between;gap:16px;font-size:13px;padding:2px 0}
+.capability-router-panel .cr-rule-id{font-family:var(--code-font,monospace);color:var(--accent)}
+.capability-router-panel .cr-rule-then{color:var(--text2,var(--text))}
+.capability-router-panel .cr-trace-form{display:flex;gap:8px;margin-bottom:8px}
+.capability-router-panel .cr-trace-input{flex:1;padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text)}
+.capability-router-panel .cr-trace-run{padding:6px 12px;border-radius:8px;border:1px solid var(--border);background:var(--accent-bg,var(--surface));color:var(--text);cursor:pointer}
+.capability-router-panel .cr-trace-out{display:flex;flex-direction:column;gap:4px}
+.capability-router-panel .cr-loading{color:var(--muted);font-size:13px}
+.capability-router-panel .cr-error{color:var(--danger,#f85149);font-size:13px}
+.capability-router-panel[hidden]{display:none!important}

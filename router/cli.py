@@ -12,11 +12,11 @@ import yaml
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from router.signals import extract
-from router.rules import explain as rules_explain, lint as rules_lint
-from router.blocklist import Blocklist
-from router.decision_log import DecisionLog
-from router.cache import Cache, SessionPin
+from .signals import extract
+from .rules import explain as rules_explain, lint as rules_lint
+from .blocklist import Blocklist
+from .decision_log import DecisionLog
+from .cache import Cache, SessionPin
 
 
 # ---------------------------------------------------------------------------

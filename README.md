@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml/badge.svg)](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/badge/branch%20coverage-100%25-brightgreen)](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-265%20passed-brightgreen)](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-305%20passed-brightgreen)](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://www.python.org/)
 [![Version](https://img.shields.io/badge/version-0.3.0-informational)](https://github.com/rodrigogs/hermes-delegate-profile)
 [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/rodrigogs/hermes-delegate-profile/blob/main/LICENSE)
@@ -213,6 +213,56 @@ call — it's purely advisory (the built-in `delegate_task(profile=...)` is a
 legitimate in-process path; the warning is a nudge for callers who actually
 want subprocess isolation).
 
+### Hermes One extension
+
+The repository ships a **read-only** Capability Router panel for
+[Hermes One](https://github.com/nesquena/hermes-webui). It is an extension
+inside the existing WebUI, not a second public application:
+
+```text
+Hermes One panel
+  → same-origin, consented extension-sidecar proxy
+    → 127.0.0.1:8791 router sidecar (token-v1)
+      → the plugin's router.yaml + router core
+```
+
+V1 exposes live status, declarative policy, real breaker state and **Trace
+Route**, a deterministic Stage-0 dry-run. It never calls the classifier from
+the UI and never presents simulations as real delegation telemetry. It does
+not edit policy, reset breakers or dispatch agents.
+
+Install the assets and generated user service:
+
+```bash
+python3 scripts/install_hermes_one_router.py \
+  --extension-root ~/hermes-one-extensions \
+  --systemd-dir ~/.config/systemd/user \
+  --plugin-dir ~/.hermes/plugins/delegate-profile \
+  --hermes-home "$HERMES_HOME" \
+  --webui-state-dir "$HERMES_WEBUI_STATE_DIR"
+
+systemctl --user daemon-reload
+systemctl --user enable --now hermes-router-sidecar.service
+curl http://127.0.0.1:8791/health
+```
+
+Reload Hermes One, then approve the declared **Capability Router** sidecar in
+**Settings → Extensions**. That approval is intentionally manual: Hermes One
+mints the private `token-v1` file and injects it only into consented proxy
+requests. Until then `/status` returns `503`; do not create a token file
+manually.
+
+Security invariants:
+
+- the sidecar binds to loopback only — never expose port `8791` through
+  Tailscale Serve/Funnel or a reverse proxy;
+- all routes except `/health` require `X-Hermes-Sidecar-Token` and fail closed
+  with `401` (wrong/missing header) or `503` (token not provisioned);
+- extension assets are copied, never symlinked, because the WebUI static server
+  rejects symlinks escaping the extension bundle;
+- the installer merges its entry into `extensions.json` without deleting or
+  reordering sibling extensions such as Office 3D.
+
 ## Configuration
 
 No config file is required. Behavior can be influenced via environment
@@ -252,11 +302,17 @@ hermes-delegate-profile/
 │   ├── breaker.py       # circuit breaker state
 │   ├── cache.py         # exact-hash classifier cache
 │   ├── decision_log.py  # JSONL decision recorder
+│   ├── service.py       # shared read-only policy view for web surfaces
+│   ├── one_sidecar.py   # Hermes One loopback token-v1 sidecar
 │   └── cli.py           # CLI: explain, lint, blocklist, log
-├── dashboard/           # WebUI panel (React + Plugin SDK)
+├── dashboard/           # Hermes Dashboard panel (React + Plugin SDK)
 │   ├── manifest.json
-│   ├── plugin_api.py    # 6 FastAPI routes
+│   ├── plugin_api.py    # FastAPI routes
 │   └── dist/index.js    # bundled panel code
+├── webui_extension/     # Hermes One assets (manifest + panel JS/CSS)
+├── scripts/             # idempotent Hermes One installer
+├── systemd/             # loopback sidecar service template
+├── PRODUCT.md           # durable product record
 └── tests/
     ├── test_delegate_profile.py
     ├── test_router_integration.py

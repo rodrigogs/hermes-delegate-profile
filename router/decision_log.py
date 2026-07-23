@@ -2,7 +2,7 @@
 
 Closed cause set — the only valid strings:
   blocklist_veto, breaker_cooldown, keyword_match, size_rule,
-  has_code_rule, classifier, session_pin, default_fallthrough,
+  has_code_rule, hard_rule, classifier, session_pin, default_fallthrough,
   fail_safe_strong
 """
 
@@ -18,6 +18,7 @@ VALID_CAUSES: set[str] = {
     "keyword_match",
     "size_rule",
     "has_code_rule",
+    "hard_rule",
     "classifier",
     "session_pin",
     "default_fallthrough",

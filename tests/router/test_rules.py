@@ -134,6 +134,8 @@ class TestMatch:
         assert rule_id == "hard-verbs"
         assert output["model"] == "claude-opus"
         assert output["provider"] == "anthropic"
+        trace = explain("Debug a race condition", fv, False, rules, default, tiers)
+        assert trace["cause"] == "hard_rule"
 
     def test_hard_outranks_trivial(self):
         """Hard verb with small file → still goes hard (first-match, hard fires first)."""

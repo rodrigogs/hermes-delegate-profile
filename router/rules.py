@@ -311,7 +311,7 @@ def _eval_clause(op: str, actual: Any, target: Any) -> bool:
         return False
 
 
-def _resolve_tiers(output: Dict[str, Any], tiers: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
+def _resolve_tiers(output: Dict[str, Any], tiers: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """Resolve Tn aliases in output['model'] against Table 2.
 
     Returns a new dict — never mutates the input.
@@ -323,6 +323,11 @@ def _resolve_tiers(output: Dict[str, Any], tiers: Dict[str, Dict[str, str]]) -> 
         result["model"] = tier.get("model", model)
         if "provider" in tier:
             result["provider"] = tier["provider"]
+        fallback = tier.get("fallback")
+        if isinstance(fallback, list):
+            result["fallback"] = [
+                dict(target) for target in fallback if isinstance(target, dict)
+            ]
     return result
 
 
@@ -351,6 +356,8 @@ def _determine_cause(rule_id: str, output: Dict[str, Any]) -> str:
         return "size_rule"
     if "code" in rule_id.lower() or "trivial" in rule_id.lower():
         return "has_code_rule"
+    if "hard" in rule_id.lower():
+        return "hard_rule"
 
     return "classifier"  # fallback
 

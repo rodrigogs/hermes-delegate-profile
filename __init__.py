@@ -77,6 +77,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 IS_WINDOWS = sys.platform == "win32"
+# Hermes's plugin loader guarantees the ``hermes_plugins.<slug>`` namespace.
+# Direct source-loading test harnesses use standalone module names and therefore
+# need the top-level ``router`` package fallback instead.
+_LOADED_AS_PACKAGE = __name__.startswith("hermes_plugins.")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -462,6 +466,17 @@ def _classify(reason: str, returncode: Optional[int]) -> Tuple[Optional[str], bo
     return "nonzero_exit", False             # app-level error — retry repeats it
 
 
+def _reported_agent_failure(stdout: str, stderr: str) -> bool:
+    """Detect Hermes CLI failures that currently exit with status zero.
+
+    ``hermes chat -q`` renders a stable terminal error after exhausting every
+    provider, but its process status remains zero. Treating that transcript as
+    a successful delegation silently returns an error banner as the agent's
+    answer and prevents the router's cross-rail fallback from running.
+    """
+    return "API call failed after 3 retries:" in f"{stdout}\n{stderr}"
+
+
 # ---------------------------------------------------------------------------
 # Capability Router integration
 # ---------------------------------------------------------------------------
@@ -504,7 +519,10 @@ def _make_classify_fn(ctx: Any) -> Optional[Callable[[str, Dict[str, Any]], Dict
 
     def classify_fn(task: str, features: Dict[str, Any]) -> Dict[str, Any]:
         """One-shot LLM difficulty classification. Returns {tier, confidence, ...}."""
-        from router.classify import build_prompt_from_config
+        if _LOADED_AS_PACKAGE:
+            from .router.classify import build_prompt_from_config
+        else:  # direct source loading used by the development test harness
+            from router.classify import build_prompt_from_config
         prompt = build_prompt_from_config(config, task, features)
         result = ctx.llm.complete(
             messages=[{"role": "user", "content": prompt}],
@@ -546,8 +564,12 @@ def _route_task(
 
     os.environ[_ROUTER_SENTINEL] = "1"
     try:
-        from router.adapter import route
-        from router.blocklist import Blocklist
+        if _LOADED_AS_PACKAGE:
+            from .router.adapter import route
+            from .router.blocklist import Blocklist
+        else:  # direct source loading used by the development test harness
+            from router.adapter import route
+            from router.blocklist import Blocklist
 
         config = _load_router_config()
         if not config.get("enabled", False):
@@ -591,7 +613,10 @@ def _record_breaker_outcome(
     if not model:
         return
     try:
-        from router.blocklist import Blocklist
+        if _LOADED_AS_PACKAGE:
+            from .router.blocklist import Blocklist
+        else:  # direct source loading used by the development test harness
+            from router.blocklist import Blocklist
 
         config = _load_router_config()
         blocklist = Blocklist(config)
@@ -845,11 +870,18 @@ def _make_handler(
                                            "started_at": started_at})
                 reason, returncode, stdout, stderr = _run_watched(proc, pgid, ttfb, idle, hard, grace)
             finally:
-                if proc is not None:
+                if proc is None:
+                    # Spawn did not produce a child; there is no process tree
+                    # or pool entry to clean up. Keep this explicit because a
+                    # FileNotFound/spawn error returns through this finally.
+                    logger.debug("delegate_profile: no child process to clean up")
+                else:
                     _kill_tree(proc, pgid, grace)
                     pool.unregister(proc.pid)
             elapsed = round(time.time() - started_at, 1)
             failure_kind, retryable = _classify(reason, returncode)
+            if failure_kind is None and _reported_agent_failure(stdout, stderr):
+                failure_kind, retryable = "agent_error", True
             _record_breaker_outcome(profile, attempt_model, failure_kind)
             base = {"subagent_id": subagent_id, "profile": profile,
                     "model": attempt_model, "provider": attempt_provider, "elapsed_s": elapsed}
@@ -862,6 +894,12 @@ def _make_handler(
                           else f"went silent for more than {int(idle)}s")
                 return {**base, "success": False, "failure_kind": failure_kind, "retryable": retryable,
                         "error": f"Subagent stalled ({detail}) and was terminated.",
+                        "stderr": stderr[-_MAX_STDERR_CHARS:] if stderr else "",
+                        "partial_output": stdout[-_MAX_RESULT_CHARS:] if stdout else ""}
+            if failure_kind == "agent_error":
+                return {**base, "success": False, "failure_kind": failure_kind,
+                        "retryable": retryable,
+                        "error": "Hermes child reported a failure despite exiting with code 0.",
                         "stderr": stderr[-_MAX_STDERR_CHARS:] if stderr else "",
                         "partial_output": stdout[-_MAX_RESULT_CHARS:] if stdout else ""}
             if failure_kind is not None:

@@ -423,6 +423,24 @@ def test_cross_profile_success_envelope_and_command(monkeypatch):
     assert pool.released == 1
 
 
+def test_cross_profile_rejects_agent_failure_with_zero_exit(monkeypatch):
+    output = """Initializing agent...
+API call failed after 3 retries: HTTP 429 rate limited
+Session: child-session
+"""
+    handler, _pool = _cross_handler(monkeypatch, ("exited", 0, output, ""))
+
+    result = json.loads(
+        handler({"goal": "task", "profile": "child", "model": "model-x"})
+    )
+
+    assert result["success"] is False
+    assert result["failure_kind"] == "agent_error"
+    assert result["retryable"] is True
+    assert "reported a failure" in result["error"]
+    assert "HTTP 429" in result["partial_output"]
+
+
 def test_cross_profile_refuses_when_pool_is_at_capacity(monkeypatch):
     handler, pool = _cross_handler(monkeypatch, pool=FakePool(acquire_result=False))
     result = json.loads(handler({"goal": "task", "profile": "child", "timeout": 2}))

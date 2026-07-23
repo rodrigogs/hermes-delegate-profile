@@ -1,5 +1,7 @@
 """Unit tests for route adapter (router/adapter.py)."""
 
+import copy
+
 import pytest
 
 from router.adapter import route
@@ -89,11 +91,26 @@ class TestRouteStage0:
 
     def test_hard_direct(self):
         """Hard verb → T4, no classifier."""
+        decision_log = DecisionLog()
         result = route(
             "Debug a race condition in the user cache", ROUTER_CONFIG,
+            decision_log=decision_log,
         )
         assert result["model"] == "claude-opus"
         assert result["profile"] == "coder"
+        assert decision_log.tail(1)[0]["cause"] == "hard_rule"
+
+    def test_hard_tier_propagates_cross_rail_fallbacks(self):
+        config = copy.deepcopy(ROUTER_CONFIG)
+        config["tiers"]["T4"]["fallback"] = [
+            {"model": "backup-model", "provider": "backup-provider"}
+        ]
+
+        result = route("Debug a race condition", config)
+
+        assert result["fallback"] == [
+            {"model": "backup-model", "provider": "backup-provider"}
+        ]
 
     def test_review_classify_action(self):
         """Review keyword → profile=reviewer, action=classify → classifier needed."""
@@ -132,6 +149,24 @@ class TestRouteStage1:
         )
         assert len(calls) == 1
         assert result["model"] == "glm-5.2"  # T2 tier
+
+    def test_classifier_tier_propagates_cross_rail_fallbacks(self):
+        config = copy.deepcopy(ROUTER_CONFIG)
+        config["tiers"]["T2"]["fallback"] = [
+            {"model": "backup-model", "provider": "backup-provider"}
+        ]
+
+        result = route(
+            "Add a health endpoint",
+            config,
+            classify_fn=lambda _task, _features: {
+                "tier": "T2", "confidence": "high"
+            },
+        )
+
+        assert result["fallback"] == [
+            {"model": "backup-model", "provider": "backup-provider"}
+        ]
 
     def test_classifier_safety_ratchet(self):
         """Low confidence → bumped up one tier."""

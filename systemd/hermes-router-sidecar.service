@@ -1,0 +1,21 @@
+[Unit]
+Description=Hermes One Capability Router sidecar (loopback token-v1)
+Documentation=https://github.com/rodrigogs/hermes-delegate-profile
+After=network.target
+
+[Service]
+Type=simple
+# Deliberately loopback-only. Hermes One proxies through its consented extension
+# path and injects the per-extension token-v1 header; this service validates it.
+Environment=HERMES_HOME=@HERMES_HOME@
+Environment=HERMES_WEBUI_STATE_DIR=@WEBUI_STATE_DIR@
+WorkingDirectory=@PLUGIN_DIR@
+ExecStart=/usr/local/lib/hermes-agent/venv/bin/python3 -m router.one_sidecar --host 127.0.0.1 --port 8791 --config @PLUGIN_DIR@/router.yaml
+Restart=always
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

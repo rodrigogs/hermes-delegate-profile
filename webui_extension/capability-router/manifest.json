@@ -1,0 +1,12 @@
+{
+  "id": "capability-router",
+  "name": "Capability Router",
+  "scripts": ["router-nav.js"],
+  "stylesheets": ["router-nav.css"],
+  "sidecar": {
+    "type": "loopback",
+    "origin": "http://127.0.0.1:8791",
+    "health_path": "/health",
+    "proxy_auth": "token-v1"
+  }
+}

@@ -18,6 +18,8 @@ import pytest
 # valid Python module name. Import it dynamically via importlib.util.
 import copy
 import importlib.util
+import subprocess
+import types
 
 _PLUGIN_INIT = Path(__file__).resolve().parent.parent / "__init__.py"
 
@@ -95,6 +97,81 @@ def isolated_router_config(dp):
     """Give each bridge test a fresh, stable router policy."""
     with patch.object(dp, "_load_router_config", return_value=copy.deepcopy(_TEST_ROUTER_CONFIG)):
         yield
+
+
+def test_plugin_package_routes_without_checkout_on_sys_path(tmp_path):
+    """The installed package must resolve its bundled router from any cwd."""
+    code = f"""
+import importlib.util
+import json
+import sys
+import types
+from pathlib import Path
+
+init_file = Path({str(_PLUGIN_INIT)!r})
+namespace = types.ModuleType("hermes_plugins")
+namespace.__path__ = []
+sys.modules["hermes_plugins"] = namespace
+spec = importlib.util.spec_from_file_location(
+    "hermes_plugins.delegate_profile_probe",
+    init_file,
+    submodule_search_locations=[str(init_file.parent)],
+)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+result = module._route_task("Rename helper in src/utils.py", "", None)
+print(json.dumps(result, sort_keys=True))
+assert result and result["profile"] == "coder"
+"""
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+
+
+def test_package_loader_executes_relative_router_import_paths(monkeypatch, tmp_path):
+    """Installed-plugin imports use relative modules, unlike direct test loading."""
+    namespace = types.ModuleType("hermes_plugins")
+    namespace.__path__ = []
+    monkeypatch.setitem(sys.modules, "hermes_plugins", namespace)
+    spec = importlib.util.spec_from_file_location(
+        "hermes_plugins.delegate_profile_coverage",
+        _PLUGIN_INIT,
+        submodule_search_locations=[str(_PLUGIN_INIT.parent)],
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    assert module._LOADED_AS_PACKAGE is True
+
+    config = copy.deepcopy(_TEST_ROUTER_CONFIG)
+    monkeypatch.setattr(module, "_load_router_config", lambda: config)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class Result:
+        text = '{"tier":"T1","confidence":"high"}'
+
+    class LLM:
+        def complete(self, **_kwargs):
+            return Result()
+
+    class Ctx:
+        llm = LLM()
+
+    classify = module._make_classify_fn(Ctx())
+    assert classify is not None
+    assert classify("Rename helper in utils.py", {})["tier"] == "T1"
+    assert module._route_task("Rename helper in utils.py", "", None)["profile"] == "coder"
+    module._record_breaker_outcome("coder", "glm-5.2-fast", None)
 
 
 # ---------------------------------------------------------------------------

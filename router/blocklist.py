@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from router.breaker import BreakerState
+from .breaker import BreakerState
 
 logger = logging.getLogger(__name__)
 
