@@ -147,7 +147,11 @@ def test_adapter_classifier_failure_and_session_floor_edges():
     )
     assert classified["profile"] == "reviewer"
 
-    assert route("task", _config(default={"action": "unsupported"})) == {
+    unsupported_rule = _config(rules=[{
+        "id": "unsupported", "when": {"verb_class": {"eq": "trivial"}},
+        "then": {"action": "unsupported"},
+    }])
+    assert route("Rename a symbol", unsupported_rule) == {
         "profile": "coder", "model": "safe", "provider": "p",
     }
     assert _cause_from_rule("rule", {"deny": True}) == "blocklist_veto"
@@ -233,6 +237,7 @@ def test_rule_helper_edges_and_lint_errors():
     assert not _all_clauses_match({}, {}, False)
     assert not _all_clauses_match({"missing": {"eq": 1}}, {}, False)
     assert _all_clauses_match({"blocked_model": {"eq": True}}, {}, True)
+    assert not _all_clauses_match({"blocked_model": {"eq": True}}, {}, False)
     assert _matching_clauses({"x": {"eq": 1}, "missing": {"eq": 2}}, {"x": 1}) == {"x": {"eq": 1}}
     assert _is_shadowed({"x": {"eq": 1}}, {"x": {"eq": 2}})
     assert not _is_shadowed({}, {"x": {"eq": 1}})
@@ -328,6 +333,11 @@ def test_breaker_malformed_state_entries_are_ignored():
     breaker.record("m@p", "ttfb_stall", 2)
     assert breaker.is_blocked("m@p", 2)
     assert breaker.record("m@p", "crash", 3) is False
+    breaker._entries["m@p"].state = "HALF_OPEN"
+    assert breaker.is_blocked("m@p", 3) is False
+    assert breaker.blocked_entries(3) == []
+    restored = BreakerState.from_dict({"version": 1, "entries": {"bad": None}}, config)
+    assert restored.to_dict() == {"version": 1, "entries": {}}
 
 
 def test_cli_blocklist_enabled_without_cooldowns(monkeypatch, capsys):
@@ -366,7 +376,10 @@ class _Parser:
     [
         "not-a-mapping",
         {"default": {}, "tiers": {"T1": {}, "T2": {}, "T3": {}, "T4": {}}, "rules": "not-a-list"},
-        {"default": {}, "tiers": {"T1": {}, "T2": {}, "T3": {}, "T4": {}}, "rules": [None]},
+        {"default": {}, "tiers": {"T1": {}, "T2": {}, "T3": {}, "T4": {}}, "rules": [
+            None,
+            {"id": "valid", "when": {"x": {"eq": 1}}, "then": {"model": "T1"}},
+        ]},
         {"default": {}, "tiers": None, "rules": [{"id": "rule", "when": {"x": {"eq": 1}}, "then": {"model": "T1"}}]},
         {
             "default": {}, "tiers": {"T1": {}, "T2": {}, "T3": {}, "T4": {}},
@@ -415,3 +428,21 @@ def test_rules_remaining_pure_branches():
     })
     assert any("missing 'id'" in error for error in errors)
     assert any("missing or invalid 'then'" in error for error in errors)
+    assert lint({
+        "default": {}, "tiers": {"T1": {}, "T2": {}, "T3": {}, "T4": {}},
+        "rules": [{"id": "literal", "when": {"x": {"eq": 1}}, "then": {"model": "literal-model"}}],
+    }) == []
+    assert _is_shadowed({"x": {"eq": 1}}, {"x": {"eq": 1}, "y": {"eq": 2}})
+    assert not _is_shadowed(
+        {"x": {"eq": 1}, "y": {"eq": 1}},
+        {"x": {"eq": 1}, "y": {"eq": 2}, "z": {"eq": 3}},
+    )
+
+
+def test_explain_handles_rule_id_missing_from_rows(monkeypatch):
+    import router.rules as rules_mod
+
+    monkeypatch.setattr(rules_mod, "match", lambda *_args: ({"model": "m"}, "orphan"))
+    result = rules_mod.explain("task", {}, False, [], {}, {})
+    assert result["matched_rule_id"] == "orphan"
+    assert result["cause"] == "classifier"

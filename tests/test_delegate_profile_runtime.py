@@ -203,6 +203,23 @@ def test_kill_tree_posix_escalates_and_tolerates_killpg_error(monkeypatch):
     monkeypatch.setattr(_dp.os, "killpg", lambda *_args: (_ for _ in ()).throw(OSError("gone")))
     _dp._kill_tree(Proc(), 11, 0.1)
 
+    monkeypatch.setattr(_dp.os, "killpg", lambda *_args: (_ for _ in ()).throw(ProcessLookupError()))
+    _dp._kill_tree(Proc(), 11, 0.1)
+
+    class TimeoutProc:
+        pid = 12
+        stdout = None
+        stderr = None
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout):
+            raise _dp.subprocess.TimeoutExpired("cmd", timeout)
+
+    monkeypatch.setattr(_dp.os, "killpg", lambda *_args: None)
+    _dp._kill_tree(TimeoutProc(), 12, 0.1)
+
 
 def test_breaker_outcome_no_model_and_error_is_nonblocking(monkeypatch):
     _dp._record_breaker_outcome("child", "", "crash")
@@ -323,6 +340,10 @@ def test_cross_profile_survives_missing_pgid_and_breaker_scans_later_tier(monkey
     _dp._record_breaker_outcome("child", "m", None)
     assert calls == [("m", "later")]
 
+    monkeypatch.setattr(_dp, "_load_router_config", lambda: {"tiers": {}})
+    _dp._record_breaker_outcome("child", "unknown", None)
+    assert calls[-1] == ("unknown", "")
+
 
 class FakeProcess:
     pid = 4321
@@ -423,6 +444,48 @@ def test_cross_profile_spawn_errors_are_structured(monkeypatch, spawn_error, exp
     result = json.loads(handler({"goal": "task", "profile": "child"}))
     assert result["failure_kind"] == expected_kind
     assert pool.released == 1
+
+
+def test_handler_router_without_model_windows_group_and_hermes_home(monkeypatch, tmp_path):
+    handler, pool = _cross_handler(monkeypatch, ("exited", 0, "done", ""))
+    monkeypatch.setattr(_dp, "_route_task", lambda *_args: {"profile": "child"})
+    routed = json.loads(handler({"goal": "task"}))
+    assert routed["success"] is True
+    assert pool.registered[0][1] == 4321
+
+    handler, windows_pool = _cross_handler(monkeypatch, ("exited", 0, "done", ""))
+    monkeypatch.setattr(_dp, "IS_WINDOWS", True)
+    windows = json.loads(handler({"goal": "task", "profile": "child"}))
+    assert windows["success"] is True
+    assert windows_pool.registered[0][1] is None
+
+    captured = {}
+    handler, _pool = _cross_handler(monkeypatch, ("exited", 0, "done", ""))
+    monkeypatch.setattr(_dp, "IS_WINDOWS", True)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    import types
+    constants = types.ModuleType("hermes_constants")
+    constants.get_hermes_home = lambda: tmp_path
+    monkeypatch.setitem(sys.modules, "hermes_constants", constants)
+    monkeypatch.setattr(_dp, "_spawn", lambda _cmd, env: captured.setdefault("env", env) and FakeProcess())
+    result = json.loads(handler({"goal": "task", "profile": "child"}))
+    assert result["success"] is True
+    assert captured["env"]["HERMES_HOME"] == str(tmp_path)
+
+    failed_home = {}
+    handler, _pool = _cross_handler(monkeypatch, ("exited", 0, "done", ""))
+    monkeypatch.setattr(_dp, "IS_WINDOWS", True)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    constants.get_hermes_home = lambda: (_ for _ in ()).throw(RuntimeError("unavailable"))
+
+    def spawn_without_home(_cmd, env):
+        failed_home["env"] = env
+        return FakeProcess()
+
+    monkeypatch.setattr(_dp, "_spawn", spawn_without_home)
+    result = json.loads(handler({"goal": "task", "profile": "child"}))
+    assert result["success"] is True
+    assert "HERMES_HOME" not in failed_home["env"]
 
 
 def test_load_router_config_handles_missing_and_invalid_yaml(monkeypatch, tmp_path):
