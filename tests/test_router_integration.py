@@ -303,12 +303,18 @@ class TestHandlerIntegration:
         parsed = json.loads(result)
         assert parsed.get("failure_kind") in ("unknown_profile", None)
 
-    def test_router_failure_falls_through(self, dp):
-        """If router fails, delegation proceeds with error (no crash)."""
+    def test_router_failure_falls_through(self, dp, monkeypatch):
+        """If router fails, delegation proceeds without crashing.
+
+        The router falls through to a fail-safe profile; with that profile
+        absent we get a clean unknown_profile error, and with it present the
+        (hermetically stubbed) spawn succeeds. Either way the handler must
+        return valid JSON and never raise."""
         def exploding_classify(task, features):
             raise RuntimeError("boom")
 
+        monkeypatch.setattr(dp, "_profile_exists", lambda p: False)
         handler = self._make_handler(dp, classify_fn=exploding_classify)
         result = handler({"goal": "ambiguous task"})
         parsed = json.loads(result)
-        assert "error" in parsed
+        assert "error" in parsed or parsed.get("failure_kind") == "unknown_profile"

@@ -58,13 +58,15 @@ def test_missing_goal_returns_error():
     assert out["error"] == "goal is required"
 
 
-def test_missing_profile_returns_error():
+def test_missing_profile_returns_error(monkeypatch):
     """Omitting profile triggers the router; if the resolved profile doesn't
     exist, the error is unknown_profile (not 'profile is required')."""
+    # Make the assumed environment explicit + hermetic: the fail-safe target
+    # profile does NOT exist here (the box may actually have a 'coder' profile,
+    # which previously made this test spawn a real subprocess and flake).
+    monkeypatch.setattr(dp, "_profile_exists", lambda p: False)
     h = _make_handler()
     out = json.loads(h({"goal": "do something"}))
-    # Router resolves "do something" via fail_safe to coder.
-    # coder doesn't exist in test env so we get unknown_profile.
     assert out["failure_kind"] == "unknown_profile"
 
 

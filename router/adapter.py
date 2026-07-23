@@ -16,6 +16,28 @@ from router.cache import Cache, SessionPin
 from router.decision_log import DecisionLog
 
 
+def _fail_safe_result(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the fail-safe routing target.
+
+    Defaults are NON-Mac and routable (deepseek-v4-pro) — the old
+    'claude-opus'/'anthropic' defaults were unroutable (no such provider) and
+    Mac-only, which violated the 'Claude Code is never the sole option' rule
+    when fail_safe fired (classifier down = exactly when you can't bet on the
+    Mac being on-LAN). The nested `fallback` list (cross-rail targets) is
+    PROPAGATED so the delegate_profile executor can try them in order.
+    """
+    fs = config.get("fail_safe", {}) or {}
+    result = {
+        "profile": fs.get("profile", "coder"),
+        "model": fs.get("model", "deepseek-v4-pro"),
+        "provider": fs.get("provider", "deepseek"),
+    }
+    fb = fs.get("fallback")
+    if isinstance(fb, list) and fb:
+        result["fallback"] = fb
+    return result
+
+
 def route(
     task: str,
     config: Dict[str, Any],
@@ -92,12 +114,7 @@ def route(
 
         if classify_fn is None:
             # No classifier available → fail-safe
-            fs = config.get("fail_safe", {})
-            result = {
-                "profile": fs.get("profile", "coder"),
-                "model": fs.get("model", "claude-opus"),
-                "provider": fs.get("provider", "anthropic"),
-            }
+            result = _fail_safe_result(config)
             dlog.record("fail_safe_strong", result, task_preview=task[:120])
             return result
 
@@ -134,22 +151,12 @@ def route(
 
         except Exception:
             # Classifier failed → fail-safe
-            fs = config.get("fail_safe", {})
-            result = {
-                "profile": fs.get("profile", "coder"),
-                "model": fs.get("model", "claude-opus"),
-                "provider": fs.get("provider", "anthropic"),
-            }
+            result = _fail_safe_result(config)
             dlog.record("fail_safe_strong", result, task_preview=task[:120])
             return result
 
     # Fail-safe fallback
-    fs = config.get("fail_safe", {})
-    result = {
-        "profile": fs.get("profile", "coder"),
-        "model": fs.get("model", "claude-opus"),
-        "provider": fs.get("provider", "anthropic"),
-    }
+    result = _fail_safe_result(config)
     dlog.record("fail_safe_strong", result, task_preview=task[:120])
     return result
 
