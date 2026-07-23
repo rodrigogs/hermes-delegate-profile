@@ -318,3 +318,69 @@ class TestHandlerIntegration:
         result = handler({"goal": "ambiguous task"})
         parsed = json.loads(result)
         assert "error" in parsed or parsed.get("failure_kind") == "unknown_profile"
+# Appended test block for cross-rail fallback execution (follow-up #2).
+import json as _json
+
+
+def test_router_fallback_executes_on_retryable_failure(dp, monkeypatch):
+    """When the routed primary target fails RETRYABLY, the executor tries the
+    router's fallback targets in order until one succeeds (cross-rail failover)."""
+    # Router picks a primary + a fallback list (e.g. Mac-only primary, non-Mac fallback).
+    monkeypatch.setattr(dp, "_route_task", lambda goal, model, cf: {
+        "profile": "coder", "model": "us.anthropic.claude-opus-4-8", "provider": "bedrock",
+        "fallback": [{"model": "deepseek-v4-pro", "provider": "deepseek"}],
+    }, raising=False)
+    monkeypatch.setattr(dp, "_profile_exists", lambda p: True)
+
+    calls = []
+    class _P:
+        pid = 4242
+        returncode = 0
+        stdout = None
+        stderr = None
+        def poll(self): return 0
+        def wait(self, timeout=None): return 0
+    monkeypatch.setattr(dp, "_spawn", lambda cmd, env: (calls.append(list(cmd)) or _P()), raising=False)
+
+    # first attempt (primary/bedrock) fails retryably; second (fallback/deepseek) succeeds
+    seq = iter([("spawn_error_sim", 1, "", "boom"), ("exited", 0, "DONE", "")])
+    def fake_watch(proc, pgid, ttfb, idle, hard, grace):
+        try: return next(seq)
+        except StopIteration: return ("exited", 0, "DONE", "")
+    monkeypatch.setattr(dp, "_run_watched", fake_watch, raising=False)
+    # make the first classify retryable
+    real_classify = dp._classify
+    def patched_classify(reason, rc):
+        if reason == "spawn_error_sim": return ("spawn_error", True)
+        return real_classify(reason, rc)
+    monkeypatch.setattr(dp, "_classify", patched_classify, raising=False)
+
+    h = dp._make_handler(current_profile="other", dispatch_delegate=lambda a: "{}", ctx=None)
+    out = _json.loads(h({"goal": "hard task"}))
+    assert out.get("success") is True, out
+    # the second (fallback) target's provider must have reached the cmd
+    assert any("deepseek" in " ".join(c) for c in calls), calls
+    assert any("--provider" in c for c in calls), calls
+
+
+def test_router_no_fallback_when_primary_succeeds(dp, monkeypatch):
+    """Primary success => no fallback attempt, provider still passed."""
+    monkeypatch.setattr(dp, "_route_task", lambda goal, model, cf: {
+        "profile": "coder", "model": "glm-5.2", "provider": "zai",
+        "fallback": [{"model": "deepseek-v4-pro", "provider": "deepseek"}],
+    }, raising=False)
+    monkeypatch.setattr(dp, "_profile_exists", lambda p: True)
+    calls = []
+    class _P:
+        pid = 4242; returncode = 0
+        stdout = None
+        stderr = None
+        def poll(self): return 0
+        def wait(self, timeout=None): return 0
+    monkeypatch.setattr(dp, "_spawn", lambda cmd, env: (calls.append(list(cmd)) or _P()), raising=False)
+    monkeypatch.setattr(dp, "_run_watched", lambda *a: ("exited", 0, "OK", ""), raising=False)
+    h = dp._make_handler(current_profile="other", dispatch_delegate=lambda a: "{}", ctx=None)
+    out = _json.loads(h({"goal": "task"}))
+    assert out.get("success") is True
+    assert len(calls) == 1, "should not try fallback on primary success"
+    assert any("zai" in " ".join(c) for c in calls)

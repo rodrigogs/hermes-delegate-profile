@@ -711,12 +711,18 @@ def _make_handler(
             return json.dumps({"error": "goal is required", "failure_kind": "bad_args"})
 
         # --- Capability router: pick profile+model when not explicitly given ---
+        routed_provider = ""
+        routed_fallbacks: list = []
         if not profile or profile == "auto":
             routed = _route_task(goal, model, classify_fn)
             if routed is not None:
                 profile = routed.get("profile", "") or profile
                 if not model and routed.get("model"):
                     model = routed["model"]
+                routed_provider = routed.get("provider", "") or ""
+                fb = routed.get("fallback")
+                if isinstance(fb, list):
+                    routed_fallbacks = [x for x in fb if isinstance(x, dict) and x.get("model")]
 
         if not profile:
             return json.dumps({"error": "profile is required", "failure_kind": "bad_args"})
@@ -767,48 +773,28 @@ def _make_handler(
                      "failure_kind": "inline_error", "retryable": True}
                 )
 
-        # Cross-profile: spawn a fully independent hermes process tree.
+# Cross-profile: spawn a fully independent hermes process tree.
         hermes_bin = _resolve_hermes_bin()
         prompt = f"Context: {context}\n\nTask: {goal}" if context else goal
 
-        # `hermes -p <profile> chat -q "<prompt>"` — -p is a global flag and
-        # MUST come before the subcommand.
-        cmd = [hermes_bin, "-p", profile, "chat", "-q", prompt]
-        if model:
-            cmd.extend(["-m", model])
-
         env = os.environ.copy()
-        # Make the child resolve HERMES_HOME the same way we do, so it finds
-        # the real ~/.hermes rather than inheriting any per-session override
-        # that points at a scratch workspace. Passing it explicitly also
-        # silences the runtime's "HERMES_HOME unset, spawner should pass it"
-        # warning (issue #18594).
+        # Resolve HERMES_HOME like we do so the child finds the real ~/.hermes
+        # (silences the wrong-profile warning, issue #18594).
         if "HERMES_HOME" not in env:
             try:
                 from hermes_constants import get_hermes_home
-
                 env["HERMES_HOME"] = str(get_hermes_home())
             except Exception:
                 pass
-        # Keep the child's env self-consistent with the ``-p <profile>`` flag:
-        # without this the child inherits OUR HERMES_PROFILE (the parent's),
-        # which disagrees with the target profile the flag selects. The flag
-        # wins, but an agreeing env avoids any ambiguity in code that reads
-        # HERMES_PROFILE directly.
-        env["HERMES_PROFILE"] = profile
-        # Prevent infinite recursion if the child also loads this plugin.
-        env["HERMES_DELEGATE_PROFILE_DISABLE"] = "1"
+        env["HERMES_PROFILE"] = profile          # keep child env consistent with -p
+        env["HERMES_DELEGATE_PROFILE_DISABLE"] = "1"   # anti-recursion
 
         ttfb, idle, hard, grace = _resolve_ladder(hard_timeout)
         pool = _get_pool()
-        # Bounded concurrency: wait up to the hard ceiling for a slot, then
-        # refuse rather than blocking the agent forever.
         queue_wait = _env_float("HERMES_DELEGATE_PROFILE_QUEUE_WAIT", 0.0)
         if not pool.acquire(queue_wait if queue_wait > 0 else hard):
             return json.dumps({
-                "success": False,
-                "failure_kind": "at_capacity",
-                "retryable": True,
+                "success": False, "failure_kind": "at_capacity", "retryable": True,
                 "error": (
                     "Too many concurrent delegate_profile subprocesses "
                     f"(cap={_env_int('HERMES_DELEGATE_PROFILE_MAX_CONCURRENT', _DEFAULT_MAX_CONCURRENT)}). "
@@ -816,103 +802,103 @@ def _make_handler(
                 ),
             })
 
-        subagent_id = f"dp_{uuid.uuid4().hex[:12]}"
-        started_at = time.time()
-        logger.info(
-            "delegate_profile: spawning %s (profile=%s, ttfb=%.0fs idle=%.0fs hard=%.0fs)",
-            subagent_id, profile, ttfb, idle, hard,
-        )
+        def _attempt(attempt_model: str, attempt_provider: str) -> dict:
+            """Run one spawn+watchdog attempt for a (model, provider) target.
 
-        proc: Optional[subprocess.Popen] = None
-        pgid: Optional[int] = None
-        try:
+            Returns a result dict (never raises). ``--provider`` is passed to the
+            child when set so the router's provider axis actually reaches the
+            subprocess (previously dropped). The whole tree is watchdog-guarded
+            and tree-killed exactly as before.
+            """
+            cmd = [hermes_bin, "-p", profile, "chat", "-q", prompt]
+            if attempt_model:
+                cmd.extend(["-m", attempt_model])
+            if attempt_provider:
+                cmd.extend(["--provider", attempt_provider])
+            subagent_id = f"dp_{uuid.uuid4().hex[:12]}"
+            started_at = time.time()
+            logger.info(
+                "delegate_profile: spawning %s (profile=%s model=%s provider=%s "
+                "ttfb=%.0fs idle=%.0fs hard=%.0fs)",
+                subagent_id, profile, attempt_model or "-", attempt_provider or "-",
+                ttfb, idle, hard,
+            )
+            proc = None
+            pgid = None
             try:
-                proc = _spawn(cmd, env)
-            except FileNotFoundError:
-                return json.dumps({
-                    "success": False,
-                    "failure_kind": "binary_not_found",
-                    "retryable": False,
-                    "error": (
-                        f"Hermes binary not found: {hermes_bin}. "
-                        f"Ensure hermes is on PATH."
-                    ),
-                })
-            except Exception as exc:
-                logger.exception("delegate_profile: spawn failed")
-                return json.dumps({
-                    "success": False,
-                    "failure_kind": "spawn_error",
-                    "retryable": True,
-                    "error": f"Subprocess spawn error: {exc}",
-                })
-
-            if not IS_WINDOWS:
                 try:
-                    pgid = os.getpgid(proc.pid)
-                except (ProcessLookupError, OSError):
-                    pgid = proc.pid  # setsid guarantees pgid == pid
-            pool.register(proc, pgid, {
-                "subagent_id": subagent_id, "profile": profile,
-                "started_at": started_at,
-            })
+                    proc = _spawn(cmd, env)
+                except FileNotFoundError:
+                    return {"success": False, "failure_kind": "binary_not_found",
+                            "retryable": False,
+                            "error": f"Hermes binary not found: {hermes_bin}. Ensure hermes is on PATH."}
+                except Exception as exc:
+                    logger.exception("delegate_profile: spawn failed")
+                    return {"success": False, "failure_kind": "spawn_error", "retryable": True,
+                            "error": f"Subprocess spawn error: {exc}"}
+                if not IS_WINDOWS:
+                    try:
+                        pgid = os.getpgid(proc.pid)
+                    except (ProcessLookupError, OSError):
+                        pgid = proc.pid
+                pool.register(proc, pgid, {"subagent_id": subagent_id, "profile": profile,
+                                           "started_at": started_at})
+                reason, returncode, stdout, stderr = _run_watched(proc, pgid, ttfb, idle, hard, grace)
+            finally:
+                if proc is not None:
+                    _kill_tree(proc, pgid, grace)
+                    pool.unregister(proc.pid)
+            elapsed = round(time.time() - started_at, 1)
+            failure_kind, retryable = _classify(reason, returncode)
+            _record_breaker_outcome(profile, attempt_model, failure_kind)
+            base = {"subagent_id": subagent_id, "profile": profile,
+                    "model": attempt_model, "provider": attempt_provider, "elapsed_s": elapsed}
+            if failure_kind == "hard_timeout":
+                return {**base, "success": False, "failure_kind": failure_kind, "retryable": retryable,
+                        "error": f"Hard timeout after {int(hard)}s.",
+                        "stderr": stderr[-_MAX_STDERR_CHARS:] if stderr else ""}
+            if failure_kind in ("ttfb_stall", "idle_stall"):
+                detail = (f"produced no output within {int(ttfb)}s" if failure_kind == "ttfb_stall"
+                          else f"went silent for more than {int(idle)}s")
+                return {**base, "success": False, "failure_kind": failure_kind, "retryable": retryable,
+                        "error": f"Subagent stalled ({detail}) and was terminated.",
+                        "stderr": stderr[-_MAX_STDERR_CHARS:] if stderr else "",
+                        "partial_output": stdout[-_MAX_RESULT_CHARS:] if stdout else ""}
+            if failure_kind is not None:
+                return {**base, "success": False, "failure_kind": failure_kind, "retryable": retryable,
+                        "error": f"Subprocess exited abnormally (code {returncode})",
+                        "stderr": stderr[-_MAX_STDERR_CHARS:] if stderr else ""}
+            return {**base, "success": True,
+                    "result": stdout[-_MAX_RESULT_CHARS:] if stdout else "(no output)"}
 
-            reason, returncode, stdout, stderr = _run_watched(
-                proc, pgid, ttfb, idle, hard, grace,
-            )
+        try:
+            # Target chain: primary (routed/explicit) then the router's cross-rail
+            # fallbacks. Retry the NEXT target only on a retryable failure — so a
+            # Mac-only primary (Claude Code) transparently fails over to a non-Mac
+            # rail, honoring 'Claude Code is never the sole option' at EXECUTION time.
+            targets = [(model, routed_provider)] + [
+                (fb.get("model", ""), fb.get("provider", "")) for fb in routed_fallbacks
+            ]
+            attempts_meta = []
+            last = None
+            for idx, (tm, tp) in enumerate(targets):
+                last = _attempt(tm, tp)
+                attempts_meta.append({"model": tm, "provider": tp,
+                                      "ok": bool(last.get("success")),
+                                      "failure_kind": last.get("failure_kind")})
+                if last.get("success"):
+                    break
+                if not last.get("retryable"):
+                    break   # bad_args/unknown/binary_not_found — fallback won't help
+                if idx + 1 < len(targets):
+                    logger.warning("delegate_profile: target %s/%s failed (%s); trying fallback %s/%s",
+                                   tp or "-", tm or "-", last.get("failure_kind"),
+                                   targets[idx+1][1] or "-", targets[idx+1][0] or "-")
+            if len(attempts_meta) > 1:
+                last["attempts"] = attempts_meta
+            return json.dumps(last, ensure_ascii=False)
         finally:
-            if proc is not None:
-                # Belt-and-suspenders: never leave a tree behind on any path.
-                _kill_tree(proc, pgid, grace)
-                pool.unregister(proc.pid)
             pool.release()
-
-        elapsed = round(time.time() - started_at, 1)
-        failure_kind, retryable = _classify(reason, returncode)
-
-        # Record outcome in the capability router's auto-breaker (fire-and-forget).
-        _record_breaker_outcome(profile, model, failure_kind)
-
-        if failure_kind == "hard_timeout":
-            return json.dumps({
-                "success": False, "subagent_id": subagent_id, "profile": profile,
-                "failure_kind": failure_kind, "retryable": retryable,
-                "error": (
-                    f"Hard timeout after {int(hard)}s. Raise the `timeout` arg or "
-                    f"HERMES_DELEGATE_PROFILE_TIMEOUT."
-                ),
-                "elapsed_s": elapsed,
-                "stderr": stderr[-_MAX_STDERR_CHARS:] if stderr else "",
-            })
-        if failure_kind in ("ttfb_stall", "idle_stall"):
-            detail = (
-                f"produced no output within {int(ttfb)}s" if failure_kind == "ttfb_stall"
-                else f"went silent for more than {int(idle)}s"
-            )
-            return json.dumps({
-                "success": False, "subagent_id": subagent_id, "profile": profile,
-                "failure_kind": failure_kind, "retryable": retryable,
-                "error": f"Subagent stalled ({detail}) and was terminated.",
-                "elapsed_s": elapsed,
-                "stderr": stderr[-_MAX_STDERR_CHARS:] if stderr else "",
-                "partial_output": stdout[-_MAX_RESULT_CHARS:] if stdout else "",
-            })
-        if failure_kind is not None:  # crash / crash_or_oom / nonzero_exit
-            return json.dumps({
-                "success": False, "subagent_id": subagent_id, "profile": profile,
-                "failure_kind": failure_kind, "retryable": retryable,
-                "error": f"Subprocess exited abnormally (code {returncode})",
-                "stderr": stderr[-_MAX_STDERR_CHARS:] if stderr else "",
-                "elapsed_s": elapsed,
-            })
-
-        return json.dumps({
-            "success": True,
-            "subagent_id": subagent_id,
-            "profile": profile,
-            "result": stdout[-_MAX_RESULT_CHARS:] if stdout else "(no output)",
-            "elapsed_s": elapsed,
-        })
 
     return delegate_profile
 
