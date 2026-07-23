@@ -196,6 +196,7 @@ def test_blocklist_save_failure_is_nonfatal(monkeypatch, tmp_path, caplog):
 
     monkeypatch.setattr(blocklist_mod, "_state_path", lambda: tmp_path / "state.json")
     monkeypatch.setattr(blocklist_mod.os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("disk")))
+    monkeypatch.setattr(blocklist_mod.os, "unlink", lambda *_args: (_ for _ in ()).throw(OSError("cleanup")))
     config = {"blocklist": {"manual_ban": [], "fallback_chain": [], "auto_breaker": {
         "enabled": True, "threshold": 1, "window_seconds": 60,
         "base_cooldown_seconds": 1, "max_cooldown_seconds": 1, "backoff_multiplier": 2,
@@ -307,6 +308,49 @@ def test_cli_blocklist_all_output_branches_and_no_log_file(monkeypatch, capsys):
     assert "2m remaining" in out and "2s remaining" in out and "expiring now" in out
     cli.cmd_log(argparse.Namespace(tail=1, file=None, follow=False))
     assert "no log file" in capsys.readouterr().out
+
+
+def test_breaker_malformed_state_entries_are_ignored():
+    from router.breaker import BreakerState, _Entry, _Event
+
+    config = {"threshold": 1}
+    assert BreakerState.from_dict({"version": 1, "entries": []}, config).to_dict() == {
+        "version": 1, "entries": {},
+    }
+    assert _Event.from_dict({"kind": "x", "ts": "not-a-number"}) is None
+    entry = _Entry.from_dict({"state": "unknown", "failure_events": [{"kind": "", "ts": 1}]})
+    assert entry is not None
+    assert entry.state == "CLOSED"
+    assert entry.events == []
+
+    breaker = BreakerState(config)
+    breaker.record("m@p", "ttfb_stall", 1)
+    breaker.record("m@p", "ttfb_stall", 2)
+    assert breaker.is_blocked("m@p", 2)
+    assert breaker.record("m@p", "crash", 3) is False
+
+
+def test_cli_blocklist_enabled_without_cooldowns(monkeypatch, capsys):
+    class EmptyBlocklist:
+        def __init__(self, _config):
+            pass
+
+        def manual_bans(self):
+            return []
+
+        def breaker_enabled(self):
+            return True
+
+        def breaker_status(self):
+            return []
+
+        def fallback_chain(self):
+            return []
+
+    monkeypatch.setattr(cli, "Blocklist", EmptyBlocklist)
+    monkeypatch.setattr(cli, "load_config", lambda _path: {})
+    cli.cmd_blocklist(argparse.Namespace(config="ignored"))
+    assert "no active cooldowns" in capsys.readouterr().out
 
 
 class _Parser:
