@@ -46,7 +46,7 @@ _CONSOLE_PATH = (
 # contract); a route in neither set is a 404 (after auth).
 _GET_ROUTES = frozenset(
     {"/health", "/status", "/policy", "/blocklist", "/liveness",
-     "/compaction", "/lint", "/explain"}
+     "/compaction", "/lint", "/explain", "/routes"}
 )
 _POST_ROUTES = frozenset({"/plan", "/apply", "/apply/confirm", "/apply/revert"})
 
@@ -289,6 +289,23 @@ class SidecarApp:
                 "threshold_tokens": threshold_tokens,
                 "warning": threshold_tokens >= SUMMARIZER_WINDOW,
             }
+        if path == "/routes":
+            # Read-only route-trace access for visual replay. ?id=X fetches one
+            # full trace (incl. steps[]); bare returns the recent list + the
+            # resolved trace_path/count so an empty list is diagnosable. Using a
+            # query param (not a /routes/{id} path segment) keeps exact-match
+            # dispatch and the 405 method guard intact.
+            rid = (query.get("id") or [""])[0]
+            if rid:
+                entry = self._service.route(rid)
+                if entry is None:
+                    return _error(404, "route trace not found")
+                return 200, entry
+            try:
+                limit = int((query.get("limit") or ["50"])[0])
+            except (TypeError, ValueError):
+                limit = 50
+            return 200, self._service.routes(limit=limit)
         if path == "/lint":
             return 200, self._service.lint()
         if path == "/explain":

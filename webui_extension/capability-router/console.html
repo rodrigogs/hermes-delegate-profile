@@ -209,7 +209,41 @@
       .metric { min-height: 88px; padding: 12px; }
       .metric-value { font-size: 17px; }
       .trace-form { grid-template-columns: 1fr; }
+      .pipeline-layout { grid-template-columns: 1fr; }
     }
+
+    /* Pipeline canvas — one shared node graph for editing + replay. */
+    .pipeline-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+    .pipeline-canvas-wrap { border: 1px solid var(--line); border-radius: var(--radius); background:
+      radial-gradient(circle at 1px 1px, rgba(38, 49, 68, .55) 1px, transparent 0) 0 0 / 22px 22px, var(--surface); overflow: auto; }
+    .pipeline-svg { display: block; width: 100%; min-height: 420px; }
+    .pnode { cursor: pointer; }
+    .pnode-box { fill: var(--surface-raised); stroke: var(--line-strong); stroke-width: 1.5; rx: 9; }
+    .pnode:hover .pnode-box { stroke: var(--accent); }
+    .pnode-label { fill: var(--text); font: 600 12px var(--mono); pointer-events: none; }
+    .pnode-sub { fill: var(--muted); font: 10px var(--mono); pointer-events: none; }
+    .pnode.is-runtime .pnode-box { stroke-dasharray: 4 3; opacity: .62; }
+    .pnode.is-runtime .pnode-label { fill: var(--muted); }
+    .pnode.is-tier .pnode-box { fill: #12203a; }
+    .pnode.is-terminal .pnode-box { fill: #1a1420; }
+    .pnode.is-selected .pnode-box { stroke: var(--accent-strong); stroke-width: 2.5; }
+    .pnode.is-active .pnode-box { stroke: var(--accent); stroke-width: 2.5; filter: drop-shadow(0 0 8px rgba(74, 140, 255, .6)); }
+    .pnode.is-traversed .pnode-box { stroke: var(--accent); }
+    .pnode.is-dim { opacity: .3; }
+    .pedge { fill: none; stroke: var(--line-strong); stroke-width: 1.5; }
+    .pedge.is-veto { stroke: var(--red); stroke-dasharray: 5 4; }
+    .pedge.is-active { stroke: var(--accent); stroke-width: 2.5; }
+    .pipeline-side { display: flex; flex-direction: column; gap: 12px; }
+    .replay-scrubber { display: flex; align-items: center; gap: 8px; }
+    .replay-scrubber input[type=range] { flex: 1; accent-color: var(--accent-strong); }
+    .replay-step-io { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #090c12; font: 11px/1.5 var(--mono); color: #dceaff; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow: auto; }
+    .prop-field { display: grid; gap: 4px; margin-bottom: 9px; }
+    .prop-field label { color: var(--muted); font: 600 10px var(--mono); text-transform: uppercase; letter-spacing: .04em; }
+    .prop-field input, .prop-field select { border: 1px solid var(--line-strong); border-radius: 7px; padding: 7px 9px; color: var(--text); background: #090c12; font: 12px var(--mono); }
+    .cause-chip { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font: 700 10px var(--mono); border: 1px solid var(--line-strong); }
+    .route-row { cursor: pointer; }
+    .route-row:hover { background: var(--surface-hover); }
+    .route-row.is-selected { background: var(--surface-hover); box-shadow: inset 2px 0 0 var(--accent-strong); }
   </style>
 </head>
 <body>
@@ -244,6 +278,7 @@
       <button class="tab" id="tab-blocklist" role="tab" aria-selected="false" aria-controls="panel-blocklist" data-tab="blocklist" type="button">Blocklist / Breaker</button>
       <button class="tab" id="tab-compaction" role="tab" aria-selected="false" aria-controls="panel-compaction" data-tab="compaction" type="button">Compaction</button>
       <button class="tab" id="tab-summarizer" role="tab" aria-selected="false" aria-controls="panel-summarizer" data-tab="summarizer" type="button">Summarizer</button>
+      <button class="tab" id="tab-pipeline" role="tab" aria-selected="false" aria-controls="panel-pipeline" data-tab="pipeline" type="button">Pipeline</button>
     </nav>
 
     <section id="panel-status" class="panel active" role="tabpanel" aria-labelledby="tab-status">
@@ -347,6 +382,47 @@
         </article>
       </div>
     </section>
+
+    <section id="panel-pipeline" class="panel" role="tabpanel" aria-labelledby="tab-pipeline">
+      <div class="pipeline-layout">
+        <article class="card">
+          <div class="card-header">
+            <div><h2 class="card-title">Pipeline graph</h2><p class="card-subtitle">The router.yaml routing pipeline. In Edit mode, click a node to change its policy fragment; then Validate &amp; apply via the guarded write-path.</p></div>
+            <div class="card-actions"><span id="pipelineMode" class="chip">read-only</span></div>
+          </div>
+          <div class="card-body">
+            <div class="pipeline-canvas-wrap"><svg id="pipelineSvg" class="pipeline-svg" role="img" aria-label="Routing pipeline node graph"></svg></div>
+            <p id="pipelineActionMessage" class="action-message" role="status" aria-live="polite"></p>
+          </div>
+        </article>
+        <div class="pipeline-side">
+          <article class="card">
+            <div class="card-header"><div><h2 class="card-title">Inspector</h2><p class="card-subtitle">Selected node / replay step.</p></div></div>
+            <div class="card-body"><div id="pipelineInspector" class="kv-list"><div class="empty">Select a node, or pick a route below to replay.</div></div>
+              <div id="pipelineEditActions" class="card-actions" style="margin-top:10px" hidden>
+                <button id="pipelineValidateButton" class="button" type="button">Validate &amp; preview</button>
+                <button id="pipelineApplyButton" class="button primary" type="button">Apply</button>
+                <button id="pipelineConfirmButton" class="button" type="button">Confirm apply</button>
+                <button id="pipelineRevertButton" class="button quiet" type="button">Revert</button>
+              </div>
+              <pre id="pipelinePlanPreview" class="replay-step-io" style="margin-top:10px" hidden></pre>
+            </div>
+          </article>
+          <article class="card">
+            <div class="card-header"><div><h2 class="card-title">Recent routes</h2><p class="card-subtitle">Real production decisions. Pick one to replay its steps.</p></div></div>
+            <div class="card-body">
+              <div id="routesTable" class="table-wrap"><div class="empty">No routes recorded yet.</div></div>
+              <div class="replay-scrubber" hidden id="replayScrubber">
+                <button id="replayPrev" class="button quiet" type="button" aria-label="Previous step">◀</button>
+                <input id="replayRange" type="range" min="0" max="0" value="0" aria-label="Replay step">
+                <button id="replayNext" class="button quiet" type="button" aria-label="Next step">▶</button>
+              </div>
+              <div id="replayStepIo" class="replay-step-io" hidden></div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
   </main>
 
   <div id="drawerBackdrop" class="drawer-backdrop" aria-hidden="true"></div>
@@ -367,7 +443,7 @@
       const PROXY_ROOT = '/api/extensions/capability-router/sidecar/';
       const ENDPOINTS = [
         ['GET', '/health'], ['GET', '/status'], ['GET', '/policy'], ['GET', '/blocklist'],
-        ['GET', '/liveness'], ['GET', '/compaction'], ['GET', '/explain?task='],
+        ['GET', '/liveness'], ['GET', '/compaction'], ['GET', '/explain?task='], ['GET', '/routes'],
         ['POST', '/plan'], ['POST', '/apply'], ['POST', '/apply/confirm'], ['POST', '/apply/revert']
       ];
       const state = {
@@ -381,8 +457,13 @@
         plan: null,
         endpointState: new Map(),
         lastChecked: null,
-        unreachable: false
+        unreachable: false,
+        // Pipeline canvas + replay
+        routes: [],
+        selectedNode: null,
+        replay: null   // { steps: [...], index: 0, routeId }
       };
+      const SVG_NS = 'http://www.w3.org/2000/svg';
 
       const $ = (id) => document.getElementById(id);
       const elements = {
@@ -395,7 +476,11 @@
         compactionState: $('compactionState'), compactionDetails: $('compactionDetails'),
         compactionConfirm: $('compactionConfirm'), compactionActionMessage: $('compactionActionMessage'),
         applyCompactionButton: $('applyCompactionButton'), traceDrawer: $('traceDrawer'), drawerBackdrop: $('drawerBackdrop'),
-        traceTask: $('traceTask'), traceResult: $('traceResult'), summarizerDetails: $('summarizerDetails')
+        traceTask: $('traceTask'), traceResult: $('traceResult'), summarizerDetails: $('summarizerDetails'),
+        pipelineSvg: $('pipelineSvg'), pipelineMode: $('pipelineMode'), pipelineInspector: $('pipelineInspector'),
+        pipelineEditActions: $('pipelineEditActions'), pipelinePlanPreview: $('pipelinePlanPreview'),
+        pipelineActionMessage: $('pipelineActionMessage'), routesTable: $('routesTable'),
+        replayScrubber: $('replayScrubber'), replayRange: $('replayRange'), replayStepIo: $('replayStepIo')
       };
 
       function makeElement(tag, className, text) {
@@ -632,7 +717,7 @@
       }
 
       function renderAll() {
-        renderChrome(); renderNotices(); renderMetrics(); renderKv(elements.statusDetails, state.status, 'No /status payload received.'); renderKv(elements.healthDetails, state.health, 'Health unavailable through proxy.'); renderLiveness(); renderEndpointLedger(); renderPolicy(); renderBlocklist(); renderCompaction();
+        renderChrome(); renderNotices(); renderMetrics(); renderKv(elements.statusDetails, state.status, 'No /status payload received.'); renderKv(elements.healthDetails, state.health, 'Health unavailable through proxy.'); renderLiveness(); renderEndpointLedger(); renderPolicy(); renderBlocklist(); renderCompaction(); renderPipelinePanel();
       }
 
       function setMode(mode) {
@@ -655,12 +740,13 @@
       async function refresh() {
         $('refreshButton').disabled = true;
         state.unreachable = false;
-        const [health, status, policy, blocklist, liveness, compaction] = await Promise.all([
-          request('/health'), request('/status'), request('/policy'), request('/blocklist'), request('/liveness'), request('/compaction')
+        const [health, status, policy, blocklist, liveness, compaction, routes] = await Promise.all([
+          request('/health'), request('/status'), request('/policy'), request('/blocklist'), request('/liveness'), request('/compaction'), request('/routes')
         ]);
         const results = [health, status, policy, blocklist, liveness, compaction];
         if (results.some((item) => item.unreachable)) state.unreachable = true;
         state.health = health.data || null; state.status = status.data || null; state.policy = policy.data || null; state.blocklist = blocklist.data || null; state.liveness = liveness.data || null; state.compaction = compaction.data || null;
+        state.routes = (routes.data && Array.isArray(routes.data.routes)) ? routes.data.routes : [];
         state.lastChecked = new Date();
         renderAll();
         $('refreshButton').disabled = false;
@@ -710,12 +796,368 @@
         if (open) elements.traceTask.focus();
       }
 
+      // --- Pipeline canvas: one shared node graph for editing + replay -------
+
+      // SVG elements need the SVG namespace; makeElement()/createElement would
+      // mis-namespace them into invisible HTML nodes.
+      function svgEl(tag, attrs) {
+        const node = document.createElementNS(SVG_NS, tag);
+        if (attrs) for (const k of Object.keys(attrs)) node.setAttribute(k, String(attrs[k]));
+        return node;
+      }
+
+      // Column layout by pipeline stage (fixed by adapter.route() order). Node
+      // ids are the natural policy keys so editor and replay share them.
+      const NODE_W = 150, NODE_H = 46, COL_GAP = 195, ROW_GAP = 60, PAD = 24;
+      const PIPELINE_COLUMNS = [
+        { key: 'stage0', title: null },
+      ];
+
+      // Which policy fragment (if any) a node binds to for editing.
+      const FIXED_NODES = [
+        { id: 'blocklist', label: 'blocklist', col: 0, bind: 'blocklist' },
+        { id: 'signals', label: 'signals', col: 1, bind: null, runtime: true },
+        { id: 'classifier', label: 'classifier', col: 3, bind: 'classifier' },
+        { id: 'cache', label: 'cache', col: 3, bind: null, runtime: true },
+        { id: 'session_pin', label: 'session_pin', col: 3, bind: null, runtime: true },
+        { id: 'fail_safe', label: 'fail_safe', col: 5, bind: 'fail_safe', terminal: true },
+        { id: 'default', label: 'default', col: 2, bind: 'default' },
+      ];
+
+      function pipelineNodes() {
+        const policy = state.policy && typeof state.policy === 'object' ? state.policy : {};
+        const rules = Array.isArray(policy.rules) ? policy.rules : [];
+        const tiers = policy.tiers && typeof policy.tiers === 'object' ? policy.tiers : {};
+        const nodes = [];
+        FIXED_NODES.forEach((n) => nodes.push({ ...n }));
+        rules.forEach((r, i) => nodes.push({
+          id: `rule:${r.id != null ? r.id : i}`, label: r.id != null ? String(r.id) : `rule[${i}]`,
+          col: 2, bind: 'rule', ruleIndex: i, sub: (r.then && (r.then.deny ? 'deny' : r.then.model)) || '',
+        }));
+        Object.keys(tiers).forEach((tn) => nodes.push({
+          id: `tier:${tn}`, label: tn, col: 4, bind: 'tier', tierName: tn, tier: true,
+          sub: (tiers[tn] && tiers[tn].model) || '',
+        }));
+        // Assign row positions within each column.
+        const byCol = {};
+        nodes.forEach((n) => { (byCol[n.col] = byCol[n.col] || []).push(n); });
+        Object.keys(byCol).forEach((col) => {
+          byCol[col].forEach((n, row) => {
+            n.x = PAD + Number(col) * COL_GAP;
+            n.y = PAD + row * ROW_GAP;
+          });
+        });
+        return nodes;
+      }
+
+      function pipelineEdges(nodes) {
+        // Fixed left→right flow; rule→tier when then.model=Tn, rule→classifier
+        // when then.action=classify. Veto edge is tinted.
+        const byId = {};
+        nodes.forEach((n) => { byId[n.id] = n; });
+        const edges = [];
+        const link = (a, b, cls) => { if (byId[a] && byId[b]) edges.push({ from: byId[a], to: byId[b], cls: cls || '' }); };
+        link('blocklist', 'signals');
+        const policy = state.policy || {};
+        (Array.isArray(policy.rules) ? policy.rules : []).forEach((r, i) => {
+          link('signals', `rule:${r.id != null ? r.id : i}`);
+          const then = r.then || {};
+          if (then.deny) { /* veto sink rendered via class on node */ }
+          else if (then.action === 'classify') link(`rule:${r.id != null ? r.id : i}`, 'classifier');
+          else if (typeof then.model === 'string' && byId[`tier:${then.model}`]) link(`rule:${r.id != null ? r.id : i}`, `tier:${then.model}`);
+        });
+        link('signals', 'default');
+        link('default', 'classifier');
+        link('classifier', 'fail_safe');
+        return edges;
+      }
+
+      function renderPipeline() {
+        const svg = elements.pipelineSvg;
+        clear(svg);
+        if (!state.policy) {
+          const t = svgEl('text', { x: PAD, y: 40, class: 'pnode-sub' });
+          t.textContent = 'Policy not loaded — open with a reachable sidecar.';
+          svg.appendChild(t);
+          return;
+        }
+        const nodes = pipelineNodes();
+        const edges = pipelineEdges(nodes);
+        const maxX = Math.max(...nodes.map((n) => n.x + NODE_W), 400) + PAD;
+        const maxY = Math.max(...nodes.map((n) => n.y + NODE_H), 200) + PAD;
+        svg.setAttribute('viewBox', `0 0 ${maxX} ${maxY}`);
+        svg.setAttribute('height', String(maxY));
+        const edgeLayer = svgEl('g', {}); svg.appendChild(edgeLayer);
+        const nodeLayer = svgEl('g', {}); svg.appendChild(nodeLayer);
+        edges.forEach((e) => {
+          const x1 = e.from.x + NODE_W, y1 = e.from.y + NODE_H / 2;
+          const x2 = e.to.x, y2 = e.to.y + NODE_H / 2;
+          const mx = (x1 + x2) / 2;
+          const path = svgEl('path', { class: `pedge ${e.cls}`, d: `M ${x1} ${y1} C ${mx} ${y1} ${mx} ${y2} ${x2} ${y2}` });
+          path.dataset.from = e.from.id; path.dataset.to = e.to.id;
+          edgeLayer.appendChild(path);
+        });
+        nodes.forEach((n) => {
+          const g = svgEl('g', { class: 'pnode', transform: `translate(${n.x} ${n.y})` });
+          g.dataset.nodeId = n.id;
+          const classes = ['pnode'];
+          if (n.runtime) classes.push('is-runtime');
+          if (n.tier) classes.push('is-tier');
+          if (n.terminal) classes.push('is-terminal');
+          if (state.selectedNode === n.id) classes.push('is-selected');
+          g.setAttribute('class', classes.join(' '));
+          g.appendChild(svgEl('rect', { class: 'pnode-box', width: NODE_W, height: NODE_H, rx: 9 }));
+          const label = svgEl('text', { class: 'pnode-label', x: 12, y: n.sub ? 20 : 28 });
+          label.textContent = n.label;   // text nodes only; never raw markup
+          g.appendChild(label);
+          if (n.sub) {
+            const sub = svgEl('text', { class: 'pnode-sub', x: 12, y: 36 });
+            sub.textContent = n.runtime ? 'runtime' : String(n.sub);
+            g.appendChild(sub);
+          } else if (n.runtime) {
+            const sub = svgEl('text', { class: 'pnode-sub', x: 12, y: 38 });
+            sub.textContent = 'runtime'; g.appendChild(sub);
+          }
+          g.addEventListener('click', () => onPipelineNodeClick(n));
+          nodeLayer.appendChild(g);
+        });
+      }
+
+      // Binds with a simple, single-object property form are editable inline.
+      // blocklist is bans/chain LISTS — better edited as JSON in the Policy tab,
+      // so its node opens the read-only inspector instead of a partial form.
+      const INLINE_EDITABLE_BINDS = new Set(['tier', 'rule', 'classifier', 'fail_safe', 'default']);
+
+      function onPipelineNodeClick(node) {
+        // Replay is read-only selection; edit mode opens the property panel.
+        state.selectedNode = node.id;
+        renderPipeline();
+        if (state.mode === 'edit' && node.bind && !node.runtime && INLINE_EDITABLE_BINDS.has(node.bind)) {
+          renderNodeEditor(node);
+        } else {
+          renderNodeInspector(node);
+        }
+      }
+
+      function renderNodeInspector(node) {
+        const policy = state.policy || {};
+        let fragment = null;
+        if (node.bind === 'rule') fragment = (policy.rules || [])[node.ruleIndex];
+        else if (node.bind === 'tier') fragment = (policy.tiers || {})[node.tierName];
+        else if (node.bind) fragment = policy[node.bind];
+        clear(elements.pipelineInspector);
+        renderKv(elements.pipelineInspector, fragment || { note: node.runtime ? 'Runtime node — cold on the live path (per-call instance).' : 'No bound policy.' }, 'Nothing bound.');
+        elements.pipelineEditActions.hidden = true;
+        elements.pipelinePlanPreview.hidden = true;
+      }
+
+      // Editing mutates a clone of the WHOLE policy in place (preserves any
+      // fields outside the UI's closed set), then reuses the exact plan/apply
+      // spine — no second write path.
+      // GET /policy returns only {rules, default, tiers, fail_safe}. The
+      // classifier and blocklist nodes are editable too, so compose the FULL
+      // policy from the other reads (status.classifier, blocklist bans/chain,
+      // status.enabled). Editing then mutates a deep clone of this whole object
+      // in place, so no field an operator did not touch is dropped on apply, and
+      // the plan diff/preview is computed against the true policy.
+      function composeFullPolicy() {
+        const base = state.policy && typeof state.policy === 'object' ? state.policy : {};
+        const full = JSON.parse(JSON.stringify(base));
+        if (state.status && state.status.classifier && full.classifier === undefined) {
+          full.classifier = JSON.parse(JSON.stringify(state.status.classifier));
+        }
+        if (state.status && typeof state.status.enabled === 'boolean' && full.enabled === undefined) {
+          full.enabled = state.status.enabled;
+        }
+        if (state.blocklist && full.blocklist === undefined) {
+          full.blocklist = {
+            manual_ban: Array.isArray(state.blocklist.manual_bans) ? state.blocklist.manual_bans : [],
+            fallback_chain: Array.isArray(state.blocklist.fallback_chain) ? state.blocklist.fallback_chain : [],
+          };
+        }
+        return full;
+      }
+
+      let pipelineDraft = null;
+      function renderNodeEditor(node) {
+        pipelineDraft = composeFullPolicy();
+        clear(elements.pipelineInspector);
+        const fields = [];
+        const addField = (label, get, set, options) => {
+          const wrap = makeElement('div', 'prop-field');
+          wrap.append(makeElement('label', '', label));
+          let input;
+          if (options) {
+            input = document.createElement('select');
+            options.forEach((o) => { const opt = document.createElement('option'); opt.value = o; opt.textContent = o; input.appendChild(opt); });
+          } else {
+            input = document.createElement('input'); input.type = 'text';
+          }
+          input.value = get() == null ? '' : String(get());
+          input.addEventListener('input', () => set(input.value));
+          wrap.append(input);
+          elements.pipelineInspector.append(wrap);
+          fields.push(input);
+        };
+        if (node.bind === 'tier') {
+          const t = pipelineDraft.tiers[node.tierName] = pipelineDraft.tiers[node.tierName] || {};
+          addField('model', () => t.model, (v) => { t.model = v; });
+          addField('provider', () => t.provider, (v) => { t.provider = v; });
+        } else if (node.bind === 'rule') {
+          const r = pipelineDraft.rules[node.ruleIndex] = pipelineDraft.rules[node.ruleIndex] || {};
+          r.then = r.then || {};
+          const tierNames = Object.keys((state.policy && state.policy.tiers) || {});
+          addField('then.model', () => r.then.model, (v) => { r.then.model = v; }, tierNames.length ? tierNames.concat(['']) : null);
+          addField('then.profile', () => r.then.profile, (v) => { r.then.profile = v; });
+        } else if (node.bind === 'classifier' || node.bind === 'fail_safe') {
+          const f = pipelineDraft[node.bind] = pipelineDraft[node.bind] || {};
+          addField('model', () => f.model, (v) => { f.model = v; });
+          addField('provider', () => f.provider, (v) => { f.provider = v; });
+        } else if (node.bind === 'default') {
+          const d = pipelineDraft.default = pipelineDraft.default || {};
+          addField('model', () => d.model, (v) => { d.model = v; });
+          addField('action', () => d.action, (v) => { d.action = v; });
+        }
+        elements.pipelineEditActions.hidden = false;
+        elements.pipelinePlanPreview.hidden = true;
+        setMessage(elements.pipelineActionMessage, `Editing ${node.label}. Validate to preview a diff before applying.`);
+      }
+
+      async function pipelineValidate() {
+        if (!canWrite(elements.pipelineActionMessage, 'Validation')) return;
+        if (!pipelineDraft) { setMessage(elements.pipelineActionMessage, 'Select a node to edit first.', 'error'); return; }
+        setMessage(elements.pipelineActionMessage, 'Requesting server-side plan…');
+        const result = await request('/plan', { method: 'POST', body: { policy: pipelineDraft } });
+        if (result.pending) { setMessage(elements.pipelineActionMessage, 'Validation unavailable: POST /plan is endpoint pending.', 'error'); return; }
+        if (result.error) { setMessage(elements.pipelineActionMessage, `Validation failed: HTTP ${result.status || 'network'} from /plan.`, 'error'); return; }
+        state.plan = result.data;
+        elements.pipelinePlanPreview.hidden = false;
+        elements.pipelinePlanPreview.textContent = pretty(result.data.diff || result.data.preview || result.data);
+        setMessage(elements.pipelineActionMessage, result.data.valid ? 'Plan valid. Inspect the diff, then Apply.' : `Plan INVALID: ${(result.data.errors || []).join('; ')}`, result.data.valid ? 'ok' : 'error');
+      }
+
+      async function pipelineApply(stage) {
+        if (!canWrite(elements.pipelineActionMessage, 'Apply')) return;
+        if (!state.plan) { setMessage(elements.pipelineActionMessage, 'Validate first.', 'error'); return; }
+        const path = stage === 'confirm' ? '/apply/confirm' : stage === 'revert' ? '/apply/revert' : '/apply';
+        const result = await request(path, { method: 'POST', body: { plan: state.plan, policy: state.plan.policy } });
+        if (result.pending) { setMessage(elements.pipelineActionMessage, `Apply unavailable: POST ${path} is endpoint pending.`, 'error'); return; }
+        if (result.status === 409) { setMessage(elements.pipelineActionMessage, 'Conflict: router.yaml changed since the plan. Re-validate against fresh state.', 'error'); state.plan = null; await refresh(); return; }
+        if (result.error) { setMessage(elements.pipelineActionMessage, `Apply failed: HTTP ${result.status || 'network'} from ${path}.`, 'error'); return; }
+        setMessage(elements.pipelineActionMessage, `${stage === 'revert' ? 'Revert' : stage === 'confirm' ? 'Confirmation' : 'Apply'} accepted. Refreshing…`, 'ok');
+        state.plan = null; pipelineDraft = null;
+        await refresh();
+      }
+
+      // --- Replay: recent routes → step scrubber over the shared graph -------
+
+      function renderRoutes() {
+        const wrap = elements.routesTable;
+        clear(wrap);
+        const routes = Array.isArray(state.routes) ? state.routes : [];
+        if (!routes.length) { wrap.append(makeElement('div', 'empty', 'No routes recorded yet.')); return; }
+        const table = makeElement('table', 'data-table');
+        const tbody = makeElement('tbody');
+        routes.forEach((r) => {
+          const tr = makeElement('tr', 'route-row');
+          tr.dataset.routeId = r.id;
+          if (state.replay && state.replay.routeId === r.id) tr.classList.add('is-selected');
+          const causeTd = makeElement('td');
+          const chip = makeElement('span', `cause-chip`, r.cause || '—');
+          chip.style.color = causeColor(r.cause);
+          causeTd.append(chip);
+          tr.append(causeTd, makeElement('td', 'mono', safeString(r.model, '—')), makeElement('td', '', safeString(r.task, '—')));
+          tr.addEventListener('click', () => selectRoute(r.id));
+          tbody.append(tr);
+        });
+        table.append(tbody);
+        wrap.append(table);
+      }
+
+      function causeColor(cause) {
+        const c = String(cause || '');
+        if (c.includes('veto') || c.includes('fail_safe')) return 'var(--red)';
+        if (c === 'classifier') return 'var(--violet)';
+        if (c.includes('size') || c.includes('keyword') || c.includes('code') || c.includes('hard')) return 'var(--green)';
+        return 'var(--muted)';
+      }
+
+      async function selectRoute(routeId) {
+        const result = await request('/routes?id=' + encodeURIComponent(routeId));
+        if (result.error || result.pending) { setMessage(elements.pipelineActionMessage, 'Could not load that route trace.', 'error'); return; }
+        const steps = Array.isArray(result.data && result.data.steps) ? result.data.steps : [];
+        state.replay = { steps, index: 0, routeId };
+        elements.replayScrubber.hidden = steps.length === 0;
+        elements.replayRange.max = String(Math.max(0, steps.length - 1));
+        elements.replayRange.value = '0';
+        renderRoutes();
+        renderReplayStep();
+      }
+
+      // Map a trace step to the graph node id it lights up.
+      function stepNodeId(step) {
+        const stage = step && step.stage;
+        if (stage === 'rules') {
+          const out = step.out || {};
+          if (out.rule_id != null) return `rule:${out.rule_id}`;
+          return 'default';
+        }
+        if (stage === 'veto') return 'blocklist';
+        if (stage === 'cache' || stage === 'session_pin') return stage;
+        return stage || null;
+      }
+
+      function renderReplayStep() {
+        if (!state.replay) return;
+        const { steps, index } = state.replay;
+        const activeId = index < steps.length ? stepNodeId(steps[index]) : null;
+        const traversed = new Set();
+        for (let i = 0; i < index && i < steps.length; i++) { const id = stepNodeId(steps[i]); if (id) traversed.add(id); }
+        elements.pipelineSvg.querySelectorAll('.pnode').forEach((g) => {
+          const id = g.dataset.nodeId;
+          g.classList.toggle('is-active', id === activeId);
+          g.classList.toggle('is-traversed', traversed.has(id) && id !== activeId);
+          g.classList.toggle('is-dim', activeId != null && id !== activeId && !traversed.has(id));
+        });
+        const step = steps[index] || {};
+        elements.replayStepIo.hidden = false;
+        elements.replayStepIo.textContent =
+          `step ${index + 1}/${steps.length}  ·  stage: ${safeString(step.stage)}  ·  cause: ${safeString(step.cause, '—')}\n\n`
+          + `in:  ${pretty(step.in)}\n\nout: ${pretty(step.out)}`;   // textContent — inert
+      }
+
+      function replayScrub(delta) {
+        if (!state.replay) return;
+        const n = state.replay.steps.length;
+        if (!n) return;
+        let idx = state.replay.index;
+        idx = delta === 'range' ? Number(elements.replayRange.value) : Math.max(0, Math.min(n - 1, idx + delta));
+        state.replay.index = idx;
+        elements.replayRange.value = String(idx);
+        renderReplayStep();
+      }
+
+      function renderPipelinePanel() {
+        elements.pipelineMode.textContent = state.mode === 'edit' ? 'edit armed' : 'read-only';
+        elements.pipelineMode.className = `chip${state.mode === 'edit' ? ' is-degraded' : ''}`;
+        renderPipeline();
+        renderRoutes();
+        if (state.replay) renderReplayStep();
+      }
+
       function wireEvents() {
         document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => {
           const name = tab.dataset.tab;
           document.querySelectorAll('.tab').forEach((item) => item.setAttribute('aria-selected', String(item === tab)));
           document.querySelectorAll('.panel').forEach((panel) => panel.classList.toggle('active', panel.id === `panel-${name}`));
         }));
+        $('pipelineValidateButton').addEventListener('click', pipelineValidate);
+        $('pipelineApplyButton').addEventListener('click', () => pipelineApply('apply'));
+        $('pipelineConfirmButton').addEventListener('click', () => pipelineApply('confirm'));
+        $('pipelineRevertButton').addEventListener('click', () => pipelineApply('revert'));
+        elements.replayRange.addEventListener('input', () => replayScrub('range'));
+        $('replayPrev').addEventListener('click', () => replayScrub(-1));
+        $('replayNext').addEventListener('click', () => replayScrub(1));
         $('readModeButton').addEventListener('click', () => setMode('read'));
         $('editModeButton').addEventListener('click', () => setMode('edit'));
         $('refreshButton').addEventListener('click', refresh);

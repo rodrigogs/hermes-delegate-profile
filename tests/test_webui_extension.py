@@ -53,6 +53,46 @@ def test_extension_script_is_safe_accessible_and_syntax_valid():
     assert checked.returncode == 0, checked.stderr
 
 
+def _console_inline_script() -> str:
+    """Return the single inline <script> body of the impeccable console."""
+    import re
+
+    html = (EXTENSION / "console.html").read_text(encoding="utf-8")
+    match = re.search(r"<script>(.*?)</script>", html, re.S)
+    assert match, "console.html must contain exactly one inline <script>"
+    return match.group(1)
+
+
+def test_console_html_is_xss_safe_and_syntax_valid(tmp_path):
+    """The console renders persisted, attacker-influenceable route/task text in
+    replay, so its inline script must never use raw-markup sinks and must render
+    via textContent. This guards the highest-XSS-surface code in the project.
+    """
+    script = _console_inline_script()
+    for forbidden in ("innerHTML", "insertAdjacentHTML", "outerHTML", "eval(", "new Function", "document.write"):
+        assert forbidden not in script, f"console.html inline script must not use {forbidden}"
+    assert "textContent" in script
+    # The Pipeline/replay wiring must be present.
+    for token in ("renderPipeline", "/routes", "svgEl", "createElementNS", "renderReplayStep"):
+        assert token in script, f"console.html must wire {token}"
+    # Syntax must be valid (write the extracted body to a temp file for node --check).
+    script_file = tmp_path / "console_inline.js"
+    script_file.write_text(script, encoding="utf-8")
+    checked = subprocess.run(
+        ["node", "--check", str(script_file)],
+        text=True, capture_output=True, check=False,
+    )
+    assert checked.returncode == 0, checked.stderr
+
+
+def test_console_html_declares_pipeline_tab_and_svg_canvas():
+    html = (EXTENSION / "console.html").read_text(encoding="utf-8")
+    assert 'data-tab="pipeline"' in html
+    assert 'id="panel-pipeline"' in html
+    assert 'id="pipelineSvg"' in html
+    assert 'id="routesTable"' in html
+
+
 def test_extension_css_inherits_host_tokens_and_handles_mobile():
     css = (EXTENSION / "router-nav.css").read_text(encoding="utf-8")
     for token in ("var(--bg)", "var(--surface)", "var(--text)", "var(--muted)", "var(--border)", "var(--accent)"):

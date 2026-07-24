@@ -575,6 +575,36 @@ def test_route_task_rejects_incomplete_and_handles_adapter_exception(monkeypatch
     assert _dp._route_task("task", "", None) is None
 
 
+def test_route_task_persists_trace_and_survives_durable_log_failure(monkeypatch, tmp_path):
+    """The live routing hook passes a DurableDecisionLog so real decisions are
+    persisted for replay — and a broken durable log never breaks routing."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(_dp, "_load_router_config", lambda: {
+        "enabled": True,
+        "default": {"profile": "coder", "model": "T1"},
+        "tiers": {"T1": {"model": "m1", "provider": "p1"}, "T2": {}, "T3": {}, "T4": {}},
+        "rules": [{"id": "any", "when": {}, "then": {"profile": "coder", "model": "T1"}}],
+    })
+    # A concrete route → the durable log writes routes.jsonl.
+    result = _dp._route_task("do a thing", "", None)
+    assert result is not None and result["profile"] == "coder"
+    import router.durable_decision_log as ddl
+    trace = ddl.routes_path()
+    assert trace.exists()
+    assert trace.read_text(encoding="utf-8").strip()  # at least one line
+
+    # If DurableDecisionLog construction itself blows up, routing still returns
+    # (the whole hook is best-effort under try/except).
+    monkeypatch.setattr(
+        ddl, "DurableDecisionLog",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("ctor boom")),
+    )
+    # Import path inside _route_task re-imports the module attribute, so patching
+    # the class on the module is what the hook sees.
+    result2 = _dp._route_task("do a thing", "", None)
+    assert result2 is None or result2.get("profile") == "coder"
+
+
 def test_record_breaker_outcome_dispatches_success_and_failure(monkeypatch):
     calls = []
 

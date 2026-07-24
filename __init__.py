@@ -582,21 +582,30 @@ def _route_task(
         if _LOADED_AS_PACKAGE:
             from .router.adapter import route
             from .router.blocklist import Blocklist
+            from .router.durable_decision_log import DurableDecisionLog
         else:  # direct source loading used by the development test harness
             from router.adapter import route
             from router.blocklist import Blocklist
+            from router.durable_decision_log import DurableDecisionLog
 
         config = _load_router_config()
         if not config.get("enabled", False):
             return None
 
         blocklist = Blocklist(config)
+        # Persist a per-step trace for visual replay. This is the single writer;
+        # the sidecar only reads routes.jsonl back. The durable log never raises
+        # into routing (all IO is guarded), and the whole call already sits in
+        # this best-effort try/except, so trace persistence can never break
+        # routing. cache= and session_pin= stay per-call throwaway on the live
+        # path (out of scope), so those pipeline nodes read as cold in replay.
         result = route(
             task=goal,
             config=config,
             requested_model=requested_model,
             classify_fn=classify_fn,
             blocklist=blocklist,
+            decision_log=DurableDecisionLog(),
         )
 
         # Blocklist veto or pending classify action → no concrete target

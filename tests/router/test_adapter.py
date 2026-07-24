@@ -100,6 +100,33 @@ class TestRouteStage0:
         assert result["profile"] == "coder"
         assert decision_log.tail(1)[0]["cause"] == "hard_rule"
 
+    def test_steps_trace_records_stage_sequence_for_direct_route(self):
+        """The steps[] trace captures each pipeline stage in/out for replay."""
+        decision_log = DecisionLog()
+        route(
+            "Debug a race condition in the user cache", ROUTER_CONFIG,
+            decision_log=decision_log,
+        )
+        steps = decision_log.tail(1)[0]["steps"]
+        stages = [s["stage"] for s in steps]
+        # Direct hard-rule route: blocklist → signals → rules, terminal cause.
+        assert stages[:3] == ["blocklist", "signals", "rules"]
+        assert steps[0]["out"] == {"blocked": False}
+        assert "features" in steps[2]["in"]
+        assert steps[-1]["cause"] == "hard_rule"
+
+    def test_steps_trace_records_veto_branch(self):
+        decision_log = DecisionLog()
+        route(
+            "test", ROUTER_CONFIG,
+            requested_model="gpt-5.6-sol", requested_provider="openai-codex",
+            decision_log=decision_log,
+        )
+        steps = decision_log.tail(1)[0]["steps"]
+        assert steps[0]["stage"] == "blocklist"
+        assert steps[-1]["stage"] == "veto"
+        assert steps[-1]["cause"] == "blocklist_veto"
+
     def test_hard_tier_propagates_cross_rail_fallbacks(self):
         config = copy.deepcopy(ROUTER_CONFIG)
         config["tiers"]["T4"]["fallback"] = [

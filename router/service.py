@@ -21,11 +21,12 @@ from __future__ import annotations
 import copy
 import difflib
 import hashlib
+import json
 import os
 import tempfile
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -456,3 +457,102 @@ class RouterService:
             except OSError:
                 pass
             raise
+
+    # ------------------------------------------------------------------
+    # Route-trace readers (for visual replay). This process is a READER only —
+    # the delegate_profile plugin is the single writer of routes.jsonl. Reads
+    # are fail-safe (missing file -> empty, corrupt line -> skipped), mirroring
+    # Blocklist._load_state, so a bad trace file never breaks the endpoint.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _trace_files() -> List[Path]:
+        """Current routes.jsonl plus its rotated backups, newest content first.
+
+        Back-filling from routes.jsonl.1 keeps the recent-routes list non-empty
+        immediately after a rotation (when the current file is fresh).
+        """
+        from router.durable_decision_log import routes_path, _TRACE_BACKUPS
+
+        base = routes_path()
+        files = [base]
+        for n in range(1, _TRACE_BACKUPS + 1):
+            files.append(base.with_suffix(base.suffix + f".{n}"))
+        return files
+
+    def _read_trace_entries(self) -> List[Dict[str, Any]]:
+        """Return parsed trace entries oldest→newest across rotated files.
+
+        Reads the current file plus its rotated backups (so the list stays
+        non-empty right after a rotation). Each line is parsed defensively; a
+        corrupt line is skipped, never raised. The trace file is size-bounded,
+        so reading it whole keeps the id scheme (ordinal) consistent between
+        :meth:`routes` and :meth:`route`.
+        """
+        collected: List[Dict[str, Any]] = []
+        for path in self._trace_files():
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            file_entries: List[Dict[str, Any]] = []
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(obj, dict):
+                    file_entries.append(obj)
+            # Prepend older files so the combined list stays oldest→newest.
+            collected = file_entries + collected
+        return collected
+
+    def routes(self, limit: int = 50) -> Dict[str, Any]:
+        """Return a compact list of recent routes, most recent first.
+
+        Each item: ``{id, ts, cause, task, model}``. ``id`` is the entry's
+        timestamp-plus-ordinal so a specific trace can be fetched by :meth:`route`.
+        The response also carries the resolved ``trace_path`` and total ``count``
+        so an empty list is diagnosable as 'no traces yet' vs 'wrong path'.
+        """
+        from router.durable_decision_log import routes_path
+
+        try:
+            safe_limit = max(1, min(int(limit), 500))
+        except (TypeError, ValueError):
+            safe_limit = 50
+        entries = self._read_trace_entries()
+        items: List[Dict[str, Any]] = []
+        for ordinal, entry in enumerate(entries):
+            out = entry.get("output", {}) if isinstance(entry.get("output"), dict) else {}
+            items.append({
+                "id": self._trace_id(entry, ordinal),
+                "ts": entry.get("ts"),
+                "cause": entry.get("cause"),
+                "task": entry.get("task", ""),
+                "model": out.get("model", ""),
+            })
+        items.reverse()  # most recent first
+        return {
+            "trace_path": str(routes_path()),
+            "count": len(items),
+            "routes": items[:safe_limit],
+        }
+
+    def route(self, route_id: str) -> Optional[Dict[str, Any]]:
+        """Return the full trace entry (including ``steps``) for ``route_id``."""
+        if not route_id:
+            return None
+        entries = self._read_trace_entries()
+        for ordinal, entry in enumerate(entries):
+            if self._trace_id(entry, ordinal) == route_id:
+                return entry
+        return None
+
+    @staticmethod
+    def _trace_id(entry: Dict[str, Any], ordinal: int) -> str:
+        """Stable id for a trace entry: timestamp + ordinal (unique within a read)."""
+        return f"{entry.get('ts', 0)}-{ordinal}"

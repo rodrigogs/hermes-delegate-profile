@@ -38,18 +38,29 @@ class DecisionLog:
         output: Dict[str, Any],
         matched_rule_id: Optional[str] = None,
         task_preview: str = "",
+        *,
+        steps: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
-        """Record a routing decision."""
+        """Record a routing decision.
+
+        ``steps`` is an optional per-stage in/out trace (``[{stage, in, out,
+        cause}, ...]``) for visual replay. It is purely additive: when omitted
+        the recorded entry keeps its historical shape (no ``steps`` key), so
+        existing consumers and persisted logs are unchanged.
+        """
         if cause not in VALID_CAUSES:
             cause = "fail_safe_strong"
 
-        self._entries.append({
+        entry: Dict[str, Any] = {
             "ts": time.time(),
             "cause": cause,
             "output": dict(output),
             "rule_id": matched_rule_id,
             "task": task_preview[:120],
-        })
+        }
+        if steps is not None:
+            entry["steps"] = steps
+        self._entries.append(entry)
 
     def tail(self, n: int = 20) -> List[Dict[str, Any]]:
         """Return the last N entries."""

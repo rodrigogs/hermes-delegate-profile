@@ -6,7 +6,7 @@ Wires Stage 0 (blocklist + signals + rules) → Stage 1 (classifier)
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .signals import extract
 from .rules import match, explain as rules_explain, lint as rules_lint
@@ -70,18 +70,33 @@ def route(
     pin = session_pin or SessionPin()
     dlog = decision_log or DecisionLog()
 
+    # Per-stage in/out trace for visual replay. Purely observational: it mirrors
+    # the values this function already computes and is passed to record() at the
+    # terminal site. It changes NO routing behavior and adds NO early returns.
+    steps: List[Dict[str, Any]] = []
+
     # --- Stage 0: blocklist pre-filter ---
     blocked = bl.is_blocked(requested_model, requested_provider)
+    steps.append({
+        "stage": "blocklist",
+        "in": {"model": requested_model, "provider": requested_provider},
+        "out": {"blocked": blocked},
+        "cause": None,
+    })
     if blocked:
         fallback_model = bl.fallback_for(requested_model)
         result = {"deny": True}
         if fallback_model:
             result["fallback_model"] = fallback_model
-        dlog.record("blocklist_veto", result, task_preview=task[:120])
+        steps.append({"stage": "veto", "in": {"model": requested_model},
+                      "out": dict(result), "cause": "blocklist_veto"})
+        dlog.record("blocklist_veto", result, task_preview=task[:120], steps=steps)
         return result
 
     # --- Stage 0: signal extraction ---
     features = extract(task)
+    steps.append({"stage": "signals", "in": {"task": task[:120]},
+                  "out": dict(features), "cause": None})
 
     # --- Stage 0: rule matching ---
     rules = config.get("rules", [])
@@ -89,6 +104,9 @@ def route(
     tiers = config.get("tiers", {})
 
     output, rule_id = match(features, blocked, rules, default, tiers)
+    steps.append({"stage": "rules", "in": {"features": dict(features)},
+                  "out": {"output": dict(output), "rule_id": rule_id},
+                  "cause": _cause_from_rule(rule_id, output) if rule_id else "default_fallthrough"})
 
     # If rule matched and gave concrete output → route now
     if rule_id is not None and "action" not in output:
@@ -96,13 +114,15 @@ def route(
         if pin.is_set() and output.get("model"):
             output, pin_applied = _apply_session_floor(output, pin, tiers)
             if pin_applied:
+                steps.append({"stage": "session_pin", "in": {"pin": pin.tier},
+                              "out": dict(output), "cause": "session_pin"})
                 dlog.record("session_pin", output, matched_rule_id=rule_id,
-                           task_preview=task[:120])
+                           task_preview=task[:120], steps=steps)
                 return output
 
         dlog.record(
             _cause_from_rule(rule_id, output), output,
-            matched_rule_id=rule_id, task_preview=task[:120],
+            matched_rule_id=rule_id, task_preview=task[:120], steps=steps,
         )
         return output
 
@@ -115,17 +135,23 @@ def route(
             result, pin_applied = _apply_session_floor(
                 result, pin, tiers, output_tier=cached.get("tier"),
             )
+            steps.append({"stage": "cache", "in": {"task": task[:120]},
+                          "out": dict(result),
+                          "cause": "session_pin" if pin_applied else "classifier"})
             dlog.record(
                 "session_pin" if pin_applied else "classifier",
                 result,
                 task_preview=task[:120],
+                steps=steps,
             )
             return result
 
         if classify_fn is None:
             # No classifier available → fail-safe
             result = _fail_safe_result(config)
-            dlog.record("fail_safe_strong", result, task_preview=task[:120])
+            steps.append({"stage": "fail_safe", "in": {"reason": "no_classifier"},
+                          "out": dict(result), "cause": "fail_safe_strong"})
+            dlog.record("fail_safe_strong", result, task_preview=task[:120], steps=steps)
             return result
 
         # Call the classifier
@@ -157,18 +183,28 @@ def route(
             if "profile" not in result:
                 result["profile"] = "coder"
 
-            dlog.record("classifier", result, task_preview=task[:120])
+            steps.append({
+                "stage": "classifier",
+                "in": {"tier": tier, "confidence": confidence},
+                "out": {"effective_tier": effective_tier, "model": result.get("model")},
+                "cause": "classifier",
+            })
+            dlog.record("classifier", result, task_preview=task[:120], steps=steps)
             return result
 
         except Exception:
             # Classifier failed → fail-safe
             result = _fail_safe_result(config)
-            dlog.record("fail_safe_strong", result, task_preview=task[:120])
+            steps.append({"stage": "fail_safe", "in": {"reason": "classifier_error"},
+                          "out": dict(result), "cause": "fail_safe_strong"})
+            dlog.record("fail_safe_strong", result, task_preview=task[:120], steps=steps)
             return result
 
     # Fail-safe fallback
     result = _fail_safe_result(config)
-    dlog.record("fail_safe_strong", result, task_preview=task[:120])
+    steps.append({"stage": "fail_safe", "in": {"reason": "fallthrough"},
+                  "out": dict(result), "cause": "fail_safe_strong"})
+    dlog.record("fail_safe_strong", result, task_preview=task[:120], steps=steps)
     return result
 
 

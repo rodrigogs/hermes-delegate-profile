@@ -5,6 +5,7 @@ fast no-socket cases: token gate outcomes, route dispatch and token precedence.
 """
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 import yaml
@@ -395,6 +396,43 @@ def test_parse_json_body_edges():
     assert parse_json_body("5", lambda _n: b"") == ({}, True)
     # Malformed JSON -> (None, False).
     assert parse_json_body("9", lambda _n: b"{not json") == (None, False)
+
+
+def test_routes_endpoint_lists_and_fetches_traces(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from router.durable_decision_log import routes_path
+    rp = routes_path()
+    rp.parent.mkdir(parents=True, exist_ok=True)
+    rp.write_text(
+        json.dumps({"ts": 1.0, "cause": "hard_rule", "task": "a", "output": {"model": "m1"},
+                    "steps": [{"stage": "blocklist"}]}) + "\n",
+        encoding="utf-8",
+    )
+    app = _app(tmp_path)
+    # List requires a token.
+    assert app.dispatch("GET", "/routes", {})[0] == 401
+    status, body = app.dispatch("GET", "/routes", _auth())
+    assert status == 200
+    assert body["count"] == 1
+    assert body["trace_path"].endswith("routes.jsonl")
+    rid = body["routes"][0]["id"]
+    # Fetch one full trace by id.
+    status, full = app.dispatch("GET", "/routes", _auth(), {"id": [rid]})
+    assert status == 200
+    assert full["steps"][0]["stage"] == "blocklist"
+    # Unknown id → 404.
+    assert app.dispatch("GET", "/routes", _auth(), {"id": ["nope"]})[0] == 404
+    # POST /routes → 405 (method guard intact for the new route).
+    assert app.dispatch("POST", "/routes", _auth(), body={})[0] == 405
+
+
+def test_routes_endpoint_bad_limit_falls_back(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    app = _app(tmp_path)
+    # Non-numeric limit must not crash; empty state → count 0.
+    status, body = app.dispatch("GET", "/routes", _auth(), {"limit": ["oops"]})
+    assert status == 200
+    assert body["count"] == 0
 
 
 def test_resolve_core_config_path_precedence(monkeypatch, tmp_path):

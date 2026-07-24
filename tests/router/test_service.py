@@ -358,6 +358,116 @@ def test_apply_write_failure_leaves_config_and_backup_consistent(config_path, mo
     assert backup.read_bytes() == original
 
 
+def _seed_traces(tmp_path, monkeypatch, entries, backups=None):
+    """Write route traces to a temp HERMES_HOME state dir; return the base path."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from router.durable_decision_log import routes_path
+    base = routes_path()
+    base.parent.mkdir(parents=True, exist_ok=True)
+    base.write_text("".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8")
+    if backups:
+        for suffix, backup_entries in backups.items():
+            p = base.with_suffix(base.suffix + suffix)
+            p.write_text("".join(json.dumps(e) + "\n" for e in backup_entries), encoding="utf-8")
+    return base
+
+
+def test_routes_lists_recent_first_with_projection(tmp_path, monkeypatch, config_path):
+    _seed_traces(tmp_path, monkeypatch, [
+        {"ts": 1.0, "cause": "hard_rule", "task": "a", "output": {"model": "m1"}},
+        {"ts": 2.0, "cause": "classifier", "task": "b", "output": {"model": "m2"}},
+    ])
+    svc = RouterService(config_path)
+    result = svc.routes()
+    assert result["count"] == 2
+    assert result["trace_path"].endswith("routes.jsonl")
+    # Most recent first.
+    assert result["routes"][0]["cause"] == "classifier"
+    assert result["routes"][0]["model"] == "m2"
+    assert result["routes"][1]["task"] == "a"
+
+
+def test_routes_honors_limit_and_bad_limit_falls_back(tmp_path, monkeypatch, config_path):
+    _seed_traces(tmp_path, monkeypatch, [
+        {"ts": float(i), "cause": "classifier", "task": f"t{i}", "output": {"model": f"m{i}"}}
+        for i in range(5)
+    ])
+    svc = RouterService(config_path)
+    assert len(svc.routes(limit=2)["routes"]) == 2
+    # A non-numeric limit falls back to the default, not a crash.
+    assert svc.routes(limit="oops")["count"] == 5
+
+
+def test_routes_skips_corrupt_lines_and_missing_file(tmp_path, monkeypatch, config_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from router.durable_decision_log import routes_path
+    base = routes_path()
+    base.parent.mkdir(parents=True, exist_ok=True)
+    base.write_text(
+        json.dumps({"ts": 1.0, "cause": "hard_rule", "output": {"model": "ok"}}) + "\n"
+        + "\n"  # blank line — skipped
+        + "   \n"  # whitespace-only — skipped
+        + "{ this is not json\n"
+        + json.dumps("a-string-not-a-dict") + "\n",
+        encoding="utf-8",
+    )
+    svc = RouterService(config_path)
+    assert svc.routes()["count"] == 1  # only the valid dict line
+
+    # Missing file → empty, never raises.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "empty"))
+    assert svc.routes()["count"] == 0
+    assert svc.routes()["routes"] == []
+
+
+def test_route_by_id_returns_full_entry_with_steps(tmp_path, monkeypatch, config_path):
+    _seed_traces(tmp_path, monkeypatch, [
+        {"ts": 7.0, "cause": "classifier", "task": "x", "output": {"model": "m"},
+         "steps": [{"stage": "blocklist"}, {"stage": "classifier"}]},
+    ])
+    svc = RouterService(config_path)
+    listed = svc.routes()["routes"][0]
+    full = svc.route(listed["id"])
+    assert full is not None
+    assert full["steps"][1]["stage"] == "classifier"
+    assert svc.route("nonexistent-id") is None
+    assert svc.route("") is None
+
+
+def test_routes_backfills_from_rotated_backup(tmp_path, monkeypatch, config_path):
+    # Current file has 1, backup .1 has 2 → limit 3 back-fills across rotation.
+    _seed_traces(
+        tmp_path, monkeypatch,
+        [{"ts": 3.0, "cause": "classifier", "task": "new", "output": {}}],
+        backups={".1": [
+            {"ts": 1.0, "cause": "hard_rule", "task": "old1", "output": {}},
+            {"ts": 2.0, "cause": "hard_rule", "task": "old2", "output": {}},
+        ]},
+    )
+    svc = RouterService(config_path)
+    result = svc.routes(limit=3)
+    assert result["count"] == 3
+    assert result["routes"][0]["task"] == "new"  # most recent first
+
+
+def test_routes_skips_absent_backup_in_chain(tmp_path, monkeypatch, config_path):
+    # A gap in the backup chain (.1 absent, .2 present) exercises the
+    # missing-file continue without raising.
+    base = _seed_traces(
+        tmp_path, monkeypatch,
+        [{"ts": float(i), "cause": "classifier", "task": f"c{i}", "output": {}} for i in range(3)],
+        backups={".2": [{"ts": 99.0, "cause": "hard_rule", "task": "deep", "output": {}}]},
+    )
+    assert not base.with_suffix(base.suffix + ".1").exists()  # gap in the chain
+    svc = RouterService(config_path)
+    result = svc.routes(limit=2)
+    assert len(result["routes"]) == 2  # limit caps the projection
+    # The reader walks past the absent .1 (continue) into .2 without raising;
+    # count reflects all readable entries across the chain.
+    assert result["count"] == 4  # 3 current + 1 from .2
+    assert any(r["task"] == "deep" for r in svc.routes(limit=100)["routes"])
+
+
 def test_validate_fail_safe_is_noop_when_absent():
     """No fail_safe key -> nothing to validate."""
     assert RouterService._validate_fail_safe({"default": {}}) == []
