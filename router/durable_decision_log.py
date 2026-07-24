@@ -28,7 +28,6 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .blocklist import _state_dir
 from .decision_log import DecisionLog
 
 logger = logging.getLogger(__name__)
@@ -43,8 +42,29 @@ _WRITE_LOCK = threading.Lock()
 
 
 def routes_path() -> Path:
-    """Absolute path of the durable route-trace log (single source of truth)."""
-    return _state_dir() / "routes.jsonl"
+    """Absolute path of the durable route-trace log — the single source of truth
+    shared by the writer (the delegate_profile plugin, running per-profile) and
+    the reader (the sidecar, running under one fixed profile).
+
+    CRITICAL: this must resolve identically in BOTH processes or replay silently
+    shows nothing. The plugin runs with a PROFILE-SCOPED ``HERMES_HOME``
+    (``~/.hermes/profiles/<profile>``) that varies per delegation, while the
+    sidecar is pinned to one profile — so a profile-scoped path would diverge.
+    We therefore anchor the trace at a PROFILE-INDEPENDENT location:
+      1. ``HERMES_ROUTE_TRACE_FILE`` if set (explicit override for both units);
+      2. else ``<hermes-root>/delegate-profile/state/routes.jsonl`` where
+         hermes-root is HERMES_HOME with any trailing ``profiles/<name>`` peeled
+         off, so every profile and the sidecar converge on one file.
+    """
+    explicit = os.environ.get("HERMES_ROUTE_TRACE_FILE")
+    if explicit:
+        return Path(explicit)
+    home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    # Peel a trailing ``profiles/<name>`` so a profile-scoped HERMES_HOME and the
+    # bare root resolve to the same canonical trace file.
+    if home.parent.name == "profiles":
+        home = home.parent.parent
+    return home / "delegate-profile" / "state" / "routes.jsonl"
 
 
 class DurableDecisionLog(DecisionLog):

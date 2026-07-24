@@ -17,6 +17,30 @@ def state_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+def test_routes_path_is_profile_independent(monkeypatch, tmp_path):
+    """Writer (profile-scoped HERMES_HOME) and reader (another profile) MUST
+    resolve the SAME trace file, else replay silently shows nothing."""
+    root = tmp_path
+    canonical = root / "delegate-profile" / "state" / "routes.jsonl"
+    monkeypatch.delenv("HERMES_ROUTE_TRACE_FILE", raising=False)
+    # Writer runs under profiles/coder ...
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "coder"))
+    assert routes_path() == canonical
+    # ... reader runs under profiles/rodrigo — same canonical file.
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "rodrigo"))
+    assert routes_path() == canonical
+    # Bare root (no profile) also converges.
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    assert routes_path() == canonical
+
+
+def test_routes_path_honors_explicit_override(monkeypatch, tmp_path):
+    override = tmp_path / "custom" / "traces.jsonl"
+    monkeypatch.setenv("HERMES_ROUTE_TRACE_FILE", str(override))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "x"))
+    assert routes_path() == override
+
+
 def test_record_appends_one_parseable_jsonl_line(state_home):
     log = DurableDecisionLog()
     log.record("hard_rule", {"model": "T4"}, task_preview="fix a bug",
