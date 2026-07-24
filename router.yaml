@@ -18,8 +18,8 @@ blocklist:
   manual_ban: []
   fallback_chain:
   - gpt-5.6-terra
-  - glm-5.2
-  - glm-4.5-flash
+  - glm-4.7
+  - deepseek-v4-pro
   auto_breaker:
     enabled: true
     threshold: 5
