@@ -37,6 +37,11 @@ py-modules = []
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
+# Make the repo root importable (router.*, delegate_profile_plugin) without an
+# editable install. CI runs the bare `pytest` console script, which — unlike
+# `python -m pytest` — does not prepend the CWD to sys.path, so without this the
+# whole suite fails to collect with ModuleNotFoundError: No module named 'router'.
+pythonpath = ["."]
 python_files = ["test_*.py"]
 addopts = [
     "-v",

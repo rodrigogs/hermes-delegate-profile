@@ -693,7 +693,8 @@
       async function applyCompaction() {
         if (!canWrite(elements.compactionActionMessage, 'Compaction')) return;
         if (elements.compactionConfirm.value !== 'COMPACT') { setMessage(elements.compactionActionMessage, 'Compaction refused: type COMPACT exactly to arm this action.', 'error'); return; }
-        const result = await request('/apply', { method: 'POST', body: { action: 'compaction', confirm: 'COMPACT' } });
+        const aggressiveness = state.compaction && Number.isFinite(state.compaction.aggressiveness) ? state.compaction.aggressiveness : 50;
+        const result = await request('/apply', { method: 'POST', body: { action: 'compaction', confirm: 'COMPACT', aggressiveness } });
         if (result.pending) { setMessage(elements.compactionActionMessage, 'Compaction unavailable: POST /apply is endpoint pending.', 'error'); return; }
         if (result.error) { setMessage(elements.compactionActionMessage, `Compaction failed: HTTP ${result.status || 'network'} from /apply.`, 'error'); return; }
         elements.compactionConfirm.value = '';

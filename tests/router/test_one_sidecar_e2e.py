@@ -92,6 +92,61 @@ def test_mutating_methods_are_rejected(running_sidecar):
     assert _get(f"{base}/status", token="s3cret-token", method="POST")[0] == 405
 
 
+def _post(url: str, token: str | None, payload: dict):
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    if token is not None:
+        req.add_header(TOKEN_HEADER, token)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8") or "null")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8")
+        return exc.code, (json.loads(body) if body else None)
+
+
+def test_console_served_over_http_tokenless(running_sidecar):
+    base, _token = running_sidecar
+    req = urllib.request.Request(f"{base}/console", method="GET")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        assert resp.headers.get("Content-Type", "").startswith("text/html")
+        assert resp.read(9).lower() == b"<!doctype"
+
+
+def test_plan_route_happy_path_over_http(running_sidecar):
+    base, _token = running_sidecar
+    status, body = _post(
+        f"{base}/plan", "s3cret-token", {"policy": {"default": {"action": "T1"}}}
+    )
+    assert status == 200
+    assert body["base_hash"]
+    # Malformed JSON body is a clean 400, not a 500.
+    req = urllib.request.Request(
+        f"{base}/plan", data=b"{not json", method="POST"
+    )
+    req.add_header(TOKEN_HEADER, "s3cret-token")
+    req.add_header("Content-Type", "application/json")
+    try:
+        urllib.request.urlopen(req, timeout=5)
+        assert False, "expected HTTPError"
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 400
+
+
+def test_apply_revert_with_empty_body_over_http(running_sidecar):
+    """A POST with no body parses to {} and reaches dispatch cleanly (do_POST path)."""
+    base, _token = running_sidecar
+    req = urllib.request.Request(f"{base}/apply/revert", data=b"", method="POST")
+    req.add_header(TOKEN_HEADER, "s3cret-token")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        # No snapshot yet in a fresh sidecar -> ok:false, but a clean 200 body.
+        assert resp.status == 200
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert payload["ok"] is False
+
+
 def test_missing_token_file_fails_closed(tmp_path):
     missing = tmp_path / "absent.token"
     app = SidecarApp(RouterService(ROOT / "router.yaml"), token_path=lambda: missing)

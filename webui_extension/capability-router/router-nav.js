@@ -34,6 +34,37 @@
     return body;
   }
 
+  // Write path — mirrors getJSON but POSTs a JSON body. A non-2xx (including a
+  // 409 optimistic-concurrency conflict) throws with status+body attached so
+  // the caller can surface a precise message.
+  async function postJSON(path, payload) {
+    const response = await fetch(SIDE + path, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status, body });
+    return body;
+  }
+
+  // Edit staging buffer. The panel is read-only until the operator switches to
+  // Edit; `plan` holds the last server-computed plan (its base_hash pins the
+  // on-disk state Apply is allowed to overwrite).
+  const state = { draft: null, plan: null, mode: 'read' };
+
+  // Pure: the human-facing text for a plan result — the server diff when present,
+  // otherwise a formatted preview. Exposed for the test seam.
+  function formatPlanDiff(planResult) {
+    if (!planResult || typeof planResult !== 'object') return '';
+    if (planResult.diff) return String(planResult.diff);
+    if (planResult.preview !== undefined) {
+      try { return JSON.stringify(planResult.preview, null, 2); } catch (_e) { return ''; }
+    }
+    return '';
+  }
+
   function formatCooldowns(cooldowns) {
     if (!Array.isArray(cooldowns) || !cooldowns.length) return 'none';
     return cooldowns.map((entry) => {
@@ -78,6 +109,44 @@
     body.append(row);
   }
 
+  // Editable sibling of kv(): a labelled <input> seeded with `value`. `onInput`
+  // fires with the current string on every keystroke. Returns the input node so
+  // callers can read it back. Exposed for the test seam.
+  function field(body, key, value, onInput) {
+    const row = el('div', 'cr-kv cr-field');
+    const input = el('input', 'cr-field-input');
+    input.type = 'text';
+    input.value = value === undefined || value === null ? '' : String(value);
+    input.setAttribute('aria-label', key);
+    if (typeof onInput === 'function') {
+      input.addEventListener('input', () => onInput(input.value));
+    }
+    row.append(el('span', 'cr-k', key), input);
+    body.append(row);
+    return input;
+  }
+
+  // Toggle the panel between read and edit. Edit reveals the apply bar; read
+  // hides it and discards any un-applied plan so a stale base_hash can't linger.
+  function setMode(panel, mode) {
+    state.mode = mode === 'edit' ? 'edit' : 'read';
+    const label = panel.querySelector('.cr-mode');
+    if (label) {
+      label.textContent = state.mode === 'edit' ? 'Editing' : 'Read / Edit';
+      label.setAttribute('aria-label', state.mode === 'edit'
+        ? 'Edit mode; plan and apply are available'
+        : 'Read-only mode; switch to edit to change policy');
+    }
+    const bar = panel.querySelector('.cr-apply-bar');
+    if (bar) bar.hidden = state.mode !== 'edit';
+    if (state.mode === 'read') { state.draft = null; state.plan = null; }
+  }
+
+  // Write gate: no POST may run unless the operator is explicitly in edit mode.
+  function canWrite() {
+    return state.mode === 'edit';
+  }
+
   function empty(text) {
     return el('div', 'cr-empty', text);
   }
@@ -97,7 +166,7 @@
     container.append(snapshot.shell);
   }
 
-  function renderPolicyTab(container, policy) {
+  function renderPolicyTab(container, policy, panel) {
     container.textContent = '';
     const policyCard = card('Policy / Tiers', 'Read-only policy material returned by the sidecar.');
     const rules = Array.isArray(policy.rules) ? policy.rules : [];
@@ -118,6 +187,92 @@
       `${tier?.model || '—'} (${tier?.provider || '—'})`,
     ));
     container.append(policyCard.shell);
+
+    if (panel && canWrite()) renderPolicyEditor(container, policy, panel);
+  }
+
+  // The edit surface. A single JSON editor seeded with the exact policy shape
+  // the sidecar returns — so bans/fallback are edited where they truly live
+  // (blocklist.manual_ban / blocklist.fallback_chain), never as invented
+  // top-level keys the write allowlist would silently drop. Plan → inspect the
+  // server diff → Apply (hash-checked) → Revert.
+  function renderPolicyEditor(container, policy, panel) {
+    const editCard = card('Edit policy', 'Changes are staged, validated by the sidecar, then applied atomically.');
+    const editable = {
+      enabled: policy.enabled,
+      default: policy.default,
+      classifier: policy.classifier,
+      tiers: policy.tiers,
+      fail_safe: policy.fail_safe,
+      rules: policy.rules,
+      blocklist: policy.blocklist,
+    };
+    const editor = el('textarea', 'cr-editor');
+    editor.value = JSON.stringify(editable, null, 2);
+    editor.setAttribute('aria-label', 'Policy JSON');
+    editor.addEventListener('input', () => { state.draft = editor.value; });
+    state.draft = editor.value;
+    const preview = el('pre', 'cr-plan-preview');
+    const message = el('div', 'cr-plan-msg'); message.setAttribute('role', 'status'); message.setAttribute('aria-live', 'polite');
+    const bar = el('div', 'cr-editor-actions');
+    const planBtn = el('button', 'cr-button', 'Plan'); planBtn.type = 'button';
+    const applyBtn = el('button', 'cr-button cr-button-primary', 'Apply'); applyBtn.type = 'button';
+    const revertBtn = el('button', 'cr-button', 'Revert'); revertBtn.type = 'button';
+    bar.append(planBtn, applyBtn, revertBtn);
+
+    planBtn.addEventListener('click', () => planPolicy(panel, message, preview));
+    applyBtn.addEventListener('click', () => applyPolicy(panel, message));
+    revertBtn.addEventListener('click', () => revertPolicy(panel, message));
+
+    editCard.body.append(editor, bar, message, preview);
+    container.append(editCard.shell);
+  }
+
+  async function planPolicy(panel, message, preview) {
+    if (!canWrite()) { message.textContent = 'Switch to Edit mode first.'; return; }
+    let draft;
+    try { draft = JSON.parse(state.draft); } catch (error) {
+      message.textContent = `Not valid JSON: ${error.message}`; return;
+    }
+    message.textContent = 'Requesting server-side plan…';
+    try {
+      const result = await postJSON('/plan', { policy: draft });
+      state.plan = result;
+      preview.textContent = formatPlanDiff(result);
+      message.textContent = result.valid
+        ? 'Plan is valid. Inspect the diff, then Apply.'
+        : `Plan is INVALID: ${(result.errors || []).join('; ')}`;
+    } catch (error) {
+      message.textContent = `Plan failed (HTTP ${error?.status || '?'}).`;
+    }
+  }
+
+  async function applyPolicy(panel, message) {
+    if (!canWrite()) { message.textContent = 'Switch to Edit mode first.'; return; }
+    if (!state.plan) { message.textContent = 'Plan first, then Apply.'; return; }
+    if (!state.plan.valid) { message.textContent = 'Refusing to apply an invalid plan.'; return; }
+    try {
+      await postJSON('/apply', { plan: state.plan, policy: state.plan.policy });
+      message.textContent = 'Applied. Reloading state…';
+      state.plan = null;
+      await load(panel);
+    } catch (error) {
+      message.textContent = error?.status === 409
+        ? 'Conflict: router.yaml changed since the plan. Re-plan against fresh state.'
+        : `Apply failed (HTTP ${error?.status || '?'}).`;
+    }
+  }
+
+  async function revertPolicy(panel, message) {
+    if (!canWrite()) { message.textContent = 'Switch to Edit mode first.'; return; }
+    try {
+      const result = await postJSON('/apply/revert', {});
+      message.textContent = result.reverted ? 'Reverted to the last snapshot. Reloading…' : 'No snapshot to revert.';
+      state.plan = null;
+      await load(panel);
+    } catch (error) {
+      message.textContent = `Revert failed (HTTP ${error?.status || '?'}).`;
+    }
   }
 
   function renderBlocklistTab(container, blocklist) {
@@ -235,7 +390,13 @@
     const reachability = el('span', 'cr-chip', 'sidecar checking'); reachability.dataset.reachability = 'true';
     const trace = el('button', 'cr-button', 'Trace Route'); trace.type = 'button'; trace.dataset.traceOpen = 'true';
     const refresh = el('button', 'cr-button', 'Refresh'); refresh.type = 'button'; refresh.addEventListener('click', () => load(panel));
-    const mode = el('div', 'cr-mode', 'Read / Edit'); mode.setAttribute('aria-label', 'Read-only mode; edit controls are not implemented');
+    const mode = el('button', 'cr-mode', 'Read / Edit'); mode.type = 'button';
+    mode.setAttribute('aria-label', 'Read-only mode; switch to edit to change policy');
+    mode.addEventListener('click', () => {
+      setMode(panel, state.mode === 'edit' ? 'read' : 'edit');
+      showTab(panel, 'policy');
+      load(panel);
+    });
     controls.append(rollup, reachability, trace, mode, refresh);
     head.append(title, controls);
 
@@ -274,7 +435,18 @@
       ]);
       renderChrome(panel, health, liveness);
       renderStatusTab(panel.querySelector('[data-tab-panel="status"]'), status, policy, lint);
-      renderPolicyTab(panel.querySelector('[data-tab-panel="policy"]'), policy);
+      // Compose the full editable shape: /policy omits enabled/classifier/
+      // blocklist, so graft them from the status + blocklist reads. bans and
+      // fallback stay nested under blocklist — never invented top-level keys.
+      const editablePolicy = Object.assign({}, policy, {
+        enabled: status.enabled,
+        classifier: status.classifier,
+        blocklist: {
+          manual_ban: blocklist.manual_bans || [],
+          fallback_chain: blocklist.fallback_chain || [],
+        },
+      });
+      renderPolicyTab(panel.querySelector('[data-tab-panel="policy"]'), editablePolicy, panel);
       renderBlocklistTab(panel.querySelector('[data-tab-panel="blocklist"]'), blocklist);
       renderLivenessTab(panel.querySelector('[data-tab-panel="status"]'), liveness);
       renderCompactionTab(panel.querySelector('[data-tab-panel="compaction"]'), compaction);

@@ -448,6 +448,34 @@ def test_cross_profile_refuses_when_pool_is_at_capacity(monkeypatch):
     assert pool.released == 0
 
 
+def test_cross_profile_agent_error_on_zero_exit_with_failure_banner(monkeypatch):
+    """A child that exits 0 but printed the CLI's post-retry error banner (and
+    is NOT a quota exhaustion) is surfaced as a retryable agent_error, not a
+    false success."""
+    output = "Working…\nAPI call failed after 3 retries: provider returned garbage\n"
+    handler, pool = _cross_handler(monkeypatch, ("exited", 0, output, ""))
+    result = json.loads(handler({"goal": "task", "profile": "child", "model": "model-x"}))
+    assert result["success"] is False
+    assert result["failure_kind"] == "agent_error"
+    assert result["retryable"] is True
+    assert "exiting with code 0" in result["error"]
+
+
+def test_cross_profile_preserves_existing_hermes_home(monkeypatch):
+    """When HERMES_HOME is already set, the child inherits it unchanged (the
+    resolve-and-inject branch is skipped)."""
+    captured = {}
+    handler, _pool = _cross_handler(monkeypatch, ("exited", 0, "done", ""))
+    monkeypatch.setenv("HERMES_HOME", "/preset/hermes/home")
+    monkeypatch.setattr(
+        _dp, "_spawn",
+        lambda _cmd, env: captured.setdefault("env", env) and FakeProcess() or FakeProcess(),
+    )
+    result = json.loads(handler({"goal": "task", "profile": "child"}))
+    assert result["success"] is True
+    assert captured["env"]["HERMES_HOME"] == "/preset/hermes/home"
+
+
 @pytest.mark.parametrize(
     ("spawn_error", "expected_kind"),
     [(FileNotFoundError(), "binary_not_found"), (RuntimeError("boom"), "spawn_error")],
