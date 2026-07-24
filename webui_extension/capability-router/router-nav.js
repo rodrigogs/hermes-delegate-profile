@@ -2,45 +2,35 @@
   'use strict';
 
   /*
-  THESIS: Make a process-isolation router legible without making it look editable.
-  OWN-WORLD: Inherit Hermes One tokens; compact diagnostic cards, not a dashboard clone.
-  STORY: An operator sees the live policy, traces a Stage-0 decision, then returns to work.
-  FIRST VIEWPORT: Status and a single trace input lead; policy and breaker follow below.
-  FORM: Existing Hermes One rail/sidebar panel extension; no new visual world or route.
-  */
-
-  // Capability Router — Hermes One extension.
-  //
-  // Adds a 'Router' button to the rail + sidebar (same pattern as the
-  // Office 3D launcher) that toggles an extension-owned panel. The panel
-  // is READ-ONLY (V1): it talks only to the consented per-extension sidecar
-  // proxy at /api/extensions/capability-router/sidecar/*, which is guarded
-  // by the WebUI session + CSRF + token-v1. No second policy source, no
-  // fabricated telemetry — every number comes from the same router.yaml and
-  // core modules the CLI and gateway use.
-
+   * THESIS: Make a process-isolation router legible without making it editable.
+   * OWN-WORLD: Inherit Hermes One tokens; compact diagnostic cards, not a dashboard clone.
+   * STORY: An operator sees live policy, traces a Stage-0 decision, then returns to work.
+   * FIRST VIEWPORT: Status and liveness lead; policy and breaker remain one tab away.
+   * FORM: Existing Hermes One rail/sidebar extension, not a new application route.
+   */
+  // Capability Router — Hermes One extension. All data travels through the
+  // consented same-origin sidecar proxy; this panel has no write path.
   const EXT_ID = 'capability-router';
   const SIDE = `/api/extensions/${EXT_ID}/sidecar`;
   const PANEL_ID = 'capability-router-panel';
-
+  const TABS = ['status', 'policy', 'blocklist', 'compaction', 'summarizer'];
   const icon =
     '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="12" r="3"/><path d="M9 6h4a2 2 0 0 1 2 2v1"/><path d="M9 18h4a2 2 0 0 0 2-2v-1"/></svg>';
 
-  // ---- safe DOM helpers (no innerHTML for dynamic data) -------------------
   function el(tag, cls, text) {
-    const n = document.createElement(tag);
-    if (cls) n.className = cls;
-    if (text != null) n.textContent = String(text);
-    return n;
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    return node;
   }
 
   async function getJSON(path) {
-    const r = await fetch(SIDE + path, {
+    const response = await fetch(SIDE + path, {
       credentials: 'same-origin',
-      headers: { 'Accept': 'application/json' },
+      headers: { Accept: 'application/json' },
     });
-    const body = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Object({ status: r.status, body });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status, body });
     return body;
   }
 
@@ -53,10 +43,180 @@
     }).join(', ');
   }
 
-  // ---- panel rendering ----------------------------------------------------
-  function showPanel() {
-    document.querySelectorAll('main > .main-view').forEach((view) => {
-      view.hidden = view.id !== PANEL_ID;
+  function rollupHealth(entries) {
+    const rank = { alive: 0, degraded: 1, quota_exhausted: 2, dead: 3 };
+    return (Array.isArray(entries) ? entries : []).reduce((worst, entry) => {
+      const state = entry && rank[entry.state] !== undefined ? entry.state : 'degraded';
+      return rank[state] > rank[worst] ? state : worst;
+    }, 'alive');
+  }
+
+  function showTab(root, name) {
+    root.querySelectorAll('[data-tab-panel]').forEach((panel) => {
+      panel.hidden = panel.dataset.tabPanel !== name;
+    });
+    root.querySelectorAll('[data-tab]').forEach((tab) => {
+      tab.setAttribute('aria-selected', String(tab.dataset.tab === name));
+    });
+  }
+
+  function card(title, subtitle) {
+    const shell = el('section', 'cr-card');
+    const header = el('div', 'cr-card-head');
+    const titleWrap = el('div');
+    titleWrap.append(el('h3', 'cr-card-title', title));
+    if (subtitle) titleWrap.append(el('p', 'cr-card-subtitle', subtitle));
+    header.append(titleWrap);
+    const body = el('div', 'cr-card-body');
+    shell.append(header, body);
+    return { shell, body };
+  }
+
+  function kv(body, key, value) {
+    const row = el('div', 'cr-kv');
+    row.append(el('span', 'cr-k', key), el('span', 'cr-v', value));
+    body.append(row);
+  }
+
+  function empty(text) {
+    return el('div', 'cr-empty', text);
+  }
+
+  function renderStatusTab(container, status, policy, lint) {
+    container.textContent = '';
+    const snapshot = card('Status', 'Current policy posture from the authenticated sidecar.');
+    const classifier = status.classifier || {};
+    const failSafe = policy.fail_safe || {};
+    const validationErrors = status.validation_errors || lint.errors || [];
+    kv(snapshot.body, 'Enabled', status.enabled ? 'yes' : 'no');
+    kv(snapshot.body, 'Rules', status.rules_count ?? '—');
+    kv(snapshot.body, 'Tiers', Array.isArray(status.tiers) ? status.tiers.join(', ') : '—');
+    kv(snapshot.body, 'Classifier', `${classifier.model || '—'} (${classifier.provider || '—'})`);
+    kv(snapshot.body, 'Fail-safe', `${failSafe.model || '—'} (${failSafe.provider || '—'})`);
+    kv(snapshot.body, 'Config valid', status.valid && lint.valid ? 'yes' : `no (${validationErrors.length} errors)`);
+    container.append(snapshot.shell);
+  }
+
+  function renderPolicyTab(container, policy) {
+    container.textContent = '';
+    const policyCard = card('Policy / Tiers', 'Read-only policy material returned by the sidecar.');
+    const rules = Array.isArray(policy.rules) ? policy.rules : [];
+    if (!rules.length) policyCard.body.append(empty('No policy rules reported.'));
+    rules.forEach((rule) => {
+      const row = el('div', 'cr-rule');
+      const then = rule.then || {};
+      const target = then.deny ? 'deny' : then.action === 'classify'
+        ? `${then.profile || '—'} → classify`
+        : `${then.profile || '—'} · ${then.model || '—'}`;
+      row.append(el('span', 'cr-rule-id', rule.id || '(rule)'), el('span', 'cr-rule-then', target));
+      policyCard.body.append(row);
+    });
+    const tiers = policy.tiers && typeof policy.tiers === 'object' ? policy.tiers : {};
+    Object.entries(tiers).forEach(([name, tier]) => kv(
+      policyCard.body,
+      name,
+      `${tier?.model || '—'} (${tier?.provider || '—'})`,
+    ));
+    container.append(policyCard.shell);
+  }
+
+  function renderBlocklistTab(container, blocklist) {
+    container.textContent = '';
+    const blockCard = card('Blocklist / Breaker', 'Manual bans and persisted breaker cooldowns.');
+    const bans = Array.isArray(blocklist.manual_bans) ? blocklist.manual_bans : [];
+    kv(blockCard.body, 'Manual bans', bans.length ? bans.map((ban) => ban.model || String(ban)).join(', ') : 'none');
+    kv(blockCard.body, 'Fallback chain', (blocklist.fallback_chain || []).join(' → ') || '—');
+    kv(blockCard.body, 'Breaker', blocklist.breaker_enabled ? 'enabled' : 'disabled');
+    kv(blockCard.body, 'Active cooldowns', formatCooldowns(blocklist.breaker_cooldowns));
+    container.append(blockCard.shell);
+  }
+
+  function renderLivenessTab(container, liveness) {
+    const healthCard = card('Liveness', 'Worst-of policy targets; no rate-limit state is inferred.');
+    const models = Array.isArray(liveness.models) ? liveness.models : [];
+    if (!models.length) healthCard.body.append(empty('No liveness targets reported.'));
+    models.forEach((model) => {
+      const row = el('div', 'cr-live-row');
+      const status = el('span', `cr-live-state cr-live-${model.state || 'degraded'}`, model.state || 'degraded');
+      row.append(el('span', 'cr-live-model', model.model_key || '—'), status);
+      healthCard.body.append(row);
+    });
+    container.append(healthCard.shell);
+  }
+
+  function renderCompactionTab(container, compaction) {
+    container.textContent = '';
+    const compactionCard = card('Compaction', 'Read-only calibration from the sidecar.');
+    if (!compaction || !compaction.model_thresholds) {
+      compactionCard.body.append(empty('Compaction telemetry unavailable.'));
+    } else {
+      kv(compactionCard.body, 'Aggressiveness', compaction.aggressiveness);
+      kv(compactionCard.body, 'Summarizer window', compaction.summarizer_window);
+      kv(compactionCard.body, 'Threshold tokens', compaction.threshold_tokens);
+      kv(compactionCard.body, 'Warning', compaction.warning ? 'yes' : 'no');
+      Object.entries(compaction.model_thresholds).forEach(([model, threshold]) => kv(compactionCard.body, model, threshold));
+    }
+    container.append(compactionCard.shell);
+  }
+
+  function renderSummarizerTab(container, compaction) {
+    container.textContent = '';
+    const summaryCard = card('Summarizer', 'The window and source threshold are intentionally shown in tokens.');
+    if (!compaction) summaryCard.body.append(empty('Summarizer telemetry unavailable.'));
+    else {
+      kv(summaryCard.body, 'Window', compaction.summarizer_window);
+      kv(summaryCard.body, 'Source threshold', compaction.threshold_tokens);
+      kv(summaryCard.body, 'Within window', compaction.threshold_tokens <= compaction.summarizer_window ? 'yes' : 'no');
+    }
+    container.append(summaryCard.shell);
+  }
+
+  function renderError(panel, error) {
+    const content = panel.querySelector('.cr-tab-content');
+    content.textContent = '';
+    const message = el('div', 'cr-error');
+    message.setAttribute('role', 'alert');
+    message.setAttribute('aria-live', 'assertive');
+    const code = error?.status || '?';
+    message.textContent = code === 403
+      ? 'Sidecar proxy not consented. Approve it in Settings → Extensions, then refresh.'
+      : code === 503
+        ? 'Sidecar token file missing (503). Start the router-sidecar service, then refresh.'
+        : `Could not reach the router sidecar (HTTP ${code}).`;
+    content.append(message);
+  }
+
+  function renderChrome(panel, health, liveness) {
+    const reachability = panel.querySelector('[data-reachability]');
+    const rollup = panel.querySelector('[data-rollup]');
+    const online = Boolean(health && health.ok);
+    const worst = rollupHealth(liveness?.models);
+    reachability.textContent = online ? 'sidecar reachable' : 'sidecar unreachable';
+    reachability.className = `cr-chip ${online ? 'cr-chip-ok' : 'cr-chip-bad'}`;
+    rollup.textContent = `worst-of-N: ${worst}`;
+    rollup.className = `cr-badge cr-live-${worst}`;
+  }
+
+  function wireTrace(panel) {
+    const drawer = panel.querySelector('.cr-trace-drawer');
+    const output = panel.querySelector('.cr-trace-out');
+    panel.querySelector('[data-trace-open]').addEventListener('click', () => { drawer.hidden = false; });
+    panel.querySelector('[data-trace-close]').addEventListener('click', () => { drawer.hidden = true; });
+    panel.querySelector('[data-trace-run]').addEventListener('click', async () => {
+      const input = panel.querySelector('[data-trace-input]');
+      const task = input.value.trim();
+      output.textContent = '';
+      if (!task) return;
+      try {
+        const result = await getJSON(`/explain?task=${encodeURIComponent(task)}`);
+        const decision = result.decision || {};
+        const route = decision.output || {};
+        kv(output, 'Matched rule', decision.matched_rule_id || '(default)');
+        kv(output, 'Cause', decision.cause || '—');
+        kv(output, 'Decision', result.requires_classifier ? 'classifier needed (Stage 1)' : `${route.model || '—'} (${route.provider || '—'})`);
+      } catch (error) {
+        output.append(el('div', 'cr-error', `Trace failed (HTTP ${error?.status || '?'}).`));
+      }
     });
   }
 
@@ -66,147 +226,67 @@
     panel = el('section', 'main-view capability-router-panel');
     panel.id = PANEL_ID;
     panel.hidden = true;
+
     const head = el('div', 'cr-head');
-    head.appendChild(el('h2', 'cr-title', 'Capability Router'));
-    const refresh = el('button', 'cr-refresh', 'Refresh');
-    refresh.type = 'button';
-    refresh.addEventListener('click', () => load(panel));
-    head.appendChild(refresh);
-    panel.appendChild(head);
-    panel.appendChild(el('div', 'cr-body'));
-    document.querySelector('main')?.appendChild(panel);
+    const title = el('div');
+    title.append(el('p', 'cr-eyebrow', 'Hermes One / observability'), el('h2', 'cr-title', 'Capability Router'));
+    const controls = el('div', 'cr-controls');
+    const rollup = el('span', 'cr-badge', 'worst-of-N: checking'); rollup.dataset.rollup = 'true';
+    const reachability = el('span', 'cr-chip', 'sidecar checking'); reachability.dataset.reachability = 'true';
+    const trace = el('button', 'cr-button', 'Trace Route'); trace.type = 'button'; trace.dataset.traceOpen = 'true';
+    const refresh = el('button', 'cr-button', 'Refresh'); refresh.type = 'button'; refresh.addEventListener('click', () => load(panel));
+    const mode = el('div', 'cr-mode', 'Read / Edit'); mode.setAttribute('aria-label', 'Read-only mode; edit controls are not implemented');
+    controls.append(rollup, reachability, trace, mode, refresh);
+    head.append(title, controls);
+
+    const tabs = el('div', 'cr-tabs'); tabs.setAttribute('role', 'tablist');
+    TABS.forEach((name) => {
+      const tab = el('button', 'cr-tab', name === 'policy' ? 'Policy / Tiers' : name === 'blocklist' ? 'Blocklist / Breaker' : name[0].toUpperCase() + name.slice(1));
+      tab.type = 'button'; tab.dataset.tab = name; tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', String(name === 'status'));
+      tab.addEventListener('click', () => showTab(panel, name));
+      tabs.append(tab);
+    });
+    const body = el('div', 'cr-body');
+    TABS.forEach((name) => {
+      const section = el('section', 'cr-tab-content'); section.dataset.tabPanel = name; section.hidden = name !== 'status'; body.append(section);
+    });
+    const applyBar = el('div', 'cr-apply-bar'); applyBar.hidden = true; applyBar.textContent = 'No write action is available.';
+    const drawer = el('aside', 'cr-trace-drawer'); drawer.hidden = true;
+    drawer.append(el('h3', 'cr-drawer-title', 'Trace route'));
+    const close = el('button', 'cr-button', 'Close'); close.type = 'button'; close.dataset.traceClose = 'true'; drawer.append(close);
+    const input = el('input', 'cr-trace-input'); input.dataset.traceInput = 'true'; input.placeholder = 'Describe a task…'; drawer.append(input);
+    const run = el('button', 'cr-button cr-button-primary', 'Trace'); run.type = 'button'; run.dataset.traceRun = 'true'; drawer.append(run);
+    const output = el('div', 'cr-trace-out'); drawer.append(output);
+    panel.append(head, tabs, body, applyBar, drawer);
+    document.querySelector('main')?.append(panel);
+    wireTrace(panel);
     return panel;
   }
 
-  function card(title) {
-    const c = el('div', 'cr-card');
-    c.appendChild(el('div', 'cr-card-title', title));
-    const b = el('div', 'cr-card-body');
-    c.appendChild(b);
-    return { card: c, body: b };
-  }
-
-  function kv(body, k, v) {
-    const row = el('div', 'cr-kv');
-    row.appendChild(el('span', 'cr-k', k));
-    row.appendChild(el('span', 'cr-v', v));
-    body.appendChild(row);
-  }
-
   async function load(panel) {
-    const body = panel.querySelector('.cr-body');
-    body.textContent = '';
-    body.appendChild(el('div', 'cr-loading', 'Loading router state…'));
-    let status, policy, bl, lint;
+    const content = panel.querySelector('.cr-tab-content');
+    content.textContent = '';
+    content.append(el('div', 'cr-loading', 'Loading router state…'));
     try {
-      [status, policy, bl, lint] = await Promise.all([
-        getJSON('/status'),
-        getJSON('/policy'),
-        getJSON('/blocklist'),
-        getJSON('/lint'),
+      const [health, status, policy, blocklist, lint, liveness, compaction] = await Promise.all([
+        getJSON('/health'), getJSON('/status'), getJSON('/policy'), getJSON('/blocklist'), getJSON('/lint'), getJSON('/liveness'), getJSON('/compaction?aggr=50'),
       ]);
-    } catch (e) {
-      body.textContent = '';
-      const err = el('div', 'cr-error');
-      err.setAttribute('role', 'alert');
-      err.setAttribute('aria-live', 'assertive');
-      const code = e && e.status ? e.status : '?';
-      if (code === 403) {
-        err.textContent =
-          'Sidecar proxy not consented. Approve it in Settings → Extensions, then Refresh.';
-      } else if (code === 503) {
-        err.textContent =
-          'Sidecar token file missing (503). Start the router-sidecar service, then Refresh.';
-      } else {
-        err.textContent = `Could not reach the router sidecar (HTTP ${code}).`;
-      }
-      body.appendChild(err);
-      return;
+      renderChrome(panel, health, liveness);
+      renderStatusTab(panel.querySelector('[data-tab-panel="status"]'), status, policy, lint);
+      renderPolicyTab(panel.querySelector('[data-tab-panel="policy"]'), policy);
+      renderBlocklistTab(panel.querySelector('[data-tab-panel="blocklist"]'), blocklist);
+      renderLivenessTab(panel.querySelector('[data-tab-panel="status"]'), liveness);
+      renderCompactionTab(panel.querySelector('[data-tab-panel="compaction"]'), compaction);
+      renderSummarizerTab(panel.querySelector('[data-tab-panel="summarizer"]'), compaction);
+    } catch (error) {
+      renderChrome(panel, null, { models: [{ state: 'dead' }] });
+      renderError(panel, error);
     }
-    body.textContent = '';
+  }
 
-    // Status
-    const s = card('Status');
-    kv(s.body, 'Enabled', status.enabled ? 'yes' : 'no');
-    kv(s.body, 'Rules', status.rules_count);
-    kv(s.body, 'Tiers', (status.tiers || []).join(', '));
-    const classifier = status.classifier || {};
-    kv(s.body, 'Classifier', `${classifier.model || '—'} (${classifier.provider || '—'})`);
-    kv(s.body, 'Auto-breaker', status.breaker_enabled ? 'on' : 'off');
-    const fs = policy.fail_safe || {};
-    kv(s.body, 'Fail-safe', `${fs.profile || '—'} · ${fs.model || '—'} (${fs.provider || '—'})`);
-    const validationErrors = status.validation_errors || lint.errors || [];
-    kv(s.body, 'Config valid', status.valid && lint.valid ? 'yes' : `no (${validationErrors.length} errors)`);
-    body.appendChild(s.card);
-
-    // Trace Route (deterministic dry-run — no LLM)
-    const t = card('Trace Route (Stage 0 dry-run)');
-    const form = el('div', 'cr-trace-form');
-    const input = el('input', 'cr-trace-input');
-    input.type = 'text';
-    input.placeholder = 'Describe a task…';
-    const run = el('button', 'cr-trace-run', 'Trace');
-    run.type = 'button';
-    const out = el('div', 'cr-trace-out');
-    async function trace() {
-      out.textContent = '';
-      const task = input.value.trim();
-      if (!task) return;
-      try {
-        const r = await getJSON('/explain?task=' + encodeURIComponent(task));
-        const decision = r.decision || {};
-        const o = decision.output || {};
-        kv(out, 'Matched rule', decision.matched_rule_id || '(default)');
-        kv(out, 'Cause', decision.cause || '—');
-        if (r.requires_classifier) {
-          kv(out, 'Decision', 'classifier needed (Stage 1)');
-        } else {
-          kv(out, 'Profile', o.profile || '—');
-          kv(out, 'Model', o.model || '—');
-          kv(out, 'Provider', o.provider || '—');
-        }
-      } catch (e) {
-        const code = e && e.status ? e.status : '?';
-        out.appendChild(el('div', 'cr-error', `Trace failed (HTTP ${code}).`));
-      }
-    }
-    run.addEventListener('click', trace);
-    input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') trace(); });
-    form.appendChild(input);
-    form.appendChild(run);
-    t.body.appendChild(form);
-    t.body.appendChild(out);
-    body.appendChild(t.card);
-
-    // Policy (rules + tiers)
-    const p = card('Policy');
-    (policy.rules || []).forEach((rule) => {
-      const row = el('div', 'cr-rule');
-      row.appendChild(el('span', 'cr-rule-id', rule.id || '(rule)'));
-      const then = rule.then || {};
-      const target = then.deny
-        ? 'deny'
-        : then.action === 'classify'
-          ? `${then.profile || ''} → classify`
-          : `${then.profile || '—'} · ${then.model || '—'}`;
-      row.appendChild(el('span', 'cr-rule-then', target));
-      p.body.appendChild(row);
-    });
-    const tiers = policy.tiers || {};
-    Object.keys(tiers).forEach((name) => {
-      const tc = tiers[name] || {};
-      kv(p.body, name, `${tc.model || '—'} (${tc.provider || '—'})`);
-    });
-    body.appendChild(p.card);
-
-    // Blocklist / breaker (real persisted state)
-    const b = card('Blocklist & Breaker');
-    const bans = bl.manual_bans || [];
-    kv(b.body, 'Manual bans', bans.length ? bans.map((x) => x.model || x).join(', ') : 'none');
-    kv(b.body, 'Fallback chain', (bl.fallback_chain || []).join(' → ') || '—');
-    kv(b.body, 'Breaker', bl.breaker_enabled ? 'enabled' : 'disabled');
-    kv(b.body, 'Active cooldowns', formatCooldowns(bl.breaker_cooldowns));
-    body.appendChild(b.card);
+  function showPanel() {
+    document.querySelectorAll('main > .main-view').forEach((view) => { view.hidden = view.id !== PANEL_ID; });
   }
 
   function onOpen() {
@@ -220,15 +300,11 @@
     if (!rail) return false;
     if (rail.querySelector('[data-capability-router]')) return true;
     const button = el('button', 'rail-btn nav-tab has-tooltip capability-router-nav');
-    button.type = 'button';
-    button.setAttribute('data-capability-router', 'true');
-    button.dataset.tooltip = 'Capability Router';
+    button.type = 'button'; button.dataset.capabilityRouter = 'true'; button.dataset.tooltip = 'Capability Router';
     button.setAttribute('aria-label', 'Capability Router');
-    // Trusted hard-coded SVG, no dynamic data.
-    button.innerHTML = icon;
+    button.innerHTML = icon; // Trusted static icon only.
     button.addEventListener('click', onOpen);
-    const spacer = rail.querySelector('.rail-spacer');
-    rail.insertBefore(button, spacer || null);
+    rail.insertBefore(button, rail.querySelector('.rail-spacer') || null);
     return true;
   }
 
@@ -237,41 +313,21 @@
     if (!nav) return false;
     if (nav.querySelector('[data-capability-router]')) return true;
     const button = el('button', 'nav-tab has-tooltip has-tooltip--bottom capability-router-nav');
-    button.type = 'button';
-    button.setAttribute('data-capability-router', 'true');
-    button.dataset.label = 'Router';
-    button.dataset.tooltip = 'Capability Router';
+    button.type = 'button'; button.dataset.capabilityRouter = 'true'; button.dataset.label = 'Router'; button.dataset.tooltip = 'Capability Router';
     button.setAttribute('aria-label', 'Capability Router');
-    // Trusted hard-coded SVG + literal label; no user/router data enters this
-    // markup. All dynamic router values render via el()/textContent below.
-    button.innerHTML = `${icon}<span class="capability-router-nav-label">Router</span>`;
+    button.innerHTML = `${icon}<span class="capability-router-nav-label">Router</span>`; // Trusted static markup only.
     button.addEventListener('click', onOpen);
     const kanban = nav.querySelector('[data-panel="kanban"]');
-    if (kanban?.nextSibling) nav.insertBefore(button, kanban.nextSibling);
-    else nav.appendChild(button);
+    if (kanban?.nextSibling) nav.insertBefore(button, kanban.nextSibling); else nav.append(button);
     return true;
   }
 
-  function install() {
-    const railReady = installRailButton();
-    const sidebarReady = installSidebarButton();
-    return railReady && sidebarReady;
-  }
-
   function bootstrap() {
-    // The WebUI shell can mount its rail/sidebar after deferred extension scripts
-    // run. Observe only until both targets exist; then disconnect to avoid a
-    // permanent observer on ordinary application updates.
-    if (install()) return;
-    const observer = new MutationObserver(() => {
-      if (install()) observer.disconnect();
-    });
+    if (installRailButton() && installSidebarButton()) return;
+    const observer = new MutationObserver(() => { if (installRailButton() && installSidebarButton()) observer.disconnect(); });
     observer.observe(document.documentElement, { childList: true, subtree: true });
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bootstrap, { once: true });
-  } else {
-    bootstrap();
-  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootstrap, { once: true });
+  else bootstrap();
 })();

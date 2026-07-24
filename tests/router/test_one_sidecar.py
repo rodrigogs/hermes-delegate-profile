@@ -107,6 +107,30 @@ def test_lint_route(tmp_path):
     assert body == {"valid": True, "errors": []}
 
 
+def test_liveness_route_is_authenticated_and_returns_composed_states(tmp_path):
+    app = _app(tmp_path)
+
+    assert app.dispatch("GET", "/liveness", {})[0] == 401
+    status, body = app.dispatch("GET", "/liveness", _auth())
+
+    assert status == 200
+    assert body["worst"] == "alive"
+    assert {entry["state"] for entry in body["models"]} == {"alive"}
+
+
+def test_compaction_route_reports_thresholds_and_summarizer_budget(tmp_path):
+    status, body = _app(tmp_path).dispatch("GET", "/compaction", _auth(), {"aggr": ["50"]})
+
+    assert status == 200
+    assert body["aggressiveness"] == 50
+    assert body["model_thresholds"]
+    assert body["summarizer_window"] > 0
+    assert body["threshold_fraction"] > 0
+    assert body["threshold_tokens"] == int(body["summarizer_window"] * body["threshold_fraction"])
+    assert body["threshold_tokens"] < body["summarizer_window"]
+    assert isinstance(body["warning"], bool)
+
+
 def test_token_resolver_prefers_explicit_env(monkeypatch, tmp_path):
     token = tmp_path / "explicit.token"
     token.write_text("abc", encoding="utf-8")

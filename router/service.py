@@ -90,6 +90,126 @@ class RouterService:
             "breaker_cooldowns": blocklist.breaker_status(),
         }
 
+    def liveness(self) -> Dict[str, Any]:
+        """Compose policy references with manual-ban and breaker health.
+
+        This is deliberately observational: it reloads policy and persisted
+        breaker state but never records, probes, or otherwise mutates either.
+        Every returned target has one of four operator-facing states:
+        ``alive``, ``degraded``, ``quota_exhausted``, or ``dead``.
+        """
+        try:
+            config, errors = self._load()
+            blocklist = Blocklist(config)
+            references = self._policy_references(config, blocklist.fallback_chain())
+            manual_bans = blocklist.manual_bans()
+            breaker_status = {
+                entry.get("model_key"): entry
+                for entry in blocklist.breaker_status()
+                if isinstance(entry, dict) and isinstance(entry.get("model_key"), str)
+            }
+
+            models: List[Dict[str, Any]] = []
+            for model, provider in references:
+                key = f"{model}@{provider}"
+                breaker = breaker_status.get(key, {})
+                if self._is_manually_banned(manual_bans, model, provider):
+                    state = "dead"
+                elif breaker.get("state") == "OPEN" and breaker.get(
+                    "last_failure_kind"
+                ) == "quota_exhausted":
+                    state = "quota_exhausted"
+                elif breaker.get("state") in ("OPEN", "HALF_OPEN"):
+                    state = "degraded"
+                else:
+                    state = "alive"
+                models.append(
+                    {
+                        "model_key": key,
+                        "model": model,
+                        "provider": provider,
+                        "state": state,
+                        "breaker": breaker,
+                    }
+                )
+
+            worst = max((entry["state"] for entry in models), key=self._liveness_rank, default="alive")
+            result: Dict[str, Any] = {"models": models, "worst": worst}
+            if errors:
+                result["validation_errors"] = errors
+            return result
+        except Exception as exc:
+            return {
+                "models": [],
+                "worst": "degraded",
+                "error": f"could not compose liveness: {exc}",
+            }
+
+    @staticmethod
+    def _policy_references(
+        config: Dict[str, Any], fallback_chain: List[str]
+    ) -> List[Tuple[str, str]]:
+        """Return unique ``(model, provider)`` pairs declared by policy."""
+        references: List[Tuple[str, str]] = []
+
+        def add(item: Any) -> None:
+            if not isinstance(item, dict):
+                return
+            model = item.get("model")
+            provider = item.get("provider")
+            if not isinstance(model, str) or not model or not isinstance(provider, str) or not provider:
+                return
+            pair = (model, provider)
+            if pair not in references:
+                references.append(pair)
+
+        add(config.get("classifier", {}))
+        tiers = config.get("tiers", {})
+        if isinstance(tiers, dict):
+            for tier in tiers.values():
+                add(tier)
+                if isinstance(tier, dict):
+                    for fallback in tier.get("fallback", []) or []:
+                        add(fallback)
+        fail_safe = config.get("fail_safe", {})
+        add(fail_safe)
+        if isinstance(fail_safe, dict):
+            for fallback in fail_safe.get("fallback", []) or []:
+                add(fallback)
+
+        # The historical fallback chain stores model names. Map each one to
+        # every provider already declared elsewhere in policy; no provider is
+        # invented for an unknown chain entry.
+        known_models = {model for model, _provider in references}
+        for fallback in fallback_chain:
+            if isinstance(fallback, dict):
+                add(fallback)
+            elif isinstance(fallback, str) and fallback in known_models:
+                continue
+        return sorted(references)
+
+    @staticmethod
+    def _is_manually_banned(
+        bans: List[Dict[str, str]], model: str, provider: str
+    ) -> bool:
+        """Match manual bans with the same model/provider semantics as Blocklist."""
+        for ban in bans:
+            if not isinstance(ban, dict):
+                continue
+            ban_model = str(ban.get("model", ""))
+            ban_provider = str(ban.get("provider", ""))
+            if ban_model and ban_model.lower() != model.lower():
+                continue
+            if not ban_provider or ban_provider.lower() == provider.lower():
+                return True
+        return False
+
+    @staticmethod
+    def _liveness_rank(state: str) -> int:
+        return {"alive": 0, "degraded": 1, "quota_exhausted": 2, "dead": 3}.get(
+            state, 1
+        )
+
     def explain(self, task: str) -> Dict[str, Any]:
         """Run a deterministic Stage-0 dry-run without invoking a classifier."""
         task = task.strip()

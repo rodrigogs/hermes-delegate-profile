@@ -129,3 +129,61 @@ def test_scalar_and_invalid_policy_cannot_be_explained(tmp_path):
     invalid.write_text("enabled: true", encoding="utf-8")
     with pytest.raises(ValueError, match="policy is invalid"):
         RouterService(invalid).explain("Describe a task")
+
+
+def test_liveness_composes_states(config_path, monkeypatch):
+    """Policy references are composed with breaker and manual-ban state."""
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["tiers"] = {
+        "T1": {"model": "alive", "provider": "cheap"},
+        "T2": {"model": "probing", "provider": "cheap"},
+        "T3": {
+            "model": "quota", "provider": "primary",
+            "fallback": [{"model": "backup", "provider": "backup-rail"}],
+        },
+        "T4": {"model": "manual", "provider": "blocked-rail"},
+    }
+    config["classifier"] = {"model": "judge", "provider": "judge-rail"}
+    config["fail_safe"] = {
+        "model": "safe", "provider": "safe-rail",
+        "fallback": [{"model": "backup", "provider": "backup-rail"}],
+    }
+    config["blocklist"] = {
+        "manual_ban": [{"model": "manual", "provider": "blocked-rail"}],
+        "fallback_chain": ["quota", "backup"],
+        "auto_breaker": {"enabled": True},
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    monkeypatch.setattr(
+        "router.service.Blocklist.breaker_status",
+        lambda _self: [
+            {
+                "model_key": "quota@primary",
+                "state": "OPEN",
+                "cooldown_remaining_s": 42.0,
+                "last_failure_kind": "quota_exhausted",
+            },
+            {
+                "model_key": "probing@cheap",
+                "state": "HALF_OPEN",
+                "cooldown_remaining_s": 0.0,
+                "last_failure_kind": "hard_timeout",
+            },
+        ],
+    )
+
+    liveness = RouterService(config_path).liveness()
+
+    states = {entry["model_key"]: entry["state"] for entry in liveness["models"]}
+    assert states == {
+        "alive@cheap": "alive",
+        "backup@backup-rail": "alive",
+        "judge@judge-rail": "alive",
+        "manual@blocked-rail": "dead",
+        "probing@cheap": "degraded",
+        "quota@primary": "quota_exhausted",
+        "safe@safe-rail": "alive",
+    }
+    assert liveness["worst"] == "dead"
+    assert "429" not in repr(liveness)

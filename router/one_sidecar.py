@@ -20,11 +20,22 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit
 
 from router.service import RouterService
+from router.threshold import compute_model_thresholds, p_eff
 
 EXTENSION_ID = "capability-router"
 TOKEN_HEADER = "X-Hermes-Sidecar-Token"
 _VERSION = 1
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "[::1]", "localhost"}
+
+# Context windows used by the existing dynamic-threshold policy. The sidecar
+# only reports the derived values; it does not write these into Hermes config.
+MODEL_WINDOWS = {
+    "glm-4.5-flash": 272_000,
+    "glm-4.7": 200_000,
+    "gpt-5.6-terra": 1_000_000,
+    "deepseek-v4-pro": 128_000,
+}
+SUMMARIZER_WINDOW = 272_000
 
 
 @dataclass(frozen=True)
@@ -115,6 +126,27 @@ class SidecarApp:
             return 200, self._service.policy()
         if path == "/blocklist":
             return 200, self._service.blocklist()
+        if path == "/liveness":
+            return 200, self._service.liveness()
+        if path == "/compaction":
+            try:
+                aggressiveness = int((query.get("aggr") or ["50"])[0])
+            except (TypeError, ValueError):
+                return _error(400, "aggr must be an integer between 0 and 100")
+            if not 0 <= aggressiveness <= 100:
+                return _error(400, "aggr must be an integer between 0 and 100")
+            threshold_fraction = p_eff(SUMMARIZER_WINDOW, aggressiveness)
+            threshold_tokens = int(SUMMARIZER_WINDOW * threshold_fraction)
+            return 200, {
+                "aggressiveness": aggressiveness,
+                "model_thresholds": compute_model_thresholds(
+                    MODEL_WINDOWS.items(), aggressiveness
+                ),
+                "summarizer_window": SUMMARIZER_WINDOW,
+                "threshold_fraction": threshold_fraction,
+                "threshold_tokens": threshold_tokens,
+                "warning": threshold_tokens >= SUMMARIZER_WINDOW,
+            }
         if path == "/lint":
             return 200, self._service.lint()
         if path == "/explain":
