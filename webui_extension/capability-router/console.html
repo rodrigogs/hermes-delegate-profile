@@ -241,6 +241,9 @@
     .prop-field label { color: var(--muted); font: 600 10px var(--mono); text-transform: uppercase; letter-spacing: .04em; }
     .prop-field input, .prop-field select { border: 1px solid var(--line-strong); border-radius: 7px; padding: 7px 9px; color: var(--text); background: #090c12; font: 12px var(--mono); }
     .cause-chip { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font: 700 10px var(--mono); border: 1px solid var(--line-strong); }
+    .pipeline-advanced > summary { cursor: pointer; color: var(--muted); font: 600 12px var(--mono); padding: 8px 0; user-select: none; }
+    .pipeline-advanced > summary:hover { color: var(--text); }
+    .pipeline-advanced[open] > summary { color: var(--text); margin-bottom: 4px; }
     .route-row { cursor: pointer; }
     .route-row:hover { background: var(--surface-hover); }
     .route-row.is-selected { background: var(--surface-hover); box-shadow: inset 2px 0 0 var(--accent-strong); }
@@ -274,11 +277,11 @@
 
     <nav class="tabbar" role="tablist" aria-label="Capability Router console sections">
       <button class="tab" id="tab-status" role="tab" aria-selected="true" aria-controls="panel-status" data-tab="status" type="button">Status</button>
-      <button class="tab" id="tab-policy" role="tab" aria-selected="false" aria-controls="panel-policy" data-tab="policy" type="button">Policy / Tiers</button>
+      <button class="tab" id="tab-pipeline" role="tab" aria-selected="false" aria-controls="panel-pipeline" data-tab="pipeline" type="button">Pipeline</button>
+      <button class="tab" id="tab-replay" role="tab" aria-selected="false" aria-controls="panel-replay" data-tab="replay" type="button">Replay</button>
       <button class="tab" id="tab-blocklist" role="tab" aria-selected="false" aria-controls="panel-blocklist" data-tab="blocklist" type="button">Blocklist / Breaker</button>
       <button class="tab" id="tab-compaction" role="tab" aria-selected="false" aria-controls="panel-compaction" data-tab="compaction" type="button">Compaction</button>
       <button class="tab" id="tab-summarizer" role="tab" aria-selected="false" aria-controls="panel-summarizer" data-tab="summarizer" type="button">Summarizer</button>
-      <button class="tab" id="tab-pipeline" role="tab" aria-selected="false" aria-controls="panel-pipeline" data-tab="pipeline" type="button">Pipeline</button>
     </nav>
 
     <section id="panel-status" class="panel active" role="tabpanel" aria-labelledby="tab-status">
@@ -306,35 +309,6 @@
           <div class="card-body"><div id="endpointLedger" class="endpoint-list"></div></div>
         </article>
       </div>
-    </section>
-
-    <section id="panel-policy" class="panel" role="tabpanel" aria-labelledby="tab-policy">
-      <div class="grid wide-narrow">
-        <article class="card">
-          <div class="card-header"><div><h2 class="card-title">Policy document</h2><p class="card-subtitle">Edit mode follows validate → preview → apply. Read mode cannot mutate.</p></div><span id="policyMode" class="chip">read-only</span></div>
-          <div class="card-body">
-            <textarea id="policyEditor" class="editor" spellcheck="false" readonly aria-label="Policy document"></textarea>
-            <div class="toolbar">
-              <div class="toolbar-group">
-                <button id="validatePolicyButton" class="button" type="button">Validate &amp; preview</button>
-                <button id="applyPolicyButton" class="button primary" type="button">Apply plan</button>
-                <button id="confirmPolicyButton" class="button" type="button">Confirm apply</button>
-                <button id="revertPolicyButton" class="button danger" type="button">Revert</button>
-              </div>
-              <span class="hint">Apply always explains why it cannot proceed.</span>
-            </div>
-            <p id="policyActionMessage" class="action-message" aria-live="polite"></p>
-          </div>
-        </article>
-        <article class="card">
-          <div class="card-header"><div><h2 class="card-title">Plan preview</h2><p class="card-subtitle">Server-provided diff from POST /plan.</p></div></div>
-          <div class="card-body"><pre id="planPreview" class="diff">No validation plan yet.</pre></div>
-        </article>
-      </div>
-      <article class="card" style="margin-top:14px">
-        <div class="card-header"><div><h2 class="card-title">Policy / tiers</h2><p class="card-subtitle">Resolved sidecar policy data.</p></div></div>
-        <div class="card-body"><div id="policyTable" class="data-table-wrap"></div></div>
-      </article>
     </section>
 
     <section id="panel-blocklist" class="panel" role="tabpanel" aria-labelledby="tab-blocklist">
@@ -383,11 +357,13 @@
       </div>
     </section>
 
+    <!-- Pipeline = the ONE place to EDIT the router. Visual-first (click a node),
+         JSON textarea as the advanced escape hatch. Both feed one guarded plan. -->
     <section id="panel-pipeline" class="panel" role="tabpanel" aria-labelledby="tab-pipeline">
       <div class="pipeline-layout">
         <article class="card">
           <div class="card-header">
-            <div><h2 class="card-title">Pipeline graph</h2><p class="card-subtitle">The router.yaml routing pipeline. In Edit mode, click a node to change its policy fragment; then Validate &amp; apply via the guarded write-path.</p></div>
+            <div><h2 class="card-title">Routing pipeline</h2><p class="card-subtitle">How router.yaml routes a task, left to right. Switch to Edit, then click a node to change it.</p></div>
             <div class="card-actions"><span id="pipelineMode" class="chip">read-only</span></div>
           </div>
           <div class="card-body">
@@ -397,8 +373,8 @@
         </article>
         <div class="pipeline-side">
           <article class="card">
-            <div class="card-header"><div><h2 class="card-title">Inspector</h2><p class="card-subtitle">Selected node / replay step.</p></div></div>
-            <div class="card-body"><div id="pipelineInspector" class="kv-list"><div class="empty">Select a node, or pick a route below to replay.</div></div>
+            <div class="card-header"><div><h2 class="card-title">Node editor</h2><p class="card-subtitle">The selected node's policy fragment.</p></div></div>
+            <div class="card-body"><div id="pipelineInspector" class="kv-list"><div class="empty">Select a node to inspect. In Edit mode, its fields become editable.</div></div>
               <div id="pipelineEditActions" class="card-actions" style="margin-top:10px" hidden>
                 <button id="pipelineValidateButton" class="button" type="button">Validate &amp; preview</button>
                 <button id="pipelineApplyButton" class="button primary" type="button">Apply</button>
@@ -408,17 +384,61 @@
               <pre id="pipelinePlanPreview" class="replay-step-io" style="margin-top:10px" hidden></pre>
             </div>
           </article>
+        </div>
+      </div>
+      <details class="pipeline-advanced" style="margin-top:14px">
+        <summary>Advanced: edit the full policy as JSON</summary>
+        <div class="grid wide-narrow" style="margin-top:12px">
           <article class="card">
-            <div class="card-header"><div><h2 class="card-title">Recent routes</h2><p class="card-subtitle">Real production decisions. Pick one to replay its steps.</p></div></div>
+            <div class="card-header"><div><h2 class="card-title">Policy document</h2><p class="card-subtitle">Escape hatch for edits the node editor doesn't cover (bans, new rules). Same guarded validate → apply.</p></div><span id="policyMode" class="chip">read-only</span></div>
             <div class="card-body">
-              <div id="routesTable" class="table-wrap"><div class="empty">No routes recorded yet.</div></div>
-              <div class="replay-scrubber" hidden id="replayScrubber">
-                <button id="replayPrev" class="button quiet" type="button" aria-label="Previous step">◀</button>
-                <input id="replayRange" type="range" min="0" max="0" value="0" aria-label="Replay step">
-                <button id="replayNext" class="button quiet" type="button" aria-label="Next step">▶</button>
+              <textarea id="policyEditor" class="editor" spellcheck="false" readonly aria-label="Policy document"></textarea>
+              <div class="toolbar">
+                <div class="toolbar-group">
+                  <button id="validatePolicyButton" class="button" type="button">Validate &amp; preview</button>
+                  <button id="applyPolicyButton" class="button primary" type="button">Apply plan</button>
+                  <button id="confirmPolicyButton" class="button" type="button">Confirm apply</button>
+                  <button id="revertPolicyButton" class="button danger" type="button">Revert</button>
+                </div>
+                <span class="hint">Apply always explains why it cannot proceed.</span>
               </div>
-              <div id="replayStepIo" class="replay-step-io" hidden></div>
+              <p id="policyActionMessage" class="action-message" aria-live="polite"></p>
             </div>
+          </article>
+          <article class="card">
+            <div class="card-header"><div><h2 class="card-title">Plan preview</h2><p class="card-subtitle">Server-provided diff from POST /plan.</p></div></div>
+            <div class="card-body"><pre id="planPreview" class="diff">No validation plan yet.</pre></div>
+          </article>
+        </div>
+        <article class="card" style="margin-top:12px">
+          <div class="card-header"><div><h2 class="card-title">Policy / tiers</h2><p class="card-subtitle">Resolved sidecar policy data (reference).</p></div></div>
+          <div class="card-body"><div id="policyTable" class="data-table-wrap"></div></div>
+        </article>
+      </details>
+    </section>
+
+    <!-- Replay = the OTHER activity: OBSERVE what the router decided. Read-only. -->
+    <section id="panel-replay" class="panel" role="tabpanel" aria-labelledby="tab-replay">
+      <div class="pipeline-layout">
+        <article class="card">
+          <div class="card-header">
+            <div><h2 class="card-title">Decision replay</h2><p class="card-subtitle">Pick a recent route, then step through the exact path it took. Read-only.</p></div>
+            <span id="replayRouteChip" class="chip">no route selected</span>
+          </div>
+          <div class="card-body">
+            <div class="pipeline-canvas-wrap"><svg id="replaySvg" class="pipeline-svg" role="img" aria-label="Replayed routing path"></svg></div>
+            <div class="replay-scrubber" hidden id="replayScrubber">
+              <button id="replayPrev" class="button quiet" type="button" aria-label="Previous step">◀</button>
+              <input id="replayRange" type="range" min="0" max="0" value="0" aria-label="Replay step">
+              <button id="replayNext" class="button quiet" type="button" aria-label="Next step">▶</button>
+            </div>
+            <div id="replayStepIo" class="replay-step-io" hidden></div>
+          </div>
+        </article>
+        <div class="pipeline-side">
+          <article class="card">
+            <div class="card-header"><div><h2 class="card-title">Recent routes</h2><p class="card-subtitle">Real production decisions, most recent first.</p></div></div>
+            <div class="card-body"><div id="routesTable" class="table-wrap"><div class="empty">No routes recorded yet.</div></div></div>
           </article>
         </div>
       </div>
@@ -480,6 +500,7 @@
         pipelineSvg: $('pipelineSvg'), pipelineMode: $('pipelineMode'), pipelineInspector: $('pipelineInspector'),
         pipelineEditActions: $('pipelineEditActions'), pipelinePlanPreview: $('pipelinePlanPreview'),
         pipelineActionMessage: $('pipelineActionMessage'), routesTable: $('routesTable'),
+        replaySvg: $('replaySvg'), replayRouteChip: $('replayRouteChip'),
         replayScrubber: $('replayScrubber'), replayRange: $('replayRange'), replayStepIo: $('replayStepIo')
       };
 
@@ -872,8 +893,11 @@
         return edges;
       }
 
-      function renderPipeline() {
-        const svg = elements.pipelineSvg;
+      // Draw the shared node graph into a target <svg>. The Pipeline tab passes
+      // its editor svg with interactive:true (clicking a node edits it); the
+      // Replay tab passes its own svg with interactive:false (read-only path).
+      function renderPipeline(svg, opts) {
+        const interactive = !opts || opts.interactive !== false;
         clear(svg);
         if (!state.policy) {
           const t = svgEl('text', { x: PAD, y: 40, class: 'pnode-sub' });
@@ -904,7 +928,7 @@
           if (n.runtime) classes.push('is-runtime');
           if (n.tier) classes.push('is-tier');
           if (n.terminal) classes.push('is-terminal');
-          if (state.selectedNode === n.id) classes.push('is-selected');
+          if (interactive && state.selectedNode === n.id) classes.push('is-selected');
           g.setAttribute('class', classes.join(' '));
           g.appendChild(svgEl('rect', { class: 'pnode-box', width: NODE_W, height: NODE_H, rx: 9 }));
           const label = svgEl('text', { class: 'pnode-label', x: 12, y: n.sub ? 20 : 28 });
@@ -918,7 +942,7 @@
             const sub = svgEl('text', { class: 'pnode-sub', x: 12, y: 38 });
             sub.textContent = 'runtime'; g.appendChild(sub);
           }
-          g.addEventListener('click', () => onPipelineNodeClick(n));
+          if (interactive) g.addEventListener('click', () => onPipelineNodeClick(n));
           nodeLayer.appendChild(g);
         });
       }
@@ -929,9 +953,9 @@
       const INLINE_EDITABLE_BINDS = new Set(['tier', 'rule', 'classifier', 'fail_safe', 'default']);
 
       function onPipelineNodeClick(node) {
-        // Replay is read-only selection; edit mode opens the property panel.
+        // Editor-only: select the node and open its inspector/editor.
         state.selectedNode = node.id;
-        renderPipeline();
+        renderPipeline(elements.pipelineSvg, { interactive: true });
         if (state.mode === 'edit' && node.bind && !node.runtime && INLINE_EDITABLE_BINDS.has(node.bind)) {
           renderNodeEditor(node);
         } else {
@@ -1084,9 +1108,18 @@
 
       async function selectRoute(routeId) {
         const result = await request('/routes?id=' + encodeURIComponent(routeId));
-        if (result.error || result.pending) { setMessage(elements.pipelineActionMessage, 'Could not load that route trace.', 'error'); return; }
+        if (result.error || result.pending) {
+          if (elements.replayRouteChip) { elements.replayRouteChip.textContent = 'trace unavailable'; }
+          return;
+        }
         const steps = Array.isArray(result.data && result.data.steps) ? result.data.steps : [];
         state.replay = { steps, index: 0, routeId };
+        if (elements.replayRouteChip) {
+          const row = (state.routes || []).find((r) => r.id === routeId) || {};
+          elements.replayRouteChip.textContent = `${safeString(row.cause, 'route')} · ${steps.length} steps`;
+        }
+        // Redraw the replay canvas fresh, then light up the first step.
+        renderPipeline(elements.replaySvg, { interactive: false });
         elements.replayScrubber.hidden = steps.length === 0;
         elements.replayRange.max = String(Math.max(0, steps.length - 1));
         elements.replayRange.value = '0';
@@ -1113,7 +1146,7 @@
         const activeId = index < steps.length ? stepNodeId(steps[index]) : null;
         const traversed = new Set();
         for (let i = 0; i < index && i < steps.length; i++) { const id = stepNodeId(steps[i]); if (id) traversed.add(id); }
-        elements.pipelineSvg.querySelectorAll('.pnode').forEach((g) => {
+        elements.replaySvg.querySelectorAll('.pnode').forEach((g) => {
           const id = g.dataset.nodeId;
           g.classList.toggle('is-active', id === activeId);
           g.classList.toggle('is-traversed', traversed.has(id) && id !== activeId);
@@ -1140,7 +1173,10 @@
       function renderPipelinePanel() {
         elements.pipelineMode.textContent = state.mode === 'edit' ? 'edit armed' : 'read-only';
         elements.pipelineMode.className = `chip${state.mode === 'edit' ? ' is-degraded' : ''}`;
-        renderPipeline();
+        // Pipeline tab = interactive editor canvas.
+        renderPipeline(elements.pipelineSvg, { interactive: true });
+        // Replay tab = its own read-only canvas + the recent-routes list.
+        renderPipeline(elements.replaySvg, { interactive: false });
         renderRoutes();
         if (state.replay) renderReplayStep();
       }
