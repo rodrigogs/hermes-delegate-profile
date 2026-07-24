@@ -1,37 +1,25 @@
-# router.yaml — the sole policy source, beside delegate_profile.
-# 2026-07-24: repointed to LIVE providers (deepseek quota-out until 07-27, zai-premium/bedrock down). Revert tiers to cost-optimal roster when refunded.
-# v2 — cost×benefit tiers from the 176-model enriched+benchmarked roster (2026-07-22).
-# Scoring: overall = 0.45*coding + 0.35*planning + 0.20*reasoning.
-# Every tier picks the CHEAPEST model that clears the tier's capability bar, and
-# every tier crosses rails so no single provider outage strands it.
-# Rails: openai-codex / deepseek / zai / xiaomi (own paid creds) · bedrock = Claude
-# Code via the Mac gate (paid, reliable, BUT can be off-LAN → never the sole option).
-
 enabled: true
-
 classifier:
-  # cheap, fast, verified+measured judge on a distinct rail from the flagships
   model: glm-4.5-flash
   provider: zai
   temperature: 0
   max_tokens: 128
   timeout_seconds: 8
-
 fail_safe:
-  # strong, always-on last resort. Claude Code (Bedrock) is the strong anchor,
-  # but it can be off-LAN — the adapter must fall back to deepseek-v4-pro (other rail).
   profile: coder
   model: gpt-5.6-terra
   provider: openai-codex
   fallback:
-    - { model: glm-4.5-flash, provider: zai }   # non-Mac strong-value coder
-
+  - model: glm-4.5-flash
+    provider: zai
+  - model: deepseek-v4-pro
+    provider: deepseek
 blocklist:
-  # No permanent model ban. gpt-5.6-sol stalls only intermittently under load;
-  # the auto-breaker cools it dynamically instead of a static deny that would
-  # forfeit the top coder entirely.
   manual_ban: []
-  fallback_chain: [gpt-5.6-terra, gpt-5.6-luna, glm-4.5-flash]
+  fallback_chain:
+  - gpt-5.6-terra
+  - glm-5.2
+  - glm-4.5-flash
   auto_breaker:
     enabled: true
     threshold: 5
@@ -39,33 +27,57 @@ blocklist:
     base_cooldown_seconds: 60
     max_cooldown_seconds: 900
     backoff_multiplier: 2.0
-
 rules:
-  - id: trivial-mechanical-edit
-    status: stable
-    when: { verb_class: { eq: trivial }, has_code: { eq: true }, size_lines: { lte: 40 } }
-    then: { profile: coder, model: T1 }        # cheapest tier, no classifier
-
-  - id: hard-verbs
-    status: stable
-    when: { verb_class: { eq: hard } }
-    then: { profile: coder, model: T4 }        # fail toward capability
-
-  - id: review-request
-    status: stable
-    when: { keywords: { contains: review } }
-    then: { profile: reviewer, action: classify }
-
-default: { action: classify }                  # hybrid switch
-
-# tiers — cheapest model clearing the bar; T4 crosses to a Bedrock fallback.
-# All primaries are verified+measured except where noted.
+- id: trivial-mechanical-edit
+  status: stable
+  when:
+    verb_class:
+      eq: trivial
+    has_code:
+      eq: true
+    size_lines:
+      lte: 40
+  then:
+    profile: coder
+    model: T1
+- id: hard-verbs
+  status: stable
+  when:
+    verb_class:
+      eq: hard
+  then:
+    profile: coder
+    model: T4
+- id: review-request
+  status: stable
+  when:
+    keywords:
+      contains: review
+  then:
+    profile: reviewer
+    action: classify
+default:
+  action: classify
 tiers:
-  T1: { model: glm-4.5-flash, provider: zai }            # live provider (repointed 07-24)
-  T2: { model: gpt-5.6-luna, provider: openai-codex }     # live provider (repointed 07-24)
-  T3: { model: gpt-5.6-terra, provider: openai-codex }    # live provider (repointed 07-24)
-  T4:
-    model: gpt-5.6-terra                                # 94/94, $2.50/$15 — top value at the ceiling
+  T1:
+    model: glm-4.5-flash
+    provider: zai
+  T2:
+    model: glm-4.7
+    provider: zai
+  T3:
+    model: gpt-5.6-terra
     provider: openai-codex
     fallback:
-      - { model: glm-4.5-flash, provider: zai }  # strong, other rail (Claude Code)
+    - model: glm-4.5-flash
+      provider: zai
+    - model: deepseek-v4-pro
+      provider: deepseek
+  T4:
+    model: gpt-5.6-terra
+    provider: openai-codex
+    fallback:
+    - model: glm-4.5-flash
+      provider: zai
+    - model: deepseek-v4-pro
+      provider: deepseek
