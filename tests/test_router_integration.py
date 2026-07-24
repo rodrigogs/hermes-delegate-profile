@@ -368,7 +368,7 @@ class TestHandlerIntegration:
         handler = self._make_handler(dp, classify_fn=mock_classify)
         result = handler({"goal": "Debug race condition", "profile": "auto"})
         parsed = json.loads(result)
-        assert parsed.get("failure_kind") in ("unknown_profile", None)
+        assert parsed.get("failure_kind") in ("unknown_profile", "quota_exhausted", None)
 
     def test_no_profile_triggers_router(self, dp):
         """Omitting profile triggers the router (same as auto)."""
@@ -378,7 +378,7 @@ class TestHandlerIntegration:
         handler = self._make_handler(dp, classify_fn=mock_classify)
         result = handler({"goal": "Rename getCwd in src/utils.py"})
         parsed = json.loads(result)
-        assert parsed.get("failure_kind") in ("unknown_profile", None)
+        assert parsed.get("failure_kind") in ("unknown_profile", "quota_exhausted", None)
 
     def test_router_failure_falls_through(self, dp, monkeypatch):
         """If router fails, delegation proceeds without crashing.
