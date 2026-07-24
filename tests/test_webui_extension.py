@@ -42,6 +42,8 @@ def test_extension_script_is_safe_accessible_and_syntax_valid():
     ):
         assert destructive_pattern not in script
     assert "textContent" in script
+    assert "MutationObserver" in script
+    assert "observer.disconnect" in script
     checked = subprocess.run(
         ["node", "--check", str(script_path)],
         text=True,

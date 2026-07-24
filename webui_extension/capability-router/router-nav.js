@@ -210,21 +210,25 @@
 
   function installRailButton() {
     const rail = document.querySelector('.rail');
-    if (!rail || rail.querySelector('[data-capability-router]')) return;
+    if (!rail) return false;
+    if (rail.querySelector('[data-capability-router]')) return true;
     const button = el('button', 'rail-btn nav-tab has-tooltip capability-router-nav');
     button.type = 'button';
     button.setAttribute('data-capability-router', 'true');
     button.dataset.tooltip = 'Capability Router';
     button.setAttribute('aria-label', 'Capability Router');
-    button.innerHTML = icon; // trusted hard-coded SVG, no dynamic data
+    // Trusted hard-coded SVG, no dynamic data.
+    button.innerHTML = icon;
     button.addEventListener('click', onOpen);
     const spacer = rail.querySelector('.rail-spacer');
     rail.insertBefore(button, spacer || null);
+    return true;
   }
 
   function installSidebarButton() {
     const nav = document.querySelector('.sidebar-nav');
-    if (!nav || nav.querySelector('[data-capability-router]')) return;
+    if (!nav) return false;
+    if (nav.querySelector('[data-capability-router]')) return true;
     const button = el('button', 'nav-tab has-tooltip has-tooltip--bottom capability-router-nav');
     button.type = 'button';
     button.setAttribute('data-capability-router', 'true');
@@ -235,17 +239,32 @@
     // markup. All dynamic router values render via el()/textContent below.
     button.innerHTML = `${icon}<span class="capability-router-nav-label">Router</span>`;
     button.addEventListener('click', onOpen);
-    nav.appendChild(button);
+    const kanban = nav.querySelector('[data-panel="kanban"]');
+    if (kanban?.nextSibling) nav.insertBefore(button, kanban.nextSibling);
+    else nav.appendChild(button);
+    return true;
   }
 
   function install() {
-    installRailButton();
-    installSidebarButton();
+    const railReady = installRailButton();
+    const sidebarReady = installSidebarButton();
+    return railReady && sidebarReady;
+  }
+
+  function bootstrap() {
+    // The WebUI shell can mount its rail/sidebar after deferred extension scripts
+    // run. Observe only until both targets exist; then disconnect to avoid a
+    // permanent observer on ordinary application updates.
+    if (install()) return;
+    const observer = new MutationObserver(() => {
+      if (install()) observer.disconnect();
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', install, { once: true });
+    document.addEventListener('DOMContentLoaded', bootstrap, { once: true });
   } else {
-    install();
+    bootstrap();
   }
 })();
