@@ -1,5 +1,5 @@
 # router.yaml — the sole policy source, beside delegate_profile.
-# 2026-07-24 pós-recarga deepseek: cost-optimal restaurado (deepseek-v3.2 DESCONTINUADO→v4-pro/chat). glm-5.2/zai-premium ainda 429; volta a T3 quando refundir.
+# 2026-07-24: repointed to LIVE providers (deepseek quota-out until 07-27, zai-premium/bedrock down). Revert tiers to cost-optimal roster when refunded.
 # v2 — cost×benefit tiers from the 176-model enriched+benchmarked roster (2026-07-22).
 # Scoring: overall = 0.45*coding + 0.35*planning + 0.20*reasoning.
 # Every tier picks the CHEAPEST model that clears the tier's capability bar, and
@@ -11,8 +11,8 @@ enabled: true
 
 classifier:
   # cheap, fast, verified+measured judge on a distinct rail from the flagships
-  model: deepseek-chat
-  provider: deepseek
+  model: glm-4.5-flash
+  provider: zai
   temperature: 0
   max_tokens: 128
   timeout_seconds: 8
@@ -24,15 +24,14 @@ fail_safe:
   model: gpt-5.6-terra
   provider: openai-codex
   fallback:
-    - { model: deepseek-v4-pro, provider: deepseek }   # non-Mac strong-value coder
-    - { model: glm-4.5-flash, provider: zai }
+    - { model: glm-4.5-flash, provider: zai }   # non-Mac strong-value coder
 
 blocklist:
   # No permanent model ban. gpt-5.6-sol stalls only intermittently under load;
   # the auto-breaker cools it dynamically instead of a static deny that would
   # forfeit the top coder entirely.
   manual_ban: []
-  fallback_chain: [gpt-5.6-terra, deepseek-v4-pro, glm-4.5-flash]
+  fallback_chain: [gpt-5.6-terra, gpt-5.6-luna, glm-4.5-flash]
   auto_breaker:
     enabled: true
     threshold: 5
@@ -62,12 +61,11 @@ default: { action: classify }                  # hybrid switch
 # tiers — cheapest model clearing the bar; T4 crosses to a Bedrock fallback.
 # All primaries are verified+measured except where noted.
 tiers:
-  T1: { model: deepseek-chat, provider: deepseek }        # live provider (repointed 07-24)
-  T2: { model: deepseek-v4-pro, provider: deepseek }      # live provider (repointed 07-24)
+  T1: { model: glm-4.5-flash, provider: zai }            # live provider (repointed 07-24)
+  T2: { model: gpt-5.6-luna, provider: openai-codex }     # live provider (repointed 07-24)
   T3: { model: gpt-5.6-terra, provider: openai-codex }    # live provider (repointed 07-24)
   T4:
     model: gpt-5.6-terra                                # 94/94, $2.50/$15 — top value at the ceiling
     provider: openai-codex
     fallback:
-      - { model: deepseek-v4-pro, provider: deepseek }  # strong, other rail (Claude Code)
-      - { model: glm-4.5-flash, provider: zai }
+      - { model: glm-4.5-flash, provider: zai }  # strong, other rail (Claude Code)
