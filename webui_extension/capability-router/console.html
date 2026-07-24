@@ -363,7 +363,8 @@
     (() => {
       'use strict';
 
-      const PROXY_ROOT = '/api/extensions/capability-router/sidecar';
+      // Same-origin extension proxy namespace. Never call the sidecar port directly.
+      const PROXY_ROOT = '/api/extensions/capability-router/sidecar/';
       const ENDPOINTS = [
         ['GET', '/health'], ['GET', '/status'], ['GET', '/policy'], ['GET', '/blocklist'],
         ['GET', '/liveness'], ['GET', '/compaction'], ['GET', '/explain?task='],
@@ -418,7 +419,7 @@
       }
 
       function endpointKey(method, path) { return `${method} ${path}`; }
-      function proxyUrl(path) { return `${PROXY_ROOT}${path}`; }
+      function proxyUrl(path) { return `${PROXY_ROOT}${path.replace(/^\//, '')}`; }
 
       async function request(path, options = {}) {
         const method = options.method || 'GET';
