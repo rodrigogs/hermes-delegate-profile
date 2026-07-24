@@ -44,6 +44,15 @@
     return body;
   }
 
+  function formatCooldowns(cooldowns) {
+    if (!Array.isArray(cooldowns) || !cooldowns.length) return 'none';
+    return cooldowns.map((entry) => {
+      const seconds = Math.max(0, Math.floor(Number(entry.cooldown_remaining_s) || 0));
+      const remaining = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+      return `${entry.model_key || '—'} ${entry.state || '—'} ${remaining}`;
+    }).join(', ');
+  }
+
   // ---- panel rendering ----------------------------------------------------
   function showPanel() {
     document.querySelectorAll('main > .main-view').forEach((view) => {
@@ -196,9 +205,7 @@
     kv(b.body, 'Manual bans', bans.length ? bans.map((x) => x.model || x).join(', ') : 'none');
     kv(b.body, 'Fallback chain', (bl.fallback_chain || []).join(' → ') || '—');
     kv(b.body, 'Breaker', bl.breaker_enabled ? 'enabled' : 'disabled');
-    const cooldowns = bl.breaker_cooldowns || {};
-    const cd = Object.keys(cooldowns);
-    kv(b.body, 'Active cooldowns', cd.length ? cd.join(', ') : 'none');
+    kv(b.body, 'Active cooldowns', formatCooldowns(bl.breaker_cooldowns));
     body.appendChild(b.card);
   }
 
