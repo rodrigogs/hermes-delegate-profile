@@ -65,6 +65,7 @@ import atexit
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -477,6 +478,20 @@ def _reported_agent_failure(stdout: str, stderr: str) -> bool:
     return "API call failed after 3 retries:" in f"{stdout}\n{stderr}"
 
 
+_EXHAUSTION_PATTERNS = (
+    r"\b(?:429|402)\b",
+    r"\busage_limit(?:_reached)?\b",
+    r"\binsufficient\s+(?:credits|balance|account\s+balance)\b",
+    r"\bweekly\s*/\s*monthly\s+limit\s+exhausted\b",
+    r"\bcode\s*['\"]?\s*:\s*['\"]?1113\b",
+)
+
+
+def _is_exhaustion(text: str) -> bool:
+    """Return whether provider output reports quota, credit, or rate exhaustion."""
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in _EXHAUSTION_PATTERNS)
+
+
 # ---------------------------------------------------------------------------
 # Capability Router integration
 # ---------------------------------------------------------------------------
@@ -880,7 +895,9 @@ def _make_handler(
                     pool.unregister(proc.pid)
             elapsed = round(time.time() - started_at, 1)
             failure_kind, retryable = _classify(reason, returncode)
-            if failure_kind is None and _reported_agent_failure(stdout, stderr):
+            if _is_exhaustion(f"{stdout}\n{stderr}"):
+                failure_kind, retryable = "quota_exhausted", True
+            elif failure_kind is None and _reported_agent_failure(stdout, stderr):
                 failure_kind, retryable = "agent_error", True
             _record_breaker_outcome(profile, attempt_model, failure_kind)
             base = {"subagent_id": subagent_id, "profile": profile,
@@ -894,6 +911,12 @@ def _make_handler(
                           else f"went silent for more than {int(idle)}s")
                 return {**base, "success": False, "failure_kind": failure_kind, "retryable": retryable,
                         "error": f"Subagent stalled ({detail}) and was terminated.",
+                        "stderr": stderr[-_MAX_STDERR_CHARS:] if stderr else "",
+                        "partial_output": stdout[-_MAX_RESULT_CHARS:] if stdout else ""}
+            if failure_kind == "quota_exhausted":
+                return {**base, "success": False, "failure_kind": failure_kind,
+                        "retryable": retryable,
+                        "error": "Provider quota exhausted; trying the next fallback target.",
                         "stderr": stderr[-_MAX_STDERR_CHARS:] if stderr else "",
                         "partial_output": stdout[-_MAX_RESULT_CHARS:] if stdout else ""}
             if failure_kind == "agent_error":

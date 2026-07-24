@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 # ---------------------------------------------------------------------------
 
 FAILURE_WEIGHTS: Dict[str, int] = {
+    "quota_exhausted": 10,  # provider has no usable quota — trip immediately
     "ttfb_stall": 3,       # model accepts connection but never streams — definitive
     "idle_stall": 2,       # started streaming, then went silent — strong signal
     "hard_timeout": 1,     # wall-clock expired — could be slow, could be broken

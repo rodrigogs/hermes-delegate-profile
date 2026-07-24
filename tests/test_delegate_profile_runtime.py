@@ -423,7 +423,7 @@ def test_cross_profile_success_envelope_and_command(monkeypatch):
     assert pool.released == 1
 
 
-def test_cross_profile_rejects_agent_failure_with_zero_exit(monkeypatch):
+def test_cross_profile_treats_quota_exhaustion_with_zero_exit_as_retryable(monkeypatch):
     output = """Initializing agent...
 API call failed after 3 retries: HTTP 429 rate limited
 Session: child-session
@@ -435,9 +435,9 @@ Session: child-session
     )
 
     assert result["success"] is False
-    assert result["failure_kind"] == "agent_error"
+    assert result["failure_kind"] == "quota_exhausted"
     assert result["retryable"] is True
-    assert "reported a failure" in result["error"]
+    assert "quota exhausted" in result["error"]
     assert "HTTP 429" in result["partial_output"]
 
 
