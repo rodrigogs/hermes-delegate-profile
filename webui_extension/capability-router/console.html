@@ -55,6 +55,34 @@
     }
     .app-shell.rail-collapsed { --rail-w: 56px; }
 
+    /* ── Top-deck layout ────────────────────────────────────────────────────
+       When this console is EMBEDDED in a host that already owns the left edge
+       (the Hermes One shell has its own icon rail + sidebar), a second vertical
+       rail would stack three navigations side by side. In that case the deck
+       lies down: one horizontal bar (brand · health · tabs · mode · actions)
+       above a full-width workspace. Same affordances, no competing rail. */
+    .app-shell.deck-top { grid-template-columns: minmax(0, 1fr); }
+    .deck-top .rail {
+      position: static; flex-direction: row; align-items: center; flex-wrap: wrap;
+      gap: 10px 14px; padding: 10px 12px;
+    }
+    .deck-top .rail-brand { flex: 0 0 auto; }
+    .deck-top .rail-brand .brand-copy .eyebrow { display: none; }
+    .deck-top .rail-brand h1 { font-size: 14px; }
+    .deck-top .rail-collapse { display: none; }
+    .deck-top .rail-health { padding: 0; border: 0; flex: 0 0 auto; }
+    .deck-top .rail-nav { flex-direction: row; flex: 1 1 auto; gap: 2px; overflow-x: auto; }
+    .deck-top .rail-item {
+      width: auto; flex: 0 0 auto; grid-template-columns: auto auto auto; gap: 8px;
+      min-height: 34px; padding: 6px 11px;
+    }
+    /* Selection reads as an underline in a horizontal bar, not a left bar. */
+    .deck-top .rail-item[aria-selected="true"] { box-shadow: inset 0 -2px 0 var(--accent); }
+    .deck-top .mode-button { width: auto; flex: 0 0 auto; }
+    .deck-top .rail-foot {
+      flex: 0 0 auto; flex-direction: row; gap: 6px; margin: 0; padding: 0; border: 0;
+    }
+
     /* ── Command deck: persistent collapsible rail = the tablist ───────── */
     .rail {
       position: sticky; top: 16px; align-self: start;
@@ -1538,6 +1566,27 @@
         });
       }
 
+      // Choose the deck orientation from the space we actually get. A host that
+      // already owns the left edge (or a narrow viewport) gets the horizontal
+      // deck; a wide standalone window keeps the vertical rail. Re-evaluated on
+      // resize so docking or undocking the panel does the right thing.
+      const DECK_TOP_MAX_WIDTH = 1180;
+      // Pure decision, so it can be tested without a browser: the deck goes
+      // horizontal when embedded (a host owns the left edge) or when narrow.
+      function deckIsTop() {
+        const embedded = window.self !== window.top || document.documentElement.dataset.crEmbedded === 'true';
+        return embedded || window.innerWidth < DECK_TOP_MAX_WIDTH;
+      }
+      function applyDeckOrientation() {
+        if (!elements.appShell) return;
+        const top = deckIsTop();
+        elements.appShell.classList.toggle('deck-top', top);
+        // A horizontal deck has no collapse affordance to honour.
+        if (top) elements.appShell.classList.remove('rail-collapsed');
+        renderPipeline(elements.pipelineSvg, { interactive: true });
+        renderPipeline(elements.replaySvg, { interactive: false });
+      }
+
       function isRailCollapsed() {
         try { return localStorage.getItem('cr-rail-collapsed') === '1'; } catch (_) { return false; }
       }
@@ -1555,7 +1604,9 @@
       }
 
       wireEvents();
-      setRailCollapsed(isRailCollapsed());
+      applyDeckOrientation();
+      window.addEventListener('resize', applyDeckOrientation);
+      if (!elements.appShell.classList.contains('deck-top')) setRailCollapsed(isRailCollapsed());
       setMode('read');
       refresh();
     })();

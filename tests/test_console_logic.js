@@ -15,7 +15,7 @@ const sourcePath = 'webui_extension/capability-router/console.html';
 
 const EXPORTS = [
   'stepNodeId', 'causeColor', 'worstLivenessClass', 'curatedStatusDetails',
-  'pipelineNodes', 'pipelineEdges', 'renderRail', 'state', 'setMode',
+  'pipelineNodes', 'pipelineEdges', 'renderRail', 'state', 'setMode', 'deckIsTop',
 ].join(', ');
 
 // A DOM stub rich enough for the console's init path: element lookups return
@@ -59,6 +59,7 @@ function fakeDom() {
   return {
     nodes,
     document: {
+      documentElement: make('documentElement'),
       getElementById: get,
       createElement: (tag) => Object.assign(make(`el:${tag}`), { tagName: tag }),
       createElementNS: (_ns, tag) => Object.assign(make(`svg:${tag}`), { tagName: tag }),
@@ -72,15 +73,24 @@ function fakeDom() {
   };
 }
 
-function loadConsole() {
+function loadConsole(_unused, win = {}) {
   const html = fs.readFileSync(sourcePath, 'utf8');
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1]
     // Publish internals, and drop the init calls that need a live browser.
     .replace(/\n      wireEvents\(\);[\s\S]*?refresh\(\);\n/, '\n')
     .replace(/\n\s*\}\)\(\);\s*$/, `\n  globalThis.__consoleTest = { ${EXPORTS} };\n})();\n`);
   const dom = fakeDom();
+  // window.self !== window.top is how the console detects being embedded.
+  const topWindow = {};
+  const windowStub = {
+    innerWidth: win.innerWidth ?? 1440,
+    addEventListener() {},
+    top: topWindow,
+  };
+  windowStub.self = win.self === 'framed' ? windowStub : topWindow;
   const context = {
     console,
+    window: windowStub,
     document: dom.document,
     globalThis: {},
     localStorage: { getItem: () => null, setItem() {} },
@@ -206,6 +216,20 @@ test('renderRail survives being called before the first poll', () => {
   // renders blank, so this is the cheapest guard against a white screen.
   assert.doesNotThrow(() => api.renderRail());
   assert.equal(dom.nodes.get('railPipelineBadge').hidden, true, 'no policy yet → no count');
+});
+
+test('the deck lies down when the console has no room for a second rail', () => {
+  // Embedded in the Hermes One panel the host already owns the left edge, so a
+  // vertical rail here would be the third stacked navigation. The deck must
+  // detect that (narrow, or framed) and go horizontal instead.
+  const wide = loadConsole(undefined, { innerWidth: 1440, self: 'top' });
+  assert.equal(wide.api.deckIsTop(), false, 'a wide standalone window keeps the vertical rail');
+
+  const narrow = loadConsole(undefined, { innerWidth: 1000, self: 'top' });
+  assert.equal(narrow.api.deckIsTop(), true, 'a narrow panel gets the horizontal deck');
+
+  const framed = loadConsole(undefined, { innerWidth: 1600, self: 'framed' });
+  assert.equal(framed.api.deckIsTop(), true, 'being embedded forces the horizontal deck at any width');
 });
 
 test('the mode control states the current mode AND what pressing it will do', () => {
