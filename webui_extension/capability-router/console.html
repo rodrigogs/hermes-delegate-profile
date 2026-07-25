@@ -102,7 +102,7 @@
        checked-at chips would overflow the 56px rail, so hide them here. */
     .rail-collapsed .rail-health #worstBadge,
     .rail-collapsed .rail-health #lastChecked { display: none; }
-    .rail-collapsed .rail-health #reachabilityChip { padding: 4px; min-height: 24px; }
+    .rail-collapsed .rail-health #reachabilityChip { padding: 0; min-height: 0; border: 0; background: transparent; }
     .rail-collapsed .rail-health #reachabilityChip #reachabilityValue { display: none; }
     .rail-collapsed .rail-item { grid-template-columns: 1fr; justify-items: center; gap: 4px; padding: 9px 4px; }
     .rail-collapsed .rail-state { flex-direction: column; gap: 3px; }
@@ -195,11 +195,12 @@
     .panel { display: none; animation: panel-in .16s ease-out; }
     .panel.active { display: block; }
     @keyframes panel-in { from { opacity: .35; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
-    .grid { display: grid; gap: 14px; }
+    .grid { display: grid; gap: 14px; align-items: stretch; }
     .grid.status { grid-template-columns: 1.3fr .7fr; }
     .grid.split { grid-template-columns: 1fr 1fr; }
     .grid.wide-narrow { grid-template-columns: minmax(0, 1.4fr) minmax(290px, .6fr); }
-    .card { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(16, 20, 28, .83); overflow: hidden; }
+    .card { min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(16, 20, 28, .83); overflow: hidden; }
+    .card > .card-body { flex: 1; }
     .card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 15px; border-bottom: 1px solid var(--line); }
     .card-title { margin: 0; font-size: 13px; letter-spacing: -.01em; }
     .card-subtitle { margin: 3px 0 0; color: var(--faint); font-size: 11px; }
@@ -1053,9 +1054,6 @@
       // Column layout by pipeline stage (fixed by adapter.route() order). Node
       // ids are the natural policy keys so editor and replay share them.
       const NODE_W = 150, NODE_H = 46, COL_GAP = 195, ROW_GAP = 60, PAD = 24;
-      const PIPELINE_COLUMNS = [
-        { key: 'stage0', title: null },
-      ];
 
       // Which policy fragment (if any) a node binds to for editing.
       const FIXED_NODES = [
@@ -1068,7 +1066,7 @@
         { id: 'default', label: 'default', col: 2, bind: 'default' },
       ];
 
-      function pipelineNodes() {
+      function pipelineNodes(targetW) {
         const policy = state.policy && typeof state.policy === 'object' ? state.policy : {};
         const rules = Array.isArray(policy.rules) ? policy.rules : [];
         const tiers = policy.tiers && typeof policy.tiers === 'object' ? policy.tiers : {};
@@ -1082,13 +1080,23 @@
           id: `tier:${tn}`, label: tn, col: 4, bind: 'tier', tierName: tn, tier: true,
           sub: (tiers[tn] && tiers[tn].model) || '',
         }));
-        // Assign row positions within each column.
+        // Assign row positions within each column. The column gap stretches to
+        // fill the target width so the graph grows into freed space (rail
+        // collapse / inspector hide) instead of letterboxing.
         const byCol = {};
         nodes.forEach((n) => { (byCol[n.col] = byCol[n.col] || []).push(n); });
+        const cols = Object.keys(byCol).map(Number);
+        const maxCol = cols.length ? Math.max(...cols) : 0;
+        let colGap = COL_GAP;
+        if (targetW && maxCol > 0) {
+          const fit = (targetW - 2 * PAD - NODE_W) / maxCol;
+          colGap = Math.max(COL_GAP, Math.min(fit, 320)); // never tighter than default, capped so it doesn't sprawl
+        }
+        const rowGap = Math.max(ROW_GAP, Math.round(colGap * 0.34)); // keep vertical rhythm proportional
         Object.keys(byCol).forEach((col) => {
           byCol[col].forEach((n, row) => {
-            n.x = PAD + Number(col) * COL_GAP;
-            n.y = PAD + row * ROW_GAP;
+            n.x = PAD + Number(col) * colGap;
+            n.y = PAD + row * rowGap;
           });
         });
         return nodes;
@@ -1128,7 +1136,9 @@
           svg.appendChild(t);
           return;
         }
-        const nodes = pipelineNodes();
+        // Lay the graph out to the canvas's real width so it fills freed space.
+        const targetW = svg.clientWidth || (svg.parentElement && svg.parentElement.clientWidth) || 0;
+        const nodes = pipelineNodes(targetW);
         const edges = pipelineEdges(nodes);
         const maxX = Math.max(...nodes.map((n) => n.x + NODE_W), 400) + PAD;
         const maxY = Math.max(...nodes.map((n) => n.y + NODE_H), 200) + PAD;
@@ -1211,9 +1221,9 @@
             : 'Switch to Edit (top-left), then click a node to change it.');
         teach.style.margin = '0 0 10px';
         elements.pipelineInspector.append(teach);
+        // rules/tiers already live in the panel-head KPIs — don't repeat them
+        // here (DESIGN.md §4). Show only what the head doesn't: the classifier.
         renderKv(elements.pipelineInspector, {
-          rules: rules.length,
-          tiers: Object.keys(tiers).length,
           classifier: (policy.classifier && policy.classifier.model) || (state.status && state.status.classifier && state.status.classifier.model) || '—',
         }, 'Policy not loaded.');
         elements.pipelineEditActions.hidden = true;
