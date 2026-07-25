@@ -16,6 +16,7 @@ const sourcePath = 'webui_extension/capability-router/console.html';
 const EXPORTS = [
   'stepNodeId', 'causeColor', 'worstLivenessClass', 'curatedStatusDetails',
   'pipelineNodes', 'pipelineEdges', 'renderRail', 'state', 'setMode', 'deckIsTop',
+  'request', 'canWrite', 'csrfToken',
 ].join(', ');
 
 // A DOM stub rich enough for the console's init path: element lookups return
@@ -73,7 +74,7 @@ function fakeDom() {
   };
 }
 
-function loadConsole(_unused, win = {}) {
+function loadConsole(_unused, win = {}, host = {}) {
   const html = fs.readFileSync(sourcePath, 'utf8');
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1]
     // Publish internals, and drop the init calls that need a live browser.
@@ -88,13 +89,14 @@ function loadConsole(_unused, win = {}) {
     top: topWindow,
   };
   windowStub.self = win.self === 'framed' ? windowStub : topWindow;
+  if (host.csrfToken !== undefined) windowStub.__HERMES_CONFIG__ = { csrfToken: host.csrfToken };
   const context = {
     console,
     window: windowStub,
     document: dom.document,
     globalThis: {},
     localStorage: { getItem: () => null, setItem() {} },
-    fetch: () => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') }),
+    fetch: host.fetch || (() => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') })),
     setTimeout() {},
     Math,
     JSON,
@@ -230,6 +232,29 @@ test('the deck lies down when the console has no room for a second rail', () => 
 
   const framed = loadConsole(undefined, { innerWidth: 1600, self: 'framed' });
   assert.equal(framed.api.deckIsTop(), true, 'being embedded forces the horizontal deck at any width');
+});
+
+test('writes carry the CSRF token, and are refused honestly without one', async () => {
+  // Measured in the browser: the WebUI proxy answers 403 "Session expired" to any
+  // unsafe method that arrives without X-Hermes-CSRF-Token. Reads are unaffected.
+  // The token only exists on pages the host renders, so a standalone console must
+  // say why editing is impossible instead of failing mysteriously.
+  const calls = [];
+  const fetchStub = () => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
+
+  const withToken = loadConsole(undefined, {}, { csrfToken: 'tok-123', fetch: (url, opts) => { calls.push(opts); return fetchStub(); } });
+  await withToken.api.request('/plan', { method: 'POST', body: { policy: {} } });
+  assert.equal(calls[0].headers['X-Hermes-CSRF-Token'], 'tok-123', 'a write must carry the token');
+
+  calls.length = 0;
+  await withToken.api.request('/status');
+  assert.ok(!(calls[0].headers && calls[0].headers['X-Hermes-CSRF-Token']), 'reads do not need it');
+
+  const noToken = loadConsole(undefined, {}, { csrfToken: '' });
+  noToken.api.setMode('edit');  // clear the mode gate so the CSRF gate is what answers
+  const node = { textContent: '', className: '' };
+  assert.equal(noToken.api.canWrite(node, 'Apply'), false, 'no token → the gate closes before any request');
+  assert.match(node.textContent, /standalone|Hermes One/i, 'and it explains where editing does work');
 });
 
 test('the mode control states the current mode AND what pressing it will do', () => {

@@ -739,9 +739,17 @@
         const method = options.method || 'GET';
         const key = endpointKey(method, path.replace(/\?.*$/, ''));
         try {
+          // Unsafe methods need the WebUI's CSRF token or the proxy answers 403
+          // "Session expired". The host injects it as window.__HERMES_CONFIG__
+          // .csrfToken on the pages it renders; a sidecar-served page (this file
+          // opened standalone) has no token, so writes are refused by design and
+          // we surface that instead of a mystery failure.
+          const headers = options.body ? { 'Content-Type': 'application/json' } : {};
+          const token = csrfToken();
+          if (token && method !== 'GET') headers['X-Hermes-CSRF-Token'] = token;
           const response = await fetch(proxyUrl(path), {
             method,
-            headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
+            headers: Object.keys(headers).length ? headers : undefined,
             body: options.body ? JSON.stringify(options.body) : undefined,
             credentials: 'same-origin'
           });
@@ -762,6 +770,15 @@
           state.endpointState.set(key, { kind: 'unreachable', error: error.message });
           return { error: true, unreachable: true, data: { message: error.message } };
         }
+      }
+
+      // The WebUI binds a CSRF token to the session and injects it into the pages
+      // it renders. Reads never need it; every write does.
+      function csrfToken() {
+        try {
+          const cfg = window.__HERMES_CONFIG__;
+          return (cfg && cfg.csrfToken) || '';
+        } catch (_) { return ''; }
       }
 
       function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
@@ -1044,7 +1061,13 @@
 
       function canWrite(messageNode, action) {
         if (state.unreachable) { setMessage(messageNode, `${action} refused: sidecar unreachable (degraded mode).`, 'error'); return false; }
-        if (state.mode !== 'edit') { setMessage(messageNode, `${action} refused: switch to Edit mode first.`, 'error'); return false; }
+        if (state.mode !== 'edit') { setMessage(messageNode, `${action} refused: unlock editing first (top-left).`, 'error'); return false; }
+        if (!csrfToken()) {
+          setMessage(messageNode,
+            `${action} unavailable: this console is open standalone, so the WebUI gives it no CSRF token and the proxy refuses writes. Open the Router panel inside Hermes One to edit.`,
+            'error');
+          return false;
+        }
         return true;
       }
 
