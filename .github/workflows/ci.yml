@@ -46,3 +46,39 @@ jobs:
           pct = data['totals']['percent_covered']
           print(f'Coverage: {pct:.1f}%')
           "
+
+  # The WebUI extension and the console carry real behaviour (rail state
+  # signalling, replay step mapping, the write-mode gate). Their tests ran only
+  # locally before, so a regression could ship green.
+  webui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run WebUI extension + console tests
+        run: |
+          node --test tests/test_router_nav_cooldowns.js \
+                      tests/test_router_nav_writespine.js \
+                      tests/test_console_logic.js
+
+      - name: Syntax-check shipped browser assets
+        run: |
+          node --check webui_extension/capability-router/router-nav.js
+          python3 - <<'PY'
+          import re, subprocess, sys, tempfile, pathlib
+          html = pathlib.Path("webui_extension/capability-router/console.html").read_text(encoding="utf-8")
+          scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
+          assert len(scripts) == 1, f"console.html must carry exactly one inline script, found {len(scripts)}"
+          with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+              fh.write(scripts[0])
+              path = fh.name
+          result = subprocess.run(["node", "--check", path], capture_output=True, text=True)
+          if result.returncode:
+              sys.exit(result.stderr)
+          print("console.html inline script: syntax OK")
+          PY
