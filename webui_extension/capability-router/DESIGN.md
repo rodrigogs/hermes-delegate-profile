@@ -1,165 +1,113 @@
-# Capability Router Console — Composition & Wayfinding (Operate)
+# Capability Router Console — Information Design (Operate)
 
-This file is the durable contract for the console's layout. It governs *where
-things live and how state is signalled*, not features. If you change a panel,
-keep it inside these rules. This is an **Operate** surface: scanability and
-state legibility outrank expression. Brand lives in precise detail, never in
-decoration. The visual world (dark control-room palette, `--sans`/`--mono`,
-cards/chips/dots) is inherited verbatim; only composition changes.
+The durable contract for this console. It governs **what earns a place on screen**
+and how state is signalled. This is an Operate surface: an operator's control
+room, not a dashboard demo. Fewer elements, each carrying a fact.
 
-## 1. Frame
+The previous version of this file mandated a kicker + title + subtitle on every
+panel and a card around every block. That rule produced 53 cards, 21 subtitles
+and three competing health rollups, and the operator's verdict was "feio e muito
+poluído — pouco objetivo". The rules below exist to make that outcome
+impossible.
 
-- One `<main class="app-shell">`, a **2-column grid**:
-  `grid-template-columns: var(--rail-w) minmax(0, 1fr); gap: 16px; align-items: start`.
-  Max width and centering (`min(1520px,100%)`, `margin:0 auto`) stay on `.app-shell`.
-- `--rail-w` is a CSS variable, **240px expanded / 56px collapsed**. The collapse
-  is a `.app-shell.rail-collapsed` class that flips `--rail-w` to 56px; the whole
-  layout reflows from that one variable, so the workspace (and the node canvas)
-  reclaim the width in the collapsed state. The choice persists in
-  `localStorage['cr-rail-collapsed']`.
-- **Left column = `<aside class="rail">`** (sticky). **Right column =
-  `<div class="workspace">`** containing the panels.
-- Show/hide contract untouched: `.panel{display:none}` / `.panel.active{display:block}`
-  + `@keyframes panel-in`. The workspace holds every panel; the `.active` toggle
-  alone drives visibility.
-- Drawer + backdrop stay `position:fixed`, outside the grid.
+## 1. The three questions
 
-## 2. The rail (persistent, collapsible left nav = the tablist)
+The console answers exactly three questions, in this order. Every screen belongs
+to one of them; anything serving none of them does not ship.
 
-Top → bottom: **brand lockup → collapse toggle → health rollup → tablist →
-foot (mode / Trace / Refresh)**.
-
-- The rail **is** `nav.rail-nav[role="tablist"]`. Each destination is
-  `<button class="tab rail-item" role="tab" data-tab="…" aria-controls="panel-…">`.
-  **`class="tab"` is load-bearing** — the click delegate selects `.tab`; never
-  remove it. `rail-item` carries all the new styling.
-- Rail item internal grid: `grid-template-columns: auto 1fr auto` →
-  `[icon] [label] [state]`. The `.rail-state` trailing cell holds a health
-  `.dot` and a `.rail-badge`.
-- **Collapsed state** (`.rail-collapsed`): labels (`.rail-label`) are hidden, the
-  brand eyebrow/title hide (mark stays), health rollup shows dots only, foot
-  buttons become icon-only. **The dot + badge stay visible in BOTH states** —
-  signalling never depends on width. `.rail-label` in collapsed hover surfaces
-  as a `title` tooltip (native).
-- **Active treatment**: reuse the file's existing selected idiom.
-  `.rail-item[aria-selected="true"]{ background:var(--surface-hover);
-  box-shadow: inset 3px 0 0 var(--accent) }` — the same inset accent bar as
-  `.route-row.is-selected`. No `::after` underline, no size change, no reflow.
-- **Health rollup**: the three chrome chips move here verbatim — `#worstBadge`,
-  `#reachabilityChip`, `#lastChecked`. Whole-system glance.
-- **Foot**: `.mode-toggle` (Read/Edit), `#traceButton`, `#refreshButton`. JS keys
-  them by id, so reparenting is free.
-
-## 3. Per-rail state signalling (the point of the redesign)
-
-Every rail item shows a **health dot** (color) and, where meaningful, a **count
-badge** (textContent). Sources, using existing mappers only — never invent
-classifiers, and **null-guard every source** (renderRail runs at init before the
-first poll populates state):
-
-| Rail item | Dot (health) | Badge (count) |
+| Question | Screen | The one thing it must show |
 |---|---|---|
-| Status | `state.unreachable`→dead; else `statusClass(worst_of_n\|worst\|overall\|status)`; else worst `normalizeLiveness()` across liveness rows | liveness target count |
-| Pipeline | `mode==='edit'`→degraded (mirrors pipelineMode); else `policy`→alive, else dead | `policy.rules.length` |
-| Replay | `endpointState.get('GET /routes')?.kind`: ok+routes→alive, pending→degraded, error→dead | `routes.length` |
-| Blocklist | any breaker present→degraded/dead (`statusClass(entry.state)`); else alive | bans + breakers |
-| Compaction | `GET /compaction` pending→degraded; `compaction` present→alive; else neutral | — (omit) |
+| Is it healthy? | **Health** | which models can be routed to, right now |
+| How does it route? | **Pipeline** | the policy graph, editable under an explicit lock |
+| What did it decide? | **Routes** | recent real decisions, replayable step by step |
 
-Dot color is applied by setting the **wrapper** class `rail-state is-${cls}` so
-the existing `.is-alive .dot / .is-degraded .dot / .is-quota .dot / .is-dead .dot`
-rules fire. Badge hidden when count is 0 (`badge.hidden = n === 0`), enforced by
-an explicit `.rail-badge[hidden]{display:none}` (author display beats UA hidden).
+Blocklist and Compaction are subordinate detail, not peers: they live inside
+Health and Pipeline respectively unless they carry an active condition.
 
-`renderRail()` is the **last** call in `renderAll()` and the last call in
-`setMode()` (so the Pipeline edit dot flips on Read/Edit). It mutates only
-pre-baked child spans via `textContent` + `className`/`.hidden`; never builds
-nodes, never touches SVG, never throws on absent state.
+## 2. Rules of subtraction
 
-## 4. Panel-head pattern
+Applied in order. When two rules conflict, the earlier one wins.
 
-Every panel's **first child** is `<div class="panel-head">` — the single home for
-a panel's identity + its own KPIs, which is how the Status kv duplication dies:
+1. **Render nothing for nothing.** No empty card, no dashed placeholder box, no
+   row that announces its own emptiness. A section with no data is absent, or a
+   single muted line — never a framed void.
+2. **One authority per fact.** Health is signalled by the rail dot and the model
+   list. Mode is signalled by the lock control. Never a second chip repeating a
+   state something else already owns; two sources that can disagree are worse
+   than none.
+3. **A subtitle must carry a fact the title cannot imply.** "Circuit breaker /
+   Cooldown state and last failure kind" is one fact written twice. Prose that
+   explains the console's own internals ("metric cards below are the canonical
+   numbers") never ships — that belongs in this file.
+4. **No card without a reason.** A card exists to group things that are read
+   together. One list, one table, or one control does not need a frame.
+5. **Translate values.** `true` is not a metric. Booleans become words
+   ("enabled"), enums become their operator meaning, timestamps become relative
+   time. Raw JSON appears only where the operator is editing JSON.
+6. **No invented vocabulary.** PRODUCT.md owns the domain words: profile, model,
+   provider/rail, tier, rule, classifier, fail-safe, blocklist, breaker,
+   decision. "worst-of-N", "five-state liveness", "posture", "endpoint pending"
+   are ours, not the domain's — use plain words instead ("Health", "Models",
+   "not implemented").
+7. **The console never reports on itself.** An endpoint ledger, a proxy note, a
+   count of which routes answered — diagnostics about the console belong behind
+   a deliberate action, never in a primary viewport.
 
-```
-<div class="panel-head">
-  <div class="panel-head-main">
-    <p class="section-kicker">STATUS</p>
-    <h2 class="panel-title">Router posture</h2>
-    <p class="card-subtitle">One line: what this panel is for.</p>
-  </div>
-  <div class="panel-kpis"><!-- chips/badges unique to THIS panel --></div>
-</div>
-```
+## 3. Signalling
 
-- KPIs are this panel's alone. A number in the panel-head is **not** repeated in
-  a kv-list below it. Panel KPIs use **their own ids** — never reuse the
-  rail-health chip ids (`#worstBadge`/`#reachabilityChip`/`#lastChecked`), which
-  are unique and owned by renderChrome.
-- Per-panel mode/actions (`#pipelineMode`, `#compactionState`, `#replayRouteChip`)
-  live in `.panel-kpis`, right-aligned.
+- **Rail item** = destination + its live state: a health dot, and a count badge
+  when a count is meaningful (rules, recent routes, active bans). This survives
+  the collapsed rail and is the only always-visible health signal.
+- **Model state** uses the router's own five states, coloured from the inherited
+  tokens: alive `--green`, degraded `--amber`, quota `--violet`, dead `--red`,
+  unknown `--faint`. The same colours mean the same things in the graph, the
+  route list and the rail.
+- **Cause colour** in a decision: deterministic rule `--green`, classifier
+  `--violet`, refusal (veto / fail-safe) `--red`.
 
-## 5. Density & dead-space rules
+## 4. Writing is a locked door
 
-- **No blank prime space.** `#statusDetails` is curated to only fields shown
-  nowhere else (`last_event`, `reason`, `mode`); metric cards, worst badge, and
-  pipeline nodes are the canonical homes for rules/tiers/classifier/valid/enabled.
-- **Summarizer is merged into Compaction** (same `state.compaction` source, no
-  unique datum). `#summarizerDetails` relocates into the Compaction panel.
-- **Node canvas fills the freed width**: `.pipeline-svg` drops `min-height:420px`
-  (small floor instead) and the Pipeline **inspector column is collapsible**, so
-  the graph gets real width — especially with the rail collapsed.
-- **The node editor is never an empty box.** With no node selected,
-  `#pipelineInspector` shows policy KPIs + a one-line teach.
-- **Raw JSON is structured, not dumped.** Replay step I/O renders as a labeled
-  meta line + `in:` / `out:` blocks. Empty-default JSON views stay behind their
-  trigger state.
-- The Advanced JSON `<details>` stays collapsed and is the **only** write path
-  for bans/new rules — do not add a second.
+- One control owns write mode: the **lock**. It states the current mode and the
+  action pressing it performs, is the only filled/accent element in the rail, and
+  never shares a shape with a status chip.
+- Locked: no write control is present in the DOM at all — not disabled, absent.
+- Unlocked: write controls appear, and the surface says it is armed.
+- Every write still goes through plan → apply → confirm/revert with the
+  `base_hash` guard. The UI never invents a second path.
+- A write the environment cannot perform (no CSRF token, because the console is
+  standalone rather than inside the Hermes One page) is refused up front with
+  that reason.
 
-## 6. Inherited token table (verbatim — do NOT invent)
+## 5. Layout
 
-| Token | Value | Use |
-|---|---|---|
-| `--bg` | `#090b10` | page |
-| `--surface` | `#10141c` | cards, panels |
-| `--surface-raised` | `#151b26` | buttons, node boxes |
-| `--surface-hover` | `#1b2331` | hover, **active rail item** |
-| `--line` | `#263144` | hairlines |
-| `--line-strong` | `#3a4a65` | strong borders |
-| `--text` | `#ecf2fb` | primary text |
-| `--muted` | `#92a0b7` | secondary |
-| `--faint` | `#62708a` | kickers, labels |
-| `--accent` | `#8fb8ff` | **active rail bar**, links |
-| `--accent-strong` | `#4a8cff` | primary action |
-| `--green / --amber / --violet / --red` | `#5ee1ad / #f6bf5f / #bf9cff / #ff7f8d` | alive / degraded / quota / dead |
-| `--mono` | SFMono stack | machine facts, badges, kickers |
-| `--sans` | Inter stack | prose, labels |
-| `--radius` | `10px` | corners |
-| `--shadow` | `0 18px 50px rgba(0,0,0,.38)` | rail float |
-| `--focus` | `0 0 0 3px rgba(143,184,255,.28)` | focus ring |
+- **Rail** (left, collapsible) when the console owns the window; a **horizontal
+  deck** when it is embedded or narrow — a host that already owns the left edge
+  must never face a second vertical navigation.
+- One screen fills its width. The graph grows into whatever space the rail and
+  the inspector are not using.
+- Density: 12–16px inside a group, 20–24px between groups. More space above a
+  heading than below it.
 
-New tokens: `--rail-w` (layout variable only). New classes are compositional:
-`rail`, `rail-nav`, `rail-item`, `rail-icon`, `rail-label`, `rail-state`,
-`rail-badge`, `rail-brand`, `rail-health`, `rail-foot`, `rail-collapse`,
-`workspace`, `panel-head`, `panel-head-main`, `panel-title`, `panel-kpis`.
+## 6. Inherited tokens (do not invent)
 
-## 7. Responsive contract
+`--bg #090b10` · `--surface #10141c` · `--surface-raised #151b26` ·
+`--surface-hover #1b2331` · `--line #263144` · `--line-strong #3a4a65` ·
+`--text #ecf2fb` · `--muted #92a0b7` · `--faint #62708a` · `--accent #8fb8ff` ·
+`--accent-strong #4a8cff` · `--green #5ee1ad` · `--amber #f6bf5f` ·
+`--red #ff7f8d` · `--violet #bf9cff` · `--mono` SFMono stack (machine facts) ·
+`--sans` Inter (prose) · `--radius 10px`.
 
-Preserve today's collapse. In `@media (max-width:1000px)`: `.app-shell{
-grid-template-columns:1fr}`, `.rail{position:static}`, `.rail-nav{
-flex-direction:row;overflow-x:auto}`, and `.rail-item{width:auto}` (so items
-don't each balloon to full width in the row scroller) — the rail degrades to a
-horizontal scroller above the workspace, honoring the `min-width:320px` floor.
-The desktop collapse toggle is hidden below this breakpoint.
+`--sans` carries prose and labels; `--mono` carries model names, counts,
+timestamps and anything an operator would copy. That pairing is the typographic
+system — not decoration.
 
-## 8. Hard invariants (tests + JS contract)
+## 7. Invariants (tests depend on these)
 
-- Exactly **one** bare `<script>` and one `</script>`. No second script.
-- The inline script must never contain `innerHTML`, `insertAdjacentHTML`,
-  `outerHTML`, `eval(`, `new Function`, `document.write` — even in strings or
-  comments. Mutate via `textContent` + `className`/`.hidden` only.
-- These literals survive verbatim: `data-tab="pipeline"`, `id="panel-pipeline"`,
-  `id="pipelineSvg"`, `id="routesTable"`, and tokens `renderPipeline`, `/routes`,
-  `svgEl`, `createElementNS`, `renderReplayStep`, `textContent`.
-- Rail buttons keep `role=tab` + `data-tab` + `aria-controls` + `class="tab"`.
-  The delegate and `aria-selected`/`.active` toggling stay byte-for-byte.
+- Exactly one inline `<script>` and one inline `<style>`; no build step, no CDN.
+- Never `innerHTML` / `insertAdjacentHTML` / `outerHTML` / `eval` /
+  `new Function` / `document.write`. All text via `textContent` — decision
+  traces contain attacker-influenceable task text.
+- Nav items keep `class="tab"` + `role="tab"` + `data-tab` + `aria-controls`,
+  and panels keep `id="panel-<tab>"`; one delegate drives selection.
+- These ids are load-bearing for tests: `pipelineSvg`, `routesTable`.
+- Writes send `X-Hermes-CSRF-Token` when the host provides one.

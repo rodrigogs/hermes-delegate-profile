@@ -1,10 +1,11 @@
-// Behavioural tests for the console's decision logic — the parts a static scan
-// cannot check. The console is one self-contained IIFE, so (like
-// test_router_nav_*.js) we rewrite its footer to publish the internals, then run
-// it in a VM over a DOM stub. Every assertion below pins a rule that would
-// silently rot otherwise: which node a replay step lights up, how a health
-// rollup degrades, what the rail badge counts, and that Status details never
-// echo a number the panel head already shows.
+// Behavioural tests for the console's decision logic — the part a static scan
+// cannot check. The console is one self-contained IIFE that publishes its
+// internals on globalThis.__router, so we run it in a VM over a DOM stub.
+//
+// Each assertion pins a rule that would otherwise rot silently: which node a
+// replay step lights, that a health rollup reports the WORST target rather than
+// the first, that values are translated instead of dumped, that the graph grows
+// into the space it is given, and that writing stays behind the lock.
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -13,59 +14,44 @@ const vm = require('node:vm');
 
 const sourcePath = 'webui_extension/capability-router/console.html';
 
-const EXPORTS = [
-  'stepNodeId', 'causeColor', 'worstLivenessClass', 'curatedStatusDetails',
-  'pipelineNodes', 'pipelineEdges', 'renderRail', 'state', 'setMode', 'deckIsTop',
-  'request', 'canWrite', 'csrfToken',
-].join(', ');
-
-// A DOM stub rich enough for the console's init path: element lookups return
-// recording nodes, so setMode()/renderRail() can run without a browser.
+// A DOM stub good enough for the console's init path.
 function fakeDom() {
   const nodes = new Map();
-  const make = (id) => ({
-    id,
-    className: '',
-    textContent: '',
-    value: '',
-    hidden: false,
-    readOnly: false,
-    style: {},
-    dataset: {},
-    attrs: {},
-    classList: {
-      _set: new Set(),
-      add(c) { this._set.add(c); },
-      remove(c) { this._set.delete(c); },
-      toggle(c, on) { if (on === undefined) { this._set.has(c) ? this._set.delete(c) : this._set.add(c); } else if (on) { this._set.add(c); } else { this._set.delete(c); } },
-      contains(c) { return this._set.has(c); },
-    },
-    children: [],
-    append(...kids) { this.children.push(...kids); },
-    appendChild(k) { this.children.push(k); return k; },
-    removeChild(k) { this.children = this.children.filter((x) => x !== k); },
-    remove() {},
-    addEventListener() {},
-    setAttribute(n, v) { this.attrs[n] = v; },
-    getAttribute(n) { return this.attrs[n]; },
-    toggleAttribute(n, on) { if (on) this.attrs[n] = ''; else delete this.attrs[n]; },
-    hasAttribute(n) { return n in this.attrs; },
-    querySelector() { return null; },
-    querySelectorAll() { return []; },
-    get firstChild() { return this.children[0] || null; },
-    getBoundingClientRect() { return { width: 900, height: 400, left: 0, right: 900 }; },
-    clientWidth: 900,
-  });
+  const make = (id) => {
+    const node = {
+      id, className: '', textContent: '', value: '', title: '',
+      hidden: false, readOnly: false, max: '0',
+      style: {}, dataset: {}, attrs: {}, children: [],
+      classList: {
+        _set: new Set(),
+        add(c) { this._set.add(c); },
+        remove(c) { this._set.delete(c); },
+        toggle(c, on) { if (on === undefined) { this._set.has(c) ? this._set.delete(c) : this._set.add(c); } else if (on) this._set.add(c); else this._set.delete(c); },
+        contains(c) { return this._set.has(c); },
+      },
+      append(...k) { node.children.push(...k); },
+      appendChild(k) { node.children.push(k); return k; },
+      removeChild(k) { node.children = node.children.filter((x) => x !== k); },
+      addEventListener() {},
+      setAttribute(n, v) { node.attrs[n] = String(v); },
+      getAttribute(n) { return node.attrs[n]; },
+      querySelector(sel) { return get(`${id}${sel}`); },
+      querySelectorAll() { return []; },
+      getBoundingClientRect() { return { width: 900, height: 300, left: 0, right: 900 }; },
+      clientWidth: 900,
+    };
+    Object.defineProperty(node, 'firstChild', { get: () => node.children[0] || null });
+    return node;
+  };
   const get = (id) => { if (!nodes.has(id)) nodes.set(id, make(id)); return nodes.get(id); };
   return {
     nodes,
+    get,
     document: {
-      documentElement: make('documentElement'),
+      documentElement: make('html'),
       getElementById: get,
       createElement: (tag) => Object.assign(make(`el:${tag}`), { tagName: tag }),
       createElementNS: (_ns, tag) => Object.assign(make(`svg:${tag}`), { tagName: tag }),
-      // Keyed by selector so '#modeButton .mode-button-label' and its siblings
-// are distinct nodes, the way they are in the document.
       querySelector: (sel) => get(`sel:${sel}`),
       querySelectorAll: () => [],
       addEventListener() {},
@@ -74,204 +60,175 @@ function fakeDom() {
   };
 }
 
-function loadConsole(_unused, win = {}, host = {}) {
+function loadConsole({ width = 1440, embedded = false, csrfToken, fetch: fetchStub } = {}) {
   const html = fs.readFileSync(sourcePath, 'utf8');
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1]
-    // Publish internals, and drop the init calls that need a live browser.
-    .replace(/\n      wireEvents\(\);[\s\S]*?refresh\(\);\n/, '\n')
-    .replace(/\n\s*\}\)\(\);\s*$/, `\n  globalThis.__consoleTest = { ${EXPORTS} };\n})();\n`);
+    // Skip the init calls that need a live browser; keep everything else intact.
+    .replace(/\n      wire\(\);[\s\S]*?load\(\);\n/, '\n');
   const dom = fakeDom();
-  // window.self !== window.top is how the console detects being embedded.
-  const topWindow = {};
-  const windowStub = {
-    innerWidth: win.innerWidth ?? 1440,
-    addEventListener() {},
-    top: topWindow,
-  };
-  windowStub.self = win.self === 'framed' ? windowStub : topWindow;
-  if (host.csrfToken !== undefined) windowStub.__HERMES_CONFIG__ = { csrfToken: host.csrfToken };
+  const top = {};
+  const win = { innerWidth: width, addEventListener() {}, top };
+  win.self = embedded ? win : top;
+  if (csrfToken !== undefined) win.__HERMES_CONFIG__ = { csrfToken };
   const context = {
-    console,
-    window: windowStub,
-    document: dom.document,
-    globalThis: {},
-    localStorage: { getItem: () => null, setItem() {} },
-    fetch: host.fetch || (() => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') })),
-    setTimeout() {},
-    Math,
-    JSON,
-    Number,
-    Object,
-    Array,
-    String,
-    Set,
-    Map,
-    Date,
+    console, window: win, document: dom.document, globalThis: {},
+    fetch: fetchStub || (() => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') })),
+    setTimeout() {}, Math, JSON, Number, Object, Array, String, Set, Map, Date, encodeURIComponent,
   };
   vm.runInNewContext(script, context, { filename: sourcePath });
-  return { api: context.globalThis.__consoleTest, dom };
+  return { api: context.globalThis.__router, dom };
 }
 
 test('a replay step lights the node that actually made the decision', () => {
   const { api } = loadConsole();
-  // A rules step names the rule that fired — replay must highlight THAT rule
-  // node, not the generic stage, or the trace lies about which row matched.
-  assert.equal(api.stepNodeId({ stage: 'rules', out: { rule_id: 'hard-verbs' } }), 'rule:hard-verbs');
-  // A rules step with no rule_id fell through to the default row.
-  assert.equal(api.stepNodeId({ stage: 'rules', out: {} }), 'default');
-  // The veto is recorded as its own stage but belongs to the blocklist node.
-  assert.equal(api.stepNodeId({ stage: 'veto' }), 'blocklist');
-  // Runtime stages map to themselves.
-  assert.equal(api.stepNodeId({ stage: 'cache' }), 'cache');
-  assert.equal(api.stepNodeId({ stage: 'session_pin' }), 'session_pin');
-  assert.equal(api.stepNodeId({ stage: 'classifier' }), 'classifier');
+  // A rules step names the rule that fired; replay must highlight THAT rule, or
+  // the trace misrepresents which row matched.
+  assert.equal(api.stepNode({ stage: 'rules', out: { rule_id: 'hard-verbs' } }), 'rule:hard-verbs');
+  assert.equal(api.stepNode({ stage: 'rules', out: {} }), 'default');
+  // A veto is its own stage but belongs to the blocklist node.
+  assert.equal(api.stepNode({ stage: 'veto' }), 'blocklist');
+  assert.equal(api.stepNode({ stage: 'classifier' }), 'classifier');
 });
 
-test('health rollup reports the WORST state, never an average or the first', () => {
+test('health reports the worst model, never the first or an average', () => {
   const { api } = loadConsole();
-  const worst = (...states) => api.worstLivenessClass(states.map((state) => ({ state })));
+  const worst = (...states) => api.worstOf(states.map((state) => ({ state })));
   assert.equal(worst('alive', 'alive'), 'alive');
-  // One bad target must dominate however many healthy ones surround it.
   assert.equal(worst('alive', 'degraded', 'alive'), 'degraded');
   assert.equal(worst('degraded', 'quota_exhausted'), 'quota');
   assert.equal(worst('quota_exhausted', 'dead'), 'dead');
-  // Order must not matter — a dead first entry and a dead last entry agree.
+  // Order must not change the verdict.
   assert.equal(worst('dead', 'alive'), worst('alive', 'dead'));
 });
 
-test('cause colours separate a refusal from a normal route', () => {
+test('router states map to the five operator meanings', () => {
+  const { api } = loadConsole();
+  assert.equal(api.modelState({ state: 'OPEN' }), '');            // unknown breaker word → no claim
+  assert.equal(api.modelState({ state: 'alive' }), 'alive');
+  assert.equal(api.modelState({ state: 'HALF_OPEN' }), 'degraded');
+  assert.equal(api.modelState({ state: 'quota_exhausted' }), 'quota');
+  assert.equal(api.modelState({ state: 'dead' }), 'dead');
+});
+
+test('a refusal and a routine decision never read the same', () => {
   const { api } = loadConsole();
   const red = api.causeColor('blocklist_veto');
-  assert.equal(api.causeColor('fail_safe_strong'), red, 'both refusals read as the same alarm');
-  assert.notEqual(api.causeColor('hard_rule'), red, 'a deterministic rule hit is not an alarm');
-  assert.notEqual(api.causeColor('classifier'), api.causeColor('hard_rule'), 'inferred and deterministic causes stay distinguishable');
+  assert.equal(api.causeColor('fail_safe_strong'), red, 'both refusals share one alarm colour');
+  assert.notEqual(api.causeColor('hard_rule'), red);
+  assert.notEqual(api.causeColor('classifier'), api.causeColor('hard_rule'),
+    'inferred and deterministic causes stay distinguishable');
 });
 
-test('Status details never echo a number the panel head already shows', () => {
+test('values are translated for an operator, not dumped', () => {
   const { api } = loadConsole();
-  api.state.status = {
-    // Canonical elsewhere (metric cards + rail badges) — must NOT be repeated.
-    rules_count: 3, valid: true, enabled: true, tiers: ['T1', 'T2'], classifier: { model: 'x' },
-    // Only shown here.
-    last_event: 'routed', reason: 'ok',
-  };
-  const curated = api.curatedStatusDetails();
-  for (const echoed of ['rules_count', 'valid', 'enabled', 'tiers', 'classifier']) {
-    assert.ok(!(echoed in curated), `${echoed} is duplicated into the details list`);
-  }
-  assert.equal(curated.last_event, 'routed');
-  assert.equal(curated.reason, 'ok');
+  // DESIGN.md §2.5: `true` is not a metric.
+  assert.equal(api.say(true), 'yes');
+  assert.equal(api.say(false), 'no');
+  assert.equal(api.say(''), '—');
+  assert.equal(api.say(null), '—');
+  assert.equal(api.say(['a', 'b']), '2', 'a list reports its size, not its JSON');
+  // Timestamps become elapsed time; an operator cares how stale, not the epoch.
+  const now = Math.floor(Date.now() / 1000);
+  assert.match(api.ago(now - 5), /^\d+s ago$/);
+  assert.match(api.ago(now - 600), /^\d+m ago$/);
+  assert.equal(api.ago(null), '—');
 });
 
-test('the graph is built from policy, and rules point at the tier they route to', () => {
+test('the graph is built from policy and rules point where they route', () => {
   const { api } = loadConsole();
   api.state.policy = {
     rules: [{ id: 'hard-verbs', then: { model: 'T4' } }, { id: 'ask', then: { action: 'classify' } }],
     tiers: { T1: { model: 'cheap' }, T4: { model: 'strong' } },
   };
-  const nodes = api.pipelineNodes(1200);
+  const nodes = api.graphNodes(1200);
   const ids = nodes.map((n) => n.id);
-  assert.ok(ids.includes('rule:hard-verbs') && ids.includes('rule:ask'), 'one node per policy rule');
+  assert.ok(ids.includes('rule:hard-verbs') && ids.includes('rule:ask'), 'one node per rule');
   assert.ok(ids.includes('tier:T1') && ids.includes('tier:T4'), 'one node per tier');
 
-  const edges = api.pipelineEdges(nodes).map((e) => `${e.from.id}->${e.to.id}`);
-  // then.model:T4 must draw the rule straight at that tier…
+  const edges = api.graphEdges(nodes).map((e) => `${e.a.id}->${e.b.id}`);
   assert.ok(edges.includes('rule:hard-verbs->tier:T4'), 'a concrete rule edges to its tier');
-  // …and then.action:classify must edge at the classifier instead.
   assert.ok(edges.includes('rule:ask->classifier'), 'a classify rule edges to the classifier');
 });
 
-test('the graph spreads into a wider canvas instead of staying compact', () => {
+test('the graph spreads into the width it is given', () => {
   const { api } = loadConsole();
   api.state.policy = { rules: [{ id: 'r', then: { model: 'T1' } }], tiers: { T1: {} } };
-  const spanOf = (width) => {
-    const nodes = api.pipelineNodes(width);
-    const xs = nodes.map((n) => n.x);
+  const span = (w) => {
+    const xs = api.graphNodes(w).map((n) => n.x);
     return Math.max(...xs) - Math.min(...xs);
   };
-  // Freeing width (rail collapse / inspector hide) must actually widen the
-  // layout — this is the whole point of the space fix.
-  assert.ok(spanOf(1400) > spanOf(700), 'a wider canvas produces a wider graph');
+  assert.ok(span(1400) > span(700), 'freeing width must widen the graph, not letterbox it');
 });
 
-test('rail badges count live state and hide when a section has nothing', () => {
+test('the rail carries each destination\'s live state', () => {
   const { api, dom } = loadConsole();
   api.state.policy = { rules: [{ id: 'a' }, { id: 'b' }, { id: 'c' }], tiers: { T1: {} } };
   api.state.routes = [{ id: '1' }, { id: '2' }];
-  api.state.blocklist = { manual_bans: [{ model: 'bad' }] };
   api.state.liveness = { models: [{ state: 'alive' }, { state: 'degraded' }] };
   api.renderRail();
 
-  assert.equal(dom.nodes.get('railPipelineBadge').textContent, '3', 'pipeline badge counts rules');
-  assert.equal(dom.nodes.get('railReplayBadge').textContent, '2', 'replay badge counts recorded routes');
-  assert.equal(dom.nodes.get('railBlocklistBadge').textContent, '1', 'blocklist badge counts bans + breakers');
-  // A degraded target must surface on the Status dot, not be averaged away.
-  assert.match(dom.nodes.get('railStatus').className, /is-degraded/);
-  // Compaction has no natural count: its badge stays hidden rather than showing 0.
-  assert.equal(dom.nodes.get('railCompactionBadge').hidden, true);
+  assert.equal(dom.get('countPipeline').textContent, '3', 'pipeline counts rules');
+  assert.equal(dom.get('countRoutes').textContent, '2', 'routes counts recorded decisions');
+  // One degraded target must surface, not be averaged into "fine".
+  assert.match(dom.get('stateHealth').className, /is-degraded/);
 });
 
-test('renderRail survives being called before the first poll', () => {
+test('the rail survives being rendered before any data arrives', () => {
   const { api, dom } = loadConsole();
-  // At init setMode() → renderRail() runs while every state field is still
-  // empty. If any source is read unguarded the whole IIFE dies and the console
-  // renders blank, so this is the cheapest guard against a white screen.
+  // setMode() renders the rail at init, before the first poll. An unguarded read
+  // here kills the whole IIFE and the operator gets a blank page.
   assert.doesNotThrow(() => api.renderRail());
-  assert.equal(dom.nodes.get('railPipelineBadge').hidden, true, 'no policy yet → no count');
+  assert.equal(dom.get('countPipeline').hidden, true, 'no policy yet → no count shown');
 });
 
-test('the deck lies down when the console has no room for a second rail', () => {
-  // Embedded in the Hermes One panel the host already owns the left edge, so a
-  // vertical rail here would be the third stacked navigation. The deck must
-  // detect that (narrow, or framed) and go horizontal instead.
-  const wide = loadConsole(undefined, { innerWidth: 1440, self: 'top' });
-  assert.equal(wide.api.deckIsTop(), false, 'a wide standalone window keeps the vertical rail');
+test('the lock is the single authority on whether writing is possible', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  const lock = dom.get('lock');
 
-  const narrow = loadConsole(undefined, { innerWidth: 1000, self: 'top' });
-  assert.equal(narrow.api.deckIsTop(), true, 'a narrow panel gets the horizontal deck');
+  api.setMode('locked');
+  assert.equal(lock.attrs['aria-pressed'], 'false');
+  assert.match(lock.title, /Unlock/i, 'the control names the action, not just the state');
+  assert.equal(dom.get('policyEditor').readOnly, true, 'locked keeps the editor read-only');
+  const msg = { textContent: '', className: '' };
+  assert.equal(api.writable(msg, 'Apply'), false, 'locked refuses writes');
+  assert.match(msg.textContent, /lock/i);
 
-  const framed = loadConsole(undefined, { innerWidth: 1600, self: 'framed' });
-  assert.equal(framed.api.deckIsTop(), true, 'being embedded forces the horizontal deck at any width');
+  api.setMode('unlocked');
+  assert.equal(lock.attrs['aria-pressed'], 'true');
+  assert.match(lock.title, /Lock/i);
+  assert.equal(dom.get('policyEditor').readOnly, false, 'unlocked arms the editor');
+  assert.equal(api.writable({ textContent: '', className: '' }, 'Apply'), true);
 });
 
-test('writes carry the CSRF token, and are refused honestly without one', async () => {
-  // Measured in the browser: the WebUI proxy answers 403 "Session expired" to any
-  // unsafe method that arrives without X-Hermes-CSRF-Token. Reads are unaffected.
-  // The token only exists on pages the host renders, so a standalone console must
-  // say why editing is impossible instead of failing mysteriously.
+test('without a session write token, editing is refused with the reason', () => {
+  // Measured against the live proxy: unsafe methods without X-Hermes-CSRF-Token
+  // come back 403 "Session expired". The token exists only on pages the WebUI
+  // renders, so a standalone console must say where editing does work.
+  const { api } = loadConsole({ csrfToken: '' });
+  api.setMode('unlocked');
+  const msg = { textContent: '', className: '' };
+  assert.equal(api.writable(msg, 'Apply'), false);
+  assert.match(msg.textContent, /standalone|Hermes One/i);
+});
+
+test('writes carry the session token; reads do not need it', async () => {
   const calls = [];
-  const fetchStub = () => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
-
-  const withToken = loadConsole(undefined, {}, { csrfToken: 'tok-123', fetch: (url, opts) => { calls.push(opts); return fetchStub(); } });
-  await withToken.api.request('/plan', { method: 'POST', body: { policy: {} } });
-  assert.equal(calls[0].headers['X-Hermes-CSRF-Token'], 'tok-123', 'a write must carry the token');
-
+  const { api } = loadConsole({
+    csrfToken: 'tok-42',
+    fetch: (url, opts) => { calls.push({ url, opts }); return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') }); },
+  });
+  await api.call('/plan', { method: 'POST', body: { policy: {} } });
+  assert.equal(calls[0].opts.headers['X-Hermes-CSRF-Token'], 'tok-42');
   calls.length = 0;
-  await withToken.api.request('/status');
-  assert.ok(!(calls[0].headers && calls[0].headers['X-Hermes-CSRF-Token']), 'reads do not need it');
-
-  const noToken = loadConsole(undefined, {}, { csrfToken: '' });
-  noToken.api.setMode('edit');  // clear the mode gate so the CSRF gate is what answers
-  const node = { textContent: '', className: '' };
-  assert.equal(noToken.api.canWrite(node, 'Apply'), false, 'no token → the gate closes before any request');
-  assert.match(node.textContent, /standalone|Hermes One/i, 'and it explains where editing does work');
+  await api.call('/status');
+  assert.ok(!calls[0].opts.headers, 'a read sends no write headers at all');
 });
 
-test('the mode control states the current mode AND what pressing it will do', () => {
-  const { api, dom } = loadConsole();
-  const button = dom.nodes.get('modeButton');
-
-  // Read: locked, and the hint tells you the way in. A control that only
-  // changed colour would leave "how do I edit?" unanswered — the complaint
-  // this redesign exists to fix.
-  api.setMode('read');
-  assert.equal(button.attrs['aria-pressed'], 'false');
-  assert.match(button.title, /Unlock/i, 'the tooltip names the action, not the state');
-  assert.equal(dom.nodes.get('policyEditor').readOnly, true, 'read mode locks the editor');
-
-  api.setMode('edit');
-  assert.equal(api.state.mode, 'edit');
-  assert.equal(button.attrs['aria-pressed'], 'true', 'pressed state carries the armed mode');
-  assert.match(button.title, /Lock/i, 'now the action is to lock again');
-  assert.equal(dom.nodes.get('policyEditor').readOnly, false, 'edit mode arms the write surface');
+test('a host that owns the left edge gets the horizontal layout', () => {
+  // Embedded in the Hermes One panel there is already a rail and a sidebar; a
+  // third vertical navigation is the clutter this rule prevents.
+  assert.equal(loadConsole({ width: 1440 }).api.isNarrow(), false);
+  assert.equal(loadConsole({ width: 1000 }).api.isNarrow(), true);
+  assert.equal(loadConsole({ width: 1600, embedded: true }).api.isNarrow(), true,
+    'being framed forces the horizontal layout at any width');
 });

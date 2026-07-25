@@ -72,8 +72,9 @@ def test_console_html_is_xss_safe_and_syntax_valid(tmp_path):
     for forbidden in ("innerHTML", "insertAdjacentHTML", "outerHTML", "eval(", "new Function", "document.write"):
         assert forbidden not in script, f"console.html inline script must not use {forbidden}"
     assert "textContent" in script
-    # The Pipeline/replay wiring must be present.
-    for token in ("renderPipeline", "/routes", "svgEl", "createElementNS", "renderReplayStep"):
+    # The graph + replay wiring must be present (the console draws its own SVG
+    # rather than importing a chart library, and it reads real decision traces).
+    for token in ("drawGraph", "/routes", "svgEl", "createElementNS", "renderStep"):
         assert token in script, f"console.html must wire {token}"
     # Syntax must be valid (write the extracted body to a temp file for node --check).
     script_file = tmp_path / "console_inline.js"

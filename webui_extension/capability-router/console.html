@@ -4,7 +4,25 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Capability Router Console</title>
+  <title>Capability Router</title>
+  <!--
+    THESIS: An operator opens this to answer three questions — is it healthy, how
+      does it route, what did it decide. Everything that serves none of them is
+      absent. It refuses the dashboard reflex of framing each fact in its own card
+      with a subtitle explaining the card.
+    OWN-WORLD: Inherited Hermes One dark control room. Structure comes from
+      hairlines and space, not from boxes: one accent (the lock), five state
+      colours that mean the same thing everywhere, --mono for anything an operator
+      would copy, --sans for prose.
+    STORY: Health first — the models it can reach. Pipeline to see and change how
+      tasks route, behind an explicit lock. Routes to replay what really happened,
+      step by step.
+    FIRST VIEWPORT: The rail names three destinations, each carrying its own live
+      state. Beside it, the model list at full width: name, state, why. Nothing
+      else competes.
+    FORM: Single self-contained file. Rail when it owns the window, horizontal
+      deck when embedded. See DESIGN.md for the rules of subtraction.
+  -->
   <style>
     :root {
       --bg: #090b10;
@@ -18,7 +36,6 @@
       --faint: #62708a;
       --accent: #8fb8ff;
       --accent-strong: #4a8cff;
-      --accent-ink: #06142d;
       --green: #5ee1ad;
       --amber: #f6bf5f;
       --red: #ff7f8d;
@@ -26,1186 +43,602 @@
       --mono: ui-monospace, "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, monospace;
       --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       --radius: 10px;
-      --shadow: 0 18px 50px rgba(0, 0, 0, .38);
       --focus: 0 0 0 3px rgba(143, 184, 255, .28);
     }
 
     * { box-sizing: border-box; }
     html { min-width: 320px; background: var(--bg); }
     body {
-      margin: 0;
-      min-height: 100vh;
-      color: var(--text);
-      background:
-        radial-gradient(circle at 12% -20%, rgba(74, 140, 255, .16), transparent 38rem),
-        radial-gradient(circle at 87% 0%, rgba(191, 156, 255, .09), transparent 33rem),
-        var(--bg);
-      font: 14px/1.45 var(--sans);
+      margin: 0; min-height: 100vh; color: var(--text);
+      background: var(--bg); font: 14px/1.5 var(--sans);
     }
-    button, input, textarea { font: inherit; }
+    button, input, textarea, select { font: inherit; color: inherit; }
     button { cursor: pointer; }
-    button:focus-visible, input:focus-visible, textarea:focus-visible { outline: none; box-shadow: var(--focus); }
-    button:disabled { cursor: not-allowed; opacity: .58; }
-    code, .mono, .metric-value, .kv-value, .timestamp, .endpoint-method { font-family: var(--mono); }
+    :focus-visible { outline: none; box-shadow: var(--focus); }
+    h1, h2 { margin: 0; font-weight: 650; letter-spacing: -.01em; }
+    h1 { font-size: 15px; }
+    h2 { font-size: 15px; }
+    p { margin: 0; }
 
-    .app-shell {
-      --rail-w: 240px;
-      width: min(1520px, 100%); margin: 0 auto; padding: 22px clamp(14px, 2.5vw, 36px) 42px;
-      display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); gap: 16px; align-items: start;
+    /* ── Frame ─────────────────────────────────────────────────────── */
+    .shell {
+      --rail: 210px;
+      display: grid; grid-template-columns: var(--rail) minmax(0, 1fr);
+      gap: 28px; width: min(1500px, 100%); margin: 0 auto;
+      padding: 20px clamp(14px, 2.4vw, 32px) 40px;
     }
-    .app-shell.rail-collapsed { --rail-w: 56px; }
+    .shell.is-narrow { grid-template-columns: minmax(0, 1fr); gap: 18px; }
 
-    /* ── Top-deck layout ────────────────────────────────────────────────────
-       When this console is EMBEDDED in a host that already owns the left edge
-       (the Hermes One shell has its own icon rail + sidebar), a second vertical
-       rail would stack three navigations side by side. In that case the deck
-       lies down: one horizontal bar (brand · health · tabs · mode · actions)
-       above a full-width workspace. Same affordances, no competing rail. */
-    .app-shell.deck-top { grid-template-columns: minmax(0, 1fr); }
-    .deck-top .rail {
-      position: static; flex-direction: row; align-items: center; flex-wrap: wrap;
-      gap: 10px 14px; padding: 10px 12px;
-    }
-    .deck-top .rail-brand { flex: 0 0 auto; }
-    .deck-top .rail-brand .brand-copy .eyebrow { display: none; }
-    .deck-top .rail-brand h1 { font-size: 14px; }
-    .deck-top .rail-collapse { display: none; }
-    .deck-top .rail-health { padding: 0; border: 0; flex: 0 0 auto; }
-    .deck-top .rail-nav { flex-direction: row; flex: 1 1 auto; gap: 2px; overflow-x: auto; }
-    .deck-top .rail-item {
-      width: auto; flex: 0 0 auto; grid-template-columns: auto auto auto; gap: 8px;
-      min-height: 34px; padding: 6px 11px;
-    }
-    /* Selection reads as an underline in a horizontal bar, not a left bar. */
-    .deck-top .rail-item[aria-selected="true"] { box-shadow: inset 0 -2px 0 var(--accent); }
-    .deck-top .mode-button { width: auto; flex: 0 0 auto; }
-    .deck-top .rail-foot {
-      flex: 0 0 auto; flex-direction: row; gap: 6px; margin: 0; padding: 0; border: 0;
-    }
+    /* ── Rail ──────────────────────────────────────────────────────── */
+    .rail { position: sticky; top: 20px; align-self: start; display: flex; flex-direction: column; gap: 18px; }
+    .is-narrow .rail { position: static; flex-direction: row; align-items: center; flex-wrap: wrap; gap: 12px 18px; }
+    .brand { display: flex; align-items: baseline; gap: 8px; }
+    .brand-name { font-size: 15px; font-weight: 650; }
+    .brand-host { color: var(--faint); font: 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+    .is-narrow .brand-host { display: none; }
 
-    /* ── Command deck: persistent collapsible rail = the tablist ───────── */
-    .rail {
-      position: sticky; top: 16px; align-self: start;
-      display: flex; flex-direction: column; gap: 12px;
-      padding: 12px; border: 1px solid var(--line); border-radius: calc(var(--radius) + 4px);
-      background: rgba(16, 20, 28, .88); box-shadow: var(--shadow); backdrop-filter: blur(16px);
-      min-height: 0;
+    .nav { display: flex; flex-direction: column; gap: 1px; }
+    .is-narrow .nav { flex-direction: row; gap: 2px; }
+    .tab {
+      display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px;
+      padding: 7px 0; border: 0; background: none; color: var(--muted);
+      font: 650 13px var(--sans); text-align: left; white-space: nowrap;
     }
-    .rail-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
-    .rail-brand .brand-copy { min-width: 0; }
-    .rail-collapse {
-      display: grid; place-items: center; width: 26px; height: 26px; flex: 0 0 auto; margin-left: auto;
-      border: 1px solid var(--line); border-radius: 7px; color: var(--muted); background: transparent;
-      font: 700 13px var(--mono); cursor: pointer; transition: border-color .16s, color .16s;
-    }
-    .rail-collapse:hover { border-color: var(--accent); color: var(--text); }
-    .rail-health { display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
-    /* Write-mode control. Read = quiet and locked; Edit = unmistakably armed
-       (amber field, not a subtle text swap), because arming writes is the one
-       action in this console with consequences. */
-    .mode-button {
-      display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 10px;
-      width: 100%; padding: 9px 11px; border: 1px solid var(--line-strong); border-radius: 9px;
-      color: var(--text); background: var(--surface-raised); cursor: pointer; text-align: left;
-      transition: border-color .16s, background .16s, color .16s;
-    }
-    .mode-button:hover { border-color: var(--accent); background: var(--surface-hover); }
-    .mode-button-icon { font-size: 13px; line-height: 1; }
-    .mode-button-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-    .mode-button-label { font: 700 12px var(--sans); }
-    .mode-button-hint { color: var(--muted); font: 10px var(--mono); }
-    .mode-button[aria-pressed="true"] {
-      border-color: rgba(246, 191, 95, .55); color: #ffe4b0;
-      background: linear-gradient(180deg, rgba(246, 191, 95, .16), rgba(246, 191, 95, .06));
-    }
-    .mode-button[aria-pressed="true"] .mode-button-hint { color: #f6bf5f; }
-    /* Collapsed rail keeps the lock/unlock glyph — the control never vanishes. */
-    .rail-collapsed .mode-button { grid-template-columns: 1fr; justify-items: center; padding: 9px 4px; }
-    .rail-collapsed .mode-button-copy { display: none; }
-
-    .rail-nav { display: flex; flex-direction: column; gap: 2px; }
-    .rail-item {
-      display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 10px;
-      width: 100%; min-height: 40px; padding: 9px 10px; border: 0; border-radius: 8px;
-      color: var(--muted); background: transparent; font: 700 12px var(--sans); text-align: left; cursor: pointer;
-      transition: background .16s, color .16s;
-    }
-    .rail-item:hover { color: var(--text); background: var(--surface-hover); }
-    .rail-item[aria-selected="true"] { color: var(--text); background: var(--surface-hover); box-shadow: inset 3px 0 0 var(--accent); }
-    .rail-item[aria-selected="true"] .rail-icon { color: var(--accent); }
-    .rail-icon { justify-self: center; color: var(--faint); font: 700 14px var(--mono); line-height: 1; transition: color .16s; }
-    .rail-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .rail-state { display: inline-flex; align-items: center; gap: 7px; }
-    .rail-badge {
-      min-width: 20px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line);
-      background: rgba(9, 11, 16, .55); color: var(--muted); font: 700 10px var(--mono); text-align: center;
-    }
-    .rail-badge[hidden] { display: none; }
-    .rail-foot { margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
-    .rail-foot .button { justify-content: center; }
-    /* Collapsed rail: icon + state only; labels/prose fold away, canvas reclaims
-       width. The health rollup keeps just the reachability dot — the worst-of-N
-       and checked-at chips would overflow a 56px rail. */
-    .rail-collapsed .rail-label,
-    .rail-collapsed .rail-brand .brand-copy,
-    .rail-collapsed .rail-foot .button span,
-    .rail-collapsed .rail-health #worstBadge,
-    .rail-collapsed .rail-health #lastChecked { display: none; }
-    .rail-collapsed .rail-health #reachabilityChip { padding: 0; min-height: 0; border: 0; background: transparent; }
-    .rail-collapsed .rail-health #reachabilityChip #reachabilityValue { display: none; }
-    .rail-collapsed .rail-item { grid-template-columns: 1fr; justify-items: center; gap: 4px; padding: 9px 4px; }
-    .rail-collapsed .rail-state { flex-direction: column; gap: 3px; }
-    .rail-collapsed .rail-health { justify-content: center; }
-    .rail-collapsed .rail-brand { justify-content: center; flex-wrap: wrap; gap: 6px; }
-    .rail-collapsed .rail-collapse { margin: 0 auto; }
-    .rail-collapsed .rail-badge { min-width: 0; padding: 0 4px; }
-
-    .workspace { min-width: 0; }
-
-    /* ── Panel head: identity + this panel's own KPIs (kills kv duplication) ── */
-    .panel-head {
-      display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap;
-      margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--line);
-    }
-    .panel-head-main { min-width: 0; }
-    .panel-title { margin: 3px 0 0; font-size: 16px; letter-spacing: -.02em; }
-    .panel-kpis { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-
-    .topbar {
-      display: grid;
-      grid-template-columns: minmax(220px, 1fr) auto auto;
-      gap: 16px;
-      align-items: center;
-      padding: 16px 18px;
-      border: 1px solid var(--line);
-      border-radius: calc(var(--radius) + 4px);
-      background: rgba(16, 20, 28, .88);
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(16px);
-    }
-    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
-    .brand-mark {
-      display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 auto;
-      border: 1px solid rgba(143, 184, 255, .5); border-radius: 9px;
-      color: var(--accent); background: linear-gradient(135deg, rgba(74, 140, 255, .20), rgba(191, 156, 255, .10));
-      font: 700 15px var(--mono);
-    }
-    .eyebrow { margin: 0 0 2px; color: var(--faint); font: 700 10px/1 var(--mono); letter-spacing: .13em; text-transform: uppercase; }
-    h1 { margin: 0; font-size: 17px; letter-spacing: -.02em; }
-    .topbar-actions, .chrome-status { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
-
-    .chip, .badge, .status-dot, .endpoint-state {
-      display: inline-flex; align-items: center; gap: 7px; min-height: 28px;
-      border: 1px solid var(--line); border-radius: 999px; padding: 4px 9px;
-      color: var(--muted); background: rgba(9, 11, 16, .55); font: 700 11px var(--mono);
-      white-space: nowrap;
-    }
-    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); box-shadow: 0 0 0 3px color-mix(in srgb, var(--faint) 15%, transparent); }
-    .is-alive .dot, .state-alive .dot { background: var(--green); box-shadow: 0 0 0 3px rgba(94, 225, 173, .14); }
-    .is-degraded .dot, .state-degraded .dot { background: var(--amber); box-shadow: 0 0 0 3px rgba(246, 191, 95, .14); }
-    .is-quota .dot, .state-quota .dot { background: var(--violet); box-shadow: 0 0 0 3px rgba(191, 156, 255, .15); }
-    .is-dead .dot, .state-dead .dot { background: var(--red); box-shadow: 0 0 0 3px rgba(255, 127, 141, .14); }
-    .badge { border-color: rgba(246, 191, 95, .4); color: #ffd899; }
-    .badge.is-good { border-color: rgba(94, 225, 173, .35); color: #9df2cf; }
-    .badge.is-bad { border-color: rgba(255, 127, 141, .42); color: #ffb5bd; }
-    .badge-label { color: var(--faint); }
-
-    .button {
-      min-height: 34px; border: 1px solid var(--line-strong); border-radius: 8px; padding: 7px 11px;
-      color: var(--text); background: var(--surface-raised); font-weight: 700; transition: background .16s, border-color .16s, transform .16s;
-    }
-    .button:hover:not(:disabled) { border-color: var(--accent); background: var(--surface-hover); }
-    .button:active:not(:disabled) { transform: translateY(1px); }
-    .button.primary { border-color: var(--accent-strong); color: #eff6ff; background: linear-gradient(180deg, #397ce8, #2c66c2); }
-    .button.primary:hover:not(:disabled) { border-color: #9fc2ff; background: linear-gradient(180deg, #4b8dff, #326dcc); }
-    .button.danger { border-color: rgba(255, 127, 141, .52); color: #ffd2d7; background: rgba(255, 127, 141, .08); }
-    .button.quiet { border-color: transparent; color: var(--muted); background: transparent; }
-    .button.quiet:hover:not(:disabled) { border-color: var(--line); color: var(--text); }
-
-
-    .notice-stack { margin: 14px 0 0; display: grid; gap: 8px; }
-    .notice { display: flex; align-items: start; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--muted); }
-    .notice strong { color: var(--text); }
-    .notice.warn { border-color: rgba(246, 191, 95, .42); background: rgba(246, 191, 95, .065); }
-    .notice.error { border-color: rgba(255, 127, 141, .52); background: rgba(255, 127, 141, .075); }
-    .notice-icon { flex: 0 0 auto; font-family: var(--mono); font-weight: 800; }
-    .notice.warn .notice-icon { color: var(--amber); }
-    .notice.error .notice-icon { color: var(--red); }
-
-    .tabbar { display: flex; align-items: center; gap: 3px; overflow-x: auto; margin: 18px 0 16px; border-bottom: 1px solid var(--line); }
-    .tab { position: relative; flex: 0 0 auto; min-height: 42px; border: 0; padding: 0 13px; color: var(--muted); background: transparent; font: 700 12px var(--sans); }
+    .is-narrow .tab { padding: 7px 12px; border-radius: 8px; }
     .tab:hover { color: var(--text); }
     .tab[aria-selected="true"] { color: var(--text); }
-    .tab[aria-selected="true"]::after { content: ""; position: absolute; right: 10px; bottom: -1px; left: 10px; height: 2px; background: var(--accent); }
-
-    .panel { display: none; animation: panel-in .16s ease-out; }
-    .panel.active { display: block; }
-    @keyframes panel-in { from { opacity: .35; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
-    .grid { display: grid; gap: 14px; align-items: stretch; }
-    .grid.status { grid-template-columns: 1.3fr .7fr; }
-    .grid.split { grid-template-columns: 1fr 1fr; }
-    .grid.wide-narrow { grid-template-columns: minmax(0, 1.4fr) minmax(290px, .6fr); }
-    .card { min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(16, 20, 28, .83); overflow: hidden; }
-    .card > .card-body { flex: 1; }
-    .card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 15px; border-bottom: 1px solid var(--line); }
-    .card-title { margin: 0; font-size: 13px; letter-spacing: -.01em; }
-    .card-subtitle { margin: 3px 0 0; color: var(--faint); font-size: 11px; }
-    .card-body { padding: 15px; }
-    .section-kicker { margin: 0 0 8px; color: var(--faint); font: 800 10px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; }
-
-    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--line); border-bottom: 1px solid var(--line); }
-    .metric { min-height: 100px; padding: 14px; background: var(--surface); }
-    .metric-label { display: block; color: var(--faint); font: 800 10px/1.2 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
-    .metric-value { display: block; overflow: hidden; margin-top: 10px; color: var(--text); font-size: 21px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
-    .metric-detail { display: block; overflow: hidden; margin-top: 4px; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-
-    .kv-list { margin: 0; }
-    .kv-row { display: grid; grid-template-columns: minmax(110px, .72fr) minmax(0, 1.28fr); gap: 16px; padding: 9px 0; border-top: 1px solid rgba(38, 49, 68, .76); }
-    .kv-row:first-child { padding-top: 0; border-top: 0; }
-    .kv-key { color: var(--muted); font-size: 12px; }
-    .kv-value { overflow-wrap: anywhere; color: var(--text); font-size: 12px; text-align: right; }
-    .empty { display: grid; place-items: center; min-height: 116px; padding: 16px; border: 1px dashed var(--line-strong); border-radius: 8px; color: var(--faint); text-align: center; }
-    .pending { color: var(--amber); }
-
-    .liveness-list { display: grid; gap: 8px; }
-    .liveness-item, .policy-item, .breaker-item { border: 1px solid var(--line); border-radius: 8px; background: rgba(9, 11, 16, .4); }
-    .liveness-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px; }
-    .liveness-name { overflow: hidden; color: var(--text); font: 700 12px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
-    .liveness-meta { overflow: hidden; color: var(--faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-    .state-label { color: var(--muted); font: 800 10px var(--mono); text-transform: uppercase; }
-
-    .data-table-wrap { overflow-x: auto; }
-    table { width: 100%; border-spacing: 0; border-collapse: collapse; font-size: 12px; }
-    th { padding: 10px 12px; border-bottom: 1px solid var(--line); color: var(--faint); text-align: left; font: 800 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
-    td { padding: 11px 12px; border-bottom: 1px solid rgba(38, 49, 68, .65); color: var(--muted); vertical-align: top; }
-    tr:last-child td { border-bottom: 0; }
-    td:first-child { color: var(--text); font-family: var(--mono); }
-
-    .editor { width: 100%; min-height: 315px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 8px; padding: 12px; color: #dceaff; background: #090c12; font: 12px/1.5 var(--mono); tab-size: 2; }
-    .editor[readonly] { color: var(--muted); border-color: var(--line); }
-    .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
-    .toolbar-group { display: flex; gap: 8px; flex-wrap: wrap; }
-    .action-message { min-height: 19px; margin: 10px 0 0; color: var(--muted); font: 11px/1.4 var(--mono); }
-    .action-message.error { color: #ffacb5; }
-    .action-message.ok { color: #96edca; }
-    .diff { min-height: 315px; overflow: auto; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: #090c12; font: 12px/1.5 var(--mono); white-space: pre-wrap; }
-    .diff .add { color: #95eac5; }
-    .diff .remove { color: #ff9ea9; }
-
-    .endpoint-list { display: grid; gap: 7px; }
-    .endpoint { display: grid; grid-template-columns: 50px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid rgba(38, 49, 68, .7); }
-    .endpoint:last-child { border-bottom: 0; }
-    .endpoint-method { font-size: 10px; font-weight: 800; color: var(--accent); }
-    .endpoint-path { overflow: hidden; color: var(--muted); font: 11px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
-    .endpoint-state { min-height: 23px; padding: 2px 7px; font-size: 10px; }
-
-    .confirm-box { border: 1px solid rgba(246, 191, 95, .42); border-radius: 8px; padding: 13px; background: rgba(246, 191, 95, .055); }
-    .confirm-box p { margin: 0 0 10px; color: var(--muted); }
-    .confirm-input { width: 100%; min-height: 38px; border: 1px solid var(--line-strong); border-radius: 7px; padding: 8px 10px; color: var(--text); background: #090c12; font-family: var(--mono); }
-    .hint { color: var(--faint); font-size: 11px; }
-
-    .drawer-backdrop { position: fixed; z-index: 8; inset: 0; display: none; background: rgba(2, 4, 8, .54); }
-    .drawer-backdrop.open { display: block; }
-    .drawer { position: fixed; z-index: 9; top: 0; right: 0; width: min(620px, 100vw); height: 100vh; transform: translateX(104%); transition: transform .22s ease; border-left: 1px solid var(--line-strong); background: #0d1119; box-shadow: -18px 0 54px rgba(0, 0, 0, .38); }
-    .drawer.open { transform: translateX(0); }
-    .drawer-header { display: flex; align-items: center; justify-content: space-between; padding: 18px; border-bottom: 1px solid var(--line); }
-    .drawer-title { margin: 0; font-size: 15px; }
-    .drawer-body { overflow-y: auto; height: calc(100vh - 72px); padding: 18px; }
-    .trace-form { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
-    .trace-input { min-width: 0; border: 1px solid var(--line-strong); border-radius: 8px; padding: 9px 10px; color: var(--text); background: #090c12; }
-    .trace-result { min-height: 240px; overflow: auto; margin-top: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: #090c12; font: 12px/1.5 var(--mono); white-space: pre-wrap; }
-
-    @media (max-width: 1000px) {
-      .topbar { grid-template-columns: 1fr auto; }
-      .chrome-status { grid-column: 1 / -1; justify-content: flex-start; }
-      .grid.status, .grid.split, .grid.wide-narrow { grid-template-columns: 1fr; }
-      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      /* Rail lies down into a horizontal scroller above the workspace. */
-      .app-shell, .app-shell.rail-collapsed { --rail-w: auto; grid-template-columns: 1fr; }
-      .rail { position: static; }
-      .rail-nav { flex-direction: row; overflow-x: auto; }
-      .rail-item { width: auto; flex: 0 0 auto; grid-template-columns: auto auto auto; }
-      .rail-collapse { display: none; }
-      .rail-foot { flex-direction: row; flex-wrap: wrap; }
+    .tab[aria-selected="true"] .tab-name::after {
+      content: ""; display: block; height: 1.5px; margin-top: 3px; background: var(--accent);
     }
-    @media (max-width: 620px) {
-      .app-shell { padding: 10px 10px 28px; }
-      .topbar { grid-template-columns: 1fr; padding: 13px; gap: 12px; }
-      .topbar-actions { justify-content: flex-start; }
-      .metrics { grid-template-columns: 1fr 1fr; }
-      .metric { min-height: 88px; padding: 12px; }
-      .metric-value { font-size: 17px; }
-      .trace-form { grid-template-columns: 1fr; }
-      .pipeline-layout { grid-template-columns: 1fr; }
+    .tab-state { display: inline-flex; align-items: center; gap: 6px; }
+    .count { color: var(--faint); font: 600 11px var(--mono); }
+    .count[hidden] { display: none; }
+    .dot {
+      width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: 0 0 auto;
     }
+    .is-alive   .dot { background: var(--green); }
+    .is-degraded .dot { background: var(--amber); }
+    .is-quota   .dot { background: var(--violet); }
+    .is-dead    .dot { background: var(--red); }
 
-    /* Pipeline canvas — one shared node graph for editing + replay. */
-    .pipeline-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
-    /* Inspector hidden → the node canvas takes the full width. */
-    .pipeline-layout:has(.pipeline-side[hidden]) { grid-template-columns: minmax(0, 1fr); }
-    .pipeline-canvas-wrap { border: 1px solid var(--line); border-radius: var(--radius); background:
-      radial-gradient(circle at 1px 1px, rgba(38, 49, 68, .55) 1px, transparent 0) 0 0 / 22px 22px, var(--surface); overflow: auto; }
-    .pipeline-svg { display: block; width: 100%; min-height: 260px; }
-    .pnode { cursor: pointer; }
-    .pnode-box { fill: var(--surface-raised); stroke: var(--line-strong); stroke-width: 1.5; rx: 9; }
-    .pnode:hover .pnode-box { stroke: var(--accent); }
-    .pnode-label { fill: var(--text); font: 600 12px var(--mono); pointer-events: none; }
-    .pnode-sub { fill: var(--muted); font: 10px var(--mono); pointer-events: none; }
-    .pnode.is-runtime .pnode-box { stroke-dasharray: 4 3; opacity: .62; }
-    .pnode.is-runtime .pnode-label { fill: var(--muted); }
-    .pnode.is-tier .pnode-box { fill: #12203a; }
-    .pnode.is-terminal .pnode-box { fill: #1a1420; }
-    .pnode.is-selected .pnode-box { stroke: var(--accent-strong); stroke-width: 2.5; }
-    .pnode.is-active .pnode-box { stroke: var(--accent); stroke-width: 2.5; filter: drop-shadow(0 0 8px rgba(74, 140, 255, .6)); }
-    .pnode.is-traversed .pnode-box { stroke: var(--accent); }
-    .pnode.is-dim { opacity: .3; }
-    .pedge { fill: none; stroke: var(--line-strong); stroke-width: 1.5; }
-    .pedge.is-veto { stroke: var(--red); stroke-dasharray: 5 4; }
-    .pedge.is-active { stroke: var(--accent); stroke-width: 2.5; }
-    .pipeline-side { display: flex; flex-direction: column; gap: 12px; }
-    .replay-scrubber { display: flex; align-items: center; gap: 8px; }
-    .replay-scrubber input[type=range] { flex: 1; accent-color: var(--accent-strong); }
-    .replay-step-io { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #090c12; font: 11px/1.5 var(--mono); color: #dceaff; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow: auto; }
-    .prop-field { display: grid; gap: 4px; margin-bottom: 9px; }
-    .prop-field label { color: var(--muted); font: 600 10px var(--mono); text-transform: uppercase; letter-spacing: .04em; }
-    .prop-field input, .prop-field select { border: 1px solid var(--line-strong); border-radius: 7px; padding: 7px 9px; color: var(--text); background: #090c12; font: 12px var(--mono); }
-    .cause-chip { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font: 700 10px var(--mono); border: 1px solid var(--line-strong); }
-    .pipeline-advanced > summary { cursor: pointer; color: var(--muted); font: 600 12px var(--mono); padding: 8px 0; user-select: none; }
-    .pipeline-advanced > summary:hover { color: var(--text); }
-    .pipeline-advanced[open] > summary { color: var(--text); margin-bottom: 4px; }
-    .route-row { cursor: pointer; }
-    .route-row:hover { background: var(--surface-hover); }
-    .route-row.is-selected { background: var(--surface-hover); box-shadow: inset 2px 0 0 var(--accent-strong); }
-    /* Replay step I/O — labeled blocks, not a raw dump. */
-    .replay-meta { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-    .replay-meta-step { color: var(--faint); font: 700 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
-    .replay-meta-stage { color: var(--text); font: 700 12px var(--mono); }
-    .replay-io-block { margin-top: 8px; }
-    .replay-io-label { color: var(--faint); font: 700 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 3px; }
-    .replay-io-body { margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: #090c12; color: #dceaff; font: 11px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+    /* The lock is the only filled control in the rail — a write gate must never
+       share a shape with a status chip. */
+    .lock {
+      display: flex; align-items: center; gap: 8px; padding: 8px 11px;
+      border: 1px solid var(--line-strong); border-radius: 8px;
+      background: var(--surface-raised); font: 650 12px var(--sans);
+    }
+    .lock:hover { border-color: var(--accent); }
+    .lock[aria-pressed="true"] {
+      border-color: rgba(246, 191, 95, .6); color: #ffe0a8;
+      background: rgba(246, 191, 95, .14);
+    }
+    .lock-icon { font-size: 12px; }
+    .rail-foot { display: flex; flex-direction: column; gap: 8px; }
+    .is-narrow .rail-foot { flex-direction: row; margin-left: auto; }
+    .quiet {
+      border: 0; background: none; color: var(--muted); font: 600 12px var(--sans);
+      padding: 4px 0; text-align: left;
+    }
+    .is-narrow .quiet { padding: 4px 8px; }
+    .quiet:hover { color: var(--text); }
+    .reach { display: flex; align-items: center; gap: 7px; color: var(--muted); font: 11px var(--mono); }
+
+    /* ── Screens ───────────────────────────────────────────────────── */
+    .screen { display: none; }
+    .screen.active { display: block; }
+    .screen-head {
+      display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+      flex-wrap: wrap; margin-bottom: 18px;
+    }
+    .screen-note { color: var(--muted); font-size: 12px; }
+    .group { margin-top: 26px; }
+    .group-head {
+      display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+      padding-bottom: 7px; margin-bottom: 10px; border-bottom: 1px solid var(--line);
+    }
+    .group-head h2 { font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
+    .nothing { color: var(--faint); font-size: 12px; padding: 2px 0; }
+
+    /* Rows: the console's one structural primitive. */
+    .row {
+      display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
+      gap: 12px; padding: 9px 0; border-bottom: 1px solid rgba(38, 49, 68, .55);
+    }
+    .row:last-child { border-bottom: 0; }
+    .row-name { font: 600 13px var(--mono); overflow-wrap: anywhere; }
+    .row-note { color: var(--faint); font-size: 12px; }
+    .row-value { color: var(--muted); font: 12px var(--mono); text-align: right; white-space: nowrap; }
+    .state { font: 700 10px var(--mono); letter-spacing: .07em; text-transform: uppercase; }
+    .is-alive .state { color: var(--green); }
+    .is-degraded .state { color: var(--amber); }
+    .is-quota .state { color: var(--violet); }
+    .is-dead .state { color: var(--red); }
+
+    .facts { display: flex; flex-wrap: wrap; gap: 6px 22px; }
+    .fact { display: flex; align-items: baseline; gap: 7px; }
+    .fact-label { color: var(--faint); font: 10px var(--mono); letter-spacing: .07em; text-transform: uppercase; }
+    .fact-value { font: 600 13px var(--mono); }
+
+    /* ── Pipeline graph ────────────────────────────────────────────── */
+    .canvas-row { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 22px; align-items: start; }
+    .canvas-row.solo { grid-template-columns: minmax(0, 1fr); }
+    .is-narrow .canvas-row { grid-template-columns: minmax(0, 1fr); }
+    /* Routes: the decision list is the subject here, not the graph beside it. */
+    .canvas-row.routes { grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); }
+    .is-narrow .canvas-row.routes { grid-template-columns: minmax(0, 1fr); }
+    .route-list { max-height: 72vh; overflow: auto; }
+    .canvas { overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+    .graph { display: block; width: 100%; min-height: 220px; }
+    .pnode { cursor: default; }
+    .pnode.editable { cursor: pointer; }
+    .pnode-box { fill: var(--surface-raised); stroke: var(--line-strong); stroke-width: 1.2; }
+    .pnode.editable:hover .pnode-box { stroke: var(--accent); }
+    .pnode-name { fill: var(--text); font: 600 11px var(--mono); }
+    .pnode-sub { fill: var(--faint); font: 9px var(--mono); }
+    .pnode.runtime .pnode-box { stroke-dasharray: 3 3; }
+    .pnode.runtime .pnode-name { fill: var(--muted); }
+    .pnode.selected .pnode-box { stroke: var(--accent-strong); stroke-width: 2; }
+    .pnode.on .pnode-box { stroke: var(--accent); stroke-width: 2; }
+    .pnode.past .pnode-box { stroke: rgba(143, 184, 255, .55); }
+    .pnode.off { opacity: .32; }
+    .pedge { fill: none; stroke: var(--line-strong); stroke-width: 1.2; }
+    .pedge.stop { stroke: var(--red); stroke-dasharray: 4 3; }
+
+    .field { display: grid; gap: 4px; margin-bottom: 10px; }
+    .field label { color: var(--faint); font: 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+    .field input, .field select {
+      border: 1px solid var(--line-strong); border-radius: 7px; padding: 7px 9px;
+      background: #080b11; font: 12px var(--mono);
+    }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .btn {
+      border: 1px solid var(--line-strong); border-radius: 7px; padding: 7px 12px;
+      background: var(--surface-raised); font: 650 12px var(--sans);
+    }
+    .btn:hover { border-color: var(--accent); background: var(--surface-hover); }
+    .btn.go { border-color: var(--accent-strong); color: #f0f6ff; background: #2f6ccb; }
+    .btn.warn { border-color: rgba(255, 127, 141, .5); color: #ffd2d7; background: rgba(255, 127, 141, .1); }
+    .msg { margin-top: 10px; color: var(--muted); font-size: 12px; }
+    .msg.ok { color: var(--green); }
+    .msg.bad { color: var(--red); }
+    .code {
+      margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+      background: #080b11; color: #d8e6fb; font: 11px/1.55 var(--mono);
+      white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto;
+    }
+    .editor {
+      width: 100%; min-height: 240px; resize: vertical; padding: 10px 12px;
+      border: 1px solid var(--line-strong); border-radius: 8px; background: #080b11;
+      font: 12px/1.55 var(--mono); tab-size: 2;
+    }
+    details > summary { color: var(--muted); font: 650 12px var(--sans); cursor: pointer; padding: 6px 0; }
+    details > summary:hover { color: var(--text); }
+
+    /* ── Routes + replay ───────────────────────────────────────────── */
+    .route { cursor: pointer; }
+    .route:hover { background: var(--surface-hover); }
+    .route.picked { background: var(--surface-hover); box-shadow: inset 2px 0 0 var(--accent); }
+    .cause { font: 700 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+    .scrub { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+    .scrub input[type=range] { flex: 1; accent-color: var(--accent-strong); }
+    .step-head { display: flex; align-items: baseline; gap: 12px; margin-top: 14px; }
+    .step-index { color: var(--faint); font: 700 10px var(--mono); letter-spacing: .07em; text-transform: uppercase; }
+    .step-stage { font: 650 13px var(--mono); }
+    .io { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 8px; }
+    .io-label { color: var(--faint); font: 10px var(--mono); letter-spacing: .07em; text-transform: uppercase; margin-bottom: 4px; }
+
+    .warn-line { display: flex; gap: 9px; align-items: baseline; padding: 9px 11px; margin-bottom: 14px;
+      border-left: 2px solid var(--amber); background: rgba(246, 191, 95, .07); color: var(--muted); font-size: 12px; }
+    .warn-line.bad { border-left-color: var(--red); background: rgba(255, 127, 141, .07); }
+
+    @media (max-width: 700px) {
+      .shell { padding: 12px 12px 28px; }
+      .io { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
-  <main class="app-shell">
+  <main class="shell" id="shell">
     <aside class="rail">
-      <div class="rail-brand">
-        <div class="brand-mark" aria-hidden="true">CR</div>
-        <div class="brand-copy">
-          <p class="eyebrow">Hermes One / observability</p>
-          <h1>Capability Router</h1>
-        </div>
-        <button id="railCollapse" class="rail-collapse" type="button" aria-label="Collapse rail" title="Collapse rail">‹</button>
+      <div class="brand">
+        <span class="brand-name">Capability Router</span>
+        <span class="brand-host">Hermes One</span>
       </div>
-      <div class="rail-health" aria-label="Router health">
-        <span id="worstBadge" class="badge"><span class="badge-label">worst-of-N</span><span id="worstValue">checking</span></span>
-        <span id="reachabilityChip" class="chip"><span class="dot"></span><span id="reachabilityValue">sidecar checking</span></span>
-        <span id="lastChecked" class="timestamp chip">not checked</span>
-      </div>
-      <!-- The single most consequential control: whether this console can WRITE.
-           It sits at the top of the rail (not buried in a footer), states what it
-           will do, and stays visible when the rail is collapsed. -->
-      <button id="modeButton" class="mode-button" type="button" aria-pressed="false"
-              title="Unlock editing (arms plan → apply)">
-        <span class="mode-button-icon" aria-hidden="true">🔒</span>
-        <span class="mode-button-copy">
-          <span class="mode-button-label">Read-only</span>
-          <span class="mode-button-hint">Unlock to edit</span>
-        </span>
-      </button>
-      <nav class="rail-nav" role="tablist" aria-label="Capability Router console sections">
-        <button class="tab rail-item" id="tab-status" role="tab" aria-selected="true" aria-controls="panel-status" data-tab="status" type="button" title="Status">
-          <span class="rail-icon" aria-hidden="true">◈</span><span class="rail-label">Status</span>
-          <span class="rail-state" id="railStatus"><span class="rail-badge" id="railStatusBadge" hidden></span><span class="dot"></span></span>
+
+      <nav class="nav" role="tablist" aria-label="Console sections">
+        <button class="tab" id="tab-health" role="tab" aria-selected="true" aria-controls="panel-health" data-tab="health" type="button">
+          <span class="tab-name">Health</span>
+          <span class="tab-state" id="stateHealth"><span class="count" id="countHealth" hidden></span><span class="dot"></span></span>
         </button>
-        <button class="tab rail-item" id="tab-pipeline" role="tab" aria-selected="false" aria-controls="panel-pipeline" data-tab="pipeline" type="button" title="Pipeline">
-          <span class="rail-icon" aria-hidden="true">⬡</span><span class="rail-label">Pipeline</span>
-          <span class="rail-state" id="railPipeline"><span class="rail-badge" id="railPipelineBadge" hidden></span><span class="dot"></span></span>
+        <button class="tab" id="tab-pipeline" role="tab" aria-selected="false" aria-controls="panel-pipeline" data-tab="pipeline" type="button">
+          <span class="tab-name">Pipeline</span>
+          <span class="tab-state" id="statePipeline"><span class="count" id="countPipeline" hidden></span><span class="dot"></span></span>
         </button>
-        <button class="tab rail-item" id="tab-replay" role="tab" aria-selected="false" aria-controls="panel-replay" data-tab="replay" type="button" title="Replay">
-          <span class="rail-icon" aria-hidden="true">⟳</span><span class="rail-label">Replay</span>
-          <span class="rail-state" id="railReplay"><span class="rail-badge" id="railReplayBadge" hidden></span><span class="dot"></span></span>
-        </button>
-        <button class="tab rail-item" id="tab-blocklist" role="tab" aria-selected="false" aria-controls="panel-blocklist" data-tab="blocklist" type="button" title="Blocklist / Breaker">
-          <span class="rail-icon" aria-hidden="true">⛨</span><span class="rail-label">Blocklist</span>
-          <span class="rail-state" id="railBlocklist"><span class="rail-badge" id="railBlocklistBadge" hidden></span><span class="dot"></span></span>
-        </button>
-        <button class="tab rail-item" id="tab-compaction" role="tab" aria-selected="false" aria-controls="panel-compaction" data-tab="compaction" type="button" title="Compaction &amp; summarizer">
-          <span class="rail-icon" aria-hidden="true">⌘</span><span class="rail-label">Compaction</span>
-          <span class="rail-state" id="railCompaction"><span class="rail-badge" id="railCompactionBadge" hidden></span><span class="dot"></span></span>
+        <button class="tab" id="tab-routes" role="tab" aria-selected="false" aria-controls="panel-routes" data-tab="routes" type="button">
+          <span class="tab-name">Routes</span>
+          <span class="tab-state" id="stateRoutes"><span class="count" id="countRoutes" hidden></span><span class="dot"></span></span>
         </button>
       </nav>
+
+      <button class="lock" id="lock" type="button" aria-pressed="false" title="Unlock editing">
+        <span class="lock-icon" aria-hidden="true">🔒</span><span id="lockLabel">Locked</span>
+      </button>
+
       <div class="rail-foot">
-        <button id="traceButton" class="button quiet" type="button"><span>Trace route</span></button>
-        <button id="refreshButton" class="button quiet" type="button"><span>Refresh</span></button>
+        <span class="reach" id="reach"><span class="dot"></span><span id="reachText">checking</span></span>
+        <button class="quiet" id="refresh" type="button">Refresh</button>
       </div>
     </aside>
 
-    <div class="workspace">
-    <section id="noticeStack" class="notice-stack" aria-live="polite"></section>
+    <div>
+      <div id="warnings"></div>
 
-    <section id="panel-status" class="panel active" role="tabpanel" aria-labelledby="tab-status">
-      <div class="panel-head">
-        <div class="panel-head-main">
-          <p class="section-kicker">Status</p>
-          <h2 class="panel-title">Router posture</h2>
-          <p class="card-subtitle">Live sidecar posture through the consented extension proxy.</p>
+      <!-- ── Health: which models can this router reach right now ────── -->
+      <section class="screen active" id="panel-health" role="tabpanel" aria-labelledby="tab-health">
+        <div class="screen-head">
+          <h2>Models</h2>
+          <div class="facts" id="healthFacts"></div>
         </div>
-      </div>
-      <div class="grid status">
-        <article class="card">
-          <div class="card-header">
-            <div><h2 class="card-title">Posture &amp; reachability</h2><p class="card-subtitle">Metric cards below are the canonical numbers; details list carries only what they don't.</p></div>
-          </div>
-          <div id="statusMetrics" class="metrics"></div>
-          <div class="card-body"><div id="statusDetails" class="kv-list"></div></div>
-        </article>
-        <article class="card">
-          <div class="card-header"><div><h2 class="card-title">Sidecar reachability</h2><p class="card-subtitle">Health is never requested directly from port 8791.</p></div></div>
-          <div class="card-body"><div id="healthDetails" class="kv-list"></div></div>
-        </article>
-      </div>
-      <div class="grid split" style="margin-top:14px">
-        <article class="card">
-          <div class="card-header"><div><h2 class="card-title">Five-state liveness</h2><p class="card-subtitle">Alive, degraded, quota, dead, or pending.</p></div></div>
-          <div class="card-body"><div id="livenessList" class="liveness-list"></div></div>
-        </article>
-        <article class="card">
-          <div class="card-header"><div><h2 class="card-title">Endpoint ledger</h2><p class="card-subtitle">New routes degrade to pending instead of failing the console.</p></div></div>
-          <div class="card-body"><div id="endpointLedger" class="endpoint-list"></div></div>
-        </article>
-      </div>
-    </section>
+        <div id="models"></div>
 
-    <section id="panel-blocklist" class="panel" role="tabpanel" aria-labelledby="tab-blocklist">
-      <div class="panel-head">
-        <div class="panel-head-main">
-          <p class="section-kicker">Guardrails</p>
-          <h2 class="panel-title">Blocklist &amp; breaker</h2>
-          <p class="card-subtitle">Config and runtime deny rows, plus circuit-breaker cooldown state.</p>
+        <div class="group" id="bansGroup" hidden>
+          <div class="group-head"><h2>Blocked</h2></div>
+          <div id="bans"></div>
         </div>
-        <div class="panel-kpis">
-          <span id="kpiBans" class="badge"><span class="badge-label">bans</span><span id="kpiBansValue">0</span></span>
-          <span id="kpiBreakers" class="badge"><span class="badge-label">breakers</span><span id="kpiBreakersValue">0</span></span>
-        </div>
-      </div>
-      <div class="grid split">
-        <article class="card">
-          <div class="card-header"><div><h2 class="card-title">Active blocklist</h2><p class="card-subtitle">Config and runtime deny rows.</p></div></div>
-          <div class="card-body"><div id="blocklistTable" class="data-table-wrap"></div></div>
-        </article>
-        <article class="card">
-          <div class="card-header"><div><h2 class="card-title">Circuit breaker</h2><p class="card-subtitle">Cooldown state and last failure kind.</p></div></div>
-          <div class="card-body"><div id="breakerList" class="liveness-list"></div></div>
-        </article>
-      </div>
-    </section>
 
-    <section id="panel-compaction" class="panel" role="tabpanel" aria-labelledby="tab-compaction">
-      <div class="panel-head">
-        <div class="panel-head-main">
-          <p class="section-kicker">Context</p>
-          <h2 class="panel-title">Compaction &amp; summarizer</h2>
-          <p class="card-subtitle">Compaction calibration and summarizer signals. Read-only until the sidecar implements the endpoint.</p>
-        </div>
-        <div class="panel-kpis">
-          <span id="compactionState" class="chip">checking</span>
-        </div>
-      </div>
-      <div class="grid wide-narrow">
-        <article class="card">
-          <div class="card-header"><div><h2 class="card-title">Compaction control</h2><p class="card-subtitle">Derived thresholds and the summarizer budget.</p></div></div>
-          <div class="card-body"><div id="compactionDetails" class="kv-list"></div></div>
-        </article>
-        <article class="card">
-          <div class="card-header"><div><h2 class="card-title">Dead-man confirm</h2><p class="card-subtitle">Write the exact phrase to arm an apply action.</p></div></div>
-          <div class="card-body">
-            <div class="confirm-box">
-              <p>Type <code>COMPACT</code> to unlock compaction apply. This is intentionally local and temporary.</p>
-              <input id="compactionConfirm" class="confirm-input" autocomplete="off" placeholder="COMPACT" aria-label="Type COMPACT to confirm">
-              <div class="toolbar"><button id="applyCompactionButton" class="button primary" type="button">Apply compaction</button></div>
-              <p id="compactionActionMessage" class="action-message" aria-live="polite"></p>
+        <div class="group">
+          <div class="group-head"><h2>Compaction</h2><span class="screen-note" id="compactionNote"></span></div>
+          <div class="facts" id="compaction"></div>
+          <details id="compactionApply">
+            <summary>Recalculate thresholds</summary>
+            <div class="field" style="margin-top:10px">
+              <label for="compactConfirm">Type COMPACT to confirm — this restarts the agent</label>
+              <input id="compactConfirm" autocomplete="off" placeholder="COMPACT">
             </div>
-          </div>
-        </article>
-      </div>
-      <article class="card" style="margin-top:14px">
-        <div class="card-header"><div><h2 class="card-title">Summarizer signals</h2><p class="card-subtitle">Read-only until the matching sidecar endpoint exists.</p></div></div>
-        <div class="card-body"><div id="summarizerDetails" class="kv-list"></div></div>
-      </article>
-    </section>
+            <div class="actions"><button class="btn warn" id="compactGo" type="button">Recalculate</button></div>
+            <p class="msg" id="compactMsg" aria-live="polite"></p>
+          </details>
+        </div>
+      </section>
 
-    <!-- Pipeline = the ONE place to EDIT the router. Visual-first (click a node),
-         JSON textarea as the advanced escape hatch. Both feed one guarded plan. -->
-    <section id="panel-pipeline" class="panel" role="tabpanel" aria-labelledby="tab-pipeline">
-      <div class="panel-head">
-        <div class="panel-head-main">
-          <p class="section-kicker">Edit</p>
-          <h2 class="panel-title">Routing pipeline</h2>
-          <p class="card-subtitle">How router.yaml routes a task, left to right. Switch to Edit, then click a node to change it.</p>
+      <!-- ── Pipeline: how a task becomes a model ───────────────────── -->
+      <section class="screen" id="panel-pipeline" role="tabpanel" aria-labelledby="tab-pipeline">
+        <div class="screen-head">
+          <h2>Routing pipeline</h2>
+          <p class="screen-note" id="pipelineNote">Unlock to change a node.</p>
         </div>
-        <div class="panel-kpis">
-          <span id="pipelineMode" class="chip">read-only</span>
-          <span id="kpiRules" class="badge"><span class="badge-label">rules</span><span id="kpiRulesValue">0</span></span>
-          <span id="kpiTiers" class="badge"><span class="badge-label">tiers</span><span id="kpiTiersValue">0</span></span>
-          <button id="inspectorToggle" class="button quiet" type="button" aria-pressed="false">Hide inspector</button>
+        <div class="canvas-row" id="pipelineRow">
+          <div class="canvas"><svg id="pipelineSvg" class="graph" role="img" aria-label="Routing pipeline"></svg></div>
+          <div id="inspector"></div>
         </div>
-      </div>
-      <div class="pipeline-layout">
-        <article class="card">
-          <div class="card-body">
-            <div class="pipeline-canvas-wrap"><svg id="pipelineSvg" class="pipeline-svg" role="img" aria-label="Routing pipeline node graph"></svg></div>
-            <p id="pipelineActionMessage" class="action-message" role="status" aria-live="polite"></p>
-          </div>
-        </article>
-        <div class="pipeline-side">
-          <article class="card">
-            <div class="card-header"><div><h2 class="card-title">Node editor</h2><p class="card-subtitle">The selected node's policy fragment.</p></div></div>
-            <div class="card-body"><div id="pipelineInspector" class="kv-list"><div class="empty">Select a node to inspect. In Edit mode, its fields become editable.</div></div>
-              <div id="pipelineEditActions" class="card-actions" style="margin-top:10px" hidden>
-                <button id="pipelineValidateButton" class="button" type="button">Validate &amp; preview</button>
-                <button id="pipelineApplyButton" class="button primary" type="button">Apply</button>
-                <button id="pipelineConfirmButton" class="button" type="button">Confirm apply</button>
-                <button id="pipelineRevertButton" class="button quiet" type="button">Revert</button>
-              </div>
-              <pre id="pipelinePlanPreview" class="replay-step-io" style="margin-top:10px" hidden></pre>
+        <div class="group">
+          <details>
+            <summary>Edit the whole policy as JSON</summary>
+            <textarea id="policyEditor" class="editor" spellcheck="false" readonly aria-label="Policy JSON"></textarea>
+            <div class="actions">
+              <button class="btn" id="jsonPlan" type="button">Validate</button>
+              <button class="btn go" id="jsonApply" type="button">Apply</button>
+              <button class="btn" id="jsonConfirm" type="button">Confirm</button>
+              <button class="btn warn" id="jsonRevert" type="button">Revert</button>
             </div>
-          </article>
+            <p class="msg" id="jsonMsg" aria-live="polite"></p>
+            <pre class="code" id="jsonDiff" hidden></pre>
+          </details>
         </div>
-      </div>
-      <details class="pipeline-advanced" style="margin-top:14px">
-        <summary>Advanced: edit the full policy as JSON</summary>
-        <div class="grid wide-narrow" style="margin-top:12px">
-          <article class="card">
-            <div class="card-header"><div><h2 class="card-title">Policy document</h2><p class="card-subtitle">Escape hatch for edits the node editor doesn't cover (bans, new rules). Same guarded validate → apply.</p></div><span id="policyMode" class="chip">read-only</span></div>
-            <div class="card-body">
-              <textarea id="policyEditor" class="editor" spellcheck="false" readonly aria-label="Policy document"></textarea>
-              <div class="toolbar">
-                <div class="toolbar-group">
-                  <button id="validatePolicyButton" class="button" type="button">Validate &amp; preview</button>
-                  <button id="applyPolicyButton" class="button primary" type="button">Apply plan</button>
-                  <button id="confirmPolicyButton" class="button" type="button">Confirm apply</button>
-                  <button id="revertPolicyButton" class="button danger" type="button">Revert</button>
-                </div>
-                <span class="hint">Apply always explains why it cannot proceed.</span>
-              </div>
-              <p id="policyActionMessage" class="action-message" aria-live="polite"></p>
-            </div>
-          </article>
-          <article class="card">
-            <div class="card-header"><div><h2 class="card-title">Plan preview</h2><p class="card-subtitle">Server-provided diff from POST /plan.</p></div></div>
-            <div class="card-body"><pre id="planPreview" class="diff">No validation plan yet.</pre></div>
-          </article>
-        </div>
-        <article class="card" style="margin-top:12px">
-          <div class="card-header"><div><h2 class="card-title">Policy / tiers</h2><p class="card-subtitle">Resolved sidecar policy data (reference).</p></div></div>
-          <div class="card-body"><div id="policyTable" class="data-table-wrap"></div></div>
-        </article>
-      </details>
-    </section>
+      </section>
 
-    <!-- Replay = the OTHER activity: OBSERVE what the router decided. Read-only. -->
-    <section id="panel-replay" class="panel" role="tabpanel" aria-labelledby="tab-replay">
-      <div class="panel-head">
-        <div class="panel-head-main">
-          <p class="section-kicker">Observe</p>
-          <h2 class="panel-title">Decision replay</h2>
-          <p class="card-subtitle">Pick a recent route, then step through the exact path it took. Read-only.</p>
+      <!-- ── Routes: what it actually decided ───────────────────────── -->
+      <section class="screen" id="panel-routes" role="tabpanel" aria-labelledby="tab-routes">
+        <div class="screen-head">
+          <h2>Recent decisions</h2>
+          <p class="screen-note" id="routesNote"></p>
         </div>
-        <div class="panel-kpis">
-          <span id="replayRouteChip" class="chip">no route selected</span>
-          <span id="kpiRoutes" class="badge"><span class="badge-label">routes</span><span id="kpiRoutesValue">0</span></span>
-        </div>
-      </div>
-      <div class="pipeline-layout">
-        <article class="card">
-          <div class="card-body">
-            <div class="pipeline-canvas-wrap"><svg id="replaySvg" class="pipeline-svg" role="img" aria-label="Replayed routing path"></svg></div>
-            <div class="replay-scrubber" hidden id="replayScrubber">
-              <button id="replayPrev" class="button quiet" type="button" aria-label="Previous step">◀</button>
-              <input id="replayRange" type="range" min="0" max="0" value="0" aria-label="Replay step">
-              <button id="replayNext" class="button quiet" type="button" aria-label="Next step">▶</button>
+        <div class="canvas-row routes">
+          <div id="routesTable" class="route-list"></div>
+          <div>
+            <div class="canvas"><svg id="replaySvg" class="graph" role="img" aria-label="Replayed path"></svg></div>
+            <div class="scrub" id="scrub" hidden>
+              <button class="quiet" id="stepPrev" type="button" aria-label="Previous step">◀</button>
+              <input id="stepRange" type="range" min="0" max="0" value="0" aria-label="Step">
+              <button class="quiet" id="stepNext" type="button" aria-label="Next step">▶</button>
             </div>
-            <div id="replayStepIo" class="replay-step-io" hidden></div>
+            <div id="stepDetail"></div>
           </div>
-        </article>
-        <div class="pipeline-side">
-          <article class="card">
-            <div class="card-header"><div><h2 class="card-title">Recent routes</h2><p class="card-subtitle">Real production decisions, most recent first.</p></div></div>
-            <div class="card-body"><div id="routesTable" class="table-wrap"><div class="empty">No routes recorded yet.</div></div></div>
-          </article>
         </div>
-      </div>
-    </section>
+      </section>
     </div>
   </main>
-
-  <div id="drawerBackdrop" class="drawer-backdrop" aria-hidden="true"></div>
-  <aside id="traceDrawer" class="drawer" aria-labelledby="traceDrawerTitle" aria-hidden="true">
-    <div class="drawer-header"><div><p class="eyebrow">Explain endpoint</p><h2 id="traceDrawerTitle" class="drawer-title">Trace route</h2></div><button id="closeTraceButton" class="button quiet" type="button">Close</button></div>
-    <div class="drawer-body">
-      <p class="hint">A dry routing explanation. This uses GET <code>/explain?task=</code> through the same-origin extension proxy.</p>
-      <form id="traceForm" class="trace-form"><input id="traceTask" class="trace-input" required placeholder="Describe a task to route" aria-label="Task to explain"><button class="button primary" type="submit">Explain</button></form>
-      <pre id="traceResult" class="trace-result">No trace requested.</pre>
-    </div>
-  </aside>
 
   <script>
     (() => {
       'use strict';
 
-      // Same-origin extension proxy namespace. Never call the sidecar port directly.
-      const PROXY_ROOT = '/api/extensions/capability-router/sidecar/';
-      const ENDPOINTS = [
-        ['GET', '/health'], ['GET', '/status'], ['GET', '/policy'], ['GET', '/blocklist'],
-        ['GET', '/liveness'], ['GET', '/compaction'], ['GET', '/explain?task='], ['GET', '/routes'],
-        ['POST', '/plan'], ['POST', '/apply'], ['POST', '/apply/confirm'], ['POST', '/apply/revert']
-      ];
+      const SIDECAR = '/api/extensions/capability-router/sidecar';
+      const NARROW_BELOW = 1120;
+
       const state = {
-        mode: 'read',
-        health: null,
-        status: null,
-        policy: null,
-        blocklist: null,
-        liveness: null,
-        compaction: null,
-        plan: null,
-        endpointState: new Map(),
-        lastChecked: null,
-        unreachable: false,
-        // Pipeline canvas + replay
-        routes: [],
-        selectedNode: null,
-        replay: null   // { steps: [...], index: 0, routeId }
+        mode: 'locked',
+        health: null, status: null, policy: null, blocklist: null,
+        liveness: null, compaction: null, routes: [],
+        plan: null, draft: null, selected: null, replay: null,
+        pending: new Set(), unreachable: false, checkedAt: null,
       };
-      const SVG_NS = 'http://www.w3.org/2000/svg';
 
       const $ = (id) => document.getElementById(id);
-      const elements = {
-        worstBadge: $('worstBadge'), worstValue: $('worstValue'), reachabilityChip: $('reachabilityChip'),
-        reachabilityValue: $('reachabilityValue'), lastChecked: $('lastChecked'), noticeStack: $('noticeStack'),
-        statusMetrics: $('statusMetrics'), statusDetails: $('statusDetails'), healthDetails: $('healthDetails'),
-        livenessList: $('livenessList'), endpointLedger: $('endpointLedger'), policyEditor: $('policyEditor'),
-        policyMode: $('policyMode'), planPreview: $('planPreview'), policyActionMessage: $('policyActionMessage'),
-        policyTable: $('policyTable'), blocklistTable: $('blocklistTable'), breakerList: $('breakerList'),
-        compactionState: $('compactionState'), compactionDetails: $('compactionDetails'),
-        compactionConfirm: $('compactionConfirm'), compactionActionMessage: $('compactionActionMessage'),
-        applyCompactionButton: $('applyCompactionButton'), traceDrawer: $('traceDrawer'), drawerBackdrop: $('drawerBackdrop'),
-        traceTask: $('traceTask'), traceResult: $('traceResult'), summarizerDetails: $('summarizerDetails'),
-        pipelineSvg: $('pipelineSvg'), pipelineMode: $('pipelineMode'), pipelineInspector: $('pipelineInspector'),
-        pipelineEditActions: $('pipelineEditActions'), pipelinePlanPreview: $('pipelinePlanPreview'),
-        pipelineActionMessage: $('pipelineActionMessage'), routesTable: $('routesTable'),
-        replaySvg: $('replaySvg'), replayRouteChip: $('replayRouteChip'),
-        replayScrubber: $('replayScrubber'), replayRange: $('replayRange'), replayStepIo: $('replayStepIo'),
-        // Command deck: rail state affordances + collapse/inspector toggles
-        appShell: document.querySelector('.app-shell'), railCollapse: $('railCollapse'),
-        modeButton: $('modeButton'),
-        modeButtonIcon: document.querySelector('#modeButton .mode-button-icon'),
-        modeButtonLabel: document.querySelector('#modeButton .mode-button-label'),
-        modeButtonHint: document.querySelector('#modeButton .mode-button-hint'),
-        railStatus: $('railStatus'), railStatusBadge: $('railStatusBadge'),
-        railPipeline: $('railPipeline'), railPipelineBadge: $('railPipelineBadge'),
-        railReplay: $('railReplay'), railReplayBadge: $('railReplayBadge'),
-        railBlocklist: $('railBlocklist'), railBlocklistBadge: $('railBlocklistBadge'),
-        railCompaction: $('railCompaction'), railCompactionBadge: $('railCompactionBadge'),
-        kpiRulesValue: $('kpiRulesValue'), kpiTiersValue: $('kpiTiersValue'),
-        kpiRoutesValue: $('kpiRoutesValue'), kpiBansValue: $('kpiBansValue'), kpiBreakersValue: $('kpiBreakersValue'),
-        inspectorToggle: $('inspectorToggle'), pipelineSide: document.querySelector('#panel-pipeline .pipeline-side')
+      const el = (tag, cls, text) => {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (text !== undefined && text !== null) n.textContent = String(text);
+        return n;
+      };
+      const svgEl = (tag, attrs) => {
+        const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
+        if (attrs) for (const k of Object.keys(attrs)) n.setAttribute(k, String(attrs[k]));
+        return n;
+      };
+      const clear = (n) => { while (n.firstChild) n.removeChild(n.firstChild); };
+      const pretty = (v) => {
+        if (typeof v === 'string') return v;
+        try { return JSON.stringify(v, null, 2); } catch (_) { return String(v); }
       };
 
-      function makeElement(tag, className, text) {
-        const node = document.createElement(tag);
-        if (className) node.className = className;
-        if (text !== undefined && text !== null) node.textContent = String(text);
-        return node;
-      }
+      // Booleans and enums become operator words; DESIGN.md §2.5.
+      const say = (v, fallback = '—') => {
+        if (v === true) return 'yes';
+        if (v === false) return 'no';
+        if (v === undefined || v === null || v === '') return fallback;
+        if (typeof v === 'object') return Array.isArray(v) ? String(v.length) : pretty(v);
+        return String(v);
+      };
+      const ago = (ts) => {
+        if (!ts) return '—';
+        const s = Math.max(0, Math.round(Date.now() / 1000 - Number(ts)));
+        if (s < 60) return `${s}s ago`;
+        if (s < 3600) return `${Math.round(s / 60)}m ago`;
+        if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+        return `${Math.round(s / 86400)}d ago`;
+      };
+      const clock = (d) => d.toTimeString().slice(0, 5);
 
-      function safeString(value, fallback = '—') {
-        if (value === undefined || value === null || value === '') return fallback;
-        if (typeof value === 'object') {
-          try { return JSON.stringify(value); } catch (_) { return '[unserializable]'; }
-        }
-        return String(value);
-      }
+      // The WebUI binds a CSRF token to the session and injects it only into pages
+      // it renders itself; without one the proxy refuses every write.
+      const csrf = () => {
+        try { return (window.__HERMES_CONFIG__ || {}).csrfToken || ''; } catch (_) { return ''; }
+      };
 
-      function pretty(value) {
-        if (typeof value === 'string') return value;
-        try { return JSON.stringify(value, null, 2); } catch (_) { return safeString(value); }
-      }
-
-      function endpointKey(method, path) { return `${method} ${path}`; }
-      function proxyUrl(path) { return `${PROXY_ROOT}${path.replace(/^\//, '')}`; }
-
-      async function request(path, options = {}) {
+      async function call(path, options = {}) {
         const method = options.method || 'GET';
-        const key = endpointKey(method, path.replace(/\?.*$/, ''));
+        const key = `${method} ${path.replace(/\?.*$/, '')}`;
+        const headers = options.body ? { 'Content-Type': 'application/json' } : {};
+        const token = csrf();
+        if (token && method !== 'GET') headers['X-Hermes-CSRF-Token'] = token;
         try {
-          // Unsafe methods need the WebUI's CSRF token or the proxy answers 403
-          // "Session expired". The host injects it as window.__HERMES_CONFIG__
-          // .csrfToken on the pages it renders; a sidecar-served page (this file
-          // opened standalone) has no token, so writes are refused by design and
-          // we surface that instead of a mystery failure.
-          const headers = options.body ? { 'Content-Type': 'application/json' } : {};
-          const token = csrfToken();
-          if (token && method !== 'GET') headers['X-Hermes-CSRF-Token'] = token;
-          const response = await fetch(proxyUrl(path), {
+          const res = await fetch(`${SIDECAR}${path}`, {
             method,
             headers: Object.keys(headers).length ? headers : undefined,
             body: options.body ? JSON.stringify(options.body) : undefined,
-            credentials: 'same-origin'
+            credentials: 'same-origin',
           });
-          const raw = await response.text();
-          let data = null;
+          const raw = await res.text();
+          let data = {};
           try { data = raw ? JSON.parse(raw) : {}; } catch (_) { data = { raw }; }
-          if (response.status === 404) {
-            state.endpointState.set(key, { kind: 'pending', status: 404 });
-            return { pending: true, status: 404, data };
-          }
-          if (!response.ok) {
-            state.endpointState.set(key, { kind: 'error', status: response.status });
-            return { error: true, status: response.status, data };
-          }
-          state.endpointState.set(key, { kind: 'ok', status: response.status });
-          return { data, status: response.status };
+          if (res.status === 404) { state.pending.add(key); return { missing: true, data }; }
+          state.pending.delete(key);
+          if (!res.ok) return { error: true, status: res.status, data };
+          return { data, status: res.status };
         } catch (error) {
-          state.endpointState.set(key, { kind: 'unreachable', error: error.message });
-          return { error: true, unreachable: true, data: { message: error.message } };
+          state.unreachable = true;
+          return { error: true, offline: true, data: { message: error.message } };
         }
       }
 
-      // The WebUI binds a CSRF token to the session and injects it into the pages
-      // it renders. Reads never need it; every write does.
-      function csrfToken() {
-        try {
-          const cfg = window.__HERMES_CONFIG__;
-          return (cfg && cfg.csrfToken) || '';
-        } catch (_) { return ''; }
-      }
-
-      function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
-
-      function setMessage(node, message, kind = '') {
-        node.textContent = message;
-        node.className = `action-message${kind ? ` ${kind}` : ''}`;
-      }
-
-      function statusClass(kind) {
-        const normalized = String(kind || '').toLowerCase();
-        if (normalized.includes('alive') || normalized === 'ok' || normalized === 'healthy') return 'alive';
-        if (normalized.includes('quota') || normalized.includes('402')) return 'quota';
-        if (normalized.includes('dead') || normalized.includes('unreachable') || normalized === 'error') return 'dead';
-        if (normalized.includes('degrad')) return 'degraded';
+      // ── state semantics ─────────────────────────────────────────────
+      const RANK = { alive: 0, degraded: 1, quota: 2, dead: 3 };
+      function modelState(entry) {
+        const raw = String((entry && (entry.state || entry.status)) || '').toLowerCase();
+        if (raw.includes('quota')) return 'quota';
+        if (raw.includes('dead') || raw.includes('unreachable')) return 'dead';
+        if (raw.includes('degrad') || raw.includes('half')) return 'degraded';
+        if (raw.includes('alive') || raw === 'ok' || raw === 'closed') return 'alive';
         return '';
       }
-
-      function normalizeLiveness(entry) {
-        const source = entry && typeof entry === 'object' ? entry : {};
-        const raw = safeString(source.state || source.liveness || source.status || source.health, 'pending').toLowerCase();
-        if (raw.includes('quota') || raw.includes('402')) return 'quota';
-        if (raw.includes('dead') || raw.includes('unreachable') || raw.includes('down')) return 'dead';
-        if (raw.includes('degrad') || raw.includes('warn')) return 'degraded';
-        if (raw.includes('alive') || raw.includes('healthy') || raw === 'ok') return 'alive';
-        return 'pending';
+      function worstOf(models) {
+        return models.reduce((worst, m) => {
+          const s = modelState(m);
+          return (RANK[s] ?? -1) > (RANK[worst] ?? -1) ? s : worst;
+        }, 'alive');
+      }
+      function causeColor(cause) {
+        const c = String(cause || '');
+        if (c.includes('veto') || c.includes('fail_safe')) return 'var(--red)';
+        if (c === 'classifier') return 'var(--violet)';
+        return 'var(--green)';
       }
 
-      function renderNotices() {
-        clear(elements.noticeStack);
-        const notices = [];
-        if (state.unreachable) notices.push(['error', 'Sidecar unreachable', 'Degraded mode is active. Reads and writes are unavailable until the proxy responds.']);
-        const errors = [...state.endpointState.values()].filter((item) => item.kind === 'error');
-        if (errors.length) notices.push(['warn', 'Some endpoint calls were rejected', `${errors.length} route(s) returned a non-404 HTTP error. Read data may be incomplete.`]);
-        const pending = [...state.endpointState.values()].filter((item) => item.kind === 'pending');
-        if (pending.length) notices.push(['warn', 'Endpoint pending', `${pending.length} optional endpoint(s) returned 404. The console stays usable with available data.`]);
-        notices.forEach(([kind, title, body]) => {
-          const notice = makeElement('div', `notice ${kind}`);
-          notice.append(makeElement('span', 'notice-icon', kind === 'error' ? '×' : '!'));
-          const copy = makeElement('div');
-          const strong = makeElement('strong', '', title);
-          copy.append(strong, document.createTextNode(` — ${body}`));
-          notice.append(copy);
-          elements.noticeStack.append(notice);
-        });
-      }
-
-      function renderKv(container, value, emptyText) {
-        clear(container);
-        if (!value || typeof value !== 'object' || Array.isArray(value) && value.length === 0) {
-          container.append(makeElement('div', 'empty', emptyText));
-          return;
-        }
-        const entries = Array.isArray(value) ? value.map((item, index) => [index, item]) : Object.entries(value);
-        entries.slice(0, 20).forEach(([key, item]) => {
-          const row = makeElement('div', 'kv-row');
-          row.append(makeElement('div', 'kv-key', key), makeElement('div', 'kv-value', safeString(item)));
-          container.append(row);
-        });
-      }
-
-      function renderMetrics() {
-        clear(elements.statusMetrics);
-        const source = state.status && typeof state.status === 'object' ? state.status : {};
-        const healthText = state.unreachable ? 'unreachable' : safeString(state.health && (state.health.status || state.health.health || state.health.ok), 'unknown');
-        const metrics = [
-          ['sidecar', healthText, state.unreachable ? 'proxy did not respond' : 'via extension proxy'],
-          ['route state', safeString(source.state || source.status, 'unknown'), safeString(source.reason || source.mode, 'no status reason')],
-          ['active rules', safeString(source.active_rules || source.rules_count || source.rules, '—'), 'reported by /status'],
-          ['last event', safeString(source.last_event || source.updated_at, '—'), 'sidecar timestamp']
-        ];
-        metrics.forEach(([label, value, detail]) => {
-          const card = makeElement('div', 'metric');
-          card.append(makeElement('span', 'metric-label', label), makeElement('strong', 'metric-value', value), makeElement('span', 'metric-detail', detail));
-          elements.statusMetrics.append(card);
-        });
-      }
-
-      function renderChrome() {
-        const report = state.status && typeof state.status === 'object' ? state.status : {};
-        const worst = safeString(report.worst_of_n || report.worst || report.overall || report.status, state.unreachable ? 'unreachable' : 'unknown');
-        const kind = statusClass(worst);
-        elements.worstValue.textContent = worst;
-        elements.worstBadge.className = `badge${kind === 'alive' ? ' is-good' : kind === 'dead' ? ' is-bad' : ''}`;
-        const sidecar = state.unreachable ? 'unreachable' : safeString(state.health && (state.health.status || state.health.health), 'reachable');
-        elements.reachabilityValue.textContent = `sidecar ${sidecar}`;
-        elements.reachabilityChip.className = `chip ${state.unreachable ? 'is-dead' : 'is-alive'}`;
-        elements.lastChecked.textContent = state.lastChecked ? `checked ${state.lastChecked.toLocaleTimeString()}` : 'not checked';
-      }
-
-      function renderLiveness() {
-        clear(elements.livenessList);
-        let rows = [];
-        const data = state.liveness;
-        if (Array.isArray(data)) rows = data;
-        else if (data && Array.isArray(data.entries)) rows = data.entries;
-        else if (data && Array.isArray(data.models)) rows = data.models;
-        else if (data && typeof data === 'object') rows = Object.entries(data).map(([name, item]) => ({ name, ...(item && typeof item === 'object' ? item : { state: item }) }));
-        if (!rows.length) {
-          elements.livenessList.append(makeElement('div', 'empty', state.endpointState.get('GET /liveness')?.kind === 'pending' ? 'Endpoint pending — /liveness has not been implemented by the sidecar.' : 'No liveness rows reported.'));
-          return;
-        }
-        rows.forEach((entry) => {
-          const stateName = normalizeLiveness(entry);
-          const item = makeElement('div', `liveness-item state-${stateName}`);
-          const chip = makeElement('span', 'chip'); chip.append(makeElement('span', 'dot'));
-          const content = makeElement('div');
-          content.append(makeElement('div', 'liveness-name', safeString(entry.name || entry.model || entry.model_key || entry.provider, 'unnamed target')),
-            makeElement('div', 'liveness-meta', safeString(entry.reason || entry.message || entry.last_checked || entry.updated_at, 'no details')));
-          item.append(chip, content, makeElement('span', 'state-label', stateName));
-          elements.livenessList.append(item);
-        });
-      }
-
-      function renderEndpointLedger() {
-        clear(elements.endpointLedger);
-        ENDPOINTS.forEach(([method, path]) => {
-          const key = endpointKey(method, path.replace(/\?.*$/, ''));
-          const detail = state.endpointState.get(key);
-          let label = 'not checked';
-          let cls = '';
-          if (detail) { label = detail.kind === 'pending' ? 'pending' : detail.kind; cls = detail.kind === 'ok' ? 'is-alive' : detail.kind === 'pending' ? 'is-degraded' : 'is-dead'; }
-          const row = makeElement('div', 'endpoint');
-          row.append(makeElement('span', 'endpoint-method', method), makeElement('span', 'endpoint-path', path), makeElement('span', `endpoint-state ${cls}`, label));
-          elements.endpointLedger.append(row);
-        });
-      }
-
-      function getPolicyRows(policy) {
-        if (Array.isArray(policy)) return policy;
-        if (policy && Array.isArray(policy.tiers)) return policy.tiers;
-        if (policy && Array.isArray(policy.rules)) return policy.rules;
-        if (policy && typeof policy === 'object') return Object.entries(policy).map(([name, detail]) => ({ name, ...(detail && typeof detail === 'object' ? detail : { value: detail }) }));
-        return [];
-      }
-
-      function renderTable(container, rows, emptyText) {
-        clear(container);
-        if (!rows.length) { container.append(makeElement('div', 'empty', emptyText)); return; }
-        const keys = [...new Set(rows.flatMap((row) => Object.keys(row || {})))].slice(0, 6);
-        const table = document.createElement('table');
-        const head = document.createElement('thead'); const headRow = document.createElement('tr');
-        keys.forEach((key) => headRow.append(makeElement('th', '', key.replace(/_/g, ' ')))); head.append(headRow);
-        const body = document.createElement('tbody');
-        rows.slice(0, 30).forEach((row) => { const tr = document.createElement('tr'); keys.forEach((key) => tr.append(makeElement('td', '', safeString(row && row[key])))); body.append(tr); });
-        table.append(head, body); container.append(table);
-      }
-
-      function renderPolicy() {
-        const policy = state.policy;
-        if (!elements.policyEditor.value || state.mode === 'read') elements.policyEditor.value = policy ? pretty(policy) : 'Policy endpoint pending or not yet loaded.';
-        renderTable(elements.policyTable, getPolicyRows(policy), state.endpointState.get('GET /policy')?.kind === 'pending' ? 'Endpoint pending — /policy has not been implemented by the sidecar.' : 'No tier policy reported.');
-      }
-
-      function renderBlocklist() {
-        const data = state.blocklist;
-        let entries = [];
-        if (Array.isArray(data)) entries = data;
-        else if (data && Array.isArray(data.entries)) entries = data.entries;
-        else if (data && Array.isArray(data.blocked)) entries = data.blocked;
-        else if (data && typeof data === 'object') entries = Object.entries(data).filter(([key]) => key !== 'breaker' && key !== 'breakers').map(([name, item]) => ({ name, ...(item && typeof item === 'object' ? item : { value: item }) }));
-        renderTable(elements.blocklistTable, entries, state.endpointState.get('GET /blocklist')?.kind === 'pending' ? 'Endpoint pending — /blocklist is unavailable.' : 'No active blocklist rows.');
-        const breakers = Array.isArray(data?.breaker) ? data.breaker : Array.isArray(data?.breakers) ? data.breakers : [];
-        clear(elements.breakerList);
-        if (!breakers.length) { elements.breakerList.append(makeElement('div', 'empty', 'No breaker cooldown entries reported.')); return; }
-        breakers.forEach((entry) => {
-          const item = makeElement('div', 'liveness-item');
-          const dotChip = makeElement('span', `chip ${statusClass(entry.state) === 'dead' ? 'is-dead' : 'is-degraded'}`); dotChip.append(makeElement('span', 'dot'));
-          const body = makeElement('div');
-          body.append(makeElement('div', 'liveness-name', safeString(entry.model_key || entry.model || entry.name)), makeElement('div', 'liveness-meta', `failure: ${safeString(entry.last_failure_kind, 'unknown')} · cooldown: ${safeString(entry.cooldown_remaining_s, '0')}s`));
-          item.append(dotChip, body, makeElement('span', 'state-label', safeString(entry.state, 'unknown')));
-          elements.breakerList.append(item);
-        });
-      }
-
-      function renderCompaction() {
-        const pending = state.endpointState.get('GET /compaction')?.kind === 'pending';
-        elements.compactionState.textContent = pending ? 'endpoint pending' : state.compaction ? 'available' : 'checking';
-        elements.compactionState.className = `chip${pending ? ' is-degraded' : ''}`;
-        renderKv(elements.compactionDetails, state.compaction, pending ? 'Endpoint pending — compaction telemetry is not implemented by the sidecar yet.' : 'No compaction data reported.');
-        renderKv(elements.summarizerDetails, state.compaction && (state.compaction.summarizer || state.compaction.summary || state.compaction), pending ? 'Endpoint pending — no summarizer telemetry is available.' : 'No summarizer signals reported.');
-      }
-
-      function renderAll() {
-        renderChrome(); renderNotices(); renderMetrics();
-        // statusDetails is curated to fields shown NOWHERE else — the metric
-        // cards, worst badge and pipeline nodes own rules/valid/enabled/tiers.
-        renderKv(elements.statusDetails, curatedStatusDetails(), 'No /status payload received.');
-        renderKv(elements.healthDetails, state.health, 'Health unavailable through proxy.');
-        renderLiveness(); renderEndpointLedger(); renderPolicy(); renderBlocklist(); renderCompaction(); renderPipelinePanel();
-        renderRail();
-      }
-
-      // Only non-duplicated posture fields (the rest live in metric cards/nodes).
-      function curatedStatusDetails() {
-        const s = state.status && typeof state.status === 'object' ? state.status : {};
-        const out = {};
-        if (s.last_event !== undefined) out.last_event = s.last_event;
-        if (s.reason !== undefined) out.reason = s.reason;
-        if (s.mode !== undefined) out.mode = s.mode;
-        if (s.updated_at !== undefined) out.updated_at = s.updated_at;
-        return Object.keys(out).length ? out : { note: 'No extra posture fields beyond the metrics above.' };
-      }
-
-      function setMode(mode) {
-        state.mode = mode;
-        const editable = mode === 'edit';
-        // One control, three signals: pressed state, label, and what it will do.
-        if (elements.modeButton) {
-          elements.modeButton.setAttribute('aria-pressed', String(editable));
-          elements.modeButton.title = editable ? 'Lock the console (back to read-only)' : 'Unlock editing (arms plan → apply)';
-          if (elements.modeButtonIcon) elements.modeButtonIcon.textContent = editable ? '✎' : '🔒';
-          if (elements.modeButtonLabel) elements.modeButtonLabel.textContent = editable ? 'Editing armed' : 'Read-only';
-          if (elements.modeButtonHint) elements.modeButtonHint.textContent = editable ? 'Click to lock' : 'Unlock to edit';
-        }
-        elements.policyEditor.readOnly = !editable;
-        elements.policyMode.textContent = editable ? 'edit armed' : 'read-only';
-        elements.policyMode.className = `chip${editable ? ' is-degraded' : ''}`;
-        setMessage(elements.policyActionMessage, editable ? 'Edit mode armed. Validate first; no change is applied by editing text.' : 'Read mode active. Switch to Edit to prepare a validation plan.');
-        renderRail();
-      }
-
-      // The rail advertises each section's live state (dot) + count (badge)
-      // before you click it. Every source is null-guarded: renderRail runs at
-      // init (via setMode) before the first poll populates state.
+      // ── rail ────────────────────────────────────────────────────────
       function renderRail() {
-        const setDot = (wrap, cls) => { if (wrap) wrap.className = `rail-state${cls ? ' is-' + cls : ''}`; };
-        const setBadge = (node, n) => { if (node) { node.textContent = String(n); node.hidden = !n; } };
-        const policy = state.policy && typeof state.policy === 'object' ? state.policy : null;
-        const rules = policy && Array.isArray(policy.rules) ? policy.rules : [];
-        const tiers = policy && policy.tiers && typeof policy.tiers === 'object' ? policy.tiers : {};
+        const models = (state.liveness && Array.isArray(state.liveness.models)) ? state.liveness.models : [];
+        const rules = (state.policy && Array.isArray(state.policy.rules)) ? state.policy.rules : [];
         const routes = Array.isArray(state.routes) ? state.routes : [];
-        const liveness = Array.isArray(state.liveness && state.liveness.models) ? state.liveness.models : [];
-        const bl = state.blocklist && typeof state.blocklist === 'object' ? state.blocklist : {};
+        const bl = state.blocklist || {};
         const bans = Array.isArray(bl.manual_bans) ? bl.manual_bans : [];
-        const breakers = Array.isArray(bl.breakers) ? bl.breakers : (Array.isArray(bl.entries) ? bl.entries : []);
+        const breakers = Array.isArray(bl.breaker_cooldowns) ? bl.breaker_cooldowns : [];
 
-        // Status: worst-of-N health across liveness, or unreachable.
-        let statusCls = '';
-        if (state.unreachable) statusCls = 'dead';
-        else if (liveness.length) statusCls = worstLivenessClass(liveness);
-        else if (state.status) statusCls = statusClass(state.status.worst_of_n || state.status.worst || state.status.overall || state.status.status);
-        setDot(elements.railStatus, statusCls);
-        setBadge(elements.railStatusBadge, liveness.length);
+        const set = (wrapId, countId, cls, count) => {
+          const wrap = $(wrapId);
+          if (wrap) wrap.className = `tab-state${cls ? ` is-${cls}` : ''}`;
+          const badge = $(countId);
+          if (badge) { badge.textContent = String(count); badge.hidden = !count; }
+        };
+        const health = state.unreachable ? 'dead' : (models.length ? worstOf(models) : '');
+        set('stateHealth', 'countHealth', health, bans.length + breakers.length || models.length);
+        set('statePipeline', 'countPipeline', state.mode === 'unlocked' ? 'degraded' : (state.policy ? 'alive' : ''), rules.length);
+        set('stateRoutes', 'countRoutes', routes.length ? 'alive' : '', routes.length);
 
-        // Pipeline: edit-armed → degraded; else policy present → alive.
-        setDot(elements.railPipeline, state.mode === 'edit' ? 'degraded' : (policy ? 'alive' : ''));
-        setBadge(elements.railPipelineBadge, rules.length);
-
-        // Replay: routes endpoint health + count.
-        const routesEp = state.endpointState.get('GET /routes');
-        setDot(elements.railReplay, routesEp ? (routesEp.kind === 'ok' ? 'alive' : routesEp.kind === 'pending' ? 'degraded' : 'dead') : '');
-        setBadge(elements.railReplayBadge, routes.length);
-
-        // Blocklist: any breaker cooling → degraded; else alive if reachable.
-        setDot(elements.railBlocklist, breakers.length ? 'degraded' : (state.blocklist ? 'alive' : ''));
-        setBadge(elements.railBlocklistBadge, bans.length + breakers.length);
-
-        // Compaction: pending endpoint → degraded; present → alive.
-        const compEp = state.endpointState.get('GET /compaction');
-        setDot(elements.railCompaction, compEp && compEp.kind === 'pending' ? 'degraded' : (state.compaction ? 'alive' : ''));
-        // Compaction has no natural count — keep its badge explicitly empty so a
-        // stray value can never render as a blank pill.
-        setBadge(elements.railCompactionBadge, 0);
-
-        // Panel KPIs (own ids; never reuse rail-health chip ids).
-        if (elements.kpiRulesValue) elements.kpiRulesValue.textContent = String(rules.length);
-        if (elements.kpiTiersValue) elements.kpiTiersValue.textContent = String(Object.keys(tiers).length);
-        if (elements.kpiRoutesValue) elements.kpiRoutesValue.textContent = String(routes.length);
-        if (elements.kpiBansValue) elements.kpiBansValue.textContent = String(bans.length);
-        if (elements.kpiBreakersValue) elements.kpiBreakersValue.textContent = String(breakers.length);
+        const reach = $('reach');
+        reach.className = `reach${state.unreachable ? ' is-dead' : (state.health ? ' is-alive' : '')}`;
+        $('reachText').textContent = state.unreachable
+          ? 'sidecar unreachable'
+          : state.checkedAt ? `checked ${clock(state.checkedAt)}` : 'checking';
       }
 
-      function worstLivenessClass(models) {
-        const rank = { alive: 0, degraded: 1, quota: 2, dead: 3 };
-        let worst = 'alive';
-        models.forEach((m) => { const c = normalizeLiveness(m); if ((rank[c] || 0) > (rank[worst] || 0)) worst = c; });
-        return worst;
-      }
-
-      function canWrite(messageNode, action) {
-        if (state.unreachable) { setMessage(messageNode, `${action} refused: sidecar unreachable (degraded mode).`, 'error'); return false; }
-        if (state.mode !== 'edit') { setMessage(messageNode, `${action} refused: unlock editing first (top-left).`, 'error'); return false; }
-        if (!csrfToken()) {
-          setMessage(messageNode,
-            `${action} unavailable: this console is open standalone, so the WebUI gives it no CSRF token and the proxy refuses writes. Open the Router panel inside Hermes One to edit.`,
-            'error');
-          return false;
+      // ── warnings: only conditions that need an operator ─────────────
+      function renderWarnings() {
+        const box = $('warnings');
+        clear(box);
+        if (state.unreachable) {
+          const line = el('div', 'warn-line bad');
+          line.append(el('strong', '', 'Sidecar unreachable.'),
+                      el('span', '', 'Reads and writes are unavailable until the proxy answers.'));
+          box.append(line);
+          return;
         }
-        return true;
+        if (state.mode === 'unlocked' && !csrf()) {
+          const line = el('div', 'warn-line');
+          line.append(el('strong', '', 'Editing cannot apply here.'),
+                      el('span', '', 'This console is open standalone, so the WebUI grants it no write token. Open the Router panel inside Hermes One.'));
+          box.append(line);
+        }
       }
 
-      async function refresh() {
-        $('refreshButton').disabled = true;
-        state.unreachable = false;
-        const [health, status, policy, blocklist, liveness, compaction, routes] = await Promise.all([
-          request('/health'), request('/status'), request('/policy'), request('/blocklist'), request('/liveness'), request('/compaction'), request('/routes')
-        ]);
-        const results = [health, status, policy, blocklist, liveness, compaction];
-        if (results.some((item) => item.unreachable)) state.unreachable = true;
-        state.health = health.data || null; state.status = status.data || null; state.policy = policy.data || null; state.blocklist = blocklist.data || null; state.liveness = liveness.data || null; state.compaction = compaction.data || null;
-        state.routes = (routes.data && Array.isArray(routes.data.routes)) ? routes.data.routes : [];
-        state.lastChecked = new Date();
-        renderAll();
-        $('refreshButton').disabled = false;
+      // ── Health ──────────────────────────────────────────────────────
+      function renderHealth() {
+        const facts = $('healthFacts');
+        clear(facts);
+        const st = state.status || {};
+        const rules = (state.policy && state.policy.rules) || [];
+        const fact = (label, value) => {
+          const f = el('div', 'fact');
+          f.append(el('span', 'fact-label', label), el('span', 'fact-value', value));
+          facts.append(f);
+        };
+        fact('routing', say(st.enabled === undefined ? undefined : st.enabled, '—') === 'yes' ? 'on' : 'off');
+        fact('rules', String(rules.length || st.rules_count || 0));
+        const classifier = (st.classifier && st.classifier.model) || (state.policy && state.policy.classifier && state.policy.classifier.model);
+        if (classifier) fact('classifier', classifier);
+        const errors = Array.isArray(st.validation_errors) ? st.validation_errors : [];
+        if (errors.length) fact('invalid', `${errors.length} error${errors.length > 1 ? 's' : ''}`);
+
+        const list = $('models');
+        clear(list);
+        const models = (state.liveness && Array.isArray(state.liveness.models)) ? state.liveness.models : [];
+        if (!models.length) {
+          list.append(el('p', 'nothing', state.unreachable ? 'Unavailable while the sidecar is unreachable.' : 'No routable models reported.'));
+        } else {
+          models.forEach((m) => {
+            const cls = modelState(m);
+            const row = el('div', `row${cls ? ` is-${cls}` : ''}`);
+            row.append(el('span', 'dot'));
+            const name = el('div');
+            name.append(el('div', 'row-name', m.model || m.model_key || '—'));
+            const rail = m.provider || (String(m.model_key || '').split('@')[1] || '');
+            if (rail) name.append(el('div', 'row-note', rail));
+            row.append(name);
+            const right = el('div');
+            right.append(el('span', 'state', cls || 'unknown'));
+            const cooldown = m.breaker && Number(m.breaker.cooldown_remaining_s);
+            if (cooldown > 0) right.append(el('div', 'row-value', `${Math.ceil(cooldown)}s cooldown`));
+            row.append(right);
+            list.append(row);
+          });
+        }
+
+        const bl = state.blocklist || {};
+        const bans = Array.isArray(bl.manual_bans) ? bl.manual_bans : [];
+        const breakers = Array.isArray(bl.breaker_cooldowns) ? bl.breaker_cooldowns : [];
+        const group = $('bansGroup');
+        const banBox = $('bans');
+        clear(banBox);
+        group.hidden = !(bans.length || breakers.length);
+        bans.forEach((b) => {
+          const row = el('div', 'row is-dead');
+          row.append(el('span', 'dot'));
+          const name = el('div');
+          name.append(el('div', 'row-name', b.model || say(b)));
+          if (b.reason) name.append(el('div', 'row-note', b.reason));
+          row.append(name, el('span', 'state', 'banned'));
+          banBox.append(row);
+        });
+        breakers.forEach((b) => {
+          const row = el('div', 'row is-degraded');
+          row.append(el('span', 'dot'));
+          const name = el('div');
+          name.append(el('div', 'row-name', b.model_key || '—'));
+          if (b.last_failure_kind) name.append(el('div', 'row-note', b.last_failure_kind));
+          row.append(name);
+          row.append(el('span', 'row-value', `${Math.ceil(Number(b.cooldown_remaining_s) || 0)}s left`));
+          banBox.append(row);
+        });
+
+        const comp = $('compaction');
+        clear(comp);
+        const c = state.compaction;
+        $('compactionNote').textContent = c ? '' : 'not implemented by this sidecar';
+        $('compactionApply').hidden = !c;
+        if (c) {
+          const fact2 = (label, value) => {
+            const f = el('div', 'fact');
+            f.append(el('span', 'fact-label', label), el('span', 'fact-value', value));
+            comp.append(f);
+          };
+          fact2('aggressiveness', say(c.aggressiveness));
+          fact2('summarizer window', say(c.summarizer_window));
+          fact2('compacts at', say(c.threshold_tokens));
+          if (c.warning) fact2('warning', 'threshold exceeds the window');
+        }
       }
 
-      async function planPolicy() {
-        if (!canWrite(elements.policyActionMessage, 'Validation')) return;
-        let draft;
-        try { draft = JSON.parse(elements.policyEditor.value); } catch (error) { setMessage(elements.policyActionMessage, `Validation refused: policy text is not valid JSON (${error.message}).`, 'error'); return; }
-        setMessage(elements.policyActionMessage, 'Requesting server-side plan…');
-        const result = await request('/plan', { method: 'POST', body: { policy: draft } });
-        if (result.pending) { setMessage(elements.policyActionMessage, 'Validation unavailable: POST /plan is endpoint pending.', 'error'); return; }
-        if (result.error) { setMessage(elements.policyActionMessage, `Validation failed: HTTP ${result.status || 'network'} from /plan.`, 'error'); return; }
-        state.plan = result.data;
-        elements.planPreview.textContent = pretty(result.data.diff || result.data.preview || result.data);
-        setMessage(elements.policyActionMessage, 'Plan returned. Inspect the preview before Apply.', 'ok');
-      }
-
-      async function applyPolicy(stage) {
-        if (!canWrite(elements.policyActionMessage, 'Apply')) return;
-        if (!state.plan) { setMessage(elements.policyActionMessage, 'Apply refused: validate and inspect a plan first.', 'error'); return; }
-        const path = stage === 'confirm' ? '/apply/confirm' : stage === 'revert' ? '/apply/revert' : '/apply';
-        const result = await request(path, { method: 'POST', body: { plan: state.plan, policy: state.plan.policy } });
-        if (result.pending) { setMessage(elements.policyActionMessage, `Apply unavailable: POST ${path} is endpoint pending.`, 'error'); return; }
-        if (result.error) { setMessage(elements.policyActionMessage, `Apply failed: HTTP ${result.status || 'network'} from ${path}.`, 'error'); return; }
-        setMessage(elements.policyActionMessage, `${stage === 'revert' ? 'Revert' : stage === 'confirm' ? 'Apply confirmation' : 'Apply'} accepted by sidecar. Refreshing state…`, 'ok');
-        await refresh();
-      }
-
-      async function applyCompaction() {
-        if (!canWrite(elements.compactionActionMessage, 'Compaction')) return;
-        if (elements.compactionConfirm.value !== 'COMPACT') { setMessage(elements.compactionActionMessage, 'Compaction refused: type COMPACT exactly to arm this action.', 'error'); return; }
-        const aggressiveness = state.compaction && Number.isFinite(state.compaction.aggressiveness) ? state.compaction.aggressiveness : 50;
-        const result = await request('/apply', { method: 'POST', body: { action: 'compaction', confirm: 'COMPACT', aggressiveness } });
-        if (result.pending) { setMessage(elements.compactionActionMessage, 'Compaction unavailable: POST /apply is endpoint pending.', 'error'); return; }
-        if (result.error) { setMessage(elements.compactionActionMessage, `Compaction failed: HTTP ${result.status || 'network'} from /apply.`, 'error'); return; }
-        elements.compactionConfirm.value = '';
-        setMessage(elements.compactionActionMessage, 'Compaction apply accepted by sidecar.', 'ok');
-        await refresh();
-      }
-
-      function setDrawer(open) {
-        elements.traceDrawer.classList.toggle('open', open);
-        elements.drawerBackdrop.classList.toggle('open', open);
-        elements.traceDrawer.setAttribute('aria-hidden', String(!open));
-        elements.drawerBackdrop.setAttribute('aria-hidden', String(!open));
-        if (open) elements.traceTask.focus();
-      }
-
-      // --- Pipeline canvas: one shared node graph for editing + replay -------
-
-      // SVG elements need the SVG namespace; makeElement()/createElement would
-      // mis-namespace them into invisible HTML nodes.
-      function svgEl(tag, attrs) {
-        const node = document.createElementNS(SVG_NS, tag);
-        if (attrs) for (const k of Object.keys(attrs)) node.setAttribute(k, String(attrs[k]));
-        return node;
-      }
-
-      // Column layout by pipeline stage (fixed by adapter.route() order). Node
-      // ids are the natural policy keys so editor and replay share them.
-      const NODE_W = 150, NODE_H = 46, COL_GAP = 195, ROW_GAP = 60, PAD = 24;
-
-      // Which policy fragment (if any) a node binds to for editing.
-      const FIXED_NODES = [
-        { id: 'blocklist', label: 'blocklist', col: 0, bind: 'blocklist' },
-        { id: 'signals', label: 'signals', col: 1, bind: null, runtime: true },
-        { id: 'classifier', label: 'classifier', col: 3, bind: 'classifier' },
-        { id: 'cache', label: 'cache', col: 3, bind: null, runtime: true },
-        { id: 'session_pin', label: 'session_pin', col: 3, bind: null, runtime: true },
-        { id: 'fail_safe', label: 'fail_safe', col: 5, bind: 'fail_safe', terminal: true },
-        { id: 'default', label: 'default', col: 2, bind: 'default' },
+      // ── Pipeline graph ──────────────────────────────────────────────
+      const NODE_W = 132, NODE_H = 40, PAD = 18, MIN_COL = 172, MIN_ROW = 52;
+      const FIXED = [
+        { id: 'blocklist', name: 'blocklist', col: 0, bind: 'blocklist' },
+        { id: 'signals', name: 'signals', col: 1, runtime: true },
+        { id: 'default', name: 'default', col: 2, bind: 'default' },
+        { id: 'classifier', name: 'classifier', col: 3, bind: 'classifier' },
+        { id: 'cache', name: 'cache', col: 3, runtime: true },
+        { id: 'session_pin', name: 'session pin', col: 3, runtime: true },
+        { id: 'fail_safe', name: 'fail-safe', col: 5, bind: 'fail_safe' },
       ];
 
-      function pipelineNodes(targetW) {
-        const policy = state.policy && typeof state.policy === 'object' ? state.policy : {};
+      function graphNodes(width) {
+        const policy = state.policy || {};
         const rules = Array.isArray(policy.rules) ? policy.rules : [];
-        const tiers = policy.tiers && typeof policy.tiers === 'object' ? policy.tiers : {};
-        const nodes = [];
-        FIXED_NODES.forEach((n) => nodes.push({ ...n }));
+        const tiers = (policy.tiers && typeof policy.tiers === 'object') ? policy.tiers : {};
+        const nodes = FIXED.map((n) => ({ ...n }));
         rules.forEach((r, i) => nodes.push({
-          id: `rule:${r.id != null ? r.id : i}`, label: r.id != null ? String(r.id) : `rule[${i}]`,
-          col: 2, bind: 'rule', ruleIndex: i, sub: (r.then && (r.then.deny ? 'deny' : r.then.model)) || '',
+          id: `rule:${r.id != null ? r.id : i}`, name: r.id != null ? String(r.id) : `rule ${i}`,
+          col: 2, bind: 'rule', ruleIndex: i,
+          sub: (r.then && (r.then.deny ? 'deny' : r.then.model)) || '',
         }));
-        Object.keys(tiers).forEach((tn) => nodes.push({
-          id: `tier:${tn}`, label: tn, col: 4, bind: 'tier', tierName: tn, tier: true,
-          sub: (tiers[tn] && tiers[tn].model) || '',
+        Object.keys(tiers).forEach((t) => nodes.push({
+          id: `tier:${t}`, name: t, col: 4, bind: 'tier', tier: t,
+          sub: (tiers[t] && tiers[t].model) || '',
         }));
-        // Assign row positions within each column. The column gap stretches to
-        // fill the target width so the graph grows into freed space (rail
-        // collapse / inspector hide) instead of letterboxing.
         const byCol = {};
         nodes.forEach((n) => { (byCol[n.col] = byCol[n.col] || []).push(n); });
-        const cols = Object.keys(byCol).map(Number);
-        const maxCol = cols.length ? Math.max(...cols) : 0;
-        let colGap = COL_GAP;
-        if (targetW && maxCol > 0) {
-          const fit = (targetW - 2 * PAD - NODE_W) / maxCol;
-          colGap = Math.max(COL_GAP, Math.min(fit, 320)); // never tighter than default, capped so it doesn't sprawl
-        }
-        const rowGap = Math.max(ROW_GAP, Math.round(colGap * 0.34)); // keep vertical rhythm proportional
-        Object.keys(byCol).forEach((col) => {
-          byCol[col].forEach((n, row) => {
-            n.x = PAD + Number(col) * colGap;
-            n.y = PAD + row * rowGap;
-          });
-        });
+        const maxCol = Math.max(...nodes.map((n) => n.col), 0);
+        const colGap = Math.max(MIN_COL, Math.min((width - 2 * PAD - NODE_W) / (maxCol || 1), 260));
+        Object.keys(byCol).forEach((col) => byCol[col].forEach((n, row) => {
+          n.x = PAD + Number(col) * colGap;
+          n.y = PAD + row * MIN_ROW;
+        }));
         return nodes;
       }
 
-      function pipelineEdges(nodes) {
-        // Fixed left→right flow; rule→tier when then.model=Tn, rule→classifier
-        // when then.action=classify. Veto edge is tinted.
-        const byId = {};
-        nodes.forEach((n) => { byId[n.id] = n; });
+      function graphEdges(nodes) {
+        const by = {};
+        nodes.forEach((n) => { by[n.id] = n; });
         const edges = [];
-        const link = (a, b, cls) => { if (byId[a] && byId[b]) edges.push({ from: byId[a], to: byId[b], cls: cls || '' }); };
+        const link = (a, b, cls) => { if (by[a] && by[b]) edges.push({ a: by[a], b: by[b], cls: cls || '' }); };
         link('blocklist', 'signals');
-        const policy = state.policy || {};
-        (Array.isArray(policy.rules) ? policy.rules : []).forEach((r, i) => {
-          link('signals', `rule:${r.id != null ? r.id : i}`);
+        const rules = (state.policy && state.policy.rules) || [];
+        rules.forEach((r, i) => {
+          const id = `rule:${r.id != null ? r.id : i}`;
+          link('signals', id);
           const then = r.then || {};
-          if (then.deny) { /* veto sink rendered via class on node */ }
-          else if (then.action === 'classify') link(`rule:${r.id != null ? r.id : i}`, 'classifier');
-          else if (typeof then.model === 'string' && byId[`tier:${then.model}`]) link(`rule:${r.id != null ? r.id : i}`, `tier:${then.model}`);
+          if (then.action === 'classify') link(id, 'classifier');
+          else if (typeof then.model === 'string' && by[`tier:${then.model}`]) link(id, `tier:${then.model}`);
         });
         link('signals', 'default');
         link('default', 'classifier');
@@ -1213,425 +646,410 @@
         return edges;
       }
 
-      // Draw the shared node graph into a target <svg>. The Pipeline tab passes
-      // its editor svg with interactive:true (clicking a node edits it); the
-      // Replay tab passes its own svg with interactive:false (read-only path).
-      function renderPipeline(svg, opts) {
-        const interactive = !opts || opts.interactive !== false;
+      function drawGraph(svg, opts) {
+        const editable = !!(opts && opts.editable);
         clear(svg);
         if (!state.policy) {
-          const t = svgEl('text', { x: PAD, y: 40, class: 'pnode-sub' });
-          t.textContent = 'Policy not loaded — open with a reachable sidecar.';
+          const t = svgEl('text', { x: PAD, y: 30, class: 'pnode-sub' });
+          t.textContent = 'Policy unavailable.';
           svg.appendChild(t);
           return;
         }
-        // Lay the graph out to the canvas's real width so it fills freed space.
-        const targetW = svg.clientWidth || (svg.parentElement && svg.parentElement.clientWidth) || 0;
-        const nodes = pipelineNodes(targetW);
-        const edges = pipelineEdges(nodes);
-        const maxX = Math.max(...nodes.map((n) => n.x + NODE_W), 400) + PAD;
-        const maxY = Math.max(...nodes.map((n) => n.y + NODE_H), 200) + PAD;
-        svg.setAttribute('viewBox', `0 0 ${maxX} ${maxY}`);
-        svg.setAttribute('height', String(maxY));
-        const edgeLayer = svgEl('g', {}); svg.appendChild(edgeLayer);
-        const nodeLayer = svgEl('g', {}); svg.appendChild(nodeLayer);
+        const width = svg.clientWidth || (svg.parentElement && svg.parentElement.clientWidth) || 900;
+        const nodes = graphNodes(width);
+        const edges = graphEdges(nodes);
+        const w = Math.max(...nodes.map((n) => n.x + NODE_W)) + PAD;
+        const h = Math.max(...nodes.map((n) => n.y + NODE_H)) + PAD;
+        svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+        svg.setAttribute('height', String(h));
+
+        const edgeLayer = svgEl('g'); svg.appendChild(edgeLayer);
         edges.forEach((e) => {
-          const x1 = e.from.x + NODE_W, y1 = e.from.y + NODE_H / 2;
-          const x2 = e.to.x, y2 = e.to.y + NODE_H / 2;
-          const mx = (x1 + x2) / 2;
-          const path = svgEl('path', { class: `pedge ${e.cls}`, d: `M ${x1} ${y1} C ${mx} ${y1} ${mx} ${y2} ${x2} ${y2}` });
-          path.dataset.from = e.from.id; path.dataset.to = e.to.id;
-          edgeLayer.appendChild(path);
+          const x1 = e.a.x + NODE_W, y1 = e.a.y + NODE_H / 2;
+          const x2 = e.b.x, y2 = e.b.y + NODE_H / 2;
+          const mid = (x1 + x2) / 2;
+          edgeLayer.appendChild(svgEl('path', {
+            class: `pedge ${e.cls}`, d: `M ${x1} ${y1} C ${mid} ${y1} ${mid} ${y2} ${x2} ${y2}`,
+          }));
         });
+
         nodes.forEach((n) => {
-          const g = svgEl('g', { class: 'pnode', transform: `translate(${n.x} ${n.y})` });
-          g.dataset.nodeId = n.id;
+          const canEdit = editable && n.bind && !n.runtime;
           const classes = ['pnode'];
-          if (n.runtime) classes.push('is-runtime');
-          if (n.tier) classes.push('is-tier');
-          if (n.terminal) classes.push('is-terminal');
-          if (interactive && state.selectedNode === n.id) classes.push('is-selected');
-          g.setAttribute('class', classes.join(' '));
-          g.appendChild(svgEl('rect', { class: 'pnode-box', width: NODE_W, height: NODE_H, rx: 9 }));
-          const label = svgEl('text', { class: 'pnode-label', x: 12, y: n.sub ? 20 : 28 });
-          label.textContent = n.label;   // text nodes only; never raw markup
-          g.appendChild(label);
-          if (n.sub) {
-            const sub = svgEl('text', { class: 'pnode-sub', x: 12, y: 36 });
+          if (n.runtime) classes.push('runtime');
+          if (canEdit) classes.push('editable');
+          if (editable && state.selected === n.id) classes.push('selected');
+          const g = svgEl('g', { class: classes.join(' '), transform: `translate(${n.x} ${n.y})` });
+          g.dataset.nodeId = n.id;
+          g.appendChild(svgEl('rect', { class: 'pnode-box', width: NODE_W, height: NODE_H, rx: 7 }));
+          const name = svgEl('text', { class: 'pnode-name', x: 10, y: n.sub ? 17 : 24 });
+          name.textContent = n.name;
+          g.appendChild(name);
+          if (n.sub || n.runtime) {
+            const sub = svgEl('text', { class: 'pnode-sub', x: 10, y: n.sub ? 30 : 30 });
             sub.textContent = n.runtime ? 'runtime' : String(n.sub);
             g.appendChild(sub);
-          } else if (n.runtime) {
-            const sub = svgEl('text', { class: 'pnode-sub', x: 12, y: 38 });
-            sub.textContent = 'runtime'; g.appendChild(sub);
           }
-          if (interactive) g.addEventListener('click', () => onPipelineNodeClick(n));
-          nodeLayer.appendChild(g);
+          if (canEdit) g.addEventListener('click', () => pickNode(n));
+          svg.appendChild(g);
         });
       }
 
-      // Binds with a simple, single-object property form are editable inline.
-      // blocklist is bans/chain LISTS — better edited as JSON in the Policy tab,
-      // so its node opens the read-only inspector instead of a partial form.
-      const INLINE_EDITABLE_BINDS = new Set(['tier', 'rule', 'classifier', 'fail_safe', 'default']);
-
-      function onPipelineNodeClick(node) {
-        // Editor-only: select the node and open its inspector/editor.
-        state.selectedNode = node.id;
-        renderPipeline(elements.pipelineSvg, { interactive: true });
-        if (state.mode === 'edit' && node.bind && !node.runtime && INLINE_EDITABLE_BINDS.has(node.bind)) {
-          renderNodeEditor(node);
-        } else {
-          renderNodeInspector(node);
-        }
+      function pickNode(node) {
+        state.selected = node.id;
+        drawGraph($('pipelineSvg'), { editable: state.mode === 'unlocked' });
+        renderInspector(node);
       }
 
-      function renderNodeInspector(node) {
-        const policy = state.policy || {};
-        let fragment = null;
-        if (node.bind === 'rule') fragment = (policy.rules || [])[node.ruleIndex];
-        else if (node.bind === 'tier') fragment = (policy.tiers || {})[node.tierName];
-        else if (node.bind) fragment = policy[node.bind];
-        clear(elements.pipelineInspector);
-        renderKv(elements.pipelineInspector, fragment || { note: node.runtime ? 'Runtime node — cold on the live path (per-call instance).' : 'No bound policy.' }, 'Nothing bound.');
-        elements.pipelineEditActions.hidden = true;
-        elements.pipelinePlanPreview.hidden = true;
-      }
+      const EDITABLE = new Set(['tier', 'rule', 'classifier', 'fail_safe', 'default']);
 
-      // The inspector is never an empty box: with no node selected it shows
-      // policy KPIs + teaches the click that edits.
-      function renderInspectorDefault() {
-        const policy = state.policy && typeof state.policy === 'object' ? state.policy : {};
-        const rules = Array.isArray(policy.rules) ? policy.rules : [];
-        const tiers = policy.tiers && typeof policy.tiers === 'object' ? policy.tiers : {};
-        clear(elements.pipelineInspector);
-        const teach = makeElement('p', 'card-subtitle',
-          state.mode === 'edit'
-            ? 'Click a node to edit its policy fragment, then Validate → Apply.'
-            : 'Switch to Edit (top-left), then click a node to change it.');
-        teach.style.margin = '0 0 10px';
-        elements.pipelineInspector.append(teach);
-        // rules/tiers already live in the panel-head KPIs — don't repeat them
-        // here (DESIGN.md §4). Show only what the head doesn't: the classifier.
-        renderKv(elements.pipelineInspector, {
-          classifier: (policy.classifier && policy.classifier.model) || (state.status && state.status.classifier && state.status.classifier.model) || '—',
-        }, 'Policy not loaded.');
-        elements.pipelineEditActions.hidden = true;
-        elements.pipelinePlanPreview.hidden = true;
-      }
-
-      // Editing mutates a clone of the WHOLE policy in place (preserves any
-      // fields outside the UI's closed set), then reuses the exact plan/apply
-      // spine — no second write path.
-      // GET /policy returns only {rules, default, tiers, fail_safe}. The
-      // classifier and blocklist nodes are editable too, so compose the FULL
-      // policy from the other reads (status.classifier, blocklist bans/chain,
-      // status.enabled). Editing then mutates a deep clone of this whole object
-      // in place, so no field an operator did not touch is dropped on apply, and
-      // the plan diff/preview is computed against the true policy.
-      function composeFullPolicy() {
+      function fullPolicy() {
         const base = state.policy && typeof state.policy === 'object' ? state.policy : {};
         const full = JSON.parse(JSON.stringify(base));
-        if (state.status && state.status.classifier && full.classifier === undefined) {
-          full.classifier = JSON.parse(JSON.stringify(state.status.classifier));
-        }
-        if (state.status && typeof state.status.enabled === 'boolean' && full.enabled === undefined) {
-          full.enabled = state.status.enabled;
-        }
-        if (state.blocklist && full.blocklist === undefined) {
+        const st = state.status || {};
+        if (full.classifier === undefined && st.classifier) full.classifier = JSON.parse(JSON.stringify(st.classifier));
+        if (full.enabled === undefined && typeof st.enabled === 'boolean') full.enabled = st.enabled;
+        if (full.blocklist === undefined && state.blocklist) {
           full.blocklist = {
-            manual_ban: Array.isArray(state.blocklist.manual_bans) ? state.blocklist.manual_bans : [],
-            fallback_chain: Array.isArray(state.blocklist.fallback_chain) ? state.blocklist.fallback_chain : [],
+            manual_ban: state.blocklist.manual_bans || [],
+            fallback_chain: state.blocklist.fallback_chain || [],
           };
         }
         return full;
       }
 
-      let pipelineDraft = null;
-      function renderNodeEditor(node) {
-        pipelineDraft = composeFullPolicy();
-        clear(elements.pipelineInspector);
-        const fields = [];
-        const addField = (label, get, set, options) => {
-          const wrap = makeElement('div', 'prop-field');
-          wrap.append(makeElement('label', '', label));
+      function renderInspector(node) {
+        const box = $('inspector');
+        clear(box);
+        if (!node) {
+          const rules = (state.policy && state.policy.rules) || [];
+          const tiers = Object.keys((state.policy && state.policy.tiers) || {});
+          box.append(el('p', 'nothing', state.mode === 'unlocked'
+            ? 'Click a node to change it.'
+            : `${rules.length} rules routing to ${tiers.length} tiers. Unlock to edit.`));
+          return;
+        }
+        const editing = state.mode === 'unlocked' && node.bind && EDITABLE.has(node.bind);
+        box.append(el('h2', '', node.name));
+        if (!editing) {
+          const policy = state.policy || {};
+          let fragment = null;
+          if (node.bind === 'rule') fragment = (policy.rules || [])[node.ruleIndex];
+          else if (node.bind === 'tier') fragment = (policy.tiers || {})[node.tier];
+          else if (node.bind) fragment = policy[node.bind];
+          if (node.runtime) box.append(el('p', 'nothing', 'Runtime state — rebuilt per call, nothing to configure.'));
+          else box.append(Object.assign(el('pre', 'code', pretty(fragment || {})), {}));
+          return;
+        }
+
+        state.draft = fullPolicy();
+        const field = (label, get, set, options) => {
+          const wrap = el('div', 'field');
+          wrap.append(el('label', '', label));
           let input;
           if (options) {
             input = document.createElement('select');
-            options.forEach((o) => { const opt = document.createElement('option'); opt.value = o; opt.textContent = o; input.appendChild(opt); });
+            options.forEach((o) => {
+              const opt = document.createElement('option');
+              opt.value = o; opt.textContent = o || '—';
+              input.appendChild(opt);
+            });
           } else {
-            input = document.createElement('input'); input.type = 'text';
+            input = document.createElement('input');
           }
           input.value = get() == null ? '' : String(get());
           input.addEventListener('input', () => set(input.value));
           wrap.append(input);
-          elements.pipelineInspector.append(wrap);
-          fields.push(input);
+          box.append(wrap);
         };
+
+        const d = state.draft;
         if (node.bind === 'tier') {
-          const t = pipelineDraft.tiers[node.tierName] = pipelineDraft.tiers[node.tierName] || {};
-          addField('model', () => t.model, (v) => { t.model = v; });
-          addField('provider', () => t.provider, (v) => { t.provider = v; });
+          const t = d.tiers[node.tier] = d.tiers[node.tier] || {};
+          field('model', () => t.model, (v) => { t.model = v; });
+          field('provider', () => t.provider, (v) => { t.provider = v; });
         } else if (node.bind === 'rule') {
-          const r = pipelineDraft.rules[node.ruleIndex] = pipelineDraft.rules[node.ruleIndex] || {};
+          const r = d.rules[node.ruleIndex] = d.rules[node.ruleIndex] || {};
           r.then = r.then || {};
-          const tierNames = Object.keys((state.policy && state.policy.tiers) || {});
-          addField('then.model', () => r.then.model, (v) => { r.then.model = v; }, tierNames.length ? tierNames.concat(['']) : null);
-          addField('then.profile', () => r.then.profile, (v) => { r.then.profile = v; });
+          const tiers = Object.keys(d.tiers || {});
+          field('routes to', () => r.then.model, (v) => { r.then.model = v; }, tiers.concat(['']));
+          field('profile', () => r.then.profile, (v) => { r.then.profile = v; });
         } else if (node.bind === 'classifier' || node.bind === 'fail_safe') {
-          const f = pipelineDraft[node.bind] = pipelineDraft[node.bind] || {};
-          addField('model', () => f.model, (v) => { f.model = v; });
-          addField('provider', () => f.provider, (v) => { f.provider = v; });
+          const f = d[node.bind] = d[node.bind] || {};
+          field('model', () => f.model, (v) => { f.model = v; });
+          field('provider', () => f.provider, (v) => { f.provider = v; });
         } else if (node.bind === 'default') {
-          const d = pipelineDraft.default = pipelineDraft.default || {};
-          addField('model', () => d.model, (v) => { d.model = v; });
-          addField('action', () => d.action, (v) => { d.action = v; });
+          const def = d.default = d.default || {};
+          field('routes to', () => def.model, (v) => { def.model = v; });
+          field('action', () => def.action, (v) => { def.action = v; });
         }
-        elements.pipelineEditActions.hidden = false;
-        elements.pipelinePlanPreview.hidden = true;
-        setMessage(elements.pipelineActionMessage, `Editing ${node.label}. Validate to preview a diff before applying.`);
+
+        const actions = el('div', 'actions');
+        const plan = el('button', 'btn', 'Validate');
+        const apply = el('button', 'btn go', 'Apply');
+        const revert = el('button', 'btn warn', 'Revert');
+        actions.append(plan, apply, revert);
+        box.append(actions);
+        const msg = el('p', 'msg'); msg.id = 'nodeMsg'; msg.setAttribute('aria-live', 'polite');
+        box.append(msg);
+        const diff = el('pre', 'code'); diff.id = 'nodeDiff'; diff.hidden = true;
+        box.append(diff);
+
+        plan.addEventListener('click', () => doPlan(state.draft, msg, diff));
+        apply.addEventListener('click', () => doApply('/apply', msg));
+        revert.addEventListener('click', () => doApply('/apply/revert', msg));
       }
 
-      async function pipelineValidate() {
-        if (!canWrite(elements.pipelineActionMessage, 'Validation')) return;
-        if (!pipelineDraft) { setMessage(elements.pipelineActionMessage, 'Select a node to edit first.', 'error'); return; }
-        setMessage(elements.pipelineActionMessage, 'Requesting server-side plan…');
-        const result = await request('/plan', { method: 'POST', body: { policy: pipelineDraft } });
-        if (result.pending) { setMessage(elements.pipelineActionMessage, 'Validation unavailable: POST /plan is endpoint pending.', 'error'); return; }
-        if (result.error) { setMessage(elements.pipelineActionMessage, `Validation failed: HTTP ${result.status || 'network'} from /plan.`, 'error'); return; }
-        state.plan = result.data;
-        elements.pipelinePlanPreview.hidden = false;
-        elements.pipelinePlanPreview.textContent = pretty(result.data.diff || result.data.preview || result.data);
-        setMessage(elements.pipelineActionMessage, result.data.valid ? 'Plan valid. Inspect the diff, then Apply.' : `Plan INVALID: ${(result.data.errors || []).join('; ')}`, result.data.valid ? 'ok' : 'error');
+      // ── write path ──────────────────────────────────────────────────
+      function writable(msg, action) {
+        if (state.unreachable) { setMsg(msg, `${action} unavailable — sidecar unreachable.`, 'bad'); return false; }
+        if (state.mode !== 'unlocked') { setMsg(msg, `${action} needs the lock opened first.`, 'bad'); return false; }
+        if (!csrf()) {
+          setMsg(msg, `${action} cannot apply from a standalone console — open the Router panel inside Hermes One.`, 'bad');
+          return false;
+        }
+        return true;
+      }
+      function setMsg(node, text, kind) {
+        if (!node) return;
+        node.textContent = text;
+        node.className = `msg${kind ? ` ${kind}` : ''}`;
       }
 
-      async function pipelineApply(stage) {
-        if (!canWrite(elements.pipelineActionMessage, 'Apply')) return;
-        if (!state.plan) { setMessage(elements.pipelineActionMessage, 'Validate first.', 'error'); return; }
-        const path = stage === 'confirm' ? '/apply/confirm' : stage === 'revert' ? '/apply/revert' : '/apply';
-        const result = await request(path, { method: 'POST', body: { plan: state.plan, policy: state.plan.policy } });
-        if (result.pending) { setMessage(elements.pipelineActionMessage, `Apply unavailable: POST ${path} is endpoint pending.`, 'error'); return; }
-        if (result.status === 409) { setMessage(elements.pipelineActionMessage, 'Conflict: router.yaml changed since the plan. Re-validate against fresh state.', 'error'); state.plan = null; await refresh(); return; }
-        if (result.error) { setMessage(elements.pipelineActionMessage, `Apply failed: HTTP ${result.status || 'network'} from ${path}.`, 'error'); return; }
-        setMessage(elements.pipelineActionMessage, `${stage === 'revert' ? 'Revert' : stage === 'confirm' ? 'Confirmation' : 'Apply'} accepted. Refreshing…`, 'ok');
-        state.plan = null; pipelineDraft = null;
-        await refresh();
+      async function doPlan(policy, msg, diffNode) {
+        if (!writable(msg, 'Validate')) return;
+        setMsg(msg, 'Checking…');
+        const res = await call('/plan', { method: 'POST', body: { policy } });
+        if (res.missing) { setMsg(msg, 'This sidecar has no /plan endpoint.', 'bad'); return; }
+        if (res.error) { setMsg(msg, `Rejected (HTTP ${res.status || 'network'}).`, 'bad'); return; }
+        state.plan = res.data;
+        if (diffNode) {
+          diffNode.hidden = false;
+          diffNode.textContent = res.data.diff || pretty(res.data.preview || {});
+        }
+        setMsg(msg, res.data.valid ? 'Valid — apply to write it.' : `Invalid: ${(res.data.errors || []).join('; ')}`,
+               res.data.valid ? 'ok' : 'bad');
       }
 
-      // --- Replay: recent routes → step scrubber over the shared graph -------
+      async function doApply(path, msg) {
+        if (!writable(msg, 'Apply')) return;
+        if (path !== '/apply/revert') {
+          if (!state.plan) { setMsg(msg, 'Validate first.', 'bad'); return; }
+          if (!state.plan.valid) { setMsg(msg, 'That plan is invalid.', 'bad'); return; }
+        }
+        const body = path === '/apply/revert' ? {} : { plan: state.plan, policy: state.plan.policy };
+        const res = await call(path, { method: 'POST', body });
+        if (res.missing) { setMsg(msg, 'This sidecar has no such endpoint.', 'bad'); return; }
+        if (res.status === 409) { setMsg(msg, 'Policy changed underneath — validate again.', 'bad'); state.plan = null; await load(); return; }
+        if (res.error) { setMsg(msg, `Failed (HTTP ${res.status || 'network'}).`, 'bad'); return; }
+        setMsg(msg, 'Written.', 'ok');
+        state.plan = null; state.draft = null;
+        await load();
+      }
 
+      async function doCompaction() {
+        const msg = $('compactMsg');
+        if (!writable(msg, 'Recalculate')) return;
+        if ($('compactConfirm').value !== 'COMPACT') { setMsg(msg, 'Type COMPACT exactly to confirm.', 'bad'); return; }
+        const aggressiveness = state.compaction && Number.isFinite(state.compaction.aggressiveness)
+          ? state.compaction.aggressiveness : 50;
+        const res = await call('/apply', { method: 'POST', body: { action: 'compaction', confirm: 'COMPACT', aggressiveness } });
+        if (res.error || res.missing) { setMsg(msg, `Refused (HTTP ${res.status || 'n/a'}).`, 'bad'); return; }
+        $('compactConfirm').value = '';
+        setMsg(msg, 'Scheduled — the agent restarts and reverts itself if unhealthy.', 'ok');
+      }
+
+      // ── Routes + replay ─────────────────────────────────────────────
       function renderRoutes() {
-        const wrap = elements.routesTable;
-        clear(wrap);
+        const box = $('routesTable');
+        clear(box);
         const routes = Array.isArray(state.routes) ? state.routes : [];
-        if (!routes.length) { wrap.append(makeElement('div', 'empty', 'No routes recorded yet.')); return; }
-        const table = makeElement('table', 'data-table');
-        const tbody = makeElement('tbody');
-        routes.forEach((r) => {
-          const tr = makeElement('tr', 'route-row');
-          tr.dataset.routeId = r.id;
-          if (state.replay && state.replay.routeId === r.id) tr.classList.add('is-selected');
-          const causeTd = makeElement('td');
-          const chip = makeElement('span', `cause-chip`, r.cause || '—');
-          chip.style.color = causeColor(r.cause);
-          causeTd.append(chip);
-          tr.append(causeTd, makeElement('td', 'mono', safeString(r.model, '—')), makeElement('td', '', safeString(r.task, '—')));
-          tr.addEventListener('click', () => selectRoute(r.id));
-          tbody.append(tr);
-        });
-        table.append(tbody);
-        wrap.append(table);
-      }
-
-      function causeColor(cause) {
-        const c = String(cause || '');
-        if (c.includes('veto') || c.includes('fail_safe')) return 'var(--red)';
-        if (c === 'classifier') return 'var(--violet)';
-        if (c.includes('size') || c.includes('keyword') || c.includes('code') || c.includes('hard')) return 'var(--green)';
-        return 'var(--muted)';
-      }
-
-      async function selectRoute(routeId) {
-        const result = await request('/routes?id=' + encodeURIComponent(routeId));
-        if (result.error || result.pending) {
-          if (elements.replayRouteChip) { elements.replayRouteChip.textContent = 'trace unavailable'; }
+        $('routesNote').textContent = routes.length
+          ? 'Pick one to replay its path.'
+          : (state.pending.has('GET /routes') ? 'This sidecar does not record decisions yet.' : '');
+        if (!routes.length) {
+          box.append(el('p', 'nothing', 'No decisions recorded yet.'));
           return;
         }
-        const steps = Array.isArray(result.data && result.data.steps) ? result.data.steps : [];
-        state.replay = { steps, index: 0, routeId };
-        if (elements.replayRouteChip) {
-          const row = (state.routes || []).find((r) => r.id === routeId) || {};
-          elements.replayRouteChip.textContent = `${safeString(row.cause, 'route')} · ${steps.length} steps`;
-        }
-        // Redraw the replay canvas fresh, then light up the first step.
-        renderPipeline(elements.replaySvg, { interactive: false });
-        elements.replayScrubber.hidden = steps.length === 0;
-        elements.replayRange.max = String(Math.max(0, steps.length - 1));
-        elements.replayRange.value = '0';
-        renderRoutes();
-        renderReplayStep();
+        routes.forEach((r) => {
+          const row = el('div', `row route${state.replay && state.replay.id === r.id ? ' picked' : ''}`);
+          row.dataset.routeId = r.id;
+          const cause = el('span', 'cause', String(r.cause || '—').replace(/_/g, ' '));
+          cause.style.color = causeColor(r.cause);
+          row.append(cause);
+          const mid = el('div');
+          mid.append(el('div', 'row-name', r.model || '—'));
+          if (r.task) mid.append(el('div', 'row-note', r.task));
+          row.append(mid, el('span', 'row-value', ago(r.ts)));
+          row.addEventListener('click', () => pickRoute(r.id));
+          box.append(row);
+        });
       }
 
-      // Map a trace step to the graph node id it lights up.
-      function stepNodeId(step) {
+      function stepNode(step) {
         const stage = step && step.stage;
         if (stage === 'rules') {
           const out = step.out || {};
-          if (out.rule_id != null) return `rule:${out.rule_id}`;
-          return 'default';
+          return out.rule_id != null ? `rule:${out.rule_id}` : 'default';
         }
         if (stage === 'veto') return 'blocklist';
-        if (stage === 'cache' || stage === 'session_pin') return stage;
         return stage || null;
       }
 
-      function renderReplayStep() {
-        if (!state.replay) return;
-        const { steps, index } = state.replay;
-        const activeId = index < steps.length ? stepNodeId(steps[index]) : null;
-        const traversed = new Set();
-        for (let i = 0; i < index && i < steps.length; i++) { const id = stepNodeId(steps[i]); if (id) traversed.add(id); }
-        elements.replaySvg.querySelectorAll('.pnode').forEach((g) => {
-          const id = g.dataset.nodeId;
-          g.classList.toggle('is-active', id === activeId);
-          g.classList.toggle('is-traversed', traversed.has(id) && id !== activeId);
-          g.classList.toggle('is-dim', activeId != null && id !== activeId && !traversed.has(id));
-        });
-        const step = steps[index] || {};
-        // Structured, labeled blocks — not a raw JSON dump. All values via
-        // textContent (inert: replayed task/trace text is attacker-influenceable).
-        const io = elements.replayStepIo;
-        io.hidden = false;
-        clear(io);
-        const meta = makeElement('div', 'replay-meta');
-        meta.append(
-          makeElement('span', 'replay-meta-step', `step ${index + 1}/${steps.length}`),
-          makeElement('span', 'replay-meta-stage', safeString(step.stage)),
-        );
-        const causeChip = makeElement('span', 'cause-chip', safeString(step.cause, '—'));
-        causeChip.style.color = causeColor(step.cause);
-        meta.append(causeChip);
-        io.append(meta);
-        const block = (label, value) => {
-          const wrap = makeElement('div', 'replay-io-block');
-          wrap.append(makeElement('div', 'replay-io-label', label));
-          wrap.append(makeElement('pre', 'replay-io-body', pretty(value)));
-          return wrap;
-        };
-        io.append(block('in', step.in), block('out', step.out));
-      }
-
-      function replayScrub(delta) {
-        if (!state.replay) return;
-        const n = state.replay.steps.length;
-        if (!n) return;
-        let idx = state.replay.index;
-        idx = delta === 'range' ? Number(elements.replayRange.value) : Math.max(0, Math.min(n - 1, idx + delta));
-        state.replay.index = idx;
-        elements.replayRange.value = String(idx);
-        renderReplayStep();
-      }
-
-      function renderPipelinePanel() {
-        elements.pipelineMode.textContent = state.mode === 'edit' ? 'edit armed' : 'read-only';
-        elements.pipelineMode.className = `chip${state.mode === 'edit' ? ' is-degraded' : ''}`;
-        // Pipeline tab = interactive editor canvas.
-        renderPipeline(elements.pipelineSvg, { interactive: true });
-        // Replay tab = its own read-only canvas + the recent-routes list.
-        renderPipeline(elements.replaySvg, { interactive: false });
+      async function pickRoute(id) {
+        const res = await call(`/routes?id=${encodeURIComponent(id)}`);
+        if (res.error || res.missing) { $('routesNote').textContent = 'That trace could not be read.'; return; }
+        const steps = Array.isArray(res.data.steps) ? res.data.steps : [];
+        state.replay = { id, steps, at: 0 };
+        drawGraph($('replaySvg'), { editable: false });
+        $('scrub').hidden = steps.length < 2;
+        $('stepRange').max = String(Math.max(0, steps.length - 1));
+        $('stepRange').value = '0';
         renderRoutes();
-        if (!state.selectedNode) renderInspectorDefault();
-        if (state.replay) renderReplayStep();
+        renderStep();
       }
 
-      function wireEvents() {
+      function renderStep() {
+        if (!state.replay) return;
+        const { steps, at } = state.replay;
+        const active = at < steps.length ? stepNode(steps[at]) : null;
+        const past = new Set();
+        for (let i = 0; i < at && i < steps.length; i++) { const id = stepNode(steps[i]); if (id) past.add(id); }
+        $('replaySvg').querySelectorAll('.pnode').forEach((g) => {
+          const id = g.dataset.nodeId;
+          g.classList.toggle('on', id === active);
+          g.classList.toggle('past', past.has(id) && id !== active);
+          g.classList.toggle('off', active != null && id !== active && !past.has(id));
+        });
+
+        const box = $('stepDetail');
+        clear(box);
+        const step = steps[at] || {};
+        const head = el('div', 'step-head');
+        head.append(el('span', 'step-index', `step ${at + 1} of ${steps.length}`),
+                    el('span', 'step-stage', String(step.stage || '—')));
+        if (step.cause) {
+          const c = el('span', 'cause', String(step.cause).replace(/_/g, ' '));
+          c.style.color = causeColor(step.cause);
+          head.append(c);
+        }
+        box.append(head);
+        const io = el('div', 'io');
+        [['in', step.in], ['out', step.out]].forEach(([label, value]) => {
+          if (value === undefined) return;
+          const cell = el('div');
+          cell.append(el('div', 'io-label', label));
+          cell.append(el('pre', 'code', pretty(value)));
+          io.append(cell);
+        });
+        box.append(io);
+      }
+
+      function scrub(delta) {
+        if (!state.replay || !state.replay.steps.length) return;
+        const max = state.replay.steps.length - 1;
+        const next = delta === 'range' ? Number($('stepRange').value)
+                                      : Math.max(0, Math.min(max, state.replay.at + delta));
+        state.replay.at = next;
+        $('stepRange').value = String(next);
+        renderStep();
+      }
+
+      // ── lock ────────────────────────────────────────────────────────
+      function setMode(mode) {
+        state.mode = mode;
+        const open = mode === 'unlocked';
+        const lock = $('lock');
+        lock.setAttribute('aria-pressed', String(open));
+        lock.title = open ? 'Lock editing' : 'Unlock editing';
+        lock.querySelector('.lock-icon').textContent = open ? '✎' : '🔒';
+        $('lockLabel').textContent = open ? 'Unlocked' : 'Locked';
+        $('policyEditor').readOnly = !open;
+        $('pipelineNote').textContent = open ? 'Click a node to change it.' : 'Unlock to change a node.';
+        renderWarnings();
+        renderRail();
+        renderInspector(null);
+        drawGraph($('pipelineSvg'), { editable: open });
+      }
+
+      // ── layout ──────────────────────────────────────────────────────
+      function isNarrow() {
+        const embedded = window.self !== window.top;
+        return embedded || window.innerWidth < NARROW_BELOW;
+      }
+      function applyLayout() {
+        $('shell').classList.toggle('is-narrow', isNarrow());
+        $('pipelineRow').classList.toggle('solo', isNarrow());
+        drawGraph($('pipelineSvg'), { editable: state.mode === 'unlocked' });
+        drawGraph($('replaySvg'), { editable: false });
+      }
+
+      // ── load ────────────────────────────────────────────────────────
+      function renderAll() {
+        renderWarnings();
+        renderRail();
+        renderHealth();
+        renderRoutes();
+        drawGraph($('pipelineSvg'), { editable: state.mode === 'unlocked' });
+        drawGraph($('replaySvg'), { editable: false });
+        if (!state.selected) renderInspector(null);
+        if (state.replay) renderStep();
+        if (state.mode !== 'unlocked' || !$('policyEditor').value) {
+          $('policyEditor').value = state.policy ? pretty(fullPolicy()) : '';
+        }
+      }
+
+      async function load() {
+        state.unreachable = false;
+        const [health, status, policy, blocklist, liveness, compaction, routes] = await Promise.all([
+          call('/health'), call('/status'), call('/policy'), call('/blocklist'),
+          call('/liveness'), call('/compaction'), call('/routes'),
+        ]);
+        state.health = health.data || null;
+        state.status = status.data || null;
+        state.policy = policy.data || null;
+        state.blocklist = blocklist.data || null;
+        state.liveness = liveness.data || null;
+        state.compaction = compaction.missing ? null : (compaction.data || null);
+        state.routes = (routes.data && Array.isArray(routes.data.routes)) ? routes.data.routes : [];
+        state.checkedAt = new Date();
+        renderAll();
+      }
+
+      function wire() {
         document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => {
           const name = tab.dataset.tab;
-          document.querySelectorAll('.tab').forEach((item) => item.setAttribute('aria-selected', String(item === tab)));
-          document.querySelectorAll('.panel').forEach((panel) => panel.classList.toggle('active', panel.id === `panel-${name}`));
+          document.querySelectorAll('.tab').forEach((t) => t.setAttribute('aria-selected', String(t === tab)));
+          document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('active', s.id === `panel-${name}`));
         }));
-        $('pipelineValidateButton').addEventListener('click', pipelineValidate);
-        $('pipelineApplyButton').addEventListener('click', () => pipelineApply('apply'));
-        $('pipelineConfirmButton').addEventListener('click', () => pipelineApply('confirm'));
-        $('pipelineRevertButton').addEventListener('click', () => pipelineApply('revert'));
-        elements.replayRange.addEventListener('input', () => replayScrub('range'));
-        $('replayPrev').addEventListener('click', () => replayScrub(-1));
-        $('replayNext').addEventListener('click', () => replayScrub(1));
-        // Rail collapse — remembers the choice; frees width for the canvas.
-        if (elements.railCollapse) elements.railCollapse.addEventListener('click', () => setRailCollapsed(!isRailCollapsed()));
-        // Inspector collapse — gives the Pipeline graph the full width.
-        if (elements.inspectorToggle) elements.inspectorToggle.addEventListener('click', () => {
-          const hidden = elements.pipelineSide.hasAttribute('hidden');
-          elements.pipelineSide.toggleAttribute('hidden', !hidden);
-          elements.inspectorToggle.setAttribute('aria-pressed', String(!hidden));
-          elements.inspectorToggle.querySelector('span') ? (elements.inspectorToggle.querySelector('span').textContent = hidden ? 'Hide inspector' : 'Show inspector') : (elements.inspectorToggle.textContent = hidden ? 'Hide inspector' : 'Show inspector');
-          renderPipeline(elements.pipelineSvg, { interactive: true });
+        $('lock').addEventListener('click', () => setMode(state.mode === 'unlocked' ? 'locked' : 'unlocked'));
+        $('refresh').addEventListener('click', load);
+        $('stepRange').addEventListener('input', () => scrub('range'));
+        $('stepPrev').addEventListener('click', () => scrub(-1));
+        $('stepNext').addEventListener('click', () => scrub(1));
+        $('compactGo').addEventListener('click', doCompaction);
+        $('jsonPlan').addEventListener('click', () => {
+          let draft;
+          try { draft = JSON.parse($('policyEditor').value); }
+          catch (e) { setMsg($('jsonMsg'), `Not valid JSON: ${e.message}`, 'bad'); return; }
+          doPlan(draft, $('jsonMsg'), $('jsonDiff'));
         });
-        if (elements.modeButton) elements.modeButton.addEventListener('click', () => setMode(state.mode === 'edit' ? 'read' : 'edit'));
-        $('refreshButton').addEventListener('click', refresh);
-        $('validatePolicyButton').addEventListener('click', planPolicy);
-        $('applyPolicyButton').addEventListener('click', () => applyPolicy('apply'));
-        $('confirmPolicyButton').addEventListener('click', () => applyPolicy('confirm'));
-        $('revertPolicyButton').addEventListener('click', () => applyPolicy('revert'));
-        elements.applyCompactionButton.addEventListener('click', applyCompaction);
-        $('traceButton').addEventListener('click', () => setDrawer(true));
-        $('closeTraceButton').addEventListener('click', () => setDrawer(false));
-        elements.drawerBackdrop.addEventListener('click', () => setDrawer(false));
-        document.addEventListener('keydown', (event) => { if (event.key === 'Escape') setDrawer(false); });
-        $('traceForm').addEventListener('submit', async (event) => {
-          event.preventDefault();
-          const task = elements.traceTask.value.trim();
-          if (!task) return;
-          elements.traceResult.textContent = 'Requesting route explanation…';
-          const result = await request(`/explain?task=${encodeURIComponent(task)}`);
-          if (result.pending) { elements.traceResult.textContent = 'Endpoint pending — GET /explain has not been implemented by the sidecar.'; return; }
-          if (result.error) { elements.traceResult.textContent = `Trace failed: HTTP ${result.status || 'network'} from /explain.`; return; }
-          elements.traceResult.textContent = pretty(result.data);
-        });
+        $('jsonApply').addEventListener('click', () => doApply('/apply', $('jsonMsg')));
+        $('jsonConfirm').addEventListener('click', () => doApply('/apply/confirm', $('jsonMsg')));
+        $('jsonRevert').addEventListener('click', () => doApply('/apply/revert', $('jsonMsg')));
+        window.addEventListener('resize', applyLayout);
       }
 
-      // Choose the deck orientation from the space we actually get. A host that
-      // already owns the left edge (or a narrow viewport) gets the horizontal
-      // deck; a wide standalone window keeps the vertical rail. Re-evaluated on
-      // resize so docking or undocking the panel does the right thing.
-      const DECK_TOP_MAX_WIDTH = 1180;
-      // Pure decision, so it can be tested without a browser: the deck goes
-      // horizontal when embedded (a host owns the left edge) or when narrow.
-      function deckIsTop() {
-        const embedded = window.self !== window.top || document.documentElement.dataset.crEmbedded === 'true';
-        return embedded || window.innerWidth < DECK_TOP_MAX_WIDTH;
-      }
-      function applyDeckOrientation() {
-        if (!elements.appShell) return;
-        const top = deckIsTop();
-        elements.appShell.classList.toggle('deck-top', top);
-        // A horizontal deck has no collapse affordance to honour.
-        if (top) elements.appShell.classList.remove('rail-collapsed');
-        renderPipeline(elements.pipelineSvg, { interactive: true });
-        renderPipeline(elements.replaySvg, { interactive: false });
-      }
+      wire();
+      applyLayout();
+      setMode('locked');
+      load();
 
-      function isRailCollapsed() {
-        try { return localStorage.getItem('cr-rail-collapsed') === '1'; } catch (_) { return false; }
-      }
-      function setRailCollapsed(collapsed) {
-        if (elements.appShell) elements.appShell.classList.toggle('rail-collapsed', collapsed);
-        if (elements.railCollapse) {
-          elements.railCollapse.textContent = collapsed ? '›' : '‹';
-          elements.railCollapse.setAttribute('aria-label', collapsed ? 'Expand rail' : 'Collapse rail');
-          elements.railCollapse.title = collapsed ? 'Expand rail' : 'Collapse rail';
-        }
-        try { localStorage.setItem('cr-rail-collapsed', collapsed ? '1' : '0'); } catch (_) { /* private mode */ }
-        // Node canvas reflows into the reclaimed width.
-        renderPipeline(elements.pipelineSvg, { interactive: true });
-        renderPipeline(elements.replaySvg, { interactive: false });
-      }
-
-      wireEvents();
-      applyDeckOrientation();
-      window.addEventListener('resize', applyDeckOrientation);
-      if (!elements.appShell.classList.contains('deck-top')) setRailCollapsed(isRailCollapsed());
-      setMode('read');
-      refresh();
+      globalThis.__router = {
+        state, setMode, renderRail, renderHealth, renderRoutes, renderStep, renderInspector,
+        drawGraph, graphNodes, graphEdges, stepNode, causeColor, worstOf, modelState,
+        say, ago, isNarrow, csrf, writable, call, load,
+      };
     })();
   </script>
 </body>
