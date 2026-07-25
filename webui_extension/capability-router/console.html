@@ -960,6 +960,9 @@
         // Compaction: pending endpoint → degraded; present → alive.
         const compEp = state.endpointState.get('GET /compaction');
         setDot(elements.railCompaction, compEp && compEp.kind === 'pending' ? 'degraded' : (state.compaction ? 'alive' : ''));
+        // Compaction has no natural count — keep its badge explicitly empty so a
+        // stray value can never render as a blank pill.
+        setBadge(elements.railCompactionBadge, 0);
 
         // Panel KPIs (own ids; never reuse rail-health chip ids).
         if (elements.kpiRulesValue) elements.kpiRulesValue.textContent = String(rules.length);
