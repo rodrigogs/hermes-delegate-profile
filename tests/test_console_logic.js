@@ -62,7 +62,9 @@ function fakeDom() {
       getElementById: get,
       createElement: (tag) => Object.assign(make(`el:${tag}`), { tagName: tag }),
       createElementNS: (_ns, tag) => Object.assign(make(`svg:${tag}`), { tagName: tag }),
-      querySelector: () => get('query'),
+      // Keyed by selector so '#modeButton .mode-button-label' and its siblings
+// are distinct nodes, the way they are in the document.
+      querySelector: (sel) => get(`sel:${sel}`),
       querySelectorAll: () => [],
       addEventListener() {},
       readyState: 'complete',
@@ -206,16 +208,21 @@ test('renderRail survives being called before the first poll', () => {
   assert.equal(dom.nodes.get('railPipelineBadge').hidden, true, 'no policy yet → no count');
 });
 
-test('edit mode is what arms writing, and read mode disarms it', () => {
+test('the mode control states the current mode AND what pressing it will do', () => {
   const { api, dom } = loadConsole();
+  const button = dom.nodes.get('modeButton');
+
+  // Read: locked, and the hint tells you the way in. A control that only
+  // changed colour would leave "how do I edit?" unanswered — the complaint
+  // this redesign exists to fix.
+  api.setMode('read');
+  assert.equal(button.attrs['aria-pressed'], 'false');
+  assert.match(button.title, /Unlock/i, 'the tooltip names the action, not the state');
+  assert.equal(dom.nodes.get('policyEditor').readOnly, true, 'read mode locks the editor');
+
   api.setMode('edit');
   assert.equal(api.state.mode, 'edit');
-  assert.equal(dom.nodes.get('editModeButton').attrs['aria-pressed'], 'true');
-  assert.equal(dom.nodes.get('readModeButton').attrs['aria-pressed'], 'false');
-  // The policy editor is the write surface: it must be writable only in edit.
-  assert.equal(dom.nodes.get('policyEditor').readOnly, false);
-
-  api.setMode('read');
-  assert.equal(api.state.mode, 'read');
-  assert.equal(dom.nodes.get('policyEditor').readOnly, true, 'read mode re-locks the editor');
+  assert.equal(button.attrs['aria-pressed'], 'true', 'pressed state carries the armed mode');
+  assert.match(button.title, /Lock/i, 'now the action is to lock again');
+  assert.equal(dom.nodes.get('policyEditor').readOnly, false, 'edit mode arms the write surface');
 });

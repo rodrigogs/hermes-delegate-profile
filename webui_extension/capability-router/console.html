@@ -72,6 +72,29 @@
     }
     .rail-collapse:hover { border-color: var(--accent); color: var(--text); }
     .rail-health { display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+    /* Write-mode control. Read = quiet and locked; Edit = unmistakably armed
+       (amber field, not a subtle text swap), because arming writes is the one
+       action in this console with consequences. */
+    .mode-button {
+      display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 10px;
+      width: 100%; padding: 9px 11px; border: 1px solid var(--line-strong); border-radius: 9px;
+      color: var(--text); background: var(--surface-raised); cursor: pointer; text-align: left;
+      transition: border-color .16s, background .16s, color .16s;
+    }
+    .mode-button:hover { border-color: var(--accent); background: var(--surface-hover); }
+    .mode-button-icon { font-size: 13px; line-height: 1; }
+    .mode-button-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+    .mode-button-label { font: 700 12px var(--sans); }
+    .mode-button-hint { color: var(--muted); font: 10px var(--mono); }
+    .mode-button[aria-pressed="true"] {
+      border-color: rgba(246, 191, 95, .55); color: #ffe4b0;
+      background: linear-gradient(180deg, rgba(246, 191, 95, .16), rgba(246, 191, 95, .06));
+    }
+    .mode-button[aria-pressed="true"] .mode-button-hint { color: #f6bf5f; }
+    /* Collapsed rail keeps the lock/unlock glyph — the control never vanishes. */
+    .rail-collapsed .mode-button { grid-template-columns: 1fr; justify-items: center; padding: 9px 4px; }
+    .rail-collapsed .mode-button-copy { display: none; }
+
     .rail-nav { display: flex; flex-direction: column; gap: 2px; }
     .rail-item {
       display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 10px;
@@ -91,15 +114,13 @@
     }
     .rail-badge[hidden] { display: none; }
     .rail-foot { margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
-    .rail-foot .mode-toggle { justify-content: center; }
     .rail-foot .button { justify-content: center; }
-    /* Collapsed rail: icon + state only; labels/prose fold away, canvas reclaims width. */
+    /* Collapsed rail: icon + state only; labels/prose fold away, canvas reclaims
+       width. The health rollup keeps just the reachability dot — the worst-of-N
+       and checked-at chips would overflow a 56px rail. */
     .rail-collapsed .rail-label,
     .rail-collapsed .rail-brand .brand-copy,
     .rail-collapsed .rail-foot .button span,
-    .rail-collapsed .rail-foot .mode-toggle { display: none; }
-    /* Health rollup collapses to reachability dot only — the worst-of-N and
-       checked-at chips would overflow the 56px rail, so hide them here. */
     .rail-collapsed .rail-health #worstBadge,
     .rail-collapsed .rail-health #lastChecked { display: none; }
     .rail-collapsed .rail-health #reachabilityChip { padding: 0; min-height: 0; border: 0; background: transparent; }
@@ -173,9 +194,6 @@
     .button.quiet { border-color: transparent; color: var(--muted); background: transparent; }
     .button.quiet:hover:not(:disabled) { border-color: var(--line); color: var(--text); }
 
-    .mode-toggle { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: #0b0e14; }
-    .mode-toggle button { min-height: 26px; border: 0; border-radius: 6px; padding: 4px 9px; color: var(--muted); background: transparent; font: 700 11px var(--mono); }
-    .mode-toggle button[aria-pressed="true"] { color: var(--text); background: var(--surface-hover); }
 
     .notice-stack { margin: 14px 0 0; display: grid; gap: 8px; }
     .notice { display: flex; align-items: start; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--muted); }
@@ -355,6 +373,17 @@
         <span id="reachabilityChip" class="chip"><span class="dot"></span><span id="reachabilityValue">sidecar checking</span></span>
         <span id="lastChecked" class="timestamp chip">not checked</span>
       </div>
+      <!-- The single most consequential control: whether this console can WRITE.
+           It sits at the top of the rail (not buried in a footer), states what it
+           will do, and stays visible when the rail is collapsed. -->
+      <button id="modeButton" class="mode-button" type="button" aria-pressed="false"
+              title="Unlock editing (arms plan → apply)">
+        <span class="mode-button-icon" aria-hidden="true">🔒</span>
+        <span class="mode-button-copy">
+          <span class="mode-button-label">Read-only</span>
+          <span class="mode-button-hint">Unlock to edit</span>
+        </span>
+      </button>
       <nav class="rail-nav" role="tablist" aria-label="Capability Router console sections">
         <button class="tab rail-item" id="tab-status" role="tab" aria-selected="true" aria-controls="panel-status" data-tab="status" type="button" title="Status">
           <span class="rail-icon" aria-hidden="true">◈</span><span class="rail-label">Status</span>
@@ -378,10 +407,6 @@
         </button>
       </nav>
       <div class="rail-foot">
-        <div class="mode-toggle" role="group" aria-label="Console access mode">
-          <button id="readModeButton" type="button" aria-pressed="true">Read</button>
-          <button id="editModeButton" type="button" aria-pressed="false">Edit</button>
-        </div>
         <button id="traceButton" class="button quiet" type="button"><span>Trace route</span></button>
         <button id="refreshButton" class="button quiet" type="button"><span>Refresh</span></button>
       </div>
@@ -645,6 +670,10 @@
         replayScrubber: $('replayScrubber'), replayRange: $('replayRange'), replayStepIo: $('replayStepIo'),
         // Command deck: rail state affordances + collapse/inspector toggles
         appShell: document.querySelector('.app-shell'), railCollapse: $('railCollapse'),
+        modeButton: $('modeButton'),
+        modeButtonIcon: document.querySelector('#modeButton .mode-button-icon'),
+        modeButtonLabel: document.querySelector('#modeButton .mode-button-label'),
+        modeButtonHint: document.querySelector('#modeButton .mode-button-hint'),
         railStatus: $('railStatus'), railStatusBadge: $('railStatusBadge'),
         railPipeline: $('railPipeline'), railPipelineBadge: $('railPipelineBadge'),
         railReplay: $('railReplay'), railReplayBadge: $('railReplayBadge'),
@@ -912,8 +941,14 @@
       function setMode(mode) {
         state.mode = mode;
         const editable = mode === 'edit';
-        $('readModeButton').setAttribute('aria-pressed', String(!editable));
-        $('editModeButton').setAttribute('aria-pressed', String(editable));
+        // One control, three signals: pressed state, label, and what it will do.
+        if (elements.modeButton) {
+          elements.modeButton.setAttribute('aria-pressed', String(editable));
+          elements.modeButton.title = editable ? 'Lock the console (back to read-only)' : 'Unlock editing (arms plan → apply)';
+          if (elements.modeButtonIcon) elements.modeButtonIcon.textContent = editable ? '✎' : '🔒';
+          if (elements.modeButtonLabel) elements.modeButtonLabel.textContent = editable ? 'Editing armed' : 'Read-only';
+          if (elements.modeButtonHint) elements.modeButtonHint.textContent = editable ? 'Click to lock' : 'Unlock to edit';
+        }
         elements.policyEditor.readOnly = !editable;
         elements.policyMode.textContent = editable ? 'edit armed' : 'read-only';
         elements.policyMode.className = `chip${editable ? ' is-degraded' : ''}`;
@@ -1480,8 +1515,7 @@
           elements.inspectorToggle.querySelector('span') ? (elements.inspectorToggle.querySelector('span').textContent = hidden ? 'Hide inspector' : 'Show inspector') : (elements.inspectorToggle.textContent = hidden ? 'Hide inspector' : 'Show inspector');
           renderPipeline(elements.pipelineSvg, { interactive: true });
         });
-        $('readModeButton').addEventListener('click', () => setMode('read'));
-        $('editModeButton').addEventListener('click', () => setMode('edit'));
+        if (elements.modeButton) elements.modeButton.addEventListener('click', () => setMode(state.mode === 'edit' ? 'read' : 'edit'));
         $('refreshButton').addEventListener('click', refresh);
         $('validatePolicyButton').addEventListener('click', planPolicy);
         $('applyPolicyButton').addEventListener('click', () => applyPolicy('apply'));
