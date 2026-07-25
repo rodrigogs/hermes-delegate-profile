@@ -48,7 +48,80 @@
     button:disabled { cursor: not-allowed; opacity: .58; }
     code, .mono, .metric-value, .kv-value, .timestamp, .endpoint-method { font-family: var(--mono); }
 
-    .app-shell { width: min(1520px, 100%); margin: 0 auto; padding: 22px clamp(14px, 2.5vw, 36px) 42px; }
+    .app-shell {
+      --rail-w: 240px;
+      width: min(1520px, 100%); margin: 0 auto; padding: 22px clamp(14px, 2.5vw, 36px) 42px;
+      display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); gap: 16px; align-items: start;
+    }
+    .app-shell.rail-collapsed { --rail-w: 56px; }
+
+    /* ── Command deck: persistent collapsible rail = the tablist ───────── */
+    .rail {
+      position: sticky; top: 16px; align-self: start;
+      display: flex; flex-direction: column; gap: 12px;
+      padding: 12px; border: 1px solid var(--line); border-radius: calc(var(--radius) + 4px);
+      background: rgba(16, 20, 28, .88); box-shadow: var(--shadow); backdrop-filter: blur(16px);
+      min-height: 0;
+    }
+    .rail-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .rail-brand .brand-copy { min-width: 0; }
+    .rail-collapse {
+      display: grid; place-items: center; width: 26px; height: 26px; flex: 0 0 auto; margin-left: auto;
+      border: 1px solid var(--line); border-radius: 7px; color: var(--muted); background: transparent;
+      font: 700 13px var(--mono); cursor: pointer; transition: border-color .16s, color .16s;
+    }
+    .rail-collapse:hover { border-color: var(--accent); color: var(--text); }
+    .rail-health { display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+    .rail-nav { display: flex; flex-direction: column; gap: 2px; }
+    .rail-item {
+      display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 10px;
+      width: 100%; min-height: 40px; padding: 9px 10px; border: 0; border-radius: 8px;
+      color: var(--muted); background: transparent; font: 700 12px var(--sans); text-align: left; cursor: pointer;
+      transition: background .16s, color .16s;
+    }
+    .rail-item:hover { color: var(--text); background: var(--surface-hover); }
+    .rail-item[aria-selected="true"] { color: var(--text); background: var(--surface-hover); box-shadow: inset 3px 0 0 var(--accent); }
+    .rail-item[aria-selected="true"] .rail-icon { color: var(--accent); }
+    .rail-icon { justify-self: center; color: var(--faint); font: 700 14px var(--mono); line-height: 1; transition: color .16s; }
+    .rail-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rail-state { display: inline-flex; align-items: center; gap: 7px; }
+    .rail-badge {
+      min-width: 20px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line);
+      background: rgba(9, 11, 16, .55); color: var(--muted); font: 700 10px var(--mono); text-align: center;
+    }
+    .rail-badge[hidden] { display: none; }
+    .rail-foot { margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+    .rail-foot .mode-toggle { justify-content: center; }
+    .rail-foot .button { justify-content: center; }
+    /* Collapsed rail: icon + state only; labels/prose fold away, canvas reclaims width. */
+    .rail-collapsed .rail-label,
+    .rail-collapsed .rail-brand .brand-copy,
+    .rail-collapsed .rail-foot .button span,
+    .rail-collapsed .rail-foot .mode-toggle { display: none; }
+    /* Health rollup collapses to reachability dot only — the worst-of-N and
+       checked-at chips would overflow the 56px rail, so hide them here. */
+    .rail-collapsed .rail-health #worstBadge,
+    .rail-collapsed .rail-health #lastChecked { display: none; }
+    .rail-collapsed .rail-health #reachabilityChip { padding: 4px; min-height: 24px; }
+    .rail-collapsed .rail-health #reachabilityChip #reachabilityValue { display: none; }
+    .rail-collapsed .rail-item { grid-template-columns: 1fr; justify-items: center; gap: 4px; padding: 9px 4px; }
+    .rail-collapsed .rail-state { flex-direction: column; gap: 3px; }
+    .rail-collapsed .rail-health { justify-content: center; }
+    .rail-collapsed .rail-brand { justify-content: center; flex-wrap: wrap; gap: 6px; }
+    .rail-collapsed .rail-collapse { margin: 0 auto; }
+    .rail-collapsed .rail-badge { min-width: 0; padding: 0 4px; }
+
+    .workspace { min-width: 0; }
+
+    /* ── Panel head: identity + this panel's own KPIs (kills kv duplication) ── */
+    .panel-head {
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+      margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--line);
+    }
+    .panel-head-main { min-width: 0; }
+    .panel-title { margin: 3px 0 0; font-size: 16px; letter-spacing: -.02em; }
+    .panel-kpis { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
     .topbar {
       display: grid;
       grid-template-columns: minmax(220px, 1fr) auto auto;
@@ -200,6 +273,13 @@
       .chrome-status { grid-column: 1 / -1; justify-content: flex-start; }
       .grid.status, .grid.split, .grid.wide-narrow { grid-template-columns: 1fr; }
       .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      /* Rail lies down into a horizontal scroller above the workspace. */
+      .app-shell, .app-shell.rail-collapsed { --rail-w: auto; grid-template-columns: 1fr; }
+      .rail { position: static; }
+      .rail-nav { flex-direction: row; overflow-x: auto; }
+      .rail-item { width: auto; flex: 0 0 auto; grid-template-columns: auto auto auto; }
+      .rail-collapse { display: none; }
+      .rail-foot { flex-direction: row; flex-wrap: wrap; }
     }
     @media (max-width: 620px) {
       .app-shell { padding: 10px 10px 28px; }
@@ -214,9 +294,11 @@
 
     /* Pipeline canvas — one shared node graph for editing + replay. */
     .pipeline-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+    /* Inspector hidden → the node canvas takes the full width. */
+    .pipeline-layout:has(.pipeline-side[hidden]) { grid-template-columns: minmax(0, 1fr); }
     .pipeline-canvas-wrap { border: 1px solid var(--line); border-radius: var(--radius); background:
       radial-gradient(circle at 1px 1px, rgba(38, 49, 68, .55) 1px, transparent 0) 0 0 / 22px 22px, var(--surface); overflow: auto; }
-    .pipeline-svg { display: block; width: 100%; min-height: 420px; }
+    .pipeline-svg { display: block; width: 100%; min-height: 260px; }
     .pnode { cursor: pointer; }
     .pnode-box { fill: var(--surface-raised); stroke: var(--line-strong); stroke-width: 1.5; rx: 9; }
     .pnode:hover .pnode-box { stroke: var(--accent); }
@@ -247,49 +329,78 @@
     .route-row { cursor: pointer; }
     .route-row:hover { background: var(--surface-hover); }
     .route-row.is-selected { background: var(--surface-hover); box-shadow: inset 2px 0 0 var(--accent-strong); }
+    /* Replay step I/O — labeled blocks, not a raw dump. */
+    .replay-meta { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .replay-meta-step { color: var(--faint); font: 700 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+    .replay-meta-stage { color: var(--text); font: 700 12px var(--mono); }
+    .replay-io-block { margin-top: 8px; }
+    .replay-io-label { color: var(--faint); font: 700 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 3px; }
+    .replay-io-body { margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: #090c12; color: #dceaff; font: 11px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
   </style>
 </head>
 <body>
   <main class="app-shell">
-    <header class="topbar">
-      <div class="brand">
+    <aside class="rail">
+      <div class="rail-brand">
         <div class="brand-mark" aria-hidden="true">CR</div>
-        <div>
+        <div class="brand-copy">
           <p class="eyebrow">Hermes One / observability</p>
           <h1>Capability Router</h1>
         </div>
+        <button id="railCollapse" class="rail-collapse" type="button" aria-label="Collapse rail" title="Collapse rail">‹</button>
       </div>
-      <div class="chrome-status" aria-label="Router status">
+      <div class="rail-health" aria-label="Router health">
         <span id="worstBadge" class="badge"><span class="badge-label">worst-of-N</span><span id="worstValue">checking</span></span>
         <span id="reachabilityChip" class="chip"><span class="dot"></span><span id="reachabilityValue">sidecar checking</span></span>
         <span id="lastChecked" class="timestamp chip">not checked</span>
       </div>
-      <div class="topbar-actions">
-        <button id="traceButton" class="button" type="button">Trace route</button>
+      <nav class="rail-nav" role="tablist" aria-label="Capability Router console sections">
+        <button class="tab rail-item" id="tab-status" role="tab" aria-selected="true" aria-controls="panel-status" data-tab="status" type="button" title="Status">
+          <span class="rail-icon" aria-hidden="true">◈</span><span class="rail-label">Status</span>
+          <span class="rail-state" id="railStatus"><span class="rail-badge" id="railStatusBadge" hidden></span><span class="dot"></span></span>
+        </button>
+        <button class="tab rail-item" id="tab-pipeline" role="tab" aria-selected="false" aria-controls="panel-pipeline" data-tab="pipeline" type="button" title="Pipeline">
+          <span class="rail-icon" aria-hidden="true">⬡</span><span class="rail-label">Pipeline</span>
+          <span class="rail-state" id="railPipeline"><span class="rail-badge" id="railPipelineBadge" hidden></span><span class="dot"></span></span>
+        </button>
+        <button class="tab rail-item" id="tab-replay" role="tab" aria-selected="false" aria-controls="panel-replay" data-tab="replay" type="button" title="Replay">
+          <span class="rail-icon" aria-hidden="true">⟳</span><span class="rail-label">Replay</span>
+          <span class="rail-state" id="railReplay"><span class="rail-badge" id="railReplayBadge" hidden></span><span class="dot"></span></span>
+        </button>
+        <button class="tab rail-item" id="tab-blocklist" role="tab" aria-selected="false" aria-controls="panel-blocklist" data-tab="blocklist" type="button" title="Blocklist / Breaker">
+          <span class="rail-icon" aria-hidden="true">⛨</span><span class="rail-label">Blocklist</span>
+          <span class="rail-state" id="railBlocklist"><span class="rail-badge" id="railBlocklistBadge" hidden></span><span class="dot"></span></span>
+        </button>
+        <button class="tab rail-item" id="tab-compaction" role="tab" aria-selected="false" aria-controls="panel-compaction" data-tab="compaction" type="button" title="Compaction &amp; summarizer">
+          <span class="rail-icon" aria-hidden="true">⌘</span><span class="rail-label">Compaction</span>
+          <span class="rail-state" id="railCompaction"><span class="rail-badge" id="railCompactionBadge" hidden></span><span class="dot"></span></span>
+        </button>
+      </nav>
+      <div class="rail-foot">
         <div class="mode-toggle" role="group" aria-label="Console access mode">
           <button id="readModeButton" type="button" aria-pressed="true">Read</button>
           <button id="editModeButton" type="button" aria-pressed="false">Edit</button>
         </div>
+        <button id="traceButton" class="button quiet" type="button"><span>Trace route</span></button>
+        <button id="refreshButton" class="button quiet" type="button"><span>Refresh</span></button>
       </div>
-    </header>
+    </aside>
 
+    <div class="workspace">
     <section id="noticeStack" class="notice-stack" aria-live="polite"></section>
 
-    <nav class="tabbar" role="tablist" aria-label="Capability Router console sections">
-      <button class="tab" id="tab-status" role="tab" aria-selected="true" aria-controls="panel-status" data-tab="status" type="button">Status</button>
-      <button class="tab" id="tab-pipeline" role="tab" aria-selected="false" aria-controls="panel-pipeline" data-tab="pipeline" type="button">Pipeline</button>
-      <button class="tab" id="tab-replay" role="tab" aria-selected="false" aria-controls="panel-replay" data-tab="replay" type="button">Replay</button>
-      <button class="tab" id="tab-blocklist" role="tab" aria-selected="false" aria-controls="panel-blocklist" data-tab="blocklist" type="button">Blocklist / Breaker</button>
-      <button class="tab" id="tab-compaction" role="tab" aria-selected="false" aria-controls="panel-compaction" data-tab="compaction" type="button">Compaction</button>
-      <button class="tab" id="tab-summarizer" role="tab" aria-selected="false" aria-controls="panel-summarizer" data-tab="summarizer" type="button">Summarizer</button>
-    </nav>
-
     <section id="panel-status" class="panel active" role="tabpanel" aria-labelledby="tab-status">
+      <div class="panel-head">
+        <div class="panel-head-main">
+          <p class="section-kicker">Status</p>
+          <h2 class="panel-title">Router posture</h2>
+          <p class="card-subtitle">Live sidecar posture through the consented extension proxy.</p>
+        </div>
+      </div>
       <div class="grid status">
         <article class="card">
           <div class="card-header">
-            <div><h2 class="card-title">Router posture</h2><p class="card-subtitle">Current sidecar status, through the extension proxy.</p></div>
-            <button id="refreshButton" class="button quiet" type="button">Refresh</button>
+            <div><h2 class="card-title">Posture &amp; reachability</h2><p class="card-subtitle">Metric cards below are the canonical numbers; details list carries only what they don't.</p></div>
           </div>
           <div id="statusMetrics" class="metrics"></div>
           <div class="card-body"><div id="statusDetails" class="kv-list"></div></div>
@@ -312,6 +423,17 @@
     </section>
 
     <section id="panel-blocklist" class="panel" role="tabpanel" aria-labelledby="tab-blocklist">
+      <div class="panel-head">
+        <div class="panel-head-main">
+          <p class="section-kicker">Guardrails</p>
+          <h2 class="panel-title">Blocklist &amp; breaker</h2>
+          <p class="card-subtitle">Config and runtime deny rows, plus circuit-breaker cooldown state.</p>
+        </div>
+        <div class="panel-kpis">
+          <span id="kpiBans" class="badge"><span class="badge-label">bans</span><span id="kpiBansValue">0</span></span>
+          <span id="kpiBreakers" class="badge"><span class="badge-label">breakers</span><span id="kpiBreakersValue">0</span></span>
+        </div>
+      </div>
       <div class="grid split">
         <article class="card">
           <div class="card-header"><div><h2 class="card-title">Active blocklist</h2><p class="card-subtitle">Config and runtime deny rows.</p></div></div>
@@ -325,9 +447,19 @@
     </section>
 
     <section id="panel-compaction" class="panel" role="tabpanel" aria-labelledby="tab-compaction">
+      <div class="panel-head">
+        <div class="panel-head-main">
+          <p class="section-kicker">Context</p>
+          <h2 class="panel-title">Compaction &amp; summarizer</h2>
+          <p class="card-subtitle">Compaction calibration and summarizer signals. Read-only until the sidecar implements the endpoint.</p>
+        </div>
+        <div class="panel-kpis">
+          <span id="compactionState" class="chip">checking</span>
+        </div>
+      </div>
       <div class="grid wide-narrow">
         <article class="card">
-          <div class="card-header"><div><h2 class="card-title">Compaction control</h2><p class="card-subtitle">This endpoint is optional until the sidecar implements it.</p></div><span id="compactionState" class="chip">checking</span></div>
+          <div class="card-header"><div><h2 class="card-title">Compaction control</h2><p class="card-subtitle">Derived thresholds and the summarizer budget.</p></div></div>
           <div class="card-body"><div id="compactionDetails" class="kv-list"></div></div>
         </article>
         <article class="card">
@@ -342,30 +474,30 @@
           </div>
         </article>
       </div>
-    </section>
-
-    <section id="panel-summarizer" class="panel" role="tabpanel" aria-labelledby="tab-summarizer">
-      <div class="grid split">
-        <article class="card">
-          <div class="card-header"><div><h2 class="card-title">Compaction / summarizer signals</h2><p class="card-subtitle">Read-only until the matching sidecar endpoint exists.</p></div></div>
-          <div class="card-body"><div id="summarizerDetails" class="kv-list"></div></div>
-        </article>
-        <article class="card">
-          <div class="card-header"><div><h2 class="card-title">Operational boundary</h2><p class="card-subtitle">The console cannot infer hidden runtime state.</p></div></div>
-          <div class="card-body"><div class="empty">Only data returned by the sidecar proxy is presented here. Missing endpoints remain explicitly pending.</div></div>
-        </article>
-      </div>
+      <article class="card" style="margin-top:14px">
+        <div class="card-header"><div><h2 class="card-title">Summarizer signals</h2><p class="card-subtitle">Read-only until the matching sidecar endpoint exists.</p></div></div>
+        <div class="card-body"><div id="summarizerDetails" class="kv-list"></div></div>
+      </article>
     </section>
 
     <!-- Pipeline = the ONE place to EDIT the router. Visual-first (click a node),
          JSON textarea as the advanced escape hatch. Both feed one guarded plan. -->
     <section id="panel-pipeline" class="panel" role="tabpanel" aria-labelledby="tab-pipeline">
+      <div class="panel-head">
+        <div class="panel-head-main">
+          <p class="section-kicker">Edit</p>
+          <h2 class="panel-title">Routing pipeline</h2>
+          <p class="card-subtitle">How router.yaml routes a task, left to right. Switch to Edit, then click a node to change it.</p>
+        </div>
+        <div class="panel-kpis">
+          <span id="pipelineMode" class="chip">read-only</span>
+          <span id="kpiRules" class="badge"><span class="badge-label">rules</span><span id="kpiRulesValue">0</span></span>
+          <span id="kpiTiers" class="badge"><span class="badge-label">tiers</span><span id="kpiTiersValue">0</span></span>
+          <button id="inspectorToggle" class="button quiet" type="button" aria-pressed="false">Hide inspector</button>
+        </div>
+      </div>
       <div class="pipeline-layout">
         <article class="card">
-          <div class="card-header">
-            <div><h2 class="card-title">Routing pipeline</h2><p class="card-subtitle">How router.yaml routes a task, left to right. Switch to Edit, then click a node to change it.</p></div>
-            <div class="card-actions"><span id="pipelineMode" class="chip">read-only</span></div>
-          </div>
           <div class="card-body">
             <div class="pipeline-canvas-wrap"><svg id="pipelineSvg" class="pipeline-svg" role="img" aria-label="Routing pipeline node graph"></svg></div>
             <p id="pipelineActionMessage" class="action-message" role="status" aria-live="polite"></p>
@@ -419,12 +551,19 @@
 
     <!-- Replay = the OTHER activity: OBSERVE what the router decided. Read-only. -->
     <section id="panel-replay" class="panel" role="tabpanel" aria-labelledby="tab-replay">
+      <div class="panel-head">
+        <div class="panel-head-main">
+          <p class="section-kicker">Observe</p>
+          <h2 class="panel-title">Decision replay</h2>
+          <p class="card-subtitle">Pick a recent route, then step through the exact path it took. Read-only.</p>
+        </div>
+        <div class="panel-kpis">
+          <span id="replayRouteChip" class="chip">no route selected</span>
+          <span id="kpiRoutes" class="badge"><span class="badge-label">routes</span><span id="kpiRoutesValue">0</span></span>
+        </div>
+      </div>
       <div class="pipeline-layout">
         <article class="card">
-          <div class="card-header">
-            <div><h2 class="card-title">Decision replay</h2><p class="card-subtitle">Pick a recent route, then step through the exact path it took. Read-only.</p></div>
-            <span id="replayRouteChip" class="chip">no route selected</span>
-          </div>
           <div class="card-body">
             <div class="pipeline-canvas-wrap"><svg id="replaySvg" class="pipeline-svg" role="img" aria-label="Replayed routing path"></svg></div>
             <div class="replay-scrubber" hidden id="replayScrubber">
@@ -443,6 +582,7 @@
         </div>
       </div>
     </section>
+    </div>
   </main>
 
   <div id="drawerBackdrop" class="drawer-backdrop" aria-hidden="true"></div>
@@ -501,7 +641,17 @@
         pipelineEditActions: $('pipelineEditActions'), pipelinePlanPreview: $('pipelinePlanPreview'),
         pipelineActionMessage: $('pipelineActionMessage'), routesTable: $('routesTable'),
         replaySvg: $('replaySvg'), replayRouteChip: $('replayRouteChip'),
-        replayScrubber: $('replayScrubber'), replayRange: $('replayRange'), replayStepIo: $('replayStepIo')
+        replayScrubber: $('replayScrubber'), replayRange: $('replayRange'), replayStepIo: $('replayStepIo'),
+        // Command deck: rail state affordances + collapse/inspector toggles
+        appShell: document.querySelector('.app-shell'), railCollapse: $('railCollapse'),
+        railStatus: $('railStatus'), railStatusBadge: $('railStatusBadge'),
+        railPipeline: $('railPipeline'), railPipelineBadge: $('railPipelineBadge'),
+        railReplay: $('railReplay'), railReplayBadge: $('railReplayBadge'),
+        railBlocklist: $('railBlocklist'), railBlocklistBadge: $('railBlocklistBadge'),
+        railCompaction: $('railCompaction'), railCompactionBadge: $('railCompactionBadge'),
+        kpiRulesValue: $('kpiRulesValue'), kpiTiersValue: $('kpiTiersValue'),
+        kpiRoutesValue: $('kpiRoutesValue'), kpiBansValue: $('kpiBansValue'), kpiBreakersValue: $('kpiBreakersValue'),
+        inspectorToggle: $('inspectorToggle'), pipelineSide: document.querySelector('#panel-pipeline .pipeline-side')
       };
 
       function makeElement(tag, className, text) {
@@ -738,7 +888,24 @@
       }
 
       function renderAll() {
-        renderChrome(); renderNotices(); renderMetrics(); renderKv(elements.statusDetails, state.status, 'No /status payload received.'); renderKv(elements.healthDetails, state.health, 'Health unavailable through proxy.'); renderLiveness(); renderEndpointLedger(); renderPolicy(); renderBlocklist(); renderCompaction(); renderPipelinePanel();
+        renderChrome(); renderNotices(); renderMetrics();
+        // statusDetails is curated to fields shown NOWHERE else — the metric
+        // cards, worst badge and pipeline nodes own rules/valid/enabled/tiers.
+        renderKv(elements.statusDetails, curatedStatusDetails(), 'No /status payload received.');
+        renderKv(elements.healthDetails, state.health, 'Health unavailable through proxy.');
+        renderLiveness(); renderEndpointLedger(); renderPolicy(); renderBlocklist(); renderCompaction(); renderPipelinePanel();
+        renderRail();
+      }
+
+      // Only non-duplicated posture fields (the rest live in metric cards/nodes).
+      function curatedStatusDetails() {
+        const s = state.status && typeof state.status === 'object' ? state.status : {};
+        const out = {};
+        if (s.last_event !== undefined) out.last_event = s.last_event;
+        if (s.reason !== undefined) out.reason = s.reason;
+        if (s.mode !== undefined) out.mode = s.mode;
+        if (s.updated_at !== undefined) out.updated_at = s.updated_at;
+        return Object.keys(out).length ? out : { note: 'No extra posture fields beyond the metrics above.' };
       }
 
       function setMode(mode) {
@@ -750,6 +917,62 @@
         elements.policyMode.textContent = editable ? 'edit armed' : 'read-only';
         elements.policyMode.className = `chip${editable ? ' is-degraded' : ''}`;
         setMessage(elements.policyActionMessage, editable ? 'Edit mode armed. Validate first; no change is applied by editing text.' : 'Read mode active. Switch to Edit to prepare a validation plan.');
+        renderRail();
+      }
+
+      // The rail advertises each section's live state (dot) + count (badge)
+      // before you click it. Every source is null-guarded: renderRail runs at
+      // init (via setMode) before the first poll populates state.
+      function renderRail() {
+        const setDot = (wrap, cls) => { if (wrap) wrap.className = `rail-state${cls ? ' is-' + cls : ''}`; };
+        const setBadge = (node, n) => { if (node) { node.textContent = String(n); node.hidden = !n; } };
+        const policy = state.policy && typeof state.policy === 'object' ? state.policy : null;
+        const rules = policy && Array.isArray(policy.rules) ? policy.rules : [];
+        const tiers = policy && policy.tiers && typeof policy.tiers === 'object' ? policy.tiers : {};
+        const routes = Array.isArray(state.routes) ? state.routes : [];
+        const liveness = Array.isArray(state.liveness && state.liveness.models) ? state.liveness.models : [];
+        const bl = state.blocklist && typeof state.blocklist === 'object' ? state.blocklist : {};
+        const bans = Array.isArray(bl.manual_bans) ? bl.manual_bans : [];
+        const breakers = Array.isArray(bl.breakers) ? bl.breakers : (Array.isArray(bl.entries) ? bl.entries : []);
+
+        // Status: worst-of-N health across liveness, or unreachable.
+        let statusCls = '';
+        if (state.unreachable) statusCls = 'dead';
+        else if (liveness.length) statusCls = worstLivenessClass(liveness);
+        else if (state.status) statusCls = statusClass(state.status.worst_of_n || state.status.worst || state.status.overall || state.status.status);
+        setDot(elements.railStatus, statusCls);
+        setBadge(elements.railStatusBadge, liveness.length);
+
+        // Pipeline: edit-armed → degraded; else policy present → alive.
+        setDot(elements.railPipeline, state.mode === 'edit' ? 'degraded' : (policy ? 'alive' : ''));
+        setBadge(elements.railPipelineBadge, rules.length);
+
+        // Replay: routes endpoint health + count.
+        const routesEp = state.endpointState.get('GET /routes');
+        setDot(elements.railReplay, routesEp ? (routesEp.kind === 'ok' ? 'alive' : routesEp.kind === 'pending' ? 'degraded' : 'dead') : '');
+        setBadge(elements.railReplayBadge, routes.length);
+
+        // Blocklist: any breaker cooling → degraded; else alive if reachable.
+        setDot(elements.railBlocklist, breakers.length ? 'degraded' : (state.blocklist ? 'alive' : ''));
+        setBadge(elements.railBlocklistBadge, bans.length + breakers.length);
+
+        // Compaction: pending endpoint → degraded; present → alive.
+        const compEp = state.endpointState.get('GET /compaction');
+        setDot(elements.railCompaction, compEp && compEp.kind === 'pending' ? 'degraded' : (state.compaction ? 'alive' : ''));
+
+        // Panel KPIs (own ids; never reuse rail-health chip ids).
+        if (elements.kpiRulesValue) elements.kpiRulesValue.textContent = String(rules.length);
+        if (elements.kpiTiersValue) elements.kpiTiersValue.textContent = String(Object.keys(tiers).length);
+        if (elements.kpiRoutesValue) elements.kpiRoutesValue.textContent = String(routes.length);
+        if (elements.kpiBansValue) elements.kpiBansValue.textContent = String(bans.length);
+        if (elements.kpiBreakersValue) elements.kpiBreakersValue.textContent = String(breakers.length);
+      }
+
+      function worstLivenessClass(models) {
+        const rank = { alive: 0, degraded: 1, quota: 2, dead: 3 };
+        let worst = 'alive';
+        models.forEach((m) => { const c = normalizeLiveness(m); if ((rank[c] || 0) > (rank[worst] || 0)) worst = c; });
+        return worst;
       }
 
       function canWrite(messageNode, action) {
@@ -975,6 +1198,28 @@
         elements.pipelinePlanPreview.hidden = true;
       }
 
+      // The inspector is never an empty box: with no node selected it shows
+      // policy KPIs + teaches the click that edits.
+      function renderInspectorDefault() {
+        const policy = state.policy && typeof state.policy === 'object' ? state.policy : {};
+        const rules = Array.isArray(policy.rules) ? policy.rules : [];
+        const tiers = policy.tiers && typeof policy.tiers === 'object' ? policy.tiers : {};
+        clear(elements.pipelineInspector);
+        const teach = makeElement('p', 'card-subtitle',
+          state.mode === 'edit'
+            ? 'Click a node to edit its policy fragment, then Validate → Apply.'
+            : 'Switch to Edit (top-left), then click a node to change it.');
+        teach.style.margin = '0 0 10px';
+        elements.pipelineInspector.append(teach);
+        renderKv(elements.pipelineInspector, {
+          rules: rules.length,
+          tiers: Object.keys(tiers).length,
+          classifier: (policy.classifier && policy.classifier.model) || (state.status && state.status.classifier && state.status.classifier.model) || '—',
+        }, 'Policy not loaded.');
+        elements.pipelineEditActions.hidden = true;
+        elements.pipelinePlanPreview.hidden = true;
+      }
+
       // Editing mutates a clone of the WHOLE policy in place (preserves any
       // fields outside the UI's closed set), then reuses the exact plan/apply
       // spine — no second write path.
@@ -1153,10 +1398,27 @@
           g.classList.toggle('is-dim', activeId != null && id !== activeId && !traversed.has(id));
         });
         const step = steps[index] || {};
-        elements.replayStepIo.hidden = false;
-        elements.replayStepIo.textContent =
-          `step ${index + 1}/${steps.length}  ·  stage: ${safeString(step.stage)}  ·  cause: ${safeString(step.cause, '—')}\n\n`
-          + `in:  ${pretty(step.in)}\n\nout: ${pretty(step.out)}`;   // textContent — inert
+        // Structured, labeled blocks — not a raw JSON dump. All values via
+        // textContent (inert: replayed task/trace text is attacker-influenceable).
+        const io = elements.replayStepIo;
+        io.hidden = false;
+        clear(io);
+        const meta = makeElement('div', 'replay-meta');
+        meta.append(
+          makeElement('span', 'replay-meta-step', `step ${index + 1}/${steps.length}`),
+          makeElement('span', 'replay-meta-stage', safeString(step.stage)),
+        );
+        const causeChip = makeElement('span', 'cause-chip', safeString(step.cause, '—'));
+        causeChip.style.color = causeColor(step.cause);
+        meta.append(causeChip);
+        io.append(meta);
+        const block = (label, value) => {
+          const wrap = makeElement('div', 'replay-io-block');
+          wrap.append(makeElement('div', 'replay-io-label', label));
+          wrap.append(makeElement('pre', 'replay-io-body', pretty(value)));
+          return wrap;
+        };
+        io.append(block('in', step.in), block('out', step.out));
       }
 
       function replayScrub(delta) {
@@ -1178,6 +1440,7 @@
         // Replay tab = its own read-only canvas + the recent-routes list.
         renderPipeline(elements.replaySvg, { interactive: false });
         renderRoutes();
+        if (!state.selectedNode) renderInspectorDefault();
         if (state.replay) renderReplayStep();
       }
 
@@ -1194,6 +1457,16 @@
         elements.replayRange.addEventListener('input', () => replayScrub('range'));
         $('replayPrev').addEventListener('click', () => replayScrub(-1));
         $('replayNext').addEventListener('click', () => replayScrub(1));
+        // Rail collapse — remembers the choice; frees width for the canvas.
+        if (elements.railCollapse) elements.railCollapse.addEventListener('click', () => setRailCollapsed(!isRailCollapsed()));
+        // Inspector collapse — gives the Pipeline graph the full width.
+        if (elements.inspectorToggle) elements.inspectorToggle.addEventListener('click', () => {
+          const hidden = elements.pipelineSide.hasAttribute('hidden');
+          elements.pipelineSide.toggleAttribute('hidden', !hidden);
+          elements.inspectorToggle.setAttribute('aria-pressed', String(!hidden));
+          elements.inspectorToggle.querySelector('span') ? (elements.inspectorToggle.querySelector('span').textContent = hidden ? 'Hide inspector' : 'Show inspector') : (elements.inspectorToggle.textContent = hidden ? 'Hide inspector' : 'Show inspector');
+          renderPipeline(elements.pipelineSvg, { interactive: true });
+        });
         $('readModeButton').addEventListener('click', () => setMode('read'));
         $('editModeButton').addEventListener('click', () => setMode('edit'));
         $('refreshButton').addEventListener('click', refresh);
@@ -1218,7 +1491,24 @@
         });
       }
 
+      function isRailCollapsed() {
+        try { return localStorage.getItem('cr-rail-collapsed') === '1'; } catch (_) { return false; }
+      }
+      function setRailCollapsed(collapsed) {
+        if (elements.appShell) elements.appShell.classList.toggle('rail-collapsed', collapsed);
+        if (elements.railCollapse) {
+          elements.railCollapse.textContent = collapsed ? '›' : '‹';
+          elements.railCollapse.setAttribute('aria-label', collapsed ? 'Expand rail' : 'Collapse rail');
+          elements.railCollapse.title = collapsed ? 'Expand rail' : 'Collapse rail';
+        }
+        try { localStorage.setItem('cr-rail-collapsed', collapsed ? '1' : '0'); } catch (_) { /* private mode */ }
+        // Node canvas reflows into the reclaimed width.
+        renderPipeline(elements.pipelineSvg, { interactive: true });
+        renderPipeline(elements.replaySvg, { interactive: false });
+      }
+
       wireEvents();
+      setRailCollapsed(isRailCollapsed());
       setMode('read');
       refresh();
     })();
