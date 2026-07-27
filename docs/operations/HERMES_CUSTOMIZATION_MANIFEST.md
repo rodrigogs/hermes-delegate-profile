@@ -461,16 +461,65 @@ Critérios de saúde:
 - alterações pendentes são classificadas como intencionais, commitadas ou
   copiadas para backup antes de qualquer update.
 
-## Atualização segura
+## Atualização transacional automática
 
-1. Tire snapshot de cada working tree e do bundle de extensões.
-2. Consolide e envie o que estiver pendente no plugin e no One.
-3. Atualize primeiro o core Hermes em uma branch de teste.
-4. Rode os testes de memória e o teste do plugin.
-5. Atualize/reinstale os assets do Router apenas depois de o plugin estar
-   commitado.
-6. Reinicie serviços fora de uma conversa que dependa deles.
-7. Execute a rotina de reconciliação e um teste manual autenticado no One.
+**Não use `hermes update` diretamente neste host.** Ele atualiza o core contra
+`origin/main` e pode trocar/resetar uma branch local; não conhece os patches de
+memória, o Router nem o checkout do One.
+
+O controlador versionado é `scripts/update_hermes_stack.py`. Ele atualiza por
+**merge na branch local já ativa**, nunca por `reset --hard` para uma ref
+remota:
+
+| Componente | Branch preservada | Ref de entrada |
+|---|---|---|
+| Core Hermes | `fix/memory-recall-2026-07` | `upstream/main` |
+| `delegate-profile` / Router | `main` local | `origin/main` |
+| Hermes One | `local/hermes-one-exp-v0.52.141` | `origin/master` |
+
+Contrato de uma execução `apply`:
+
+1. Adquire lock por usuário; duas execuções não podem concorrer.
+2. Cria snapshot privado em `~/.hermes/update-backups/hermes-stack/`, contendo
+   bundle Git, patch binário, arquivos não rastreados, bundle de extensões,
+   unit do Router e cache de modelos do One.
+3. Faz `fetch`, guarda alterações pendentes em stash temporário, executa merge
+   e reaplica o stash. Conflito é falha, não uma resolução improvisada.
+4. Reinstala somente a extensão `capability-router`, preservando as extensões
+   irmãs; roda regressões da memória, suíte do plugin e compilação Python.
+5. Reinicia Router → Memory Graph → Hermes One e exige healthchecks loopback.
+6. Qualquer falha restaura fontes e artefatos a partir do snapshot e tenta
+   reiniciar os serviços restaurados.
+
+Comandos úteis:
+
+```bash
+cd /home/rodrigo/.hermes/plugins/delegate-profile
+
+# Só observa: busca refs e mostra commits/dirty state.
+python3 scripts/update_hermes_stack.py plan
+
+# Atualização transacional manual.
+python3 scripts/update_hermes_stack.py apply --yes
+
+# Reversão explícita de um snapshot listado em ~/.hermes/update-backups/hermes-stack.
+python3 scripts/update_hermes_stack.py rollback <snapshot-id> --yes
+```
+
+O instalador `scripts/install_hermes_stack_updater.py --enable` copia o
+controlador para o plugin efetivo e instala `hermes-stack-update.timer`. O
+timer roda aos sábados às 04:15 com atraso aleatório máximo de 30 minutos e
+`Persistent=true`; ele apenas chama `apply --yes`, portanto herda o mesmo lock,
+snapshot, rollback e validações. Logs ficam no journal:
+
+```bash
+systemctl --user list-timers hermes-stack-update.timer
+journalctl --user -u hermes-stack-update.service --since '7 days ago' --no-pager
+```
+
+A execução pode parar com rollback quando houver conflito de patch. Isso é
+comportamento correto: publique/reconcilie o conflito a partir do snapshot em
+vez de deixar um serviço rodando com árvore parcialmente atualizada.
 
 ## Donos e fronteiras
 
