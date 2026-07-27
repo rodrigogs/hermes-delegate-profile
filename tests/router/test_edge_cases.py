@@ -210,6 +210,61 @@ def test_blocklist_save_failure_is_nonfatal(monkeypatch, tmp_path, caplog):
     assert "Failed to save" in caplog.text
 
 
+def test_blocklist_concurrent_record_failure_does_not_lose_events(tmp_path, monkeypatch):
+    """Regression: concurrent record_failure calls must not drop failure events.
+
+    ``_record_breaker_outcome`` constructs a FRESH Blocklist per delegate_profile
+    call. Without serialization across the load -> mutate -> save critical
+    section, N writers each load the same on-disk state, mutate their private
+    copy, and clobber each other on the atomic rename — so the breaker never
+    accumulates enough weight to trip even though every failure was "recorded".
+    This test fails (state stays CLOSED, events < N) without the process-wide
+    state lock.
+    """
+    import threading
+
+    import router.blocklist as blocklist_mod
+
+    # Each test gets a unique state path in a fresh tmp_path; flush any stale
+    # lock entry inherited from a previous run so the lock matches this path.
+    state_file = tmp_path / "state.json"
+    monkeypatch.setattr(blocklist_mod, "_state_path", lambda: state_file)
+
+    n_threads = 8
+    failure_kind = "idle_stall"  # weight 2; 8 threads -> weight 16, well over threshold 5
+    config = {"blocklist": {"manual_ban": [], "fallback_chain": [], "auto_breaker": {
+        "enabled": True, "threshold": 5, "window_seconds": 600,
+        "base_cooldown_seconds": 60, "max_cooldown_seconds": 900, "backoff_multiplier": 2.0,
+    }}}
+    barrier = threading.Barrier(n_threads)
+
+    def fire():
+        barrier.wait()  # maximise simultaneity
+        bl = Blocklist(config)          # fresh instance, like _record_breaker_outcome
+        bl.record_failure("race-model", "race-prov", failure_kind)
+
+    threads = [threading.Thread(target=fire) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    final = Blocklist(config)
+    entries = final.breaker_state_dict().get("entries", {})
+    entry = entries.get("race-model@race-prov", {})
+    events = entry.get("failure_events", [])
+    state = entry.get("state", "CLOSED")
+    persisted_weight = sum(e.get("weight", 0) for e in events)
+
+    assert len(events) == n_threads, (
+        f"lost-update race: only {len(events)}/{n_threads} failure events persisted"
+    )
+    assert persisted_weight == n_threads * 2
+    assert state == "OPEN", (
+        f"breaker failed to trip under concurrency: state={state}, weight={persisted_weight}"
+    )
+
+
 def test_blocklist_disabled_success_and_match_semantics():
     bl = Blocklist({"blocklist": {"manual_ban": [{"model": "M"}], "fallback_chain": [], "auto_breaker": {"enabled": False}}})
     bl.record_success("M", "p")

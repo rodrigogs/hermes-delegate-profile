@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -31,6 +32,30 @@ def _state_dir() -> Path:
 
 def _state_path() -> Path:
     return _state_dir() / "breaker-state.json"
+
+
+# Process-wide lock guarding the load -> mutate -> save critical section on
+# breaker-state.json. ``_record_breaker_outcome`` constructs a FRESH Blocklist
+# per delegate_profile call, so without serialization N concurrent writers
+# each load the same on-disk state, mutate their private copy, and clobber
+# each other on the atomic rename — silently dropping failure events so the
+# breaker never trips. The lock is shared across all Blocklist instances in
+# this process; cross-process writers (the sidecar is read-only) are not a
+# concern here. Keyed by resolved path so distinct HERMES_HOME values don't
+# alias, and kept weakref-able so test temp dirs don't leak entries.
+_BLOCKER_LOCKS: "Dict[str, threading.Lock]" = {}
+_BLOCKER_LOCKS_GUARD = threading.Lock()
+
+
+def _state_lock(path: Path) -> threading.Lock:
+    """Return the process-wide Lock guarding RMW on ``path``."""
+    key = str(path.resolve())
+    with _BLOCKER_LOCKS_GUARD:
+        lock = _BLOCKER_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _BLOCKER_LOCKS[key] = lock
+    return lock
 
 
 class Blocklist:
@@ -105,22 +130,39 @@ class Blocklist:
         provider: str,
         failure_kind: str,
     ) -> bool:
-        """Record a failure event for a model. Returns True if breaker tripped."""
+        """Record a failure event for a model. Returns True if breaker tripped.
+
+        Holds the process-wide state lock across load -> mutate -> save so that
+        concurrent ``_record_breaker_outcome`` calls (each in its own fresh
+        Blocklist) accumulate rather than clobber. The on-trip return value is
+        preserved for the existing API/contracts; non-tripping events are now
+        persisted too, otherwise the breaker could never reach the threshold
+        under concurrent failures.
+        """
         if not self._breaker_enabled:
             return False
         key = f"{model}@{provider}" if provider else model
-        tripped = self._breaker.record(key, failure_kind, time.time())
-        if tripped:
+        with _state_lock(_state_path()):
+            # Reload the freshest on-disk state under the lock so we merge onto
+            # it rather than onto the snapshot captured at construction time.
+            self._load_state()
+            tripped = self._breaker.record(key, failure_kind, time.time())
             self._save_state()
         return tripped
 
     def record_success(self, model: str, provider: str) -> None:
-        """Record a successful call — resets breaker if in HALF_OPEN."""
+        """Record a successful call — resets breaker if in HALF_OPEN.
+
+        Same lock discipline as :meth:`record_failure`: load -> mutate -> save
+        is atomic against other in-process writers.
+        """
         if not self._breaker_enabled:
             return
         key = f"{model}@{provider}" if provider else model
-        self._breaker.record_success(key, time.time())
-        self._save_state()
+        with _state_lock(_state_path()):
+            self._load_state()
+            self._breaker.record_success(key, time.time())
+            self._save_state()
 
     def manual_bans(self) -> List[Dict[str, str]]:
         """Return the current manual ban list (for CLI display)."""

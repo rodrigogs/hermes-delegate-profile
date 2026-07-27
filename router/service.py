@@ -532,6 +532,10 @@ class RouterService:
                 "id": self._trace_id(entry, ordinal),
                 "ts": entry.get("ts"),
                 "cause": entry.get("cause"),
+                # Which rule fired, so a surface can count hits per rule — a rule
+                # that never fires is an operator finding, and `cause` alone
+                # cannot identify it.
+                "rule_id": entry.get("rule_id"),
                 "task": entry.get("task", ""),
                 "model": out.get("model", ""),
             })

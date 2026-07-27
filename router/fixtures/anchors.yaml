@@ -4,7 +4,7 @@
 
 anchors:
   - tier: T1
-    description: "Rename getCwd to getCurrentWorkingDirectory across the project"
+    description: "Rename getCurrentWorkingDirectory across the project"
     expected: { tier: T1, confidence: high, needs_capability: "mechanical rename, no reasoning" }
 
   - tier: T2

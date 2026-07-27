@@ -79,9 +79,16 @@ def resolve_core_config_path() -> Path:
     explicit = os.environ.get("HERMES_CORE_CONFIG_FILE")
     if explicit:
         return Path(explicit)
-    profile = os.environ.get("HERMES_PROFILE", "rodrigo")
     home = os.environ.get("HERMES_HOME")
     base = Path(home) if home else Path.home() / ".hermes"
+    # HERMES_HOME is already profile-scoped in a running agent
+    # (~/.hermes/profiles/<name>), so appending profiles/<name> again yields
+    # .../profiles/rodrigo/profiles/rodrigo/config.yaml and every compaction
+    # attempt dies with ENOENT. Only reach for the profile when the home given
+    # is the base directory. Same trap as routes_path().
+    if base.parent.name == "profiles":
+        return base / "config.yaml"
+    profile = os.environ.get("HERMES_PROFILE", "rodrigo")
     return base / "profiles" / profile / "config.yaml"
 
 

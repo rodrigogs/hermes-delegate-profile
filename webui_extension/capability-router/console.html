@@ -3,283 +3,829 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
   <title>Capability Router</title>
   <!--
     THESIS: An operator opens this to answer three questions — is it healthy, how
       does it route, what did it decide. Everything that serves none of them is
       absent. It refuses the dashboard reflex of framing each fact in its own card
       with a subtitle explaining the card.
-    OWN-WORLD: Inherited Hermes One dark control room. Structure comes from
-      hairlines and space, not from boxes: one accent (the lock), five state
-      colours that mean the same thing everywhere, --mono for anything an operator
-      would copy, --sans for prose.
+    OWN-WORLD: Hermes One's own. There is no palette here: every colour reads a
+      --host-* property the theme bridge forwards from the running shell, so the
+      console repaints with all 21 skins and both polarities. The header, the tab
+      strip, the type ladder and the button shape are the host's measured values.
+      The skin's accent marks WHERE YOU ARE and WHAT YOU PICKED; the semantic four
+      (--ok/--warn/--info/--bad) report CONDITION and nothing else, so a gold
+      underline can never be read as health.
     STORY: Health first — the models it can reach. Pipeline to see and change how
-      tasks route, behind an explicit lock. Routes to replay what really happened,
+      tasks route, in an explicit edit mode. Routes to replay what really happened,
       step by step.
-    FIRST VIEWPORT: The rail names three destinations, each carrying its own live
-      state. Beside it, the model list at full width: name, state, why. Nothing
-      else competes.
-    FORM: Single self-contained file. Rail when it owns the window, horizontal
-      deck when embedded. See DESIGN.md for the rules of subtraction.
+    FIRST VIEWPORT: A host-shaped header names the surface, a tab strip names the
+      three destinations and carries their live state, and then the screen's own
+      question is answered in its first line: how many models are routable, or
+      where a task would land, or what the log holds.
+    FORM: Single self-contained file, one column under a fixed header. Both the
+      policy and a trace read as ordered vertical sequences down one spine —
+      never a canvas. See DESIGN.md for the rules of subtraction.
   -->
   <style>
+    /* ── WHERE EVERY COLOUR COMES FROM ─────────────────────────────────
+       Nothing below is a palette. Each token reads a --host-* property that
+       hermes-theme-bridge.js forwards from the running shell's resolved theme,
+       and the hex after the comma is a FALLBACK — what this console looks like
+       when the shell cannot be read at all (bridge missing, frame not yet
+       adopted). Those fallbacks are this console's previous hard-coded values,
+       so the worst case is the design we already shipped rather than an
+       unstyled page.
+       The reason is measured: the host ships 21 skins x light/dark. default/dark
+       is navy #0D0D1A on warm cream #FFF8DC with a GOLD accent; catppuccin/light
+       is #EFF1F5 with a PURPLE one. A copied palette is wrong in 20 skins out of
+       21, and in any light skin this console was a black rectangle inside a
+       parchment shell — screenshotted.
+
+       ── THE COLOUR RULE, RESTATED FOR A GOLD SHELL ───────────────────
+       This console used to have a paper-white accent so that no hue competed
+       with a health dot. Inside Hermes One the accent is the SKIN'S IDENTITY and
+       the host uses exactly one at a time, so the rule is now split by meaning
+       rather than by hue:
+
+         --accent (the skin's gold) marks WHERE YOU ARE and WHAT YOU PICKED:
+           the selected tab's underline, the focus ring, the armed Edit mode, the
+           selected scope, the row you are replaying, the line your probed task
+           matched, and the one committing button. It never reports a condition.
+
+         The semantic four report CONDITION, and only condition:
+           --ok alive · --warn degraded · --info quota (and the classifier stage,
+           because "it asked a model" is the same kind of fact) · --bad dead or
+           refused. Same colour, same meaning, on every screen.
+
+       So a gold underline can never be mistaken for health, and a green dot can
+       never be mistaken for selection. */
     :root {
-      --bg: #090b10;
-      --surface: #10141c;
-      --surface-raised: #151b26;
-      --surface-hover: #1b2331;
-      --line: #263144;
-      --line-strong: #3a4a65;
-      --text: #ecf2fb;
-      --muted: #92a0b7;
-      --faint: #62708a;
-      --accent: #8fb8ff;
-      --accent-strong: #4a8cff;
-      --green: #5ee1ad;
-      --amber: #f6bf5f;
-      --red: #ff7f8d;
-      --violet: #bf9cff;
-      --mono: ui-monospace, "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, monospace;
-      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      --radius: 10px;
-      --focus: 0 0 0 3px rgba(143, 184, 255, .28);
+      /* Planes, in the host's own lightness order. --surface-raised and
+         --surface-hover take the host's authored WASHES rather than a mix toward
+         --text: measured, mixing toward the text colour INVERTS in catppuccin/
+         light (bg #EFF1F5, surface #FFFFFF), so a raised plane read as recessed. */
+      --bg: var(--host-bg, #0a0a0c);
+      --surface: var(--host-surface, #101013);
+      --surface-raised: var(--host-surface-subtle, #15151a);
+      --surface-hover: var(--host-hover-bg, #1c1c23);
+      --line: var(--host-border, #212127);
+      --line-strong: var(--host-border2, #33333d);
+
+      /* Text. The host ships exactly TWO steps and so do we: --faint is the same
+         value as --muted deliberately. Measured across 21 skins x both
+         polarities, --host-muted bottoms out at 3.47:1 against --bg; a third,
+         fainter step derived from it measured 2.31:1 — under the 3:1 floor. The
+         step below --muted is therefore made in TYPE (11px, uppercase, tracked),
+         not in contrast. */
+      --text: var(--host-text, #f3f3f6);
+      --muted: var(--host-muted, #9a9aa8);
+      --faint: var(--host-muted, #61616e);
+
+      --accent: var(--host-accent, #f3f3f6);
+      --accent-strong: var(--host-accent-hover, #ffffff);
+      --accent-text: var(--host-accent-text, var(--host-accent, #f3f3f6));
+      --accent-bg: var(--host-accent-bg, rgba(243, 243, 246, .08));
+      --accent-bg-strong: var(--host-accent-bg-strong, rgba(243, 243, 246, .15));
+      /* #fff, matching the host's own `color: var(--panel-head-primary-fg, #fff)`
+         (style.css:6526) and hermes-panel.css:94. The host declares that token ONLY
+         under `:root.dark` (style.css:6525), so in every LIGHT skin the bridge has
+         nothing to forward and this fallback is what lands — a near-black glyph on a
+         light accent, which is the one filled button on the screen. Dark skins are
+         unaffected either way, because there the token IS forwarded. */
+      --accent-fg: var(--host-accent-fg, #fff);
+
+      /* Condition. Ours are ok/warn/bad/info, the host's are success/warning/
+         error/info; the mapping lives here, once. */
+      --ok: var(--host-success, #4ade9b);
+      --warn: var(--host-warning, #f7b955);
+      --bad: var(--host-error, #ff6b7d);
+      --info: var(--host-info, #b490ff);
+      --ok-bg: transparent;
+      --warn-bg: transparent;
+      --bad-bg: transparent;
+      --info-bg: transparent;
+      /* The four above are authored for FILLS — a badge, a dot — and as TEXT they
+         fail badly. Measured against every skin in style.css that declares a full
+         set (23 palettes, both polarities), raw state colour on that palette's own
+         --bg bottoms out at:
+           --info 1.38:1 · --success 1.49:1 · --warning 1.61:1 · --error 3.44:1
+         all in neon-paint/light. So state WORDS get their own tokens, derived
+         below; the pre-mix values here are the honest fallback for an engine with
+         no color-mix, where the raw hue at least still means the right thing. */
+      --ok-text: var(--host-success, #4ade9b);
+      --warn-text: var(--host-warning, #f7b955);
+      --bad-text: var(--host-error, #ff6b7d);
+      --info-text: var(--host-info, #b490ff);
+
+      --mono: var(--host-font-mono, ui-monospace, "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, monospace);
+      --sans: var(--host-font-ui, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+
+      /* The host's ladder, not a parallel one: it declares 11/12/14px and its
+         .main-view-title measures 18px/600/-0.18px. The old 10.5px and 20px
+         steps were guest sizes and read as an accident next to host chrome.
+         --t-value 16px has no host equivalent and sits between body and heading
+         for a fact that must be scannable without being a headline. */
+      --t-label: var(--host-font-size-xs, 11px);
+      --t-small: var(--host-font-size-sm, 12px);
+      --t-body: var(--host-font-size-md, 14px);
+      --t-value: 16px;
+      --t-head: 18px;
+
+      --radius-sm: var(--host-radius-sm, 4px);
+      --radius: var(--host-radius-md, 8px);
+      --radius-input: var(--host-radius-md, 8px);
+      --radius-pill: var(--host-radius-pill, 999px);
+      --focus: 0 0 0 3px var(--host-focus-ring, rgba(243, 243, 246, .22));
+
+      --ease: cubic-bezier(.16, 1, .3, 1);
+      --enter: 160ms;
+
+      /* The shell's polarity, so native scrollbars and form controls are right
+         before any of our CSS paints. The host carries this as a CLASS on
+         <html>, never as a property, so the bridge resolves it for us. */
+      color-scheme: var(--host-color-scheme, dark);
+    }
+
+    /* Two derivations, both from a STATE colour, so neither can invert. They need
+       @supports rather than the usual declare-twice fallback: a custom property
+       accepts any token stream at parse time, so an engine without color-mix()
+       would keep the declaration and fail later, at computed-value time. */
+    @supports (color: color-mix(in srgb, red 50%, blue)) {
+      :root {
+        --ok-bg: color-mix(in srgb, var(--host-success, #4ade9b) 14%, transparent);
+        --warn-bg: color-mix(in srgb, var(--host-warning, #f7b955) 14%, transparent);
+        --bad-bg: color-mix(in srgb, var(--host-error, #ff6b7d) 14%, transparent);
+        --info-bg: color-mix(in srgb, var(--host-info, #b490ff) 14%, transparent);
+        /* State as TYPE: 45% hue over the skin's own --text. One ratio for all four,
+           chosen by measurement across the 23 full palettes in style.css x both
+           polarities, using the same alpha-free compositing the shell does:
+             45% -> worst case 5.08:1 (--info, neon-paint/light); ok 5.47, warn 5.57,
+                    error 7.66. Clears the 4.5:1 body-text floor in every skin.
+             50% -> worst 4.44:1, which does NOT clear it.
+           Going further toward --text (35% -> 6.79 worst) buys contrast the floor
+           does not need and starts costing hue identity, which is the whole point
+           of a state colour. Mixing toward --text rather than away from --bg is
+           what makes this polarity-proof: it darkens on parchment and lightens on
+           navy, automatically. */
+        --ok-text: color-mix(in srgb, var(--host-success, #4ade9b) 45%, var(--host-text, #f3f3f6));
+        --warn-text: color-mix(in srgb, var(--host-warning, #f7b955) 45%, var(--host-text, #f3f3f6));
+        --bad-text: color-mix(in srgb, var(--host-error, #ff6b7d) 45%, var(--host-text, #f3f3f6));
+        --info-text: color-mix(in srgb, var(--host-info, #b490ff) 45%, var(--host-text, #f3f3f6));
+      }
     }
 
     * { box-sizing: border-box; }
-    html { min-width: 320px; background: var(--bg); }
+    html { min-width: 320px; background: var(--bg); color-scheme: var(--host-color-scheme, dark); }
+    /* dvh, not vh: on iOS the visual viewport shrinks under the toolbar and a vh
+       column overflows by exactly the toolbar's height. */
     body {
-      margin: 0; min-height: 100vh; color: var(--text);
-      background: var(--bg); font: 14px/1.5 var(--sans);
+      margin: 0; height: 100vh; height: 100dvh;
+      display: flex; flex-direction: column;
+      color: var(--text); background: var(--bg);
+      font: var(--t-body)/1.5 var(--sans);
+      -webkit-font-smoothing: antialiased;
+      font-variant-numeric: tabular-nums;
     }
     button, input, textarea, select { font: inherit; color: inherit; }
     button { cursor: pointer; }
     :focus-visible { outline: none; box-shadow: var(--focus); }
-    h1, h2 { margin: 0; font-weight: 650; letter-spacing: -.01em; }
-    h1 { font-size: 15px; }
-    h2 { font-size: 15px; }
+    h1, h2 { margin: 0; font-weight: 600; }
     p { margin: 0; }
+    [hidden] { display: none !important; }
 
-    /* ── Frame ─────────────────────────────────────────────────────── */
-    .shell {
-      --rail: 210px;
-      display: grid; grid-template-columns: var(--rail) minmax(0, 1fr);
-      gap: 28px; width: min(1500px, 100%); margin: 0 auto;
-      padding: 20px clamp(14px, 2.4vw, 32px) 40px;
+    /* ── The header the host itself uses ───────────────────────────────
+       Measured from the running shell: .main-view-header is min-height 41px,
+       padding 8px 32px, a 1px bottom border on --border; .main-view-title is
+       18px / 600 / letter-spacing -.18px in the UI SANS. Not a tracked uppercase
+       wordmark: the host's rail already says which surface you are on, so the
+       header carries the view's name and its actions and nothing else. The
+       "ROUTER HERMES ONE" mark that used to live here said, in 9 characters,
+       what the highlighted rail icon says for free. */
+    .view-head {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center; gap: 8px 16px;
+      flex-shrink: 0; min-height: 41px;
+      padding: 8px clamp(14px, 2.4vw, 32px);
+      border-bottom: 1px solid var(--line); background: var(--bg);
     }
-    .shell.is-narrow { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+    .view-title {
+      font: 600 var(--t-head)/1.3 var(--sans); letter-spacing: -.18px;
+      color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .view-actions { display: inline-flex; align-items: center; gap: 8px; justify-self: end; }
 
-    /* ── Rail ──────────────────────────────────────────────────────── */
-    .rail { position: sticky; top: 20px; align-self: start; display: flex; flex-direction: column; gap: 18px; }
-    .is-narrow .rail { position: static; flex-direction: row; align-items: center; flex-wrap: wrap; gap: 12px 18px; }
-    .brand { display: flex; align-items: baseline; gap: 8px; }
-    .brand-name { font-size: 15px; font-weight: 650; }
-    .brand-host { color: var(--faint); font: 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
-    .is-narrow .brand-host { display: none; }
+    /* Liveness of the console's own reading, next to the controls that refresh
+       it: a dot and a clock, 11px, the host's metadata step. */
+    .reach { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font: var(--t-label) var(--mono); white-space: nowrap; }
+    /* At 390px the header's three items need 232px and the title is left 114px, so
+       "Capability Router" truncated to "Capability R…" — the one thing in the
+       header that says what you are looking at was the thing that yielded.
+       Measured: dropping the clock returns 99px, which is enough for the full
+       title. So the CLOCK yields, and only when it must. The dot stays: whether
+       these numbers are current is not a nicety, and a 6px dot beside the button
+       that refreshes them still reads. When the sidecar is unreachable the words
+       come back at any width, because that is a condition the operator must see —
+       and the wrapped warning line on the body says it too. */
+    @media (max-width: 640px) {
+      .reach.is-fresh #reachText { display: none; }
+    }
 
-    .nav { display: flex; flex-direction: column; gap: 1px; }
-    .is-narrow .nav { flex-direction: row; gap: 2px; }
+    /* ── The three destinations ────────────────────────────────────────
+       Drawn as the host draws its own nav tabs: a quiet 14px label that takes
+       the accent when selected, plus a 20px x 2px accent bar on the bottom edge
+       (style.css:2149-2150). Each tab also carries the live state of what it
+       leads to, because a destination whose contents are degraded should say so
+       before you arrive. */
+    .tabs {
+      display: flex; align-items: stretch; gap: 2px; flex-shrink: 0;
+      padding: 0 clamp(14px, 2.4vw, 32px);
+      border-bottom: 1px solid var(--line); background: var(--bg);
+    }
     .tab {
-      display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px;
-      padding: 7px 0; border: 0; background: none; color: var(--muted);
-      font: 650 13px var(--sans); text-align: left; white-space: nowrap;
+      position: relative; display: inline-flex; align-items: center; gap: 8px;
+      padding: 9px 12px 10px; border: 0; background: none;
+      color: var(--muted); font: 500 var(--t-body) var(--sans); white-space: nowrap;
+      border-radius: var(--radius-sm) var(--radius-sm) 0 0;
     }
-    .is-narrow .tab { padding: 7px 12px; border-radius: 8px; }
-    .tab:hover { color: var(--text); }
-    .tab[aria-selected="true"] { color: var(--text); }
-    .tab[aria-selected="true"] .tab-name::after {
-      content: ""; display: block; height: 1.5px; margin-top: 3px; background: var(--accent);
+    .tab:hover { color: var(--text); background: var(--surface-raised); }
+    .tab[aria-selected="true"] { color: var(--accent-text); }
+    .tab[aria-selected="true"]::after {
+      content: ""; position: absolute; bottom: -1px; left: 50%; transform: translateX(-50%);
+      width: 20px; height: 2px; border-radius: 2px 2px 0 0; background: var(--accent);
     }
     .tab-state { display: inline-flex; align-items: center; gap: 6px; }
-    .count { color: var(--faint); font: 600 11px var(--mono); }
-    .count[hidden] { display: none; }
+    .count { color: var(--muted); font: 500 var(--t-label) var(--mono); }
+    /* A dot keeps the RAW hue — that is what makes it identifiable as green or
+       amber — but the raw hue against the plane measures as low as 1.38:1
+       (neon-paint/light), under the 3:1 floor for a graphical object. The 1px
+       inset edge on the plane's own line colour makes the dot locatable in every
+       skin without changing what colour it is; the state WORD beside it carries
+       the meaning in text, so colour is never the only channel. */
     .dot {
-      width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: 0 0 auto;
+      width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto;
+      background: var(--muted); outline: 1px solid var(--line-strong); outline-offset: -1px;
     }
-    .is-alive   .dot { background: var(--green); }
-    .is-degraded .dot { background: var(--amber); }
-    .is-quota   .dot { background: var(--violet); }
-    .is-dead    .dot { background: var(--red); }
+    .is-alive    .dot { background: var(--ok);   box-shadow: 0 0 0 3px var(--ok-bg); }
+    .is-degraded .dot { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-bg); }
+    .is-quota    .dot { background: var(--info); box-shadow: 0 0 0 3px var(--info-bg); }
+    .is-dead     .dot { background: var(--bad);  box-shadow: 0 0 0 3px var(--bad-bg); }
 
-    /* The lock is the only filled control in the rail — a write gate must never
-       share a shape with a status chip. */
-    .lock {
-      display: flex; align-items: center; gap: 8px; padding: 8px 11px;
-      border: 1px solid var(--line-strong); border-radius: 8px;
-      background: var(--surface-raised); font: 650 12px var(--sans);
+    /* ── controls ──────────────────────────────────────────────────────
+       Shaped like the host's own header button (style.css:7074 .logs-copy):
+       1px border on --border, --surface behind it, radius 8px, 12px/600. No
+       pills for actions — the host reserves pills for chips and badges. */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      padding: 5px 11px; border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--surface); color: var(--text);
+      /* 16px line box, so 5 + 16 + 5 + 2 = 28px — the measured height of the
+         host's own header button (.logs-copy, style.css:7074, 6px 10px at 12/600
+         with a normal line box). The header around it then computes to 8 + 28 + 8
+         = 44px, which is what the host's Logs header measures live. Left to the
+         inherited 1.5 line-height it came out 32px and the header 48px, 4px taller
+         than every native panel — the kind of drift that reads as "not quite
+         ours" without ever being nameable. */
+      font: 600 var(--t-small)/16px var(--sans); white-space: nowrap;
     }
-    .lock:hover { border-color: var(--accent); }
-    .lock[aria-pressed="true"] {
-      border-color: rgba(246, 191, 95, .6); color: #ffe0a8;
-      background: rgba(246, 191, 95, .14);
+    .btn:hover { background: var(--surface-hover); border-color: var(--line-strong); }
+    .btn[disabled] { opacity: .55; cursor: default; }
+    .btn[disabled]:hover { background: var(--surface); border-color: var(--line); }
+    /* The committing action is the only FILLED element on a screen, and it is
+       filled with the skin's accent — the same signal the host puts on its own
+       primary button, with the host's own foreground rule for legibility. */
+    .btn.go { border-color: var(--accent); background: var(--accent); color: var(--accent-fg); }
+    .btn.go:hover { border-color: var(--accent-strong); background: var(--accent-strong); color: var(--accent-fg); }
+    .btn.warn { color: var(--bad-text); border-color: var(--line-strong); }
+    .btn.warn:hover { border-color: var(--bad); background: var(--bad-bg); }
+    /* Editing is a MODE of this console, so its control reads as pressed while
+       the mode is on, in the host's own "selected" idiom (accent wash + accent
+       text). Deliberately not amber: the four condition colours describe the
+       router, and an operator choosing to edit is not the router degrading. */
+    .mode[aria-pressed="true"] {
+      border-color: var(--accent-bg-strong); background: var(--accent-bg); color: var(--accent-text);
     }
-    .lock-icon { font-size: 12px; }
-    .rail-foot { display: flex; flex-direction: column; gap: 8px; }
-    .is-narrow .rail-foot { flex-direction: row; margin-left: auto; }
-    .quiet {
-      border: 0; background: none; color: var(--muted); font: 600 12px var(--sans);
-      padding: 4px 0; text-align: left;
-    }
-    .is-narrow .quiet { padding: 4px 8px; }
-    .quiet:hover { color: var(--text); }
-    .reach { display: flex; align-items: center; gap: 7px; color: var(--muted); font: 11px var(--mono); }
 
-    /* ── Screens ───────────────────────────────────────────────────── */
+    /* ── the scrolling body ────────────────────────────────────────────
+       The host's .main-view-body: it scrolls, the header does not. padding
+       24px 32px, and the measure is capped so a line of prose stays readable on
+       a wide monitor. */
+    .body {
+      flex: 1; min-height: 0; overflow-y: auto;
+      padding: 22px clamp(14px, 2.4vw, 32px) 44px;
+    }
+    .measure { width: min(1180px, 100%); margin: 0 auto; }
+
+    /* ── screens ───────────────────────────────────────────────────────
+       ONE authored moment: the screen you asked for arrives. Ease-out from an
+       already-visible layout, 160ms, and nothing else on the page animates. */
     .screen { display: none; }
-    .screen.active { display: block; }
-    .screen-head {
-      display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
-      flex-wrap: wrap; margin-bottom: 18px;
+    .screen.active { display: block; animation: screen-in var(--enter) var(--ease) both; }
+    @keyframes screen-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+    /* The lede answers the screen's one question in the first line of the first
+       viewport: which models are routable, how a task routes, what it decided.
+       Its facts sit on the opposite margin so the sentence and the numbers can
+       be read in one movement. */
+    .lede {
+      display: flex; align-items: baseline; justify-content: space-between;
+      flex-wrap: wrap; gap: 12px 32px; margin-bottom: 20px;
     }
-    .screen-note { color: var(--muted); font-size: 12px; }
-    .group { margin-top: 26px; }
+    .lede-answer {
+      font: 500 var(--t-value)/1.4 var(--sans); letter-spacing: -.15px;
+      color: var(--text); min-width: 0;
+    }
+    .lede-answer:empty { display: none; }
+    .lede-answer.is-quiet { font: var(--t-body)/1.5 var(--sans); letter-spacing: 0; color: var(--muted); }
+    .screen-note { color: var(--muted); font-size: var(--t-body); }
+
+    /* MORE space above a heading than below it. */
+    .group { margin-top: 34px; }
     .group-head {
       display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
-      padding-bottom: 7px; margin-bottom: 10px; border-bottom: 1px solid var(--line);
+      padding-bottom: 8px; margin-bottom: 10px; border-bottom: 1px solid var(--line);
     }
-    .group-head h2 { font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
-    .nothing { color: var(--faint); font-size: 12px; padding: 2px 0; }
+    /* The host's own section label: 11px / 600 / uppercase / .05em, muted —
+       .detail-card-title at style.css:6419. Not tracked mono: mono is for
+       machine facts here, and a section name is not one. */
+    .group-head h2 {
+      font: 600 var(--t-label) var(--sans); letter-spacing: .05em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .nothing { color: var(--muted); font-size: var(--t-body); padding: 4px 0; }
 
     /* Rows: the console's one structural primitive. */
     .row {
       display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
-      gap: 12px; padding: 9px 0; border-bottom: 1px solid rgba(38, 49, 68, .55);
+      gap: 14px; padding: 11px 0; border-bottom: 1px solid var(--line);
     }
     .row:last-child { border-bottom: 0; }
-    .row-name { font: 600 13px var(--mono); overflow-wrap: anywhere; }
-    .row-note { color: var(--faint); font-size: 12px; }
-    .row-value { color: var(--muted); font: 12px var(--mono); text-align: right; white-space: nowrap; }
-    .state { font: 700 10px var(--mono); letter-spacing: .07em; text-transform: uppercase; }
-    .is-alive .state { color: var(--green); }
-    .is-degraded .state { color: var(--amber); }
-    .is-quota .state { color: var(--violet); }
-    .is-dead .state { color: var(--red); }
+    .row-name { font: 500 var(--t-body) var(--mono); overflow-wrap: anywhere; }
+    .row-note { color: var(--muted); font: var(--t-small) var(--mono); margin-top: 2px; }
+    .row-value { color: var(--muted); font: var(--t-small) var(--mono); text-align: right; white-space: nowrap; }
+    /* A condition, in a word. Colour is one of the four and never decorative;
+       the word is there so colour is not the only channel. */
+    .state {
+      font: 600 var(--t-label) var(--sans); letter-spacing: .05em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .is-alive .state { color: var(--ok-text); }
+    .is-degraded .state { color: var(--warn-text); }
+    .is-quota .state { color: var(--info-text); }
+    .is-dead .state { color: var(--bad-text); }
 
-    .facts { display: flex; flex-wrap: wrap; gap: 6px 22px; }
-    .fact { display: flex; align-items: baseline; gap: 7px; }
-    .fact-label { color: var(--faint); font: 10px var(--mono); letter-spacing: .07em; text-transform: uppercase; }
-    .fact-value { font: 600 13px var(--mono); }
+    /* Facts read as a measured strip: a quiet 11px label above, a value large
+       enough to be read from a metre away. Mono only where the value is a
+       machine fact — a model id or a count — and sans where it is a word. */
+    .facts { display: flex; flex-wrap: wrap; gap: 14px 28px; }
+    .lede .facts { justify-content: flex-end; }
+    .group > .facts { padding-top: 4px; }
+    .fact { display: flex; flex-direction: column; gap: 2px; }
+    .fact-label {
+      color: var(--muted); font: 600 var(--t-label) var(--sans);
+      letter-spacing: .05em; text-transform: uppercase;
+    }
+    .fact-value { font: 600 var(--t-value) var(--sans); letter-spacing: -.15px; }
+    .fact-value.is-mono { font: 500 var(--t-value) var(--mono); letter-spacing: -.01em; }
+    /* The denominator of a fraction, under the number it belongs to: "208,352"
+       above "of 272,000" says the relationship without a fifth type size. */
+    .fact-note { color: var(--muted); font: var(--t-label) var(--mono); margin-top: 1px; }
 
-    /* ── Pipeline graph ────────────────────────────────────────────── */
-    .canvas-row { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 22px; align-items: start; }
+    /* ── the decision sheet ────────────────────────────────────────────
+       A router IS an ordered first-match table, so the surface is a numbered
+       sheet, not a free-form canvas: precedence is the vertical axis and the eye
+       never has to infer order from position. One spine runs down the left
+       margin so the sheet reads as a single continuous flow. */
+    .probe { display: flex; gap: 8px; }
+    .probe-input {
+      flex: 1; min-width: 0; padding: 9px 12px; border: 1px solid var(--line);
+      border-radius: var(--radius-input); background: var(--host-input-bg, var(--surface));
+      color: var(--text); font: var(--t-body) var(--mono);
+    }
+    .probe-input:focus { border-color: var(--accent); }
+    .probe-input::placeholder { color: var(--muted); }
+    /* A sentence, not a flex row of fragments. As flex with gap:9px it LOOKED
+       right and read wrong: the gap is layout, not text, so textContent came out
+       "Caught byhard-verbs→gpt-5.6-terraon openai-codex" — which is what a screen
+       reader says out loud. Normal inline flow puts real spaces in the string, and
+       the mono model names still stand out by font and colour. */
+    .verdict { padding: 12px 0 0; color: var(--muted); font-size: var(--t-body); line-height: 1.6; }
+    .verdict-model { color: var(--text); font: 500 var(--t-body) var(--mono); }
+
+    .sheet { position: relative; margin-top: 28px; padding-left: 30px; }
+    .sheet::before {
+      content: ""; position: absolute; left: 8px; top: 8px; bottom: 26px; width: 1px;
+      background: var(--line-strong);
+    }
+    .stage {
+      position: relative; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+      margin: 30px 0 6px; color: var(--muted);
+      font: 600 var(--t-label) var(--sans); letter-spacing: .05em; text-transform: uppercase;
+    }
+    .stage:first-child { margin-top: 4px; }
+    .stage::before {
+      content: ""; position: absolute; left: -26px; top: 4px; width: 7px; height: 7px;
+      border-radius: 50%; background: var(--bg); box-shadow: inset 0 0 0 1px var(--line-strong);
+    }
+    /* Asking a model is a different KIND of step, and --info is the condition
+       colour for "inference happened" on every screen of this console. */
+    .stage.inference { color: var(--info-text); }
+    .stage.inference::before { box-shadow: inset 0 0 0 1px var(--info); }
+    /* The window a count was taken over — the count means nothing without it. */
+    .stage-note {
+      color: var(--muted); font: 400 var(--t-small) var(--sans);
+      letter-spacing: 0; text-transform: none;
+    }
+
+    /* One rule = one line of the sheet: its precedence, what catches, where it
+       goes, and how often it really fired. */
+    .step {
+      position: relative; display: grid;
+      /* minmax(0, max-content), not `auto`: an auto track sizes to its content's
+         intrinsic width and took it from the 1fr beside it. */
+      grid-template-columns: 22px minmax(0, 1fr) fit-content(46%);
+      align-items: baseline; gap: 16px; padding: 12px 10px 12px 0;
+      border-bottom: 1px solid var(--line); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    }
+    .step:last-child { border-bottom: 0; }
+    .step::before {
+      content: ""; position: absolute; left: -22px; top: 19px;
+      width: 9px; height: 1px; background: var(--line);
+    }
+    .step.editable { cursor: pointer; }
+    .step.editable:hover { background: var(--surface-hover); }
+    /* The line the probed task matched: this is an ANSWER TO YOUR QUESTION, not
+       a condition, so it wears the accent. */
+    .step.hit { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
+    .step.hit::before { background: var(--accent); }
+    .step.cold { opacity: .5; }
+    .step-ord { color: var(--muted); font: 500 var(--t-label) var(--mono); text-align: right; }
+    .step-what { min-width: 0; }
+    .step-id { font: 500 var(--t-body) var(--mono); }
+    .step-when { color: var(--muted); font-size: var(--t-body); margin-top: 3px; }
+    /* Destination and hits are columns, not a floating pair: a reader compares
+       down a column, so both must land on the same x on every line. Two ways this
+       has failed, both measured on the live sheet:
+         * `auto` on the third track sized it to its content's intrinsic width —
+           278px for "us.anthropic.claude-opus-5 → deepseek-v4-pro" — and starved
+           the minmax(0,1fr) rule column beside it to exactly 0px.
+         * capping the CHILD with max-width:46% is circular: the child's
+           containing block is a max-content track that the child itself sizes, so
+           the destination resolved to 0px wide and "refuse"/"T4"/"classifier"
+           vanished from every line while the arrow stayed.
+       The cap belongs on the TRACK, where a percentage resolves against the grid
+       container: fit-content(46%) is exactly the intent — take the content's own
+       width, but never more than 46% of the row — so the rule always keeps the
+       majority, and the rule is what the operator reads down the sheet. */
+    /* The hits track is 80px, not the old 74px: 74 fitted "never fired" at the
+       retired 10.5px step, and at the host's 12px the string wrapped to two lines.
+       A wrapped warning reads as damage rather than as a finding. */
+    .step-to {
+      display: grid; grid-template-columns: minmax(0, 1fr) 80px;
+      align-items: baseline; gap: 14px;
+    }
+
+    .step-dest { display: flex; align-items: baseline; gap: 8px; justify-content: flex-end; min-width: 0; }
+    .step-arrow { color: var(--muted); font: var(--t-body) var(--mono); }
+    .step-target { font: 500 var(--t-body) var(--mono); overflow: hidden; text-overflow: ellipsis; }
+    .step-hits {
+      grid-column: 2; color: var(--muted); font: var(--t-small) var(--mono);
+      text-align: right; white-space: nowrap;
+    }
+    /* A rule that has never fired in the recorded window is a real finding, and
+       one of only three hues this screen is allowed. */
+    .step-hits.zero { color: var(--warn-text); }
+
+    /* The ladder: the tiers a rule or the classifier can send a task to, each
+       rung with its cross-rail fallbacks. Same starvation guard as .step. */
+    .rung {
+      display: grid; grid-template-columns: 34px minmax(0, 1fr) minmax(0, max-content);
+      align-items: baseline; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--line);
+    }
+    .rung:last-child { border-bottom: 0; }
+    .rung-tier { font: 600 var(--t-body) var(--mono); letter-spacing: .04em; color: var(--text); }
+    .rung-model { font: 500 var(--t-body) var(--mono); }
+    .rung-rail { color: var(--muted); font: var(--t-small) var(--mono); margin-top: 2px; }
+    .rung-fallback { color: var(--muted); font: var(--t-small) var(--mono); text-align: right; min-width: 0; overflow-wrap: anywhere; }
+    .rung-fallback.none { color: var(--warn-text); }
+
+    /* ── replay ────────────────────────────────────────────────────────
+       A trace is a short sequence, so it is drawn as one: the same spine-and-
+       line vocabulary as the decision sheet, so an operator learns one way of
+       reading this console instead of two. */
+    .canvas-row { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 26px; align-items: start; }
     .canvas-row.solo { grid-template-columns: minmax(0, 1fr); }
     .is-narrow .canvas-row { grid-template-columns: minmax(0, 1fr); }
-    /* Routes: the decision list is the subject here, not the graph beside it. */
+    /* Routes: list and replay stay SIDE BY SIDE wherever there is room for two
+       readable columns, even in the host panel. Stacked, picking a decision
+       appeared to do nothing because the replay was below the fold. */
     .canvas-row.routes { grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); }
-    .is-narrow .canvas-row.routes { grid-template-columns: minmax(0, 1fr); }
-    .route-list { max-height: 72vh; overflow: auto; }
-    .canvas { overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
-    .graph { display: block; width: 100%; min-height: 220px; }
-    .pnode { cursor: default; }
-    .pnode.editable { cursor: pointer; }
-    .pnode-box { fill: var(--surface-raised); stroke: var(--line-strong); stroke-width: 1.2; }
-    .pnode.editable:hover .pnode-box { stroke: var(--accent); }
-    .pnode-name { fill: var(--text); font: 600 11px var(--mono); }
-    .pnode-sub { fill: var(--faint); font: 9px var(--mono); }
-    .pnode.runtime .pnode-box { stroke-dasharray: 3 3; }
-    .pnode.runtime .pnode-name { fill: var(--muted); }
-    .pnode.selected .pnode-box { stroke: var(--accent-strong); stroke-width: 2; }
-    .pnode.on .pnode-box { stroke: var(--accent); stroke-width: 2; }
-    .pnode.past .pnode-box { stroke: rgba(143, 184, 255, .55); }
-    .pnode.off { opacity: .32; }
-    .pedge { fill: none; stroke: var(--line-strong); stroke-width: 1.2; }
-    .pedge.stop { stroke: var(--red); stroke-dasharray: 4 3; }
+    @media (max-width: 860px) { .canvas-row.routes { grid-template-columns: minmax(0, 1fr); } }
+    /* Until a decision is picked there is no replay, so the second column would
+       hold nothing. It appears when it has something in it. */
+    .canvas-row.routes.waiting { grid-template-columns: minmax(0, 1fr); }
+    .canvas-row.routes.waiting .replay-col { display: none; }
+    /* The list scrolls inside its own column so the replay stays next to it
+         instead of being pushed down the page by 47 rows. The gutter is
+         reserved: without it the scrollbar clipped "22h ago" to "22h ag". */
+    .route-list { max-height: min(64dvh, 600px); overflow-y: auto; scrollbar-gutter: stable; padding-right: 4px; }
+    .replay-col { position: sticky; top: 0; }
+    .filter { width: 100%; margin-bottom: 8px; }
+    /* Scope: which subset you are looking at is a SELECTION, not a condition, so
+       it wears the accent when chosen — the host's own chip idiom (accent wash,
+       accent text, accent-tinted border). */
+    .route-scopes { display: flex; gap: 6px; margin-bottom: 10px; }
+    .scope {
+      padding: 5px 12px; border: 1px solid var(--line); border-radius: var(--radius-pill);
+      background: transparent; color: var(--muted); font: 600 var(--t-small) var(--sans);
+    }
+    .scope:hover { border-color: var(--line-strong); color: var(--text); }
+    .scope.is-on { border-color: var(--accent-bg-strong); background: var(--accent-bg); color: var(--accent-text); }
+    .scope[disabled] { opacity: .55; cursor: default; }
+    .scope-count { color: var(--muted); margin-left: 6px; font: 500 var(--t-label) var(--mono); }
+    .scope.is-on .scope-count { color: var(--accent-text); }
+    /* Rows are buttons, so they must not inherit button chrome. The cause column
+       is fixed so model names line up down the list; a ragged left edge forces
+       the eye to re-find the model on every row. */
+    .row.route {
+      width: 100%; border: 0; border-bottom: 1px solid var(--line);
+      background: none; text-align: left; font: inherit; color: inherit;
+      /* 118px, not 104: the longest real cause is "FAIL SAFE STRONG" and at the
+         host's 11px it needs 112px on one line. At 104 it wrapped to two, which
+         made every fail-safe row 20px taller than its neighbours and turned a
+         scannable column into a ragged one. Measured against the live log's four
+         causes: has_code_rule, fail_safe_strong, hard_rule, blocklist_veto. */
+      grid-template-columns: 118px minmax(0, 1fr) auto; gap: 12px;
+    }
+    .row.route .cause { line-height: 1.3; overflow-wrap: anywhere; }
+    /* The task is the row's subject: give it the width and let it wrap to two
+       lines rather than trailing off into empty space. */
+    .row.route .row-note {
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden; font-family: var(--sans); font-size: var(--t-body);
+    }
 
-    .field { display: grid; gap: 4px; margin-bottom: 10px; }
-    .field label { color: var(--faint); font: 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+    .path { position: relative; padding-left: 30px; }
+    .path::before { content: ""; position: absolute; left: 8px; top: 14px; bottom: 14px; width: 1px; background: var(--line); }
+    .trace {
+      position: relative; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto;
+      align-items: baseline; gap: 14px; width: 100%; padding: 11px 10px 11px 0;
+      border: 0; border-bottom: 1px solid var(--line); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      background: none; text-align: left;
+    }
+    .trace:last-child { border-bottom: 0; }
+    .trace::before {
+      content: ""; position: absolute; left: -26px; top: 17px; width: 7px; height: 7px;
+      border-radius: 50%; background: var(--bg); box-shadow: inset 0 0 0 1px var(--line-strong);
+    }
+    .trace:hover { background: var(--surface-hover); }
+    /* Where the reader is (accent — it is what they picked), what has already
+       happened, what is still ahead. */
+    .trace.on { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
+    .trace.on::before { background: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+    .trace.past::before { background: var(--muted); box-shadow: inset 0 0 0 1px var(--muted); }
+    .trace.ahead { opacity: .72; }
+    .trace-ord { color: var(--muted); font: 500 var(--t-label) var(--mono); }
+    .trace-stage { font: 500 var(--t-body) var(--sans); color: var(--text); }
+    .trace-outcome { color: var(--muted); font: var(--t-small) var(--mono); margin-top: 2px; overflow-wrap: anywhere; }
+
+    .field { display: grid; gap: 6px; margin-bottom: 12px; }
+    .field label { color: var(--muted); font: 600 var(--t-label) var(--sans); letter-spacing: .05em; text-transform: uppercase; }
     .field input, .field select {
-      border: 1px solid var(--line-strong); border-radius: 7px; padding: 7px 9px;
-      background: #080b11; font: 12px var(--mono);
+      border: 1px solid var(--line); border-radius: var(--radius-input); padding: 8px 11px;
+      background: var(--host-input-bg, var(--surface)); color: var(--text); font: var(--t-body) var(--mono);
     }
-    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-    .btn {
-      border: 1px solid var(--line-strong); border-radius: 7px; padding: 7px 12px;
-      background: var(--surface-raised); font: 650 12px var(--sans);
-    }
-    .btn:hover { border-color: var(--accent); background: var(--surface-hover); }
-    .btn.go { border-color: var(--accent-strong); color: #f0f6ff; background: #2f6ccb; }
-    .btn.warn { border-color: rgba(255, 127, 141, .5); color: #ffd2d7; background: rgba(255, 127, 141, .1); }
-    .msg { margin-top: 10px; color: var(--muted); font-size: 12px; }
-    .msg.ok { color: var(--green); }
-    .msg.bad { color: var(--red); }
+    .field input:focus, .field select:focus { border-color: var(--accent); }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+    .msg { margin-top: 12px; color: var(--muted); font-size: var(--t-body); }
+    .msg.ok { color: var(--ok-text); }
+    .msg.bad { color: var(--bad-text); }
     .code {
-      margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
-      background: #080b11; color: #d8e6fb; font: 11px/1.55 var(--mono);
+      margin: 12px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--host-code-bg, var(--surface)); color: var(--text);
+      font: var(--t-small)/1.6 var(--mono);
       white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto;
     }
     .editor {
-      width: 100%; min-height: 240px; resize: vertical; padding: 10px 12px;
-      border: 1px solid var(--line-strong); border-radius: 8px; background: #080b11;
-      font: 12px/1.55 var(--mono); tab-size: 2;
+      width: 100%; min-height: 240px; resize: vertical; padding: 10px 12px; margin-top: 10px;
+      border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--host-code-bg, var(--surface)); color: var(--text);
+      font: var(--t-small)/1.6 var(--mono); tab-size: 2;
     }
-    details > summary { color: var(--muted); font: 650 12px var(--sans); cursor: pointer; padding: 6px 0; }
+    /* Noisy internals stay collapsed by default, which is the host's own rule. */
+    details > summary { color: var(--muted); font: 500 var(--t-body) var(--sans); cursor: pointer; padding: 8px 0; }
     details > summary:hover { color: var(--text); }
 
-    /* ── Routes + replay ───────────────────────────────────────────── */
+    /* ── routes + replay detail ────────────────────────────────────── */
     .route { cursor: pointer; }
     .route:hover { background: var(--surface-hover); }
-    .route.picked { background: var(--surface-hover); box-shadow: inset 2px 0 0 var(--accent); }
-    .cause { font: 700 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
-    .scrub { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
-    .scrub input[type=range] { flex: 1; accent-color: var(--accent-strong); }
-    .step-head { display: flex; align-items: baseline; gap: 12px; margin-top: 14px; }
-    .step-index { color: var(--faint); font: 700 10px var(--mono); letter-spacing: .07em; text-transform: uppercase; }
-    .step-stage { font: 650 13px var(--mono); }
-    .io { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 8px; }
-    .io-label { color: var(--faint); font: 10px var(--mono); letter-spacing: .07em; text-transform: uppercase; margin-bottom: 4px; }
+    .route.picked { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
+    /* The cause of a decision: one of the four condition colours, set in JS.
+       Sans, because a cause is a phrase ("fail safe strong"), not code. */
+    .cause { font: 600 var(--t-label) var(--sans); letter-spacing: .05em; text-transform: uppercase; }
+    .io { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-top: 24px; }
+    /* A step's payload is evidence under its label, not a component. Boxing each
+       side put two bordered cards inside a column that already sits inside the
+       panel — three nested frames for four lines of JSON. */
+    .io .code {
+      margin-top: 0; padding: 1px 0 1px 12px;
+      border: 0; border-left: 1px solid var(--line); border-radius: 0; background: none;
+    }
+    .io-label { color: var(--muted); font: 600 var(--t-label) var(--sans); letter-spacing: .05em; text-transform: uppercase; margin-bottom: 6px; }
+    .inspector-head { margin: 28px 0 12px; font: 600 var(--t-head)/1.3 var(--sans); letter-spacing: -.18px; }
 
-    .warn-line { display: flex; gap: 9px; align-items: baseline; padding: 9px 11px; margin-bottom: 14px;
-      border-left: 2px solid var(--amber); background: rgba(246, 191, 95, .07); color: var(--muted); font-size: 12px; }
-    .warn-line.bad { border-left-color: var(--red); background: rgba(255, 127, 141, .07); }
+    /* A condition that needs an operator is a LINE, marked with the same dot the
+       tabs use — not a tinted card with a thick coloured edge. Every other group
+       here is made from a hairline and space; the warning was the one element
+       that disagreed, and it disagreed loudest. */
+    .warn-line {
+      display: flex; gap: 10px; align-items: baseline; padding: 11px 0; margin-bottom: 18px;
+      border-bottom: 1px solid var(--line); color: var(--muted); font-size: var(--t-body);
+    }
+    .warn-line::before {
+      content: ""; flex: 0 0 auto; width: 6px; height: 6px; margin-top: 6px;
+      border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 3px var(--warn-bg);
+    }
+    .warn-line strong { color: var(--text); font-weight: 600; }
+    .warn-line.bad { color: var(--text); }
+    .warn-line.bad::before { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-bg); }
 
+    /* ── narrow: the host panel with the workspace open (~550px) ──────── */
     @media (max-width: 700px) {
-      .shell { padding: 12px 12px 28px; }
+      .body { padding: 18px 14px 32px; }
       .io { grid-template-columns: 1fr; }
+      .lede { display: block; }
+      .lede .facts { justify-content: flex-start; margin-top: 12px; }
+    }
+
+    /* ── the phone ─────────────────────────────────────────────────────
+       640px, because that is the host's own breakpoint: below 641px it hides the
+       rail entirely and the sidebar drawer becomes the only navigation
+       (style.css:2137). Matching it means this console changes shape at the same
+       width the shell around it does. Header + tabs measure 41 + 38 = 79px of
+       chrome, against 120px for the old three-row masthead. */
+    @media (max-width: 640px) {
+      .view-head { padding: 8px 14px; }
+      /* The tabs scroll rather than wrap: three destinations with live state
+         dots do not fit 390px, and a wrapped tab strip reads as two
+         navigations. Scroll-snap so a partial swipe settles on a boundary. */
+      .tabs {
+        padding: 0 14px; overflow-x: auto; scroll-snap-type: x proximity;
+        -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; scrollbar-width: none;
+      }
+      .tabs::-webkit-scrollbar { display: none; }
+      .tab { scroll-snap-align: start; }
+      /* Two columns of facts, not four: at 390px four columns gave each label
+         ~85px, which truncated "AGGRESSIVENESS" to "AGGRESSIVE" — a label that
+         silently lies about which number it names. */
+      .facts { gap: 12px 20px; }
+      .fact { min-width: calc(50% - 20px); }
+
+      /* The sheet and the ladder stack instead of competing. A 46% cap is ~150px
+         here — not enough for a Bedrock id, so it would ellipsis away the very
+         thing the line exists to say. */
+      .step { grid-template-columns: 22px minmax(0, 1fr); row-gap: 6px; }
+      .step-to { grid-column: 2; max-width: none; grid-template-columns: minmax(0, 1fr) auto; }
+      .step-dest { justify-content: flex-start; }
+      .step-target { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+      .rung { grid-template-columns: 34px minmax(0, 1fr); row-gap: 4px; }
+      .rung-fallback { grid-column: 2; text-align: left; }
+
+      /* The row stops being a three-column grid and becomes one wrapping line:
+         dot, name, rail, state. At 390px the grid gave the state a column of its
+         own, which forced "ALIVE" onto a third line and made five models 15
+         lines tall. */
+      .row { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px; row-gap: 3px; padding: 10px 0; }
+      .row > .dot { align-self: center; }
+      .row-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; min-width: 0; }
+      .row-main > .row-name { flex: 0 1 auto; }
+      .row .row-note { margin-top: 0; }
+      .row > div:last-of-type { display: flex; align-items: baseline; gap: 10px; margin-left: auto; }
+      .row-value, .row .state { text-align: left; }
+      /* A decision row keeps its GRID here, against the flex rule above: as flex,
+         the middle cell sized to its own content, so the model name started at a
+         different x on every line — measured, the ragged edge DESIGN.md §3 exists
+         to prevent, because the reader has to re-find the model on each row.
+         Two rows instead: cause and age on the first, model and task on the
+         second, both flush left. The cause column keeps its own width so the four
+         cause words still line up down the list. */
+      .row.route {
+        display: grid; grid-template-columns: minmax(0, 1fr) auto;
+        row-gap: 4px; column-gap: 12px; align-items: baseline;
+      }
+      .row.route .cause { grid-column: 1; grid-row: 1; }
+      .row.route .row-value { grid-column: 2; grid-row: 1; justify-self: end; }
+      /* margin-left:auto is reset explicitly. `.row > div:last-of-type` above is
+         written for the MODEL row, where it pushes the state to the far end; a
+         decision row's only div is its subject, and inheriting that rule shoved
+         each model to a different x — 152px, 51px, 116px, 24px, 249px on five
+         consecutive rows, measured. Which is the same ragged edge the two-row
+         layout exists to remove. */
+      .row.route > div { grid-column: 1 / -1; grid-row: 2; margin-left: 0; display: block; }
+    }
+
+    /* Touch. The host requires 44px targets under a coarse pointer
+       (style.css: "@media (hover:none) and (pointer:coarse)" ... min-height:44px)
+       and every control here was built for a mouse. A missed tap on Refresh is
+       harmless; a missed tap on the write gate is not. */
+    @media (hover: none) and (pointer: coarse) {
+      .tab { min-height: 44px; }
+      .btn { min-height: 44px; }
+      .scope { min-height: 44px; padding: 0 16px; }
+      .row.route { min-height: 56px; }
+      summary { min-height: 44px; display: flex; align-items: center; }
+      /* iOS Safari zooms in when a focused input is under 16px and never zooms
+         back out, so tapping the filter left the operator on a magnified,
+         sideways-scrolling console.
+         The SELECTOR is the load-bearing part, and it was wrong. A bare
+         `input, textarea, select` scores (0,0,1) and every input in this console is
+         reached by a CLASS — .probe-input, .editor, .field input — which scores
+         (0,1,0) and wins. Measured in a real iPhone 13 context, where
+         (pointer:coarse) genuinely matches: the probe field, the decision filter
+         and the COMPACT confirmation all computed 14px with this block present, so
+         the guard had been decorative. Naming the classes makes it apply.
+         max() keeps anything already larger; .editor stays at --t-small on a mouse
+         because it holds JSON, and gets 16px here for the same reason as the rest. */
+      input, textarea, select,
+      .probe-input, .editor, .field input, .field select {
+        font-size: max(16px, 1em);
+      }
+      /* An input the keyboard covers is an input you cannot see while typing.
+         The host measures this inset onto ITS documentElement, which a
+         same-origin iframe does not inherit — so the console measures its own,
+         with the host's formula, in syncKeyboard(). */
+      .body { padding-bottom: calc(44px + var(--keyboard-inset, 0px)); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .screen.active { animation: none; }
+      * { animation: none !important; transition: none !important; }
     }
   </style>
 </head>
 <body>
-  <main class="shell" id="shell">
-    <aside class="rail">
-      <div class="brand">
-        <span class="brand-name">Capability Router</span>
-        <span class="brand-host">Hermes One</span>
-      </div>
-
-      <nav class="nav" role="tablist" aria-label="Console sections">
-        <button class="tab" id="tab-health" role="tab" aria-selected="true" aria-controls="panel-health" data-tab="health" type="button">
-          <span class="tab-name">Health</span>
-          <span class="tab-state" id="stateHealth"><span class="count" id="countHealth" hidden></span><span class="dot"></span></span>
-        </button>
-        <button class="tab" id="tab-pipeline" role="tab" aria-selected="false" aria-controls="panel-pipeline" data-tab="pipeline" type="button">
-          <span class="tab-name">Pipeline</span>
-          <span class="tab-state" id="statePipeline"><span class="count" id="countPipeline" hidden></span><span class="dot"></span></span>
-        </button>
-        <button class="tab" id="tab-routes" role="tab" aria-selected="false" aria-controls="panel-routes" data-tab="routes" type="button">
-          <span class="tab-name">Routes</span>
-          <span class="tab-state" id="stateRoutes"><span class="count" id="countRoutes" hidden></span><span class="dot"></span></span>
-        </button>
-      </nav>
-
-      <button class="lock" id="lock" type="button" aria-pressed="false" title="Unlock editing">
-        <span class="lock-icon" aria-hidden="true">🔒</span><span id="lockLabel">Locked</span>
+  <!-- The host's own panel header: an 18px/600 sans title on the left, the
+       actions on the right, one hairline under it. What used to be here was a
+       "ROUTER · HERMES ONE" wordmark — 9 characters saying what the highlighted
+       rail icon says for free, in a mono uppercase voice the shell never uses. -->
+  <header class="view-head">
+    <h1 class="view-title">Capability Router</h1>
+    <div class="view-actions">
+      <!-- Whether these numbers are current. Not a status chip repeating a state
+           something else owns: it reports THIS CONSOLE'S last read, which nothing
+           else on screen can say. -->
+      <span class="reach" id="reach"><span class="dot"></span><span id="reachText">checking</span></span>
+      <!-- Edit, not a padlock. The padlock claimed to be a protection and was
+           not: the sidecar has never heard of it (zero mentions in
+           one_sidecar.py), and every write is already gated server-side by the
+           per-extension token-v1 secret, the host's CSRF token, a loopback-only
+           bind, and an optimistic base_hash that answers 409 on drift. The
+           compaction action additionally requires confirm=="COMPACT" checked ON
+           THE SERVER (one_sidecar.py:392).
+           What it did that was worth keeping is the read-only DEFAULT: the
+           Pipeline shows the live routing policy, and a stray tap on a line
+           should not start editing it. That is a mode, so it is named as one. -->
+      <button class="btn mode" id="editMode" type="button" aria-pressed="false">
+        <span id="editLabel">Edit</span>
       </button>
+      <button class="btn" id="refresh" type="button">Refresh</button>
+    </div>
+  </header>
 
-      <div class="rail-foot">
-        <span class="reach" id="reach"><span class="dot"></span><span id="reachText">checking</span></span>
-        <button class="quiet" id="refresh" type="button">Refresh</button>
-      </div>
-    </aside>
+  <!-- Three destinations, drawn the way the host draws its own nav tabs: a quiet
+       label that takes the accent when selected, with a 20px accent bar on the
+       bottom edge. Each carries the live state of what it leads to. -->
+  <nav class="tabs" role="tablist" aria-label="Console sections">
+    <button class="tab" id="tab-health" role="tab" aria-selected="true" aria-controls="panel-health" data-tab="health" type="button">
+      <span class="tab-name">Health</span>
+      <span class="tab-state" id="stateHealth"><span class="count" id="countHealth" hidden></span><span class="dot"></span></span>
+    </button>
+    <button class="tab" id="tab-pipeline" role="tab" aria-selected="false" aria-controls="panel-pipeline" data-tab="pipeline" type="button">
+      <span class="tab-name">Pipeline</span>
+      <span class="tab-state" id="statePipeline"><span class="count" id="countPipeline" hidden></span><span class="dot"></span></span>
+    </button>
+    <button class="tab" id="tab-routes" role="tab" aria-selected="false" aria-controls="panel-routes" data-tab="routes" type="button">
+      <span class="tab-name">Routes</span>
+      <span class="tab-state" id="stateRoutes"><span class="count" id="countRoutes" hidden></span><span class="dot"></span></span>
+    </button>
+  </nav>
 
-    <div>
+  <main class="body" id="shell">
+    <div class="measure">
       <div id="warnings"></div>
 
       <!-- ── Health: which models can this router reach right now ────── -->
       <section class="screen active" id="panel-health" role="tabpanel" aria-labelledby="tab-health">
-        <div class="screen-head">
-          <h2>Models</h2>
+        <!-- The screen's one question, answered in its first line: the rollup of
+             the model set, with the router's own three facts on the opposite
+             margin. There is no second "Router" heading — the panel header
+             already names the surface, and a title that repeats the rail is the
+             clutter this console was rebuilt to remove. -->
+        <div class="lede">
+          <p class="lede-answer" id="modelsNote"></p>
           <div class="facts" id="healthFacts"></div>
         </div>
+
         <div id="models"></div>
 
         <div class="group" id="bansGroup" hidden>
@@ -290,10 +836,14 @@
         <div class="group">
           <div class="group-head"><h2>Compaction</h2><span class="screen-note" id="compactionNote"></span></div>
           <div class="facts" id="compaction"></div>
+          <!-- The type-to-confirm stays: this action restarts the agent, and the
+               server demands the same phrase independently (one_sidecar.py:392),
+               so the two cannot drift apart. The summary carries the consequence,
+               so the decision to open it is informed. -->
           <details id="compactionApply">
-            <summary>Recalculate thresholds</summary>
+            <summary>Recalculate thresholds — restarts the agent</summary>
             <div class="field" style="margin-top:10px">
-              <label for="compactConfirm">Type COMPACT to confirm — this restarts the agent</label>
+              <label for="compactConfirm">Type COMPACT to confirm</label>
               <input id="compactConfirm" autocomplete="off" placeholder="COMPACT">
             </div>
             <div class="actions"><button class="btn warn" id="compactGo" type="button">Recalculate</button></div>
@@ -302,24 +852,42 @@
         </div>
       </section>
 
-      <!-- ── Pipeline: how a task becomes a model ───────────────────── -->
+      <!-- ── Pipeline: a decision sheet, read top to bottom ─────────── -->
       <section class="screen" id="panel-pipeline" role="tabpanel" aria-labelledby="tab-pipeline">
-        <div class="screen-head">
-          <h2>Routing pipeline</h2>
-          <p class="screen-note" id="pipelineNote">Unlock to change a node.</p>
+        <!-- The probe is the first thing in the first viewport, because "where
+             would MY task land?" is the question this screen exists for and the
+             sheet below is the answer's audit trail. Backed by GET /explain
+             (Stage 0, deterministic). -->
+        <div class="lede">
+          <p class="lede-answer is-quiet" id="pipelineNote">Read top to bottom — the first rule that matches wins.</p>
         </div>
-        <div class="canvas-row" id="pipelineRow">
-          <div class="canvas"><svg id="pipelineSvg" class="graph" role="img" aria-label="Routing pipeline"></svg></div>
-          <div id="inspector"></div>
+
+        <form class="probe" id="probeForm">
+          <input id="probeTask" class="probe-input" autocomplete="off"
+                 placeholder="Try a task — “Debug a race condition in the cache”" aria-label="Task to route">
+          <button class="btn" type="submit">Route it</button>
+        </form>
+        <div id="probeResult"></div>
+
+        <div class="sheet" id="sheet"></div>
+
+        <div class="group">
+          <div class="group-head"><h2>Capability ladder</h2><span class="screen-note">Where the rules and the classifier can send a task.</span></div>
+          <div id="ladder"></div>
         </div>
+
+        <div id="inspector"></div>
         <div class="group">
           <details>
             <summary>Edit the whole policy as JSON</summary>
             <textarea id="policyEditor" class="editor" spellcheck="false" readonly aria-label="Policy JSON"></textarea>
+            <!-- No Confirm button. It POSTed /apply/confirm, which on the server
+                 is the SAME function as /apply — one_sidecar.py:346 and :353 both
+                 return _commit_policy(body). Two buttons, one effect, and nothing
+                 on screen said which to press or what the difference was. -->
             <div class="actions">
-              <button class="btn" id="jsonPlan" type="button">Validate</button>
               <button class="btn go" id="jsonApply" type="button">Apply</button>
-              <button class="btn" id="jsonConfirm" type="button">Confirm</button>
+              <button class="btn" id="jsonPreview" type="button">Preview</button>
               <button class="btn warn" id="jsonRevert" type="button">Revert</button>
             </div>
             <p class="msg" id="jsonMsg" aria-live="polite"></p>
@@ -330,19 +898,25 @@
 
       <!-- ── Routes: what it actually decided ───────────────────────── -->
       <section class="screen" id="panel-routes" role="tabpanel" aria-labelledby="tab-routes">
-        <div class="screen-head">
-          <h2>Recent decisions</h2>
-          <p class="screen-note" id="routesNote"></p>
+        <div class="lede">
+          <p class="lede-answer is-quiet" id="routesNote"></p>
         </div>
-        <div class="canvas-row routes">
-          <div id="routesTable" class="route-list"></div>
+        <div class="canvas-row routes waiting" id="routesRow">
           <div>
-            <div class="canvas"><svg id="replaySvg" class="graph" role="img" aria-label="Replayed path"></svg></div>
-            <div class="scrub" id="scrub" hidden>
-              <button class="quiet" id="stepPrev" type="button" aria-label="Previous step">◀</button>
-              <input id="stepRange" type="range" min="0" max="0" value="0" aria-label="Step">
-              <button class="quiet" id="stepNext" type="button" aria-label="Next step">▶</button>
+            <input id="routesFilter" class="probe-input filter" type="search" autocomplete="off" hidden
+                   placeholder="Filter by task, model or cause" aria-label="Filter decisions">
+            <!-- The question an operator actually arrives with is "did anything go
+                 wrong?", and answering it meant reading 47 cause labels and
+                 knowing which of them mean refusal. The console already knows, so
+                 the knowledge becomes a control — not a colour legend, a filter. -->
+            <div class="route-scopes" id="routeScopes" role="group" aria-label="Which decisions to show">
+              <button class="scope is-on" id="scopeAll" type="button" aria-pressed="true">All</button>
+              <button class="scope" id="scopeOffRule" type="button" aria-pressed="false">Not by rule</button>
             </div>
+            <div id="routesTable" class="route-list"></div>
+          </div>
+          <div class="replay-col">
+            <div class="path" id="replayPath"></div>
             <div id="stepDetail"></div>
           </div>
         </div>
@@ -358,11 +932,18 @@
       const NARROW_BELOW = 1120;
 
       const state = {
-        mode: 'locked',
+        mode: 'reading',   // 'reading' or 'editing'
         health: null, status: null, policy: null, blocklist: null,
         liveness: null, compaction: null, routes: [],
         plan: null, draft: null, selected: null, replay: null,
         pending: new Set(), unreachable: false, checkedAt: null,
+        // Until the first response lands, "nothing here" is not a fact yet.
+        loading: true, query: '',
+        // How many decisions the sidecar says exist, which is not always how many
+        // it sent us.
+        routesTotal: 0,
+        // Which subset of decisions is on screen. 'all' or 'off-rule'.
+        scope: 'all',
       };
 
       const $ = (id) => document.getElementById(id);
@@ -370,11 +951,6 @@
         const n = document.createElement(tag);
         if (cls) n.className = cls;
         if (text !== undefined && text !== null) n.textContent = String(text);
-        return n;
-      };
-      const svgEl = (tag, attrs) => {
-        const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
-        if (attrs) for (const k of Object.keys(attrs)) n.setAttribute(k, String(attrs[k]));
         return n;
       };
       const clear = (n) => { while (n.firstChild) n.removeChild(n.firstChild); };
@@ -400,11 +976,36 @@
         return `${Math.round(s / 86400)}d ago`;
       };
       const clock = (d) => d.toTimeString().slice(0, 5);
+      // Token counts are six digits here. 208352 has to be counted digit by digit
+      // to be compared with 272000; 208,352 does not. Thin spaces would be prettier
+      // and would break copy-paste into a shell, which is what these numbers are
+      // for, so a plain separator it is.
+      const fmt = (n) => {
+        const value = Number(n);
+        return Number.isFinite(value) ? value.toLocaleString('en-US') : say(n);
+      };
 
-      // The WebUI binds a CSRF token to the session and injects it only into pages
-      // it renders itself; without one the proxy refuses every write.
+      // "Nothing here" has three different meanings and an operator must be able
+      // to tell them apart: we have not asked yet, we cannot ask, or we asked and
+      // there is genuinely nothing. Claiming the third while the first is true is
+      // the most common lie a console tells.
+      const absence = (empty) => state.loading ? 'Loading…'
+        : state.unreachable ? 'Unavailable while the sidecar is unreachable.'
+        : empty;
+
+      // The WebUI derives a CSRF token from the session (HMAC, server-side) and
+      // injects it only into the pages it renders itself — /, /index.html and
+      // /session/*. A page the sidecar serves therefore never has one, which is
+      // why writing only works when this console is mounted inside the Hermes One
+      // shell: there it runs same-origin under the host document and can read the
+      // token the host was given.
       const csrf = () => {
-        try { return (window.__HERMES_CONFIG__ || {}).csrfToken || ''; } catch (_) { return ''; }
+        try {
+          const own = (window.__HERMES_CONFIG__ || {}).csrfToken;
+          if (own) return own;
+          // Mounted in the host's panel: the token belongs to the host document.
+          return (window.parent.__HERMES_CONFIG__ || {}).csrfToken || '';
+        } catch (_) { return ''; }  // cross-origin parent — no token to borrow
       };
 
       async function call(path, options = {}) {
@@ -433,6 +1034,63 @@
         }
       }
 
+      // ── conditions in words ─────────────────────────────────────────
+      // A rule's `when` clause is the answer to "why would this catch my task?".
+      // The engine's vocabulary is closed (router/signals.py fields,
+      // router/rules.py operators), so it can be translated exactly rather than
+      // dumped as JSON.
+      const FIELD = {
+        verb_class:       { noun: 'verb' },
+        lang:             { noun: 'language' },
+        keywords:         { noun: 'keywords' },
+        has_code:         { yes: 'has code', no: 'has no code' },
+        has_stacktrace:   { yes: 'has a stacktrace', no: 'has no stacktrace' },
+        size_lines:       { unit: 'lines' },
+        num_files:        { unit: 'files' },
+        num_requirements: { unit: 'requirements' },
+        char_len:         { unit: 'characters' },
+      };
+      const AMOUNT = { gt: 'over', gte: 'at least', lt: 'under', lte: 'at most' };
+
+      function phraseCondition(field, condition) {
+        const spec = FIELD[field] || {};
+        const noun = spec.noun || field;
+        const parts = [];
+        Object.keys(condition || {}).forEach((op) => {
+          const value = condition[op];
+          if (spec.yes && (op === 'eq' || op === 'ne')) {
+            // A boolean signal reads as presence, never as "= true".
+            const affirmative = (op === 'eq') === (value === true);
+            parts.push(affirmative ? spec.yes : spec.no);
+            return;
+          }
+          if (spec.unit && AMOUNT[op]) { parts.push(`${AMOUNT[op]} ${value} ${spec.unit}`); return; }
+          switch (op) {
+            case 'eq': parts.push(`${noun} is ${value}`); break;
+            case 'ne': parts.push(`${noun} is not ${value}`); break;
+            case 'in': parts.push(`${noun} is ${[].concat(value).join(' or ')}`); break;
+            case 'nin': parts.push(`${noun} is not ${[].concat(value).join(' or ')}`); break;
+            case 'contains': parts.push(`${noun} include “${value}”`); break;
+            case 'starts_with': parts.push(`${noun} start with “${value}”`); break;
+            case 'ends_with': parts.push(`${noun} end with “${value}”`); break;
+            case 'matches': parts.push(`${noun} matches /${value}/`); break;
+            default:
+              // An operator this console has not learned must still render — a
+              // dropped condition would misrepresent why the rule fires.
+              parts.push(`${noun} ${op} ${value}`);
+          }
+        });
+        return parts.join(' and ');
+      }
+
+      function phraseWhen(when) {
+        if (!when || typeof when !== 'object') return 'every task';
+        const clauses = Object.keys(when)
+          .map((field) => phraseCondition(field, when[field]))
+          .filter(Boolean);
+        return clauses.length ? clauses.join(', ') : 'every task';
+      }
+
       // ── state semantics ─────────────────────────────────────────────
       const RANK = { alive: 0, degraded: 1, quota: 2, dead: 3 };
       function modelState(entry) {
@@ -451,9 +1109,9 @@
       }
       function causeColor(cause) {
         const c = String(cause || '');
-        if (c.includes('veto') || c.includes('fail_safe')) return 'var(--red)';
-        if (c === 'classifier') return 'var(--violet)';
-        return 'var(--green)';
+        if (c.includes('veto') || c.includes('fail_safe')) return 'var(--bad-text)';
+        if (c === 'classifier') return 'var(--info-text)';
+        return 'var(--ok-text)';
       }
 
       // ── rail ────────────────────────────────────────────────────────
@@ -473,11 +1131,24 @@
         };
         const health = state.unreachable ? 'dead' : (models.length ? worstOf(models) : '');
         set('stateHealth', 'countHealth', health, bans.length + breakers.length || models.length);
-        set('statePipeline', 'countPipeline', state.mode === 'unlocked' ? 'degraded' : (state.policy ? 'alive' : ''), rules.length);
+        // The Pipeline dot reports the POLICY, never the operator's own mode. It
+        // used to go amber ('degraded') whenever editing was open, so the console
+        // claimed the router was degraded because someone had clicked a button —
+        // and amber is the colour that means "this needs your attention". An
+        // invalid policy is a real degradation; an open editor is not.
+        const invalid = Array.isArray(state.status && state.status.validation_errors)
+          && state.status.validation_errors.length > 0;
+        set('statePipeline', 'countPipeline',
+            invalid ? 'degraded' : (state.policy ? 'alive' : ''), rules.length);
         set('stateRoutes', 'countRoutes', routes.length ? 'alive' : '', routes.length);
 
         const reach = $('reach');
-        reach.className = `reach${state.unreachable ? ' is-dead' : (state.health ? ' is-alive' : '')}`;
+        // is-fresh means "nothing to report about the read itself", which is what
+        // lets the phone drop the clock and keep the title. Anything else — no read
+        // yet, or a dead sidecar — keeps its words at every width.
+        const fresh = !state.unreachable && !!state.checkedAt;
+        reach.className = `reach${fresh ? ' is-fresh' : ''}`
+          + `${state.unreachable ? ' is-dead' : (state.health ? ' is-alive' : '')}`;
         $('reachText').textContent = state.unreachable
           ? 'sidecar unreachable'
           : state.checkedAt ? `checked ${clock(state.checkedAt)}` : 'checking';
@@ -494,7 +1165,7 @@
           box.append(line);
           return;
         }
-        if (state.mode === 'unlocked' && !csrf()) {
+        if (state.mode === 'editing' && !csrf()) {
           const line = el('div', 'warn-line');
           line.append(el('strong', '', 'Editing cannot apply here.'),
                       el('span', '', 'This console is open standalone, so the WebUI grants it no write token. Open the Router panel inside Hermes One.'));
@@ -508,29 +1179,60 @@
         clear(facts);
         const st = state.status || {};
         const rules = (state.policy && state.policy.rules) || [];
-        const fact = (label, value) => {
+        // Mono is for machine facts — a model id, a count, something an operator
+        // would copy — and sans for words. "on" is a word; "deepseek-v3.2" is not.
+        const fact = (label, value, mono) => {
           const f = el('div', 'fact');
-          f.append(el('span', 'fact-label', label), el('span', 'fact-value', value));
+          f.append(el('span', 'fact-label', label),
+                   el('span', `fact-value${mono ? ' is-mono' : ''}`, value));
           facts.append(f);
         };
         fact('routing', say(st.enabled === undefined ? undefined : st.enabled, '—') === 'yes' ? 'on' : 'off');
-        fact('rules', String(rules.length || st.rules_count || 0));
+        fact('rules', String(rules.length || st.rules_count || 0), true);
         const classifier = (st.classifier && st.classifier.model) || (state.policy && state.policy.classifier && state.policy.classifier.model);
-        if (classifier) fact('classifier', classifier);
+        if (classifier) fact('classifier', classifier, true);
         const errors = Array.isArray(st.validation_errors) ? st.validation_errors : [];
         if (errors.length) fact('invalid', `${errors.length} error${errors.length > 1 ? 's' : ''}`);
 
         const list = $('models');
         clear(list);
         const models = (state.liveness && Array.isArray(state.liveness.models)) ? state.liveness.models : [];
+
+        // Say the state of the SET, so an operator does not have to count rows and
+        // compare their colours to answer "is everything fine?". Only the exception
+        // is named: "5 reachable" is the whole story when it is true, and when it
+        // is not, the number that matters is how many are not.
+        const notWell = models.filter((m) => {
+          const st = modelState(m);
+          return st && st !== 'alive';
+        });
+        // Never claim reachability the console cannot currently know. state.liveness
+        // keeps the LAST successful read, so when the sidecar goes away this line
+        // would go on asserting "all 5 reachable" over a dead measurement — the one
+        // moment an operator most needs to distrust it. Unreachable says so; the rows
+        // below still show the last known states, which is useful as history but not
+        // as a claim about now.
+        //
+        // This sentence is now the FIRST LINE of the screen — the answer to
+        // "which models can be routed to right now" — so it is set at the 16px
+        // step rather than as a 13px note beside a heading that repeated the
+        // rail. When there is nothing to answer with yet, it renders nothing at
+        // all rather than an empty line holding space open (DESIGN.md §2.1).
+        const note = $('modelsNote');
+        note.textContent = !models.length ? ''
+          : state.unreachable ? 'last known — the sidecar is not answering'
+          : notWell.length
+            ? `${notWell.length} of ${models.length} not routable`
+            : `all ${models.length} reachable`;
+
         if (!models.length) {
-          list.append(el('p', 'nothing', state.unreachable ? 'Unavailable while the sidecar is unreachable.' : 'No routable models reported.'));
+          list.append(el('p', 'nothing', absence('No routable models reported.')));
         } else {
           models.forEach((m) => {
             const cls = modelState(m);
             const row = el('div', `row${cls ? ` is-${cls}` : ''}`);
             row.append(el('span', 'dot'));
-            const name = el('div');
+            const name = el('div', 'row-main');
             name.append(el('div', 'row-name', m.model || m.model_key || '—'));
             const rail = m.provider || (String(m.model_key || '').split('@')[1] || '');
             if (rail) name.append(el('div', 'row-note', rail));
@@ -554,7 +1256,7 @@
         bans.forEach((b) => {
           const row = el('div', 'row is-dead');
           row.append(el('span', 'dot'));
-          const name = el('div');
+          const name = el('div', 'row-main');
           name.append(el('div', 'row-name', b.model || say(b)));
           if (b.reason) name.append(el('div', 'row-note', b.reason));
           row.append(name, el('span', 'state', 'banned'));
@@ -563,7 +1265,7 @@
         breakers.forEach((b) => {
           const row = el('div', 'row is-degraded');
           row.append(el('span', 'dot'));
-          const name = el('div');
+          const name = el('div', 'row-main');
           name.append(el('div', 'row-name', b.model_key || '—'));
           if (b.last_failure_kind) name.append(el('div', 'row-note', b.last_failure_kind));
           row.append(name);
@@ -574,131 +1276,350 @@
         const comp = $('compaction');
         clear(comp);
         const c = state.compaction;
-        $('compactionNote').textContent = c ? '' : 'not implemented by this sidecar';
         $('compactionApply').hidden = !c;
-        if (c) {
-          const fact2 = (label, value) => {
-            const f = el('div', 'fact');
-            f.append(el('span', 'fact-label', label), el('span', 'fact-value', value));
-            comp.append(f);
-          };
-          fact2('aggressiveness', say(c.aggressiveness));
-          fact2('summarizer window', say(c.summarizer_window));
-          fact2('compacts at', say(c.threshold_tokens));
-          if (c.warning) fact2('warning', 'threshold exceeds the window');
-        }
-      }
-
-      // ── Pipeline graph ──────────────────────────────────────────────
-      const NODE_W = 132, NODE_H = 40, PAD = 18, MIN_COL = 172, MIN_ROW = 52;
-      const FIXED = [
-        { id: 'blocklist', name: 'blocklist', col: 0, bind: 'blocklist' },
-        { id: 'signals', name: 'signals', col: 1, runtime: true },
-        { id: 'default', name: 'default', col: 2, bind: 'default' },
-        { id: 'classifier', name: 'classifier', col: 3, bind: 'classifier' },
-        { id: 'cache', name: 'cache', col: 3, runtime: true },
-        { id: 'session_pin', name: 'session pin', col: 3, runtime: true },
-        { id: 'fail_safe', name: 'fail-safe', col: 5, bind: 'fail_safe' },
-      ];
-
-      function graphNodes(width) {
-        const policy = state.policy || {};
-        const rules = Array.isArray(policy.rules) ? policy.rules : [];
-        const tiers = (policy.tiers && typeof policy.tiers === 'object') ? policy.tiers : {};
-        const nodes = FIXED.map((n) => ({ ...n }));
-        rules.forEach((r, i) => nodes.push({
-          id: `rule:${r.id != null ? r.id : i}`, name: r.id != null ? String(r.id) : `rule ${i}`,
-          col: 2, bind: 'rule', ruleIndex: i,
-          sub: (r.then && (r.then.deny ? 'deny' : r.then.model)) || '',
-        }));
-        Object.keys(tiers).forEach((t) => nodes.push({
-          id: `tier:${t}`, name: t, col: 4, bind: 'tier', tier: t,
-          sub: (tiers[t] && tiers[t].model) || '',
-        }));
-        const byCol = {};
-        nodes.forEach((n) => { (byCol[n.col] = byCol[n.col] || []).push(n); });
-        const maxCol = Math.max(...nodes.map((n) => n.col), 0);
-        const colGap = Math.max(MIN_COL, Math.min((width - 2 * PAD - NODE_W) / (maxCol || 1), 260));
-        Object.keys(byCol).forEach((col) => byCol[col].forEach((n, row) => {
-          n.x = PAD + Number(col) * colGap;
-          n.y = PAD + row * MIN_ROW;
-        }));
-        return nodes;
-      }
-
-      function graphEdges(nodes) {
-        const by = {};
-        nodes.forEach((n) => { by[n.id] = n; });
-        const edges = [];
-        const link = (a, b, cls) => { if (by[a] && by[b]) edges.push({ a: by[a], b: by[b], cls: cls || '' }); };
-        link('blocklist', 'signals');
-        const rules = (state.policy && state.policy.rules) || [];
-        rules.forEach((r, i) => {
-          const id = `rule:${r.id != null ? r.id : i}`;
-          link('signals', id);
-          const then = r.then || {};
-          if (then.action === 'classify') link(id, 'classifier');
-          else if (typeof then.model === 'string' && by[`tier:${then.model}`]) link(id, `tier:${then.model}`);
-        });
-        link('signals', 'default');
-        link('default', 'classifier');
-        link('classifier', 'fail_safe');
-        return edges;
-      }
-
-      function drawGraph(svg, opts) {
-        const editable = !!(opts && opts.editable);
-        clear(svg);
-        if (!state.policy) {
-          const t = svgEl('text', { x: PAD, y: 30, class: 'pnode-sub' });
-          t.textContent = 'Policy unavailable.';
-          svg.appendChild(t);
+        if (!c) {
+          $('compactionNote').textContent = 'not implemented by this sidecar';
           return;
         }
-        const width = svg.clientWidth || (svg.parentElement && svg.parentElement.clientWidth) || 900;
-        const nodes = graphNodes(width);
-        const edges = graphEdges(nodes);
-        const w = Math.max(...nodes.map((n) => n.x + NODE_W)) + PAD;
-        const h = Math.max(...nodes.map((n) => n.y + NODE_H)) + PAD;
-        svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
-        svg.setAttribute('height', String(h));
 
-        const edgeLayer = svgEl('g'); svg.appendChild(edgeLayer);
-        edges.forEach((e) => {
-          const x1 = e.a.x + NODE_W, y1 = e.a.y + NODE_H / 2;
-          const x2 = e.b.x, y2 = e.b.y + NODE_H / 2;
-          const mid = (x1 + x2) / 2;
-          edgeLayer.appendChild(svgEl('path', {
-            class: `pedge ${e.cls}`, d: `M ${x1} ${y1} C ${mid} ${y1} ${mid} ${y2} ${x2} ${y2}`,
+        // The three numbers here were printed raw: "aggressiveness 50",
+        // "summarizer window 272000", "compacts at 208352". An operator cannot act
+        // on that without doing arithmetic — 208352 is only meaningful next to the
+        // window it is a fraction of. The sidecar already returns
+        // threshold_fraction and computes the ratio; the console was discarding it.
+        // So the sentence says the relationship, and the numbers back it up.
+        const window = Number(c.summarizer_window) || 0;
+        const at = Number(c.threshold_tokens) || 0;
+        const share = c.threshold_fraction !== undefined
+          ? Number(c.threshold_fraction)
+          : (window ? at / window : 0);
+        // "at 77% of the window" is the trigger POINT, not current usage — and next
+        // to a label reading COMPACTS AT it could be read as "we are at 77%", which
+        // is a wrong reading of an action that restarts the agent. So the sentence
+        // says when, explicitly. (Verified against router/threshold.py: p_eff(272000,
+        // 50) == 0.766 and 0.766 * 272000 == 208352, matching what the sidecar
+        // returns. The console does not know current usage — nothing in /compaction
+        // reports it — so it must not imply it.)
+        $('compactionNote').textContent = window && at
+          ? `fires once a conversation fills ${Math.round(share * 100)}% of the ${fmt(window)}-token window`
+          : '';
+
+        const fact2 = (label, value, note) => {
+          const f = el('div', 'fact');
+          f.append(el('span', 'fact-label', label), el('span', 'fact-value', value));
+          if (note) f.append(el('span', 'fact-note', note));
+          comp.append(f);
+        };
+        // The dial has NAMES on the server — router/threshold.py PRESETS maps
+        // Max-context 0, Conservative 25, Balanced 50, Aggressive 100 — so the
+        // console says the word and keeps the number, rather than printing a bare
+        // 50 that reads like a token count beside 272,000.
+        //
+        // The direction is counter-intuitive and worth stating: p_eff subtracts
+        // 0.002 per point (threshold.py:28), so MORE aggressive means a LOWER
+        // threshold, i.e. compacting sooner and more often. An operator raising this
+        // to "make it do less" would get the opposite.
+        const PRESETS = { 0: 'max context', 25: 'conservative', 50: 'balanced', 100: 'aggressive' };
+        const dial = Number(c.aggressiveness);
+        const preset = PRESETS[dial];
+        fact2('aggressiveness',
+              preset || `${say(c.aggressiveness)}/100`,
+              preset ? `${dial}/100 · compacts sooner as this rises` : 'compacts sooner as this rises');
+        fact2('compacts at', fmt(at), window ? `of ${fmt(window)}` : '');
+        if (c.warning) {
+          const line = el('div', 'warn-line');
+          line.append(el('strong', '', 'Threshold exceeds the window.'),
+                      el('span', '', 'Compaction would never fire — lower the aggressiveness.'));
+          comp.append(line);
+        }
+      }
+
+      // ── The decision sheet ──────────────────────────────────────────
+      // Hit counts come from the recorded traces (cause + rule_id), never from
+      // invented telemetry. A rule with zero hits is a real finding, so it is
+      // called out rather than hidden.
+      function ruleHits() {
+        const byRule = {};
+        const byCause = {};
+        (state.routes || []).forEach((r) => {
+          if (r.rule_id) byRule[r.rule_id] = (byRule[r.rule_id] || 0) + 1;
+          if (r.cause) byCause[r.cause] = (byCause[r.cause] || 0) + 1;
+        });
+        return { byRule, byCause, total: (state.routes || []).length };
+      }
+
+      // A count is only true of the window it was counted over. Naming that
+      // window is what separates "16×" from a claim about right now — the sheet
+      // showed 34% fail-safe long after the cause had been fixed.
+      function hitsWindow() {
+        const routes = state.routes || [];
+        if (!routes.length) return '';
+        const oldest = routes[routes.length - 1];
+        return `counts over the last ${routes.length} decisions, since ${ago(oldest && oldest.ts)}`;
+      }
+
+      function renderSheet() {
+        const box = $('sheet');
+        clear(box);
+        const policy = state.policy;
+        if (!policy) { box.append(el('p', 'nothing', absence('Policy unavailable.'))); return; }
+        const { byRule, byCause, total } = ruleHits();
+        const rules = Array.isArray(policy.rules) ? policy.rules : [];
+        const editable = state.mode === 'editing';
+
+        const stage = (title, cls, note) => {
+          const s = el('div', `stage${cls ? ` ${cls}` : ''}`);
+          s.append(el('span', '', title));
+          if (note) s.append(el('span', 'stage-note', note));
+          return s;
+        };
+
+        const line = (opts) => {
+          const step = el('div', `step${opts.editable ? ' editable' : ''}${opts.cold ? ' cold' : ''}`);
+          step.append(el('div', 'step-ord', opts.ord || ''));
+          const what = el('div', 'step-what');
+          what.append(el('div', 'step-id', opts.id));
+          if (opts.when) what.append(el('div', 'step-when', opts.when));
+          step.append(what);
+          const to = el('div', 'step-to');
+          const dest = el('div', 'step-dest');
+          if (opts.target) {
+            dest.append(el('span', 'step-arrow', '→'));
+            const t = el('span', 'step-target', opts.target);
+            if (opts.targetColor) t.style.color = opts.targetColor;
+            dest.append(t);
+          }
+          to.append(dest);
+          if (opts.hits !== undefined) {
+            const h = el('span', `step-hits${opts.hits === 0 ? ' zero' : ''}`,
+                         opts.hits === 0 ? 'never fired' : `${opts.hits}×`);
+            to.append(h);
+          }
+          step.append(to);
+          if (opts.onPick) step.addEventListener('click', opts.onPick);
+          return step;
+        };
+
+        // Stage 0 — deterministic. The product's core principle is that cheap,
+        // auditable rules decide before any inference happens.
+        box.append(stage('Stage 0 · deterministic', '', hitsWindow()));
+        // COLOUR BUDGET FOR THIS SCREEN. Only a REFUSAL is coloured in the
+        // destination column. The classifier used to be coloured too, which put
+        // five cyan destinations in one viewport against one gold underline, one
+        // amber finding and two reds — four hues competing, which is exactly what
+        // the host's guide forbids ("one accent at a time; semantic colours for
+        // semantic state"). And "goes to the classifier" is not a condition, it is
+        // a KIND of destination: it is already named once, on the Stage 1 heading
+        // that says asking a model costs a model call. Naming it again on every
+        // line that reaches it spends the loudest channel on the least news.
+        // What survives: --bad for a refusal (the router declining IS a
+        // condition), --warn for a rule that never fired, --info on the single
+        // Stage 1 heading, and the accent on the line a probe matched.
+        box.append(line({
+          ord: '', id: 'blocklist',
+          when: 'the requested model is banned or cooling down',
+          target: 'refuse', targetColor: 'var(--bad-text)',
+          hits: byCause.blocklist_veto || 0,
+          editable, onPick: editable ? () => pickBind({ id: 'blocklist', name: 'blocklist', bind: 'blocklist' }) : null,
+        }));
+        rules.forEach((r, i) => {
+          const then = r.then || {};
+          const target = then.deny ? 'refuse' : (then.action === 'classify' ? 'classifier' : (then.model || '—'));
+          box.append(line({
+            ord: String(i + 1),
+            id: r.id != null ? String(r.id) : `rule ${i + 1}`,
+            when: phraseWhen(r.when),
+            target,
+            targetColor: then.deny ? 'var(--bad-text)' : '',
+            hits: byRule[r.id] || 0,
+            editable,
+            onPick: editable ? () => pickBind({ id: `rule:${r.id}`, name: String(r.id), bind: 'rule', ruleIndex: i }) : null,
           }));
         });
+        const def = policy.default || {};
+        box.append(line({
+          ord: '·', id: 'default',
+          when: 'nothing above matched',
+          target: def.action === 'classify' ? 'classifier' : (def.model || '—'),
+          targetColor: '',
+          editable,
+          onPick: editable ? () => pickBind({ id: 'default', name: 'default', bind: 'default' }) : null,
+        }));
 
-        nodes.forEach((n) => {
-          const canEdit = editable && n.bind && !n.runtime;
-          const classes = ['pnode'];
-          if (n.runtime) classes.push('runtime');
-          if (canEdit) classes.push('editable');
-          if (editable && state.selected === n.id) classes.push('selected');
-          const g = svgEl('g', { class: classes.join(' '), transform: `translate(${n.x} ${n.y})` });
-          g.dataset.nodeId = n.id;
-          g.appendChild(svgEl('rect', { class: 'pnode-box', width: NODE_W, height: NODE_H, rx: 7 }));
-          const name = svgEl('text', { class: 'pnode-name', x: 10, y: n.sub ? 17 : 24 });
-          name.textContent = n.name;
-          g.appendChild(name);
-          if (n.sub || n.runtime) {
-            const sub = svgEl('text', { class: 'pnode-sub', x: 10, y: n.sub ? 30 : 30 });
-            sub.textContent = n.runtime ? 'runtime' : String(n.sub);
-            g.appendChild(sub);
-          }
-          if (canEdit) g.addEventListener('click', () => pickNode(n));
-          svg.appendChild(g);
+        // Stage 1 — inference. Marked apart because it costs a model call.
+        box.append(stage('Stage 1 · asks a model', 'inference', 'costs a model call'));
+        const cls = (state.status && state.status.classifier) || policy.classifier || {};
+        box.append(line({
+          ord: '', id: 'classifier',
+          when: `${cls.model || '—'} picks a tier`,
+          target: 'a tier', targetColor: '',
+          hits: byCause.classifier || 0,
+          editable,
+          onPick: editable ? () => pickBind({ id: 'classifier', name: 'classifier', bind: 'classifier' }) : null,
+        }));
+        const fs = policy.fail_safe || {};
+        const fsHits = byCause.fail_safe_strong || 0;
+        box.append(line({
+          ord: '', id: 'fail-safe',
+          when: fsHits && total
+            ? `when the classifier cannot answer — ${Math.round(100 * fsHits / total)}% of the decisions counted here did`
+            : 'when the classifier cannot answer',
+          // The fail-safe's target is a model it DID route to, so it is not
+          // painted as a refusal. Measured against the live log: 17 of 21
+          // off-rule decisions named a model they routed to successfully, so
+          // colouring this red called 81% of them failures. The line's own words
+          // carry the caveat ("when the classifier cannot answer").
+          target: fs.model || '—', targetColor: '',
+          hits: fsHits,
+          editable,
+          onPick: editable ? () => pickBind({ id: 'fail_safe', name: 'fail-safe', bind: 'fail_safe' }) : null,
+        }));
+
+        // Runtime helpers are honest about being cold on the live path.
+        box.append(stage('Runtime'));
+        box.append(line({
+          ord: '', id: 'cache · session pin', cold: true,
+          when: 'rebuilt per call on this deployment, so neither carries between tasks',
+        }));
+      }
+
+      function renderLadder() {
+        const box = $('ladder');
+        clear(box);
+        const tiers = (state.policy && state.policy.tiers) || {};
+        const names = Object.keys(tiers);
+        if (!names.length) { box.append(el('p', 'nothing', absence('No tiers defined.'))); return; }
+        names.forEach((name) => {
+          const t = tiers[name] || {};
+          const rung = el('div', 'rung');
+          rung.append(el('div', 'rung-tier', name));
+          const mid = el('div');
+          mid.append(el('div', 'rung-model', t.model || '—'));
+          if (t.provider) mid.append(el('div', 'rung-rail', t.provider));
+          rung.append(mid);
+          const fb = Array.isArray(t.fallback) ? t.fallback : [];
+          // A tier with no fallback has nowhere to go if its rail fails — worth
+          // saying out loud rather than leaving blank.
+          const chain = fb.length
+            ? fb.map((f) => f.model).join(' → ')
+            : 'no fallback';
+          rung.append(el('div', `rung-fallback${fb.length ? '' : ' none'}`, chain));
+          box.append(rung);
         });
       }
 
-      function pickNode(node) {
+      function pickBind(node) {
         state.selected = node.id;
-        drawGraph($('pipelineSvg'), { editable: state.mode === 'unlocked' });
+        renderSheet();
         renderInspector(node);
+      }
+
+      async function probe(task) {
+        const box = $('probeResult');
+        clear(box);
+        if (!task) return;
+        box.append(el('div', 'verdict', 'Routing…'));
+        const res = await call(`/explain?task=${encodeURIComponent(task)}`);
+        clear(box);
+        if (res.missing || res.error) {
+          box.append(el('p', 'nothing', 'The dry run is unavailable on this sidecar.'));
+          return;
+        }
+        const d = res.data || {};
+        const dec = d.decision || {};
+        const out = dec.output || {};
+        const verdict = el('div', 'verdict');
+        if (d.requires_classifier) {
+          // Honest limit: /explain runs Stage 0 only, so a task bound for the
+          // classifier cannot be previewed all the way to a model.
+          verdict.append(el('span', '', 'No rule catches it — it would go to the classifier, so the model depends on that call.'));
+        } else {
+          // Real spaces in the text, not a layout gap standing in for them: this
+          // string is read aloud as well as looked at.
+          verdict.append(el('span', '', 'Caught by '));
+          verdict.append(el('span', 'verdict-model', dec.matched_rule_id || 'default'));
+          verdict.append(el('span', '', ', routed to '));
+          verdict.append(el('span', 'verdict-model', out.model || '—'));
+          if (out.provider) verdict.append(el('span', '', ` on ${out.provider}`));
+          const fb = Array.isArray(out.fallback) ? out.fallback : [];
+          if (fb.length) verdict.append(el('span', '', `. Falls back to ${fb.map((f) => f.model).join(' → ')}`));
+          else verdict.append(el('span', '', '.'));
+        }
+        box.append(verdict);
+        // Mark the winning line on the sheet itself.
+        state.probeRule = d.requires_classifier ? 'default' : (dec.matched_rule_id || 'default');
+        renderSheet();
+        $('sheet').querySelectorAll('.step').forEach((s) => {
+          const id = s.querySelector('.step-id');
+          if (id && id.textContent === state.probeRule) s.classList.add('hit');
+        });
+      }
+
+      // ── Replay: the path a recorded decision really took ─────────────
+      // Not a graph of the whole policy. A trace has 2-4 steps; drawing all
+      // fifteen policy nodes to highlight three of them makes the reader hunt
+      // for the answer. The recorded path IS a short sequence, so it is drawn
+      // as one — same vertical vocabulary as the decision sheet.
+      const STAGE_WORDS = {
+        blocklist: 'checked the blocklist',
+        signals: 'read the task',
+        rules: 'matched the rules',
+        session_pin: 'checked the session pin',
+        cache: 'looked in the cache',
+        classifier: 'asked the classifier',
+        veto: 'refused the request',
+        fail_safe: 'fell back to the fail-safe',
+      };
+
+      function stepNode(step) {
+        const stage = step && step.stage;
+        if (stage === 'rules') {
+          const out = step.out || {};
+          return out.rule_id != null ? `rule:${out.rule_id}` : 'default';
+        }
+        if (stage === 'veto') return 'blocklist';
+        return stage || null;
+      }
+
+      // What this step concluded, in the operator's words — the reader should not
+      // have to open the JSON to learn the outcome of a step.
+      function stepOutcome(step) {
+        const out = (step && step.out) || {};
+        if (out.rule_id != null) return String(out.rule_id);
+        if (out.deny === true) return 'refused';
+        if (out.blocked === false) return 'clear';
+        if (out.model) return String(out.model);
+        if (out.tier) return String(out.tier);
+        if (out.hit === false) return 'miss';
+        return '';
+      }
+
+      function drawPath() {
+        const box = $('replayPath');
+        clear(box);
+        if (!state.replay) {
+          box.append(el('p', 'nothing', 'Pick a decision on the left.'));
+          return;
+        }
+        const { steps, at } = state.replay;
+        steps.forEach((step, i) => {
+          const cls = i === at ? ' on' : (i < at ? ' past' : ' ahead');
+          const node = el('button', `trace${cls}`);
+          node.type = 'button';
+          node.append(el('span', 'trace-ord', String(i + 1)));
+          const what = el('div', 'trace-what');
+          what.append(el('div', 'trace-stage', STAGE_WORDS[step.stage] || String(step.stage || '—')));
+          const outcome = stepOutcome(step);
+          if (outcome) what.append(el('div', 'trace-outcome', outcome));
+          node.append(what);
+          if (step.cause) {
+            const c = el('span', 'cause', String(step.cause).replace(/_/g, ' '));
+            c.style.color = causeColor(step.cause);
+            node.append(c);
+          }
+          node.addEventListener('click', () => { state.replay.at = i; renderStep(); });
+          box.append(node);
+        });
       }
 
       const EDITABLE = new Set(['tier', 'rule', 'classifier', 'fail_safe', 'default']);
@@ -721,16 +1642,12 @@
       function renderInspector(node) {
         const box = $('inspector');
         clear(box);
-        if (!node) {
-          const rules = (state.policy && state.policy.rules) || [];
-          const tiers = Object.keys((state.policy && state.policy.tiers) || {});
-          box.append(el('p', 'nothing', state.mode === 'unlocked'
-            ? 'Click a node to change it.'
-            : `${rules.length} rules routing to ${tiers.length} tiers. Unlock to edit.`));
-          return;
-        }
-        const editing = state.mode === 'unlocked' && node.bind && EDITABLE.has(node.bind);
-        box.append(el('h2', '', node.name));
+        // Nothing selected is not a condition to report: the sheet above already
+        // shows every rule and the ladder every tier, and the screen note already
+        // says how to edit. DESIGN.md §2.1.
+        if (!node) return;
+        const editing = state.mode === 'editing' && node.bind && EDITABLE.has(node.bind);
+        box.append(el('h2', 'inspector-head', node.name));
         if (!editing) {
           const policy = state.policy || {};
           let fragment = null;
@@ -784,26 +1701,39 @@
           field('action', () => def.action, (v) => { def.action = v; });
         }
 
+        // Apply leads, because applying is the intention; Preview is for the
+        // operator who wants to see the diff first. Apply no longer depends on
+        // Preview having been pressed — it plans for itself.
         const actions = el('div', 'actions');
-        const plan = el('button', 'btn', 'Validate');
-        const apply = el('button', 'btn go', 'Apply');
-        const revert = el('button', 'btn warn', 'Revert');
-        actions.append(plan, apply, revert);
+        const applyBtn = el('button', 'btn go', 'Apply');
+        const previewBtn = el('button', 'btn', 'Preview');
+        const revertBtn = el('button', 'btn warn', 'Revert');
+        actions.append(applyBtn, previewBtn, revertBtn);
         box.append(actions);
         const msg = el('p', 'msg'); msg.id = 'nodeMsg'; msg.setAttribute('aria-live', 'polite');
         box.append(msg);
         const diff = el('pre', 'code'); diff.id = 'nodeDiff'; diff.hidden = true;
         box.append(diff);
 
-        plan.addEventListener('click', () => doPlan(state.draft, msg, diff));
-        apply.addEventListener('click', () => doApply('/apply', msg));
-        revert.addEventListener('click', () => doApply('/apply/revert', msg));
+        applyBtn.addEventListener('click', () => doApply('/apply', msg, state.draft, diff));
+        previewBtn.addEventListener('click', () => doPreview(state.draft, msg, diff));
+        revertBtn.addEventListener('click', () => doApply('/apply/revert', msg));
       }
 
       // ── write path ──────────────────────────────────────────────────
+      // What actually stops a write, and nothing else.
+      //
+      // This used to refuse when the editor was closed, which added a click to
+      // every write path and protected nothing: the sidecar has never heard of the
+      // console's mode, and it already requires a per-extension token-v1 secret,
+      // the host's CSRF token, a loopback bind and a matching base_hash. The
+      // compaction action also checks confirm=="COMPACT" server-side. A client-side
+      // mode was the one gate an attacker could skip and the operator could not.
+      //
+      // Both remaining tests describe an obstacle the operator can DO something
+      // about, and each names the fix.
       function writable(msg, action) {
         if (state.unreachable) { setMsg(msg, `${action} unavailable — sidecar unreachable.`, 'bad'); return false; }
-        if (state.mode !== 'unlocked') { setMsg(msg, `${action} needs the lock opened first.`, 'bad'); return false; }
         if (!csrf()) {
           setMsg(msg, `${action} cannot apply from a standalone console — open the Router panel inside Hermes One.`, 'bad');
           return false;
@@ -816,26 +1746,81 @@
         node.className = `msg${kind ? ` ${kind}` : ''}`;
       }
 
-      async function doPlan(policy, msg, diffNode) {
-        if (!writable(msg, 'Validate')) return;
-        setMsg(msg, 'Checking…');
+      // Plan a policy and record it. Returns true only if the result is safe to
+      // write, and leaves the reason in `msg` when it is not.
+      async function plan(policy, msg, diffNode) {
         const res = await call('/plan', { method: 'POST', body: { policy } });
-        if (res.missing) { setMsg(msg, 'This sidecar has no /plan endpoint.', 'bad'); return; }
-        if (res.error) { setMsg(msg, `Rejected (HTTP ${res.status || 'network'}).`, 'bad'); return; }
+        if (res.missing) { setMsg(msg, 'This sidecar has no /plan endpoint.', 'bad'); return false; }
+        if (res.error) { setMsg(msg, `Rejected (HTTP ${res.status || 'network'}).`, 'bad'); return false; }
         state.plan = res.data;
         if (diffNode) {
           diffNode.hidden = false;
           diffNode.textContent = res.data.diff || pretty(res.data.preview || {});
         }
-        setMsg(msg, res.data.valid ? 'Valid — apply to write it.' : `Invalid: ${(res.data.errors || []).join('; ')}`,
-               res.data.valid ? 'ok' : 'bad');
+        if (!res.data.valid) {
+          setMsg(msg, `Invalid: ${(res.data.errors || []).join('; ')}`, 'bad');
+          return false;
+        }
+        return true;
       }
 
-      async function doApply(path, msg) {
+      // The explicit preview: "show me what this would change, without changing
+      // it". A different intention from Apply, so it keeps its own control — and
+      // it is the one that renders the diff.
+      async function doPreview(policy, msg, diffNode) {
+        if (!writable(msg, 'Preview')) return;
+        setMsg(msg, 'Checking…');
+        if (await plan(policy, msg, diffNode)) {
+          setMsg(msg, 'No problems found — this is what would change.', 'ok');
+        }
+      }
+
+      // Apply plans for itself.
+      //
+      // /plan is not optional: it returns the base_hash that /apply refuses to
+      // write without (router/service.py:357, the optimistic-concurrency pin). But
+      // that is the machine's bookkeeping, and it used to be the operator's chore —
+      // click Validate, read "Valid — apply to write it", click Apply. Two clicks
+      // for one intention, and a middle state whose only content was an
+      // instruction to press the next button.
+      //
+      // Now Apply plans first and stops on the plan's own verdict. An invalid draft
+      // never reaches /apply, exactly as before; the difference is that the
+      // operator learns WHY from one click instead of two.
+      // In flight, so a second click cannot start a second plan+apply pair. Two
+      // overlapping pairs race on the same base_hash: the first writes, the second
+      // 409s, and the operator is told "Policy changed underneath" about their own
+      // click.
+      let applying = false;
+
+      async function doApply(path, msg, draft, diffNode) {
         if (!writable(msg, 'Apply')) return;
+        if (applying) { setMsg(msg, 'Still writing the last change…', 'bad'); return; }
+        applying = true;
+        try {
         if (path !== '/apply/revert') {
-          if (!state.plan) { setMsg(msg, 'Validate first.', 'bad'); return; }
-          if (!state.plan.valid) { setMsg(msg, 'That plan is invalid.', 'bad'); return; }
+          const policy = draft !== undefined ? draft : (state.draft || (state.plan && state.plan.policy));
+          if (policy === undefined || policy === null) { setMsg(msg, 'Nothing to apply.', 'bad'); return; }
+          setMsg(msg, 'Checking…');
+          // The diff is passed through, not discarded. Folding Validate into Apply
+          // removed the step that used to render it, and with it the guarantee that
+          // an operator SAW a concurrent edit being removed before the write: /plan
+          // deep-merges the draft over whatever is on disk now and replaces lists
+          // wholesale (router/service.py:50), so a rule added by a CLI edit or
+          // another tab since page load is deleted by the next Apply. The diff
+          // contains that deletion; it was being computed and thrown away.
+          const planned = await plan(policy, msg, diffNode);
+          if (!planned) return;
+          // A plan with no diff changes nothing on disk — but the server snapshots
+          // the current file to .bak before every write (service.py:415), so
+          // applying a no-op destroys the only thing Revert can restore. The JSON
+          // twisty makes this one click away: renderAll() refills that textarea
+          // with the live policy whenever the console is not in editing mode, so in
+          // the default state its Apply is a guaranteed no-op write.
+          if (state.plan && state.plan.diff === '') {
+            setMsg(msg, 'Nothing to change — this is already the policy on disk.', 'ok');
+            return;
+          }
         }
         const body = path === '/apply/revert' ? {} : { plan: state.plan, policy: state.plan.policy };
         const res = await call(path, { method: 'POST', body });
@@ -845,6 +1830,9 @@
         setMsg(msg, 'Written.', 'ok');
         state.plan = null; state.draft = null;
         await load();
+        } finally {
+          applying = false;
+        }
       }
 
       async function doCompaction() {
@@ -854,26 +1842,129 @@
         const aggressiveness = state.compaction && Number.isFinite(state.compaction.aggressiveness)
           ? state.compaction.aggressiveness : 50;
         const res = await call('/apply', { method: 'POST', body: { action: 'compaction', confirm: 'COMPACT', aggressiveness } });
-        if (res.error || res.missing) { setMsg(msg, `Refused (HTTP ${res.status || 'n/a'}).`, 'bad'); return; }
+        if (res.error || res.missing) {
+          // The status alone sent an operator hunting: the real 400 was a
+          // resolvable path bug and the reason was in the body all along.
+          const why = (res.data && (res.data.error || res.data.message)) || `HTTP ${res.status || 'n/a'}`;
+          setMsg(msg, `Refused — ${why}`, 'bad');
+          return;
+        }
         $('compactConfirm').value = '';
         setMsg(msg, 'Scheduled — the agent restarts and reverts itself if unhealthy.', 'ok');
       }
 
       // ── Routes + replay ─────────────────────────────────────────────
+      // Free-text over the three things an operator remembers about a decision:
+      // what it was asked, where it went, and why.
+      function matchesQuery(r, q) {
+        if (!q) return true;
+        return [r.task, r.model, r.cause, r.rule_id]
+          .some((f) => String(f || '').toLowerCase().includes(q));
+      }
+
+      // Decisions that did NOT come from a rule matching. Two kinds, and the
+      // distinction matters:
+      //   * a blocklist veto refused outright — no model was chosen;
+      //   * the fail-safe DID choose a model, because nothing else would take the
+      //     task (here: the classifier erroring).
+      // This pill used to say "Refused" for both. Measured against the live log:
+      // 21 of 50 matched, but only 4 were refusals — the other 17 all named a model
+      // they successfully routed to. So the word was false for 81% of what it
+      // counted, and an operator reading "Refused 21" would open an investigation
+      // into 17 non-refusals.
+      //
+      // One pill, not two: "did anything go off the rule path?" is a single
+      // question, and splitting it would need a third combined pill to ask it — plus
+      // a third sub-44px tap target. The breakdown goes in the note instead, where
+      // there is room for the words that make it precise.
+      function isOffRulePath(route) {
+        const cause = String(route && route.cause || '');
+        return cause.includes('veto') || cause.includes('fail_safe');
+      }
+
+      function isVeto(route) {
+        return String(route && route.cause || '').includes('veto');
+      }
+
+      function inScope(route) {
+        return state.scope === 'off-rule' ? isOffRulePath(route) : true;
+      }
+
       function renderRoutes() {
         const box = $('routesTable');
         clear(box);
-        const routes = Array.isArray(state.routes) ? state.routes : [];
-        $('routesNote').textContent = routes.length
-          ? 'Pick one to replay its path.'
-          : (state.pending.has('GET /routes') ? 'This sidecar does not record decisions yet.' : '');
+        // The replay column earns its half of the screen only once it holds a
+        // trace. Driven from state, not from the click, so a failed pick or a
+        // refresh that clears the selection gives the width back.
+        $('routesRow').classList.toggle('waiting', !state.replay);
+        const all = Array.isArray(state.routes) ? state.routes : [];
+        const q = state.query.trim().toLowerCase();
+        const routes = all.filter((r) => inScope(r) && matchesQuery(r, q));
+        $('routesFilter').hidden = all.length < 8;
+
+        // The counts live ON the controls, so "how many went off the rule path" is
+        // answered before the operator decides whether to look.
+        const offRule = all.filter(isOffRulePath);
+        const vetoed = offRule.filter(isVeto).length;
+        // clear() and append, never a raw-markup sink: this console renders
+        // persisted, attacker-influenceable route text, so the whole file is held
+        // to textContent only and a test enforces it by scanning the source. These
+        // two labels are static, but an exception is the one the next person copies
+        // — and the test cannot tell an exception from a mistake.
+        const scopeLabel = (node, word, count) => {
+          clear(node);
+          node.append(el('span', '', word), el('span', 'scope-count', String(count)));
+        };
+        const showingOffRule = state.scope === 'off-rule';
+        scopeLabel($('scopeAll'), 'All', all.length);
+        scopeLabel($('scopeOffRule'), 'Not by rule', offRule.length);
+        $('scopeAll').classList.toggle('is-on', !showingOffRule);
+        $('scopeOffRule').classList.toggle('is-on', showingOffRule);
+        $('scopeAll').setAttribute('aria-pressed', String(!showingOffRule));
+        $('scopeOffRule').setAttribute('aria-pressed', String(showingOffRule));
+        // Nothing off the rule path is good news and must not read as a broken filter.
+        $('scopeOffRule').disabled = offRule.length === 0 && !showingOffRule;
+        $('routeScopes').hidden = all.length < 2;
+
+        // The note says three things, in this order of usefulness: what the current
+        // scope actually means, what a search matched, and what to do next. It used
+        // to ignore the scope entirely — in the filtered view with no query it still
+        // read "Pick one to replay its path", so the one place that could explain
+        // what had been filtered said nothing about it.
+        //
+        // "N went off the rule path — X refused, Y fail-safe" is the sentence a two
+        // -word pill cannot carry: it gives the definition, and it distinguishes the
+        // refusals (no model chosen) from the fail-safe catches (a model WAS chosen,
+        // because nothing else would take the task).
+        const windowNote = state.routesTotal > all.length
+          ? ` Counting the most recent ${all.length} of ${state.routesTotal} recorded.`
+          : '';
+        $('routesNote').textContent = !all.length
+          ? (state.pending.has('GET /routes') ? 'This sidecar does not record decisions yet.' : '')
+          : q ? `${routes.length} of ${all.length} match “${state.query.trim()}”.${windowNote}`
+          : showingOffRule
+            ? `${offRule.length} of ${all.length} did not come from a rule — `
+              + `${vetoed} refused, ${offRule.length - vetoed} caught by the fail-safe.${windowNote}`
+          // "Pick one to replay its path" stayed on screen after picking one, so
+          // the instruction outlived its own task and read as though the click
+          // had not registered. Once a trace is open the note says what is open.
+          : state.replay ? `Replaying one decision — pick another to switch.${windowNote}`
+              : `Pick one to replay its path.${windowNote}`;
+        if (!all.length) {
+          box.append(el('p', 'nothing', absence('No decisions recorded yet.')));
+          return;
+        }
         if (!routes.length) {
-          box.append(el('p', 'nothing', 'No decisions recorded yet.'));
+          box.append(el('p', 'nothing', 'No decision matches that search.'));
           return;
         }
         routes.forEach((r) => {
-          const row = el('div', `row route${state.replay && state.replay.id === r.id ? ' picked' : ''}`);
+          // A button, not a div: choosing a trace is an action, and an operator
+          // on a keyboard must be able to reach and take it.
+          const row = el('button', `row route${state.replay && state.replay.id === r.id ? ' picked' : ''}`);
+          row.type = 'button';
           row.dataset.routeId = r.id;
+          if (state.replay && state.replay.id === r.id) row.setAttribute('aria-current', 'true');
           const cause = el('span', 'cause', String(r.cause || '—').replace(/_/g, ' '));
           cause.style.color = causeColor(r.cause);
           row.append(cause);
@@ -886,54 +1977,22 @@
         });
       }
 
-      function stepNode(step) {
-        const stage = step && step.stage;
-        if (stage === 'rules') {
-          const out = step.out || {};
-          return out.rule_id != null ? `rule:${out.rule_id}` : 'default';
-        }
-        if (stage === 'veto') return 'blocklist';
-        return stage || null;
-      }
-
       async function pickRoute(id) {
         const res = await call(`/routes?id=${encodeURIComponent(id)}`);
         if (res.error || res.missing) { $('routesNote').textContent = 'That trace could not be read.'; return; }
         const steps = Array.isArray(res.data.steps) ? res.data.steps : [];
         state.replay = { id, steps, at: 0 };
-        drawGraph($('replaySvg'), { editable: false });
-        $('scrub').hidden = steps.length < 2;
-        $('stepRange').max = String(Math.max(0, steps.length - 1));
-        $('stepRange').value = '0';
         renderRoutes();
         renderStep();
       }
 
       function renderStep() {
-        if (!state.replay) return;
-        const { steps, at } = state.replay;
-        const active = at < steps.length ? stepNode(steps[at]) : null;
-        const past = new Set();
-        for (let i = 0; i < at && i < steps.length; i++) { const id = stepNode(steps[i]); if (id) past.add(id); }
-        $('replaySvg').querySelectorAll('.pnode').forEach((g) => {
-          const id = g.dataset.nodeId;
-          g.classList.toggle('on', id === active);
-          g.classList.toggle('past', past.has(id) && id !== active);
-          g.classList.toggle('off', active != null && id !== active && !past.has(id));
-        });
-
+        drawPath();
         const box = $('stepDetail');
         clear(box);
+        if (!state.replay) return;
+        const { steps, at } = state.replay;
         const step = steps[at] || {};
-        const head = el('div', 'step-head');
-        head.append(el('span', 'step-index', `step ${at + 1} of ${steps.length}`),
-                    el('span', 'step-stage', String(step.stage || '—')));
-        if (step.cause) {
-          const c = el('span', 'cause', String(step.cause).replace(/_/g, ' '));
-          c.style.color = causeColor(step.cause);
-          head.append(c);
-        }
-        box.append(head);
         const io = el('div', 'io');
         [['in', step.in], ['out', step.out]].forEach(([label, value]) => {
           if (value === undefined) return;
@@ -945,31 +2004,35 @@
         box.append(io);
       }
 
-      function scrub(delta) {
-        if (!state.replay || !state.replay.steps.length) return;
-        const max = state.replay.steps.length - 1;
-        const next = delta === 'range' ? Number($('stepRange').value)
-                                      : Math.max(0, Math.min(max, state.replay.at + delta));
-        state.replay.at = next;
-        $('stepRange').value = String(next);
-        renderStep();
-      }
-
-      // ── lock ────────────────────────────────────────────────────────
+      // ── edit mode ───────────────────────────────────────────────────
       function setMode(mode) {
         state.mode = mode;
-        const open = mode === 'unlocked';
-        const lock = $('lock');
-        lock.setAttribute('aria-pressed', String(open));
-        lock.title = open ? 'Lock editing' : 'Unlock editing';
-        lock.querySelector('.lock-icon').textContent = open ? '✎' : '🔒';
-        $('lockLabel').textContent = open ? 'Unlocked' : 'Locked';
+        const open = mode === 'editing';
+        const button = $('editMode');
+        button.setAttribute('aria-pressed', String(open));
+        // The label names what the button DOES next, so the operator never has to
+        // work out whether a state word is a description or an instruction.
+        button.title = open ? 'Stop editing' : 'Edit the routing policy';
+        $('editLabel').textContent = open ? 'Done' : 'Edit';
         $('policyEditor').readOnly = !open;
-        $('pipelineNote').textContent = open ? 'Click a node to change it.' : 'Unlock to change a node.';
+        // The JSON twisty's write buttons follow the read-only default too. They are
+        // static markup, so unlike the inspector's — which renderInspector simply
+        // does not build in reading mode — they have to be disabled explicitly.
+        // Without this, expanding "Edit the whole policy as JSON" to READ it put a
+        // live green Apply and a live Revert one tap away, and renderAll() keeps
+        // that textarea pre-filled with the live policy whenever the console is not
+        // editing, so jsonDraft() always parses and the "Nothing to apply" guard
+        // could never fire on that path. Revert is the destructive one: it takes no
+        // plan, shows no diff, and restores whatever the .bak holds.
+        $('jsonApply').disabled = !open;
+        $('jsonRevert').disabled = !open;
+        $('pipelineNote').textContent = open
+          ? 'Editing — click any line to change it.'
+          : 'Read top to bottom — the first rule that matches wins.';
         renderWarnings();
         renderRail();
         renderInspector(null);
-        drawGraph($('pipelineSvg'), { editable: open });
+        if (state.policy) renderSheet();
       }
 
       // ── layout ──────────────────────────────────────────────────────
@@ -979,9 +2042,27 @@
       }
       function applyLayout() {
         $('shell').classList.toggle('is-narrow', isNarrow());
-        $('pipelineRow').classList.toggle('solo', isNarrow());
-        drawGraph($('pipelineSvg'), { editable: state.mode === 'unlocked' });
-        drawGraph($('replaySvg'), { editable: false });
+      }
+
+      // The on-screen keyboard covers the bottom of the frame without changing
+      // its layout height, so a focused filter or probe input can end up behind
+      // it with no way to scroll to it. The host solves this for its own composer
+      // by measuring visualViewport and publishing --keyboard-bottom-inset on its
+      // documentElement — which this document, being a separate one, does not
+      // inherit. Same measurement, same guards, our own custom property.
+      function syncKeyboard() {
+        const root = document.documentElement;
+        const vv = window.visualViewport;
+        let touch = false;
+        try { touch = matchMedia('(hover:none) and (pointer:coarse)').matches; } catch (_) { touch = false; }
+        if (!vv || !touch) { root.style.removeProperty('--keyboard-inset'); return; }
+        // A pinch-zoomed viewport makes the difference reflect the zoom rather
+        // than the keyboard, which on Chromium with "force enable zoom" yields a
+        // large spurious inset that jitters while panning.
+        if (Math.abs((vv.scale || 1) - 1) > 0.05) { root.style.removeProperty('--keyboard-inset'); return; }
+        const inset = Math.max(0, Math.ceil(window.innerHeight - (vv.height + vv.offsetTop)));
+        if (inset > 0) root.style.setProperty('--keyboard-inset', `${inset}px`);
+        else root.style.removeProperty('--keyboard-inset');
       }
 
       // ── load ────────────────────────────────────────────────────────
@@ -990,20 +2071,30 @@
         renderRail();
         renderHealth();
         renderRoutes();
-        drawGraph($('pipelineSvg'), { editable: state.mode === 'unlocked' });
-        drawGraph($('replaySvg'), { editable: false });
+        renderSheet();
+        renderLadder();
         if (!state.selected) renderInspector(null);
         if (state.replay) renderStep();
-        if (state.mode !== 'unlocked' || !$('policyEditor').value) {
+        if (state.mode !== 'editing' || !$('policyEditor').value) {
           $('policyEditor').value = state.policy ? pretty(fullPolicy()) : '';
         }
       }
 
       async function load() {
+        const button = $('refresh');
+        button.disabled = true;
+        button.textContent = 'Refreshing…';
+        try { await fetchAll(); } finally {
+          button.disabled = false;
+          button.textContent = 'Refresh';
+        }
+      }
+
+      async function fetchAll() {
         state.unreachable = false;
         const [health, status, policy, blocklist, liveness, compaction, routes] = await Promise.all([
           call('/health'), call('/status'), call('/policy'), call('/blocklist'),
-          call('/liveness'), call('/compaction'), call('/routes'),
+          call('/liveness'), call('/compaction'), call('/routes?limit=200'),
         ]);
         state.health = health.data || null;
         state.status = status.data || null;
@@ -1012,43 +2103,95 @@
         state.liveness = liveness.data || null;
         state.compaction = compaction.missing ? null : (compaction.data || null);
         state.routes = (routes.data && Array.isArray(routes.data.routes)) ? routes.data.routes : [];
+        // The envelope reports how many decisions EXIST; we were discarding it and
+        // then presenting the page we happened to receive as the whole record.
+        // Measured: the console asked for the default 50 while 71 were recorded, so
+        // every hit count was understated by ~27% (trivial-mechanical-edit showed
+        // 19x against a real 26x) and a rule that fired only in the dropped 21 would
+        // have rendered "never fired" — a false negative on the exact question the
+        // sheet exists to answer. Truncation drops the OLDEST rows, so this gets
+        // worse as the log grows; raising the limit alone would only move the cliff.
+        state.routesTotal = Number(routes.data && routes.data.count) || state.routes.length;
         state.checkedAt = new Date();
+        state.loading = false;
         renderAll();
       }
 
       function wire() {
-        document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => {
-          const name = tab.dataset.tab;
-          document.querySelectorAll('.tab').forEach((t) => t.setAttribute('aria-selected', String(t === tab)));
-          document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('active', s.id === `panel-${name}`));
-        }));
-        $('lock').addEventListener('click', () => setMode(state.mode === 'unlocked' ? 'locked' : 'unlocked'));
-        $('refresh').addEventListener('click', load);
-        $('stepRange').addEventListener('input', () => scrub('range'));
-        $('stepPrev').addEventListener('click', () => scrub(-1));
-        $('stepNext').addEventListener('click', () => scrub(1));
-        $('compactGo').addEventListener('click', doCompaction);
-        $('jsonPlan').addEventListener('click', () => {
-          let draft;
-          try { draft = JSON.parse($('policyEditor').value); }
-          catch (e) { setMsg($('jsonMsg'), `Not valid JSON: ${e.message}`, 'bad'); return; }
-          doPlan(draft, $('jsonMsg'), $('jsonDiff'));
+        const tabs = [...document.querySelectorAll('.tab')];
+        const select = (tab) => {
+          tabs.forEach((t) => {
+            const on = t === tab;
+            t.setAttribute('aria-selected', String(on));
+            // Only the selected tab is in the tab order; arrows move between
+            // them. This is what role="tablist" promises a screen reader.
+            t.tabIndex = on ? 0 : -1;
+          });
+          document.querySelectorAll('.screen')
+            .forEach((s) => s.classList.toggle('active', s.id === `panel-${tab.dataset.tab}`));
+        };
+        tabs.forEach((tab, i) => {
+          tab.tabIndex = tab.getAttribute('aria-selected') === 'true' ? 0 : -1;
+          tab.addEventListener('click', () => select(tab));
+          tab.addEventListener('keydown', (e) => {
+            const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1
+                       : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1
+                       : e.key === 'Home' ? -i
+                       : e.key === 'End' ? tabs.length - 1 - i : 0;
+            if (!step) return;
+            e.preventDefault();
+            const next = tabs[(i + step + tabs.length) % tabs.length];
+            select(next);
+            next.focus();
+          });
         });
-        $('jsonApply').addEventListener('click', () => doApply('/apply', $('jsonMsg')));
-        $('jsonConfirm').addEventListener('click', () => doApply('/apply/confirm', $('jsonMsg')));
+        $('editMode').addEventListener('click', () => setMode(state.mode === 'editing' ? 'reading' : 'editing'));
+        $('refresh').addEventListener('click', load);
+        $('compactGo').addEventListener('click', doCompaction);
+        // One parse, used by both buttons. Malformed JSON is reported before any
+        // request goes out, because "your text is not JSON" is not something the
+        // server should have to tell you.
+        const jsonDraft = () => {
+          try { return { ok: true, value: JSON.parse($('policyEditor').value) }; }
+          catch (e) { setMsg($('jsonMsg'), `Not valid JSON: ${e.message}`, 'bad'); return { ok: false }; }
+        };
+        $('jsonApply').addEventListener('click', () => {
+          const draft = jsonDraft();
+          if (draft.ok) doApply('/apply', $('jsonMsg'), draft.value, $('jsonDiff'));
+        });
+        $('jsonPreview').addEventListener('click', () => {
+          const draft = jsonDraft();
+          if (draft.ok) doPreview(draft.value, $('jsonMsg'), $('jsonDiff'));
+        });
         $('jsonRevert').addEventListener('click', () => doApply('/apply/revert', $('jsonMsg')));
+        $('probeForm').addEventListener('submit', (e) => { e.preventDefault(); probe($('probeTask').value.trim()); });
+        $('routesFilter').addEventListener('input', (e) => { state.query = e.target.value; renderRoutes(); });
+        const setScope = (scope) => { state.scope = scope; renderRoutes(); };
+        $('scopeAll').addEventListener('click', () => setScope('all'));
+        $('scopeOffRule').addEventListener('click', () => setScope('off-rule'));
         window.addEventListener('resize', applyLayout);
+        // visualViewport fires for the keyboard; resize does not, on iOS.
+        window.visualViewport?.addEventListener('resize', syncKeyboard);
+        window.visualViewport?.addEventListener('scroll', syncKeyboard);
       }
 
       wire();
       applyLayout();
-      setMode('locked');
+      syncKeyboard();
+      setMode('reading');
       load();
 
       globalThis.__router = {
         state, setMode, renderRail, renderHealth, renderRoutes, renderStep, renderInspector,
-        drawGraph, graphNodes, graphEdges, stepNode, causeColor, worstOf, modelState,
-        say, ago, isNarrow, csrf, writable, call, load,
+        drawPath, stepNode, stepOutcome, causeColor, worstOf, modelState,
+        phraseCondition, phraseWhen, renderSheet, renderLadder, ruleHits, probe,
+        say, ago, fmt, isNarrow, csrf, writable, call, load, absence, matchesQuery,
+        syncKeyboard,
+        // The write spine: the only code here that changes how the agent routes
+        // real work. It is exported so its refusals can be tested directly —
+        // tests/test_router_nav_writespine.js used to pin an equivalent path in
+        // router-nav.js, and that file is now only a mount.
+        plan, doPreview, doApply, setMsg,
       };
     })();
   </script>
