@@ -774,6 +774,18 @@
     .is-embedded nav.tabs { display: none; }
     /* With no title the actions would sit in column 1, hard left. */
     .is-embedded .view-head > .view-actions { grid-column: 2; }
+
+    /* Which clause satisfied the rule. Chips rather than a sentence: the operator
+       is scanning for a field name, and three conditions in prose becomes a comma
+       list nobody parses. */
+    .verdict-why { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-top: 6px; }
+    .verdict-why-label { color: var(--muted); font-size: var(--t-label); }
+    .clause {
+      display: inline-flex; align-items: baseline; gap: 5px;
+      padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px;
+      font-size: var(--t-label);
+    }
+    .clause { color: var(--text); }
 </style>
 </head>
 <body>
@@ -1584,6 +1596,26 @@
           else verdict.append(el('span', '', '.'));
         }
         box.append(verdict);
+        // WHICH clause did the work. /explain has always returned matched_clauses
+        // and this console ignored it, so the verdict named a rule without saying
+        // what in the task satisfied it — the operator had to open the rule and
+        // guess. A rule with three conditions is three different reasons it could
+        // have fired.
+        const clauses = dec.matched_clauses && typeof dec.matched_clauses === 'object'
+          ? Object.entries(dec.matched_clauses) : [];
+        if (clauses.length) {
+          const why = el('div', 'verdict-why');
+          why.append(el('span', 'verdict-why-label',
+                        clauses.length === 1 ? 'because ' : 'because all of '));
+          clauses.forEach(([field, test]) => {
+            // phraseCondition already owns this vocabulary — it handles boolean
+            // signals as presence rather than "= true", carries units, and knows
+            // `in` — so the chips read exactly like the rule rows above them
+            // instead of inventing a second wording for the same condition.
+            why.append(el('span', 'clause', phraseCondition(field, test) || field));
+          });
+          box.append(why);
+        }
         // Mark the winning line on the sheet itself.
         // The rule the evaluation actually stopped at. Was hardcoded to 'default'
         // for every classifier-bound task, which marked the wrong line whenever a
