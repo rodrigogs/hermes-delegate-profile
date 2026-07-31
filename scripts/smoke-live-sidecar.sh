@@ -12,7 +12,7 @@
 # Exits non-zero on the first failed assertion count, so it is CI-usable.
 set -u
 P=/home/rodrigo/.hermes/plugins/delegate-profile
-TOK=$(cat /home/rodrigo/.hermes/profiles/rodrigo/webui/sidecar-auth/capability-router.token)
+TOK=$(cat ${HERMES_HOME:-$HOME/.hermes}/webui/sidecar-auth/capability-router.token)
 H="X-Hermes-Sidecar-Token: $TOK"
 B=http://127.0.0.1:8791
 pass=0; fail=0
