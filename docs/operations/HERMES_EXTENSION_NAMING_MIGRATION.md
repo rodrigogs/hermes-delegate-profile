@@ -41,7 +41,7 @@ ativas, foi removido explicitamente do bundle.
 | Biblioteca de extensões One | `hermes-one-extension-kit` | `hermes-one-extension-kit` | Hermes One Extension Kit | **concluído** |
 | Painel Office | `hermes-one-office-3d` | `hermes-one-office-3d` | Office 3D | **concluído** |
 | Painel/sidecar de roteamento | `hermes-one-capability-router` | `hermes-one-capability-router` | Capability Router | **concluído — nome mantido** |
-| Painel/sidecar de memória | `memory-graph` | `hermes-one-fact-explorer` | Fact Explorer | renomear |
+| Painel/sidecar de memória | `hermes-one-fact-explorer` | `hermes-one-fact-explorer` | Fact Explorer | **concluído** |
 | Unit Router | `hermes-router-sidecar.service` | manter inicialmente | Profile Router sidecar | label agora; ID depois |
 | Unit Memory | `hermes-memory-sidecar.service` | manter inicialmente | Fact Explorer sidecar | label agora; ID depois |
 
@@ -67,7 +67,14 @@ ativas, foi removido explicitamente do bundle.
   seção principal é "Capability ladder". O prefixo do bundle resolve a colisão de
   namespace sem trocar a superfície: `hermes-one-capability-router`.
 - A memória apresenta fatos, confiança e alcance; o grafo é somente uma das
-  visualizações. `Fact Explorer` descreve a experiência real.
+  visualizações. `Fact Explorer` descreve a experiência real — e ao contrário do
+  caso do router, a medição **confirma** a justificativa. O schema tem `facts`
+  (121, com FTS e embeddings), `entities` (396) e `fact_entities` (659), e nenhuma
+  tabela de grafo: `graph.py` diz no próprio docstring que "the store has no
+  fact→fact edges" e deriva as arestas por request. No console, `#modeList` traz
+  `aria-selected="true"` e `#graphPane` traz `hidden`; o texto lê `fact` 181 vezes
+  contra `graph` 88. A lista é a interface primária, o grafo é o segundo modo.
+  O label do rail era `Graph` e passou a `Facts`, que é o que o painel abre.
 
 ## 3. Compatibilidade que cada ID exige
 
@@ -132,10 +139,18 @@ e `delegate_profile` funcionam depois da migração.
 
 ### Fase D — Fact Explorer e origem versionada
 
-Primeiro mover o código que hoje está em `~/.hermes/plugins/memory-graph` para
-uma origem Git versionada e rastreável; ele não é um plugin Agent porque não
-possui `plugin.yaml`. Só então renomear a extensão para
-`hermes-one-fact-explorer` e atualizar o manifest/sidecar.
+Concluída. A precondição já estava satisfeita: o código tem origem versionada em
+`rodrigogs/hermes-one-fact-explorer`, limpa e em sync. Segue não sendo plugin Agent
+— não possui `plugin.yaml` — e isso não muda.
+
+Renomeados o ID, o diretório de assets do console, o diretório do plugin em disco,
+o `EXTENSION_ID` do sidecar (com o caminho do token e do console derivando dele), o
+manifest e o exemplo rastreado, os testes e o README — 18 referências no repo do
+Fact Explorer e 16 no bundle de extensões.
+
+O label do rail era `Graph` e o título `Memory graph`; passaram a `Facts` e
+`Fact Explorer`, porque o grafo é o segundo modo e não o primeiro.
+
 
 A unit mantém o ID de arquivo atual nesta fase e passa a ter descrição
 `Hermes One Fact Explorer sidecar`.

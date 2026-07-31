@@ -227,7 +227,7 @@ isso pode descartar o Router efetivo.
 
 2. Remova **somente** a entrada `hermes-one-capability-router` de
    `~/hermes-one-extensions/extensions.json` e o diretório correspondente do
-   bundle; não remova `hermes-one-extension-kit`, `memory-graph` ou `hermes-one-office-3d`.
+   bundle; não remova `hermes-one-extension-kit`, `hermes-one-fact-explorer` ou `hermes-one-office-3d`.
 3. Recarregue/reinicie o serviço WebUI fora de uma conversa que dependa dele.
 4. Para reativar, restaure os assets pelo instalador e então execute:
 
@@ -314,7 +314,7 @@ rm -rf webui_extension
 | `hermes-one-extension-kit` | Sistema comum de navegação, painel e ponte de temas. | `hermes-panel/` | não |
 | `hermes-one-office-3d` | Abre Office 3D no painel central sem abandonar a shell. | `hermes-one-office-3d/` | não |
 | `hermes-one-capability-router` | Console operacional do Router. | `hermes-one-capability-router/` | `127.0.0.1:8791` |
-| `memory-graph` | Grafo de memória read-only. | `memory-graph/` | `127.0.0.1:8792` |
+| `hermes-one-fact-explorer` | Lista de fatos read-only; grafo como segundo modo. | `hermes-one-fact-explorer/` | `127.0.0.1:8792` |
 
 ## Hermes Panel System
 
@@ -354,7 +354,7 @@ Manifesto:
 
 | Campo | Valor |
 |---|---|
-| Fonte | `/home/rodrigo/.hermes/plugins/memory-graph` |
+| Fonte | `/home/rodrigo/.hermes/plugins/hermes-one-fact-explorer` |
 | Unit | `hermes-memory-sidecar.service` |
 | Bind | `127.0.0.1:8792` |
 | Fonte observada | `~/.hermes/profiles/rodrigo/memory_store.db` |

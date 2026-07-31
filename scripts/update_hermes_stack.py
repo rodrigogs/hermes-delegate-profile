@@ -63,7 +63,7 @@ LOCK_NAME = "update-locks/hermes-stack.lock"
 # on a healthy manifest.
 #
 # Only the two extensions this install actually ships are required. hermes-one-capability-router
-# and memory-graph carry sidecars that run on the old box and are deliberately absent
+# and hermes-one-fact-explorer carry sidecars that run on the old box and are absent
 # from extensions.json here, so requiring them would fail the same way.
 REQUIRED_EXTENSION_IDS = {
     "hermes-one-extension-kit",
