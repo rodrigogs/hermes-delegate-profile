@@ -976,16 +976,27 @@ def _make_handler(
 # ---------------------------------------------------------------------------
 # Post-tool-call hook
 # ---------------------------------------------------------------------------
-def _on_post_tool_call(tool_name: str, params: dict, result: str, **_kwargs: Any) -> None:
+def _on_post_tool_call(
+    tool_name: str = "",
+    args: dict | None = None,
+    result: str = "",
+    *,
+    params: dict | None = None,
+    **_kwargs: Any,
+) -> None:
     """Warn when delegate_task is called with a `profile` param.
 
     Advisory only — never blocks. The built-in delegate_task *does* accept
     ``profile=`` for in-process delegation; the nudge is for callers who
     actually want subprocess isolation (this plugin's purpose).
     """
+    # The host (model_tools._emit_post_tool_call_hook) passes ``args=``, as
+    # documented in hermes_cli/hooks.py.  ``params`` is accepted as a legacy
+    # alias so older callers and tests keep working.
+    payload = args if args is not None else (params or {})
     if tool_name != "delegate_task":
         return
-    if params and isinstance(params, dict) and "profile" in params:
+    if payload and isinstance(payload, dict) and "profile" in payload:
         logger.warning(
             "delegate_profile: delegate_task called with 'profile' param "
             "(in-process delegation). If you want subprocess isolation under "

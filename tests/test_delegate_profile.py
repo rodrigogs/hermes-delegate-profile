@@ -463,3 +463,29 @@ def test_pool_snapshot_shape():
     assert snap[0]["profile"] == "coder"
     pool.unregister(4242)
     assert pool.snapshot() == []
+
+def test_post_tool_call_accepts_the_host_keyword_contract(monkeypatch):
+    """model_tools._emit_post_tool_call_hook passes `args=`, not `params=`.
+
+    Every field is keyword-only, so a handler that names the payload `params`
+    raises TypeError on every single tool call. See hermes_cli/hooks.py, which
+    documents the post_tool_call payload as {"tool_name", "args", "result", ...}.
+    """
+    warned = []
+    monkeypatch.setattr(dp, "_warn", lambda *a, **k: warned.append(a), raising=False)
+    # exactly how the host invokes it
+    dp._on_post_tool_call(
+        tool_name="delegate_task",
+        args={"profile": "coder", "goal": "x"},
+        result="ok",
+        task_id="",
+        session_id="",
+        tool_call_id="",
+        turn_id="",
+        api_request_id="",
+        duration_ms=1,
+        status="ok",
+        error_type=None,
+        error_message=None,
+        middleware_trace=[],
+    )
