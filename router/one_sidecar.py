@@ -88,7 +88,9 @@ def resolve_core_config_path() -> Path:
     # is the base directory. Same trap as routes_path().
     if base.parent.name == "profiles":
         return base / "config.yaml"
-    profile = os.environ.get("HERMES_PROFILE", "rodrigo")
+    profile = os.environ.get("HERMES_PROFILE", "")
+    if not profile:
+        return base / "config.yaml"
     return base / "profiles" / profile / "config.yaml"
 
 
