@@ -1393,6 +1393,11 @@
 
         const line = (opts) => {
           const step = el('div', `step${opts.editable ? ' editable' : ''}${opts.cold ? ' cold' : ''}`);
+          // The dry run names the rule that won; without this the operator has to
+          // read a sentence and then find that rule by eye in the list below it.
+          // Kong and LaunchDarkly both mark the winning rule in place for the same
+          // reason: first-match-wins is only legible if you can see WHERE it stopped.
+          if (opts.id) step.dataset.ruleId = opts.id;
           step.append(el('div', 'step-ord', opts.ord || ''));
           const what = el('div', 'step-what');
           what.append(el('div', 'step-id', opts.id));
@@ -1549,7 +1554,23 @@
         if (d.requires_classifier) {
           // Honest limit: /explain runs Stage 0 only, so a task bound for the
           // classifier cannot be previewed all the way to a model.
-          verdict.append(el('span', '', 'No rule catches it — it would go to the classifier, so the model depends on that call.'));
+          //
+          // TWO different reasons land here and they were collapsed into one
+          // sentence. Measured against the live policy:
+          //   "rename a variable"            -> matched_rule_id null, cause
+          //                                     default_fallthrough  (no rule)
+          //   "please review this pull req"  -> matched_rule_id review-request,
+          //                                     cause classifier     (a rule DID
+          //                                     match and it delegates)
+          // Saying "No rule catches it" for the second was simply false, and it
+          // threw away the rule id the server had already worked out.
+          if (dec.matched_rule_id) {
+            verdict.append(el('span', '', 'Caught by '));
+            verdict.append(el('span', 'verdict-model', dec.matched_rule_id));
+            verdict.append(el('span', '', ', which asks the classifier — so the model depends on that call.'));
+          } else {
+            verdict.append(el('span', '', 'No rule catches it — it would go to the classifier, so the model depends on that call.'));
+          }
         } else {
           // Real spaces in the text, not a layout gap standing in for them: this
           // string is read aloud as well as looked at.
@@ -1564,11 +1585,20 @@
         }
         box.append(verdict);
         // Mark the winning line on the sheet itself.
-        state.probeRule = d.requires_classifier ? 'default' : (dec.matched_rule_id || 'default');
+        // The rule the evaluation actually stopped at. Was hardcoded to 'default'
+        // for every classifier-bound task, which marked the wrong line whenever a
+        // real rule had matched and delegated.
+        state.probeRule = dec.matched_rule_id || (d.requires_classifier ? 'classifier' : 'default');
         renderSheet();
+        // Match on data-rule-id, not on the rendered label: the label is display
+        // text and the marker silently stopped working the moment one was reworded.
         $('sheet').querySelectorAll('.step').forEach((s) => {
-          const id = s.querySelector('.step-id');
-          if (id && id.textContent === state.probeRule) s.classList.add('hit');
+          if (s.dataset.ruleId === state.probeRule) {
+            s.classList.add('hit');
+            s.setAttribute('aria-current', 'true');
+          } else {
+            s.removeAttribute('aria-current');
+          }
         });
       }
 
