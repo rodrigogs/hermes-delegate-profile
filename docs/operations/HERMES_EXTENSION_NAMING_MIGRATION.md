@@ -38,8 +38,8 @@ ativas, foi removido explicitamente do bundle.
 |---|---|---|---|---|
 | Plugin Agent | `delegate-profile` | `delegate-profile` | Delegate Profile | **manter** |
 | Tool Agent | `delegate_profile` | `delegate_profile` | — | **manter** |
-| Biblioteca de extensões One | `hermes-panel` | `hermes-one-extension-kit` | Hermes One Extension Kit | renomear |
-| Painel Office | `office-3d-launcher` | `hermes-one-office-3d` | Office 3D | renomear |
+| Biblioteca de extensões One | `hermes-one-extension-kit` | `hermes-one-extension-kit` | Hermes One Extension Kit | **concluído** |
+| Painel Office | `hermes-one-office-3d` | `hermes-one-office-3d` | Office 3D | **concluído** |
 | Painel/sidecar de roteamento | `capability-router` | `hermes-one-profile-router` | Profile Router | renomear |
 | Painel/sidecar de memória | `memory-graph` | `hermes-one-fact-explorer` | Fact Explorer | renomear |
 | Unit Router | `hermes-router-sidecar.service` | manter inicialmente | Profile Router sidecar | label agora; ID depois |
@@ -86,8 +86,11 @@ Hermes One continua coerente em desktop/mobile e os testes JavaScript passam.
 
 ### Fase B — Office 3D
 
-Renomear `office-3d-launcher` para `hermes-one-office-3d`. A funcionalidade e
-URL `/office/` não mudam.
+Concluída. `office-3d-launcher` renomeado para `hermes-one-office-3d`; a
+funcionalidade e a URL `/office/` não mudaram. A classe de navegação acompanhou o
+ID (`office-3d-nav` para `hermes-one-office-3d-nav`), seguindo a convenção dos
+irmãos, e `REQUIRED_EXTENSION_IDS` no updater passou a nomear os IDs pós-rename —
+ele ainda exigia `hermes-panel` e falharia sobre um manifest saudável.
 
 **Aceite:** o Office abre no painel, preserva iframe/câmera ao alternar de
 view e não recarrega ao retornar.

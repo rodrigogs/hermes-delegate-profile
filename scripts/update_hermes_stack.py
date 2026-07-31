@@ -56,11 +56,18 @@ from typing import Any, Iterable, Sequence
 SNAPSHOT_FORMAT = 1
 SNAPSHOT_ROOT_NAME = "update-backups/hermes-stack"
 LOCK_NAME = "update-locks/hermes-stack.lock"
+# The manifest entries whose loss means a broken shell, by their post-rename IDs
+# (see HERMES_EXTENSION_NAMING_MIGRATION.md). This gate raises UpdateError on any
+# missing entry, so it has to track the renames: it still named hermes-panel after
+# phase A renamed it to hermes-one-extension-kit, which meant a validation failure
+# on a healthy manifest.
+#
+# Only the two extensions this install actually ships are required. capability-router
+# and memory-graph carry sidecars that run on the old box and are deliberately absent
+# from extensions.json here, so requiring them would fail the same way.
 REQUIRED_EXTENSION_IDS = {
-    "hermes-panel",
-    "office-3d-launcher",
-    "capability-router",
-    "memory-graph",
+    "hermes-one-extension-kit",
+    "hermes-one-office-3d",
 }
 
 

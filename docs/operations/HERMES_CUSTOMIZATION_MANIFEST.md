@@ -227,7 +227,7 @@ isso pode descartar o Router efetivo.
 
 2. Remova **somente** a entrada `capability-router` de
    `~/hermes-one-extensions/extensions.json` e o diretório correspondente do
-   bundle; não remova `hermes-panel`, `memory-graph` ou `office-3d-launcher`.
+   bundle; não remova `hermes-one-extension-kit`, `memory-graph` ou `hermes-one-office-3d`.
 3. Recarregue/reinicie o serviço WebUI fora de uma conversa que dependa dele.
 4. Para reativar, restaure os assets pelo instalador e então execute:
 
@@ -311,8 +311,8 @@ rm -rf webui_extension
 
 | ID | Objetivo | Fonte/asset | Sidecar |
 |---|---|---|---|
-| `hermes-panel` | Sistema comum de navegação, painel e ponte de temas. | `hermes-panel/` | não |
-| `office-3d-launcher` | Abre Office 3D no painel central sem abandonar a shell. | `office-3d-launcher/` | não |
+| `hermes-one-extension-kit` | Sistema comum de navegação, painel e ponte de temas. | `hermes-panel/` | não |
+| `hermes-one-office-3d` | Abre Office 3D no painel central sem abandonar a shell. | `hermes-one-office-3d/` | não |
 | `capability-router` | Console operacional do Router. | `capability-router/` | `127.0.0.1:8791` |
 | `memory-graph` | Grafo de memória read-only. | `memory-graph/` | `127.0.0.1:8792` |
 
