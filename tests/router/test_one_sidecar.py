@@ -445,7 +445,13 @@ def test_resolve_core_config_path_precedence(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_HOME", raising=False)
     monkeypatch.delenv("HERMES_PROFILE", raising=False)
     monkeypatch.setattr(sidecar_mod.Path, "home", classmethod(lambda cls: tmp_path))
-    assert resolve_core_config_path() == tmp_path / ".hermes" / "profiles" / "rodrigo" / "config.yaml"
+    # With no HERMES_PROFILE set, resolve the ROOT profile (~/.hermes/config.yaml).
+    # Falling back to a literal profile name pointed at a directory that does not
+    # exist on a root-profile-only install.
+    assert resolve_core_config_path() == tmp_path / ".hermes" / "config.yaml"
+    # An explicit profile still resolves under profiles/<name>.
+    monkeypatch.setenv("HERMES_PROFILE", "bob")
+    assert resolve_core_config_path() == tmp_path / ".hermes" / "profiles" / "bob" / "config.yaml"
 
 
 def test_default_restart_runner_missing_launcher(monkeypatch, tmp_path):
