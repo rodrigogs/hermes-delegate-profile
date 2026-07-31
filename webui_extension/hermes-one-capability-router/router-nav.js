@@ -172,7 +172,7 @@
   let sectionObserver = null;
 
   function watchSections() {
-    const frame = document.querySelector('[data-console-frame]');
+    const frame = document.querySelector('.hermes-one-capability-router-panel [data-console-frame]');
     if (!frame) return;
     let doc = null;
     try { doc = frame.contentDocument; } catch (error) { return; }
@@ -189,7 +189,7 @@
 
   /** Drive the console's own tab, then mirror its state back into the sidebar. */
   function selectSection(tab) {
-    const frame = document.querySelector('[data-console-frame]');
+    const frame = document.querySelector('.hermes-one-capability-router-panel [data-console-frame]');
     try {
       const doc = frame && frame.contentDocument;
       const button = doc && doc.getElementById(`tab-${tab}`);
@@ -203,7 +203,7 @@
   /** Mirror aria-selected from the console's tabs onto the sidebar rows. */
   function syncSections() {
     if (!sideNav) return;
-    const frame = document.querySelector('[data-console-frame]');
+    const frame = document.querySelector('.hermes-one-capability-router-panel [data-console-frame]');
     let doc = null;
     try { doc = frame && frame.contentDocument; } catch (error) { return; }
     for (const row of sideNav.querySelectorAll('.router-section')) {
