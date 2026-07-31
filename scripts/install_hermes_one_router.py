@@ -79,11 +79,24 @@ def _copy_assets(repo_root: Path, extension_root: Path) -> None:
     shutil.copytree(source, destination)
 
 
+def _default_python() -> str:
+    """The interpreter the unit should run.
+
+    The template used to hardcode /usr/local/lib/hermes-agent/venv, which is one
+    install's layout: on an install that keeps its venv under HERMES_HOME the unit
+    pointed at a path that does not exist and the sidecar failed at ExecStart. Use
+    the interpreter running this installer, which is by construction the one whose
+    environment has the router module importable.
+    """
+    return sys.executable
+
+
 def _render_unit(
     repo_root: Path,
     plugin_dir: Path,
     hermes_home: Path,
     webui_state_dir: Path,
+    python: str | None = None,
 ) -> str:
     template = (repo_root / "systemd" / "hermes-router-sidecar.service").read_text(
         encoding="utf-8"
@@ -92,6 +105,7 @@ def _render_unit(
         "@PLUGIN_DIR@": str(plugin_dir),
         "@HERMES_HOME@": str(hermes_home),
         "@WEBUI_STATE_DIR@": str(webui_state_dir),
+        "@PYTHON@": python or _default_python(),
     }
     missing = [placeholder for placeholder in replacements if placeholder not in template]
     if missing:
@@ -114,6 +128,7 @@ def install(
     *,
     hermes_home: Path | None = None,
     webui_state_dir: Path | None = None,
+    python: str | None = None,
 ) -> None:
     """Copy assets, merge manifest and render the systemd unit atomically enough.
 
@@ -141,7 +156,13 @@ def install(
 
     systemd_dir.mkdir(parents=True, exist_ok=True)
     (systemd_dir / "hermes-router-sidecar.service").write_text(
-        _render_unit(repo_root, plugin_dir, effective_hermes_home, effective_webui_state_dir),
+        _render_unit(
+            repo_root,
+            plugin_dir,
+            effective_hermes_home,
+            effective_webui_state_dir,
+            python=python,
+        ),
         encoding="utf-8",
     )
 
@@ -154,6 +175,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plugin-dir", type=Path, default=Path.home() / ".hermes/plugins/delegate-profile")
     parser.add_argument("--hermes-home", type=Path, default=None)
     parser.add_argument("--webui-state-dir", type=Path, default=None)
+    parser.add_argument(
+        "--python",
+        default=None,
+        help="Interpreter for the unit's ExecStart (default: the one running this script).",
+    )
     parser.set_defaults(repo_root=repo_root)
     return parser
 
@@ -167,6 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         args.plugin_dir,
         hermes_home=args.hermes_home,
         webui_state_dir=args.webui_state_dir,
+        python=args.python,
     )
     print(f"installed {EXTENSION_ID} extension into {args.extension_root}")
     print("next: daemon-reload/start sidecar, reload Hermes One, approve token-v1 proxy in Settings → Extensions")

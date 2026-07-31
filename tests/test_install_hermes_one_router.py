@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+import pathlib
 import json
 from pathlib import Path
 
@@ -157,3 +159,40 @@ def test_installer_cli_builds_defaults_and_invokes_install(monkeypatch, tmp_path
     ]) == 0
     assert captured["extension_root"] == tmp_path / "extensions"
     assert "installed hermes-one-capability-router" in capsys.readouterr().out
+
+def test_unit_execstart_uses_a_python_that_exists(tmp_path):
+    """The unit must not hardcode one install's venv layout.
+
+    It did: /usr/local/lib/hermes-agent/venv/bin/python3, which is absent on an
+    install that keeps its venv under HERMES_HOME. systemd then failed at ExecStart
+    with no hint that the path was the problem, and no test noticed because none
+    read ExecStart.
+    """
+    install(
+        ROOT,
+        tmp_path / "extensions",
+        tmp_path / "systemd",
+        tmp_path / "plugin",
+        hermes_home=tmp_path / "hermes",
+    )
+    unit = (tmp_path / "systemd" / "hermes-router-sidecar.service").read_text(encoding="utf-8")
+    execstart = next(
+        line for line in unit.splitlines() if line.startswith("ExecStart=")
+    )
+    interpreter = execstart[len("ExecStart="):].split()[0]
+    assert interpreter == sys.executable, execstart
+    assert pathlib.Path(interpreter).exists(), f"unit points at a missing interpreter: {interpreter}"
+    assert "@PYTHON@" not in unit
+
+
+def test_unit_execstart_honours_an_explicit_python(tmp_path):
+    install(
+        ROOT,
+        tmp_path / "extensions",
+        tmp_path / "systemd",
+        tmp_path / "plugin",
+        hermes_home=tmp_path / "hermes",
+        python="/opt/custom/bin/python3",
+    )
+    unit = (tmp_path / "systemd" / "hermes-router-sidecar.service").read_text(encoding="utf-8")
+    assert "ExecStart=/opt/custom/bin/python3 -m router.one_sidecar" in unit
