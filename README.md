@@ -289,7 +289,8 @@ Project layout:
 hermes-delegate-profile/
 ├── plugin.yaml          # manifest (name, version, provides_tools, provides_hooks)
 ├── __init__.py          # register() — registers the tool + post_tool_call hook
-├── router.yaml          # capability router config (rules, tiers, blocklist)
+├── router.example.yaml  # shipped default policy (tracked)
+├── router.yaml          # live policy — gitignored, seeded from the example
 ├── pyproject.toml       # project metadata + pytest/coverage config
 ├── README.md            # this file
 ├── LICENSE              # MIT
@@ -340,3 +341,14 @@ registers the tool schema + `post_tool_call` hook.
 ## License
 
 MIT
+
+## Routing policy (`router.yaml`)
+
+`router.yaml` is the **live** policy file. It is intentionally *not* tracked by
+git: tuning tiers or rules for your own providers would otherwise leave the
+checkout permanently dirty and conflict on every pull.
+
+- `router.example.yaml` — tracked, the shipped default.
+- `router.yaml` — gitignored, seeded from the example on first load, then yours.
+
+To start over, delete `router.yaml` and it will be re-seeded.

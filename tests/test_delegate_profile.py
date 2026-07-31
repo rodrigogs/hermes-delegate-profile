@@ -489,3 +489,32 @@ def test_post_tool_call_accepts_the_host_keyword_contract(monkeypatch):
         error_message=None,
         middleware_trace=[],
     )
+
+def test_router_config_seeds_from_example_when_absent(tmp_path, monkeypatch):
+    """router.yaml is untracked live config, seeded from router.example.yaml.
+
+    Tracking the live policy file made every local tuning show up as a dirty
+    checkout forever, and conflict on each pull. The example is tracked; the
+    live file is gitignored and created on first load.
+    """
+    plugin_dir = tmp_path / "delegate-profile"
+    plugin_dir.mkdir()
+    (plugin_dir / "router.example.yaml").write_text(
+        "enabled: true\ntiers:\n  T1: {model: m, provider: p}\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(dp, "__file__", str(plugin_dir / "__init__.py"))
+
+    cfg = dp._load_router_config()
+
+    assert cfg.get("enabled") is True
+    assert (plugin_dir / "router.yaml").exists(), "live config should be seeded"
+    # A second load must not clobber operator edits.
+    (plugin_dir / "router.yaml").write_text("enabled: false\n", encoding="utf-8")
+    assert dp._load_router_config().get("enabled") is False
+
+
+def test_router_config_returns_empty_when_neither_file_exists(tmp_path, monkeypatch):
+    plugin_dir = tmp_path / "empty-plugin"
+    plugin_dir.mkdir()
+    monkeypatch.setattr(dp, "__file__", str(plugin_dir / "__init__.py"))
+    assert dp._load_router_config() == {}

@@ -500,13 +500,30 @@ _ROUTER_SENTINEL = "HERMES_ROUTER_CLASSIFYING"
 
 
 def _load_router_config() -> Dict[str, Any]:
-    """Load router.yaml from the plugin directory. Returns {} on failure."""
+    """Load router.yaml from the plugin directory. Returns {} on failure.
+
+    router.yaml is the *live* policy and is deliberately not tracked by git, so
+    that local tuning does not leave the checkout permanently dirty (and does
+    not conflict on every pull). On first run it is seeded from the tracked
+    router.example.yaml; after that it belongs to the operator.
+    """
     try:
         import yaml
         plugin_dir = Path(__file__).resolve().parent
         config_path = plugin_dir / "router.yaml"
         if not config_path.exists():
-            return {}
+            example = plugin_dir / "router.example.yaml"
+            if not example.exists():
+                return {}
+            try:
+                config_path.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+                logger.info(
+                    "delegate_profile: seeded %s from router.example.yaml; edit it to tune routing",
+                    config_path,
+                )
+            except OSError:
+                # Read-only install: fall back to reading the example directly.
+                return yaml.safe_load(example.read_text(encoding="utf-8")) or {}
         return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     except Exception:
         return {}

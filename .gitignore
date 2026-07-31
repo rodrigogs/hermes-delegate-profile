@@ -40,3 +40,5 @@ Thumbs.db
 # State files (generated at runtime)
 state/
 *.db
+# Live config (seeded from router.example.yaml on first run; edit freely)
+router.yaml
