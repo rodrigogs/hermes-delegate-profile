@@ -761,7 +761,20 @@
       .screen.active { animation: none; }
       * { animation: none !important; transition: none !important; }
     }
-  </style>
+  
+    /* ── embedded in the Hermes One panel ────────────────────────────────────
+       The rail icon is lit and labelled Capability Router, and the console's
+       sections are the shell's sidebar now, so the 45px masthead title and the
+       37px tab row were 82px of chrome repeating what the shell already shows.
+       Both stay in the DOM — the tabs are the state the sidebar reads, and
+       clicking a sidebar row clicks the tab — they are just not drawn twice.
+       The head survives without its title: it carries the freshness chip and the
+       Edit/Refresh actions, which have no other home. */
+    .is-embedded .view-title { display: none; }
+    .is-embedded nav.tabs { display: none; }
+    /* With no title the actions would sit in column 1, hard left. */
+    .is-embedded .view-head > .view-actions { grid-column: 2; }
+</style>
 </head>
 <body>
   <!-- The host's own panel header: an 18px/600 sans title on the left, the
@@ -925,6 +938,10 @@
   </main>
 
   <script>
+    /* True inside the Hermes One panel iframe; the host owns the chrome there. */
+    try {
+      if (window.self !== window.top) document.documentElement.classList.add('is-embedded');
+    } catch (error) { document.documentElement.classList.add('is-embedded'); }
     (() => {
       'use strict';
 

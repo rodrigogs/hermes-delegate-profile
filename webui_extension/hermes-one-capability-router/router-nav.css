@@ -3,3 +3,72 @@
 .hermes-one-capability-router-nav-label{display:none}
 .sidebar-nav .hermes-one-capability-router-nav-label{display:inline}
 @media(max-width:900px){.sidebar-nav .hermes-one-capability-router-nav-label{display:none}}
+
+/* ── the console's sections, as the shell's sidebar ─────────────────────────
+   The Office's shape: the panel head mirrors the host's own .panel-head, measured
+   off the running shell — 11px/600 uppercase at .08em in --muted, 41px min-height,
+   one hairline below — so this column and the conversation list read as one system.
+   The rail picks the panel; these rows pick the section.
+
+   HOST tokens only. This stylesheet loads in the host document, where the panel
+   tokens do not exist, and test_extension_css_only_dresses_the_nav_button pins that.
+   Measured live on the running shell: --bg #0D0D1A, --text #FFF8DC, --muted #C0C0C0
+   and --accent #FFD700 are defined; --font-sans and --font-mono are NOT, so type
+   inherits rather than naming a family that resolves to nothing. */
+.sidebar .panel-view[data-panel-token="router"] {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.sidebar .panel-view[data-panel-token="router"] .panel-head {
+  min-height: 41px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--muted);
+  border-bottom-color: color-mix(in srgb, var(--muted) 28%, transparent);
+  color: var(--muted);
+  font: 600 11px/1.3 inherit;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.router-sections { display: flex; flex-direction: column; padding: 8px; gap: 2px; }
+.router-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font: 500 13px/1.35 inherit;
+  text-align: left;
+  cursor: pointer;
+}
+/* The hover plane is mixed from --text rather than named as --hover-bg: the host
+   does define that token, but only these four are guaranteed, and a plane derived
+   from the foreground follows any skin's polarity for free. */
+.router-section:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.router-section.is-on {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+.router-section-n { color: var(--muted); font: 500 12px/1 inherit; }
+/* The host's 44px floor under a coarse pointer applies to every row it draws. */
+@media (hover: none) and (pointer: coarse) {
+  .router-section { min-height: 44px; }
+}
+
+/* ── the Office's sidebar-yield, for the same reason ────────────────────────
+   The console's sections fill this track now, so a 1px line of page background
+   between the panel and the rail is a seam the real sidebar never has — measured
+   1px on this panel before the fix. Bounded at 641px, the host's own collapse
+   breakpoint: below it the rail is gone and this sidebar IS the navigation. */
+@media (min-width: 641px) {
+  .layout:has(> main.main.showing-x-router) > .sidebar:not(.mobile-open) {
+    border-right-width: 0;
+  }
+}

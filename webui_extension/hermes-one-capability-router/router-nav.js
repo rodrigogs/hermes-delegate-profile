@@ -77,6 +77,8 @@
         headers: { Accept: 'text/html' },
       });
       if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status });
+      // Not once: a reload replaces the document and the observer with it.
+      frame.addEventListener('load', watchSections);
       frame.srcdoc = await response.text();
       frame.dataset.loaded = 'true';
     } catch (error) {
@@ -109,12 +111,118 @@
     // show() then finds it by token. Re-showing is idempotent.
     if (nav) nav.show();
     load(panel);
+    // Re-open of an already-loaded console: the frame fired 'load' long ago, so
+    // nothing would re-mirror without this.
+    watchSections();
   }
 
   // A missing shared module must say so. Without this the next line throws
   // "Cannot read properties of undefined", the script dies before installing
   // anything, and the symptom is a button that simply is not there — which is
   // exactly how the office launcher failed silently once already.
+
+  /** The sidebar's section list, kept so the console can report back into it. */
+  let sideNav = null;
+
+  // The Office's shape, applied here.
+  //
+  // This console carried a 45px masthead reading "Capability Router" directly under
+  // a rail icon that is already lit and labelled Capability Router, and a row of
+  // section tabs below it — 82px of chrome above the content. The Office lost the
+  // same masthead for the same reason and gave its column to the host sidebar.
+  //
+  // This console has no column of its own, so the SECTIONS become the sidebar: the
+  // rail selects the panel, the sidebar selects the section, exactly like Chats
+  // selects a conversation. The head mirrors the host's .panel-head — 11px/600
+  // uppercase at .08em in --muted, one hairline below — so the two read as one
+  // system rather than two.
+  function buildSidebar(view) {
+    const head = el('div', 'panel-head');
+    const title = document.createElement('span');
+    title.textContent = 'Capability Router';
+    head.append(title);
+    view.append(head);
+
+    const list = el('nav', 'router-sections');
+    list.setAttribute('aria-label', 'Se\u00e7\u00f5es do console');
+    for (const [tab, label] of [['health', 'Sa\u00fade'], ['pipeline', 'Pol\u00edtica'], ['routes', 'Decis\u00f5es']]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'router-section';
+      button.dataset.tab = tab;
+      button.textContent = label;
+      // Same-origin, so the click drives the console's own tab rather than
+      // reimplementing its state here: one source of truth for which section is up.
+      button.addEventListener('click', () => selectSection(tab));
+      list.append(button);
+    }
+    view.append(list);
+    sideNav = list;
+    syncSections();
+  }
+
+  /** Re-mirror once the console document exists, and whenever it changes section.
+   *
+   * buildSidebar runs at install time, before the frame has a document, so its own
+   * syncSections() finds no tabs and leaves every row unmarked — measured, the
+   * console had tab-health aria-selected="true" while all three rows were off. The
+   * observer then keeps the two in step when the operator uses the console's own
+   * tabs (they still exist; they are only undrawn) or when a section's count moves.
+   */
+  let sectionObserver = null;
+
+  function watchSections() {
+    const frame = document.querySelector('[data-console-frame]');
+    if (!frame) return;
+    let doc = null;
+    try { doc = frame.contentDocument; } catch (error) { return; }
+    const tablist = doc && doc.querySelector('nav.tabs');
+    if (!tablist) return;
+    syncSections();
+    if (sectionObserver) sectionObserver.disconnect();
+    sectionObserver = new MutationObserver(syncSections);
+    sectionObserver.observe(tablist, {
+      subtree: true, attributes: true,
+      attributeFilter: ['aria-selected', 'hidden'], childList: true, characterData: true,
+    });
+  }
+
+  /** Drive the console's own tab, then mirror its state back into the sidebar. */
+  function selectSection(tab) {
+    const frame = document.querySelector('[data-console-frame]');
+    try {
+      const doc = frame && frame.contentDocument;
+      const button = doc && doc.getElementById(`tab-${tab}`);
+      if (button) button.click();
+    } catch (error) {
+      console.warn('[hermes-one-capability-router] cannot reach the console tabs', error);
+    }
+    syncSections();
+  }
+
+  /** Mirror aria-selected from the console's tabs onto the sidebar rows. */
+  function syncSections() {
+    if (!sideNav) return;
+    const frame = document.querySelector('[data-console-frame]');
+    let doc = null;
+    try { doc = frame && frame.contentDocument; } catch (error) { return; }
+    for (const row of sideNav.querySelectorAll('.router-section')) {
+      const tab = doc && doc.getElementById(`tab-${row.dataset.tab}`);
+      const on = tab ? tab.getAttribute('aria-selected') === 'true' : false;
+      row.classList.toggle('is-on', on);
+      row.setAttribute('aria-current', on ? 'true' : 'false');
+      // The console puts a count and a dot in each tab; carry the count across so
+      // the sidebar says how many, not just which.
+      const count = tab && tab.querySelector('.count');
+      const n = count && !count.hasAttribute('hidden') ? count.textContent.trim() : '';
+      let badge = row.querySelector('.router-section-n');
+      if (n) {
+        if (!badge) { badge = el('span', 'router-section-n'); row.append(badge); }
+        badge.textContent = n;
+      } else if (badge) badge.remove();
+    }
+  }
+
   if (!window.HermesPanelNav) {
     console.error('[hermes-one-capability-router] Hermes One Extension Kit did not load; '
       + 'the Router button cannot be installed. Check that "hermes-one-extension-kit" is '
@@ -129,5 +237,6 @@
     iconPath: ICON,
     navClass: 'hermes-one-capability-router-nav',
     onOpen,
+    sidebarView: buildSidebar,
   });
 })();
