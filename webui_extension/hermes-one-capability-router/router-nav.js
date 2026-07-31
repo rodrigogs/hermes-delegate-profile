@@ -26,8 +26,8 @@
   // token via window.parent. Verified end to end: POST /plan answers 200 from
   // inside this frame and 403 from a standalone tab.
   //
-  // Navigation and visibility come from HermesPanelNav (the shared hermes-panel
-  // extension), because doing it here meant doing it three times, three slightly
+  // Navigation and visibility come from HermesPanelNav (the shared Hermes One
+  // Extension Kit), because doing it here meant doing it three times, three slightly
   // different ways. It implements the pattern the host documents for extensions
   // (hermes-webui/docs/EXTENSIONS.md:551-580): toggle `hidden` across
   // main > .main-view, and drive the host's own switchPanel rather than writing its
@@ -116,8 +116,8 @@
   // anything, and the symptom is a button that simply is not there — which is
   // exactly how the office launcher failed silently once already.
   if (!window.HermesPanelNav) {
-    console.error('[hermes-one-capability-router] hermes-panel extension did not load; '
-      + 'the Router button cannot be installed. Check that "hermes-panel" is '
+    console.error('[hermes-one-capability-router] Hermes One Extension Kit did not load; '
+      + 'the Router button cannot be installed. Check that "hermes-one-extension-kit" is '
       + 'listed BEFORE "hermes-one-capability-router" in extensions.json.');
     return;
   }
