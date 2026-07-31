@@ -44,7 +44,7 @@ def _get(url: str, token: str | None = None, method: str = "GET"):
 
 @pytest.fixture()
 def running_sidecar(tmp_path):
-    token_file = tmp_path / "capability-router.token"
+    token_file = tmp_path / "hermes-one-capability-router.token"
     token_file.write_text("s3cret-token", encoding="utf-8")
     app = SidecarApp(RouterService(ROOT / "router.yaml"), token_path=lambda: token_file)
     server = build_server("127.0.0.1", 0, app)

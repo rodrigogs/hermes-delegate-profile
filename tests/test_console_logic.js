@@ -16,7 +16,7 @@ const vm = require('node:vm');
 // fire during tests; the concurrency test needs a real one to interleave with.
 const setTimeoutReal = setTimeout;
 
-const sourcePath = 'webui_extension/capability-router/console.html';
+const sourcePath = 'webui_extension/hermes-one-capability-router/console.html';
 
 // A DOM stub good enough for the console's init path.
 function fakeDom() {

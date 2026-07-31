@@ -563,7 +563,7 @@ def _make_classify_fn(ctx: Any) -> Optional[Callable[[str, Dict[str, Any]], Dict
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
-            purpose="capability-router.classify",
+            purpose="hermes-one-capability-router.classify",
         )
         # Parse JSON response — model may wrap in markdown fences
         text = result.text.strip()
@@ -635,7 +635,7 @@ def _route_task(
 
         return result
     except Exception as exc:
-        logger.debug("capability-router: _route_task failed: %s", exc)
+        logger.debug("hermes-one-capability-router: _route_task failed: %s", exc)
         return None
     finally:
         os.environ.pop(_ROUTER_SENTINEL, None)

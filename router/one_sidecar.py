@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlsplit
 from router.service import RouterService
 from router.threshold import apply_dynamic_thresholds, compute_model_thresholds, p_eff
 
-EXTENSION_ID = "capability-router"
+EXTENSION_ID = "hermes-one-capability-router"
 TOKEN_HEADER = "X-Hermes-Sidecar-Token"
 _VERSION = 1
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "[::1]", "localhost"}
@@ -37,7 +37,7 @@ _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "[::1]", "localhost"}
 _CONSOLE_PATH = (
     Path(__file__).resolve().parent.parent
     / "webui_extension"
-    / "capability-router"
+    / "hermes-one-capability-router"
     / "console.html"
 )
 

@@ -1,6 +1,6 @@
 """Capability Router dashboard plugin — backend API routes.
 
-Mounted at /api/plugins/capability-router/ by the dashboard plugin system.
+Mounted at /api/plugins/hermes-one-capability-router/ by the dashboard plugin system.
 Imports the pure-core router from the delegate-profile plugin.
 """
 

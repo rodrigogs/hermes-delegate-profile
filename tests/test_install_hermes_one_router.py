@@ -45,13 +45,13 @@ def test_install_preserves_manifest_entries_and_is_idempotent(tmp_path):
     )
 
     payload = json.loads(root_manifest.read_text(encoding="utf-8"))
-    assert [entry["id"] for entry in payload["extensions"]] == ["office", "capability-router"]
+    assert [entry["id"] for entry in payload["extensions"]] == ["office", "hermes-one-capability-router"]
     router = payload["extensions"][1]
-    assert router["scripts"] == ["capability-router/router-nav.js"]
-    assert router["stylesheets"] == ["capability-router/router-nav.css"]
+    assert router["scripts"] == ["hermes-one-capability-router/router-nav.js"]
+    assert router["stylesheets"] == ["hermes-one-capability-router/router-nav.css"]
     assert router["sidecar"]["proxy_auth"] == "token-v1"
 
-    installed = extension_root / "capability-router"
+    installed = extension_root / "hermes-one-capability-router"
     assert (installed / "router-nav.js").is_file()
     assert (installed / "router-nav.css").is_file()
     assert not (installed / "router-nav.js").is_symlink()
@@ -74,7 +74,7 @@ def test_install_replaces_existing_router_entry_without_reordering_others(tmp_pa
             {
                 "extensions": [
                     {"id": "first"},
-                    {"id": "capability-router", "scripts": ["stale.js"]},
+                    {"id": "hermes-one-capability-router", "scripts": ["stale.js"]},
                     {"id": "last"},
                 ]
             }
@@ -87,8 +87,8 @@ def test_install_replaces_existing_router_entry_without_reordering_others(tmp_pa
     install(ROOT, extension_root, tmp_path / "systemd", plugin_dir)
 
     entries = json.loads((extension_root / "extensions.json").read_text(encoding="utf-8"))["extensions"]
-    assert [entry["id"] for entry in entries] == ["first", "capability-router", "last"]
-    assert entries[1]["scripts"] == ["capability-router/router-nav.js"]
+    assert [entry["id"] for entry in entries] == ["first", "hermes-one-capability-router", "last"]
+    assert entries[1]["scripts"] == ["hermes-one-capability-router/router-nav.js"]
 
 
 def test_installer_rejects_malformed_inputs_and_missing_templates(tmp_path):
@@ -109,7 +109,7 @@ def test_installer_rejects_malformed_inputs_and_missing_templates(tmp_path):
         installer._read_extension_entry(tmp_path)
 
     source_root = tmp_path / "source"
-    manifest = source_root / "webui_extension/capability-router/manifest.json"
+    manifest = source_root / "webui_extension/hermes-one-capability-router/manifest.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text('{"id":"wrong"}', encoding="utf-8")
     with pytest.raises(ValueError, match="must declare"):
@@ -156,4 +156,4 @@ def test_installer_cli_builds_defaults_and_invokes_install(monkeypatch, tmp_path
         "--plugin-dir", str(tmp_path / "plugin"),
     ]) == 0
     assert captured["extension_root"] == tmp_path / "extensions"
-    assert "installed capability-router" in capsys.readouterr().out
+    assert "installed hermes-one-capability-router" in capsys.readouterr().out

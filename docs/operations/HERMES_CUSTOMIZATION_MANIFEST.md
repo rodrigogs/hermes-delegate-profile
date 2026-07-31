@@ -151,7 +151,7 @@ delegação recebe `profile=auto` ou não recebe profile explícito.
 | Log de decisão | `router/decision_log.py`, `router/durable_decision_log.py` |
 | Integração com tool | `__init__.py` |
 | HTTP sidecar | `router/one_sidecar.py` |
-| Console One | `webui_extension/capability-router/` |
+| Console One | `webui_extension/hermes-one-capability-router/` |
 
 ### Sidecar do Router
 
@@ -174,7 +174,7 @@ curl -fsS http://127.0.0.1:8791/health
 Resultado esperado:
 
 ```json
-{"ok": true, "service": "capability-router", "version": 1}
+{"ok": true, "service": "hermes-one-capability-router", "version": 1}
 ```
 
 ### Instalação no Hermes One
@@ -225,7 +225,7 @@ isso pode descartar o Router efetivo.
    systemctl --user stop hermes-router-sidecar.service
    ```
 
-2. Remova **somente** a entrada `capability-router` de
+2. Remova **somente** a entrada `hermes-one-capability-router` de
    `~/hermes-one-extensions/extensions.json` e o diretório correspondente do
    bundle; não remova `hermes-one-extension-kit`, `memory-graph` ou `hermes-one-office-3d`.
 3. Recarregue/reinicie o serviço WebUI fora de uma conversa que dependa dele.
@@ -313,7 +313,7 @@ rm -rf webui_extension
 |---|---|---|---|
 | `hermes-one-extension-kit` | Sistema comum de navegação, painel e ponte de temas. | `hermes-panel/` | não |
 | `hermes-one-office-3d` | Abre Office 3D no painel central sem abandonar a shell. | `hermes-one-office-3d/` | não |
-| `capability-router` | Console operacional do Router. | `capability-router/` | `127.0.0.1:8791` |
+| `hermes-one-capability-router` | Console operacional do Router. | `hermes-one-capability-router/` | `127.0.0.1:8791` |
 | `memory-graph` | Grafo de memória read-only. | `memory-graph/` | `127.0.0.1:8792` |
 
 ## Hermes Panel System
@@ -341,7 +341,7 @@ Manifesto:
 
 ```json
 {
-  "id": "capability-router",
+  "id": "hermes-one-capability-router",
   "sidecar": {
     "origin": "http://127.0.0.1:8791",
     "health_path": "/health",
@@ -485,7 +485,7 @@ Contrato de uma execução `apply`:
    unit do Router e cache de modelos do One.
 3. Faz `fetch`, guarda alterações pendentes em stash temporário, executa merge
    e reaplica o stash. Conflito é falha, não uma resolução improvisada.
-4. Reinstala somente a extensão `capability-router`, preservando as extensões
+4. Reinstala somente a extensão `hermes-one-capability-router`, preservando as extensões
    irmãs; roda regressões da memória, suíte do plugin e compilação Python.
 5. Reinicia Router → Memory Graph → Hermes One e exige healthchecks loopback.
 6. Qualquer falha restaura fontes e artefatos a partir do snapshot e tenta
@@ -540,7 +540,7 @@ vez de deixar um serviço rodando com árvore parcialmente atualizada.
 | Versão Hermes | `Hermes Agent v0.19.0 (2026.7.20)` |
 | Core memory suite | `72 passed` |
 | Plugin/router suite | `424 passed, 2 skipped` |
-| Router health | `{"ok": true, "service": "capability-router", "version": 1}` |
+| Router health | `{"ok": true, "service": "hermes-one-capability-router", "version": 1}` |
 | Memory health | `{"ok": true, "store": "…/memory_store.db", "present": true}` |
 | Router unit | `active (running)` |
 | Memory unit | `active (running)` |

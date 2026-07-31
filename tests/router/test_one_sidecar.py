@@ -72,7 +72,7 @@ def test_health_is_open_and_mutating_methods_are_refused(tmp_path):
     app = _app(tmp_path)
     assert app.dispatch("GET", "/health", {}) == (
         200,
-        {"ok": True, "service": "capability-router", "version": 1},
+        {"ok": True, "service": "hermes-one-capability-router", "version": 1},
     )
     assert app.dispatch("POST", "/health", {})[0] == 405
     # A GET-only data route hit with POST is 405 (wrong method), even with auth.
@@ -541,7 +541,7 @@ def test_token_resolver_uses_state_dir_then_home(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_EXT_SIDECAR_TOKEN_FILE", raising=False)
     state_dir = tmp_path / "state"
     monkeypatch.setenv("HERMES_WEBUI_STATE_DIR", str(state_dir))
-    state_token = state_dir / "sidecar-auth" / "capability-router.token"
+    state_token = state_dir / "sidecar-auth" / "hermes-one-capability-router.token"
     state_token.parent.mkdir(parents=True)
     state_token.write_text("state", encoding="utf-8")
     assert read_expected_token().token == "state"
@@ -549,7 +549,7 @@ def test_token_resolver_uses_state_dir_then_home(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_WEBUI_STATE_DIR", raising=False)
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
-    home_token = home / "webui" / "sidecar-auth" / "capability-router.token"
+    home_token = home / "webui" / "sidecar-auth" / "hermes-one-capability-router.token"
     home_token.parent.mkdir(parents=True)
     home_token.write_text("home", encoding="utf-8")
     assert read_expected_token().token == "home"

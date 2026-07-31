@@ -4,7 +4,7 @@
 The installer is deliberately narrow and idempotent:
 
 * copies versioned assets, never symlinks (WebUI rejects escaping symlinks);
-* replaces only the ``capability-router`` entry in ``extensions.json``;
+* replaces only the ``hermes-one-capability-router`` entry in ``extensions.json``;
 * preserves every sibling entry and its ordering (for example Office 3D);
 * renders a loopback-only systemd user unit pointing at the effective plugin
   installation; and
@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-EXTENSION_ID = "capability-router"
+EXTENSION_ID = "hermes-one-capability-router"
 
 
 def _read_json(path: Path) -> Dict[str, Any]:

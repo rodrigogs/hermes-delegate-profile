@@ -1,5 +1,0 @@
-.capability-router-nav{color:var(--muted)}
-.capability-router-nav:hover{color:var(--text);background:rgba(255,255,255,.06)}
-.capability-router-nav-label{display:none}
-.sidebar-nav .capability-router-nav-label{display:inline}
-@media(max-width:900px){.sidebar-nav .capability-router-nav-label{display:none}}

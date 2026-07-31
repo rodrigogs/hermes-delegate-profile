@@ -32,9 +32,9 @@
   // (hermes-webui/docs/EXTENSIONS.md:551-580): toggle `hidden` across
   // main > .main-view, and drive the host's own switchPanel rather than writing its
   // classes off behind its back. See that module for what each rule fixes.
-  const EXT_ID = 'capability-router';
+  const EXT_ID = 'hermes-one-capability-router';
   const SIDE = `/api/extensions/${EXT_ID}/sidecar`;
-  const PANEL_ID = 'capability-router-panel';
+  const PANEL_ID = 'hermes-one-capability-router-panel';
   const ICON = '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/>'
     + '<circle cx="18" cy="12" r="3"/><path d="M9 6h4a2 2 0 0 1 2 2v1"/>'
     + '<path d="M9 18h4a2 2 0 0 0 2-2v-1"/>';
@@ -51,7 +51,7 @@
   function ensurePanel() {
     let panel = document.getElementById(PANEL_ID);
     if (panel) return panel;
-    panel = el('section', 'main-view hermes-panel capability-router-panel');
+    panel = el('section', 'main-view hermes-panel hermes-one-capability-router-panel');
     panel.id = PANEL_ID;
     // srcdoc, not src: the sidecar sends X-Frame-Options DENY and
     // frame-ancestors 'none', so the served page cannot be framed by URL. srcdoc
@@ -116,9 +116,9 @@
   // anything, and the symptom is a button that simply is not there — which is
   // exactly how the office launcher failed silently once already.
   if (!window.HermesPanelNav) {
-    console.error('[capability-router] hermes-panel extension did not load; '
+    console.error('[hermes-one-capability-router] hermes-panel extension did not load; '
       + 'the Router button cannot be installed. Check that "hermes-panel" is '
-      + 'listed BEFORE "capability-router" in extensions.json.');
+      + 'listed BEFORE "hermes-one-capability-router" in extensions.json.');
     return;
   }
 
@@ -127,7 +127,7 @@
     label: 'Router',
     title: 'Capability Router',
     iconPath: ICON,
-    navClass: 'capability-router-nav',
+    navClass: 'hermes-one-capability-router-nav',
     onOpen,
   });
 })();

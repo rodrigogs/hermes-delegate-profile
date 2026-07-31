@@ -8,12 +8,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-EXTENSION = ROOT / "webui_extension" / "capability-router"
+EXTENSION = ROOT / "webui_extension" / "hermes-one-capability-router"
 
 
 def test_extension_manifest_declares_token_v1_sidecar():
     manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["id"] == "capability-router"
+    assert manifest["id"] == "hermes-one-capability-router"
     assert manifest["scripts"] == ["router-nav.js"]
     assert manifest["stylesheets"] == ["router-nav.css"]
     assert manifest["sidecar"] == {
@@ -137,7 +137,7 @@ def test_extension_css_only_dresses_the_nav_button():
 
     css = (EXTENSION / "router-nav.css").read_text(encoding="utf-8")
 
-    assert ".capability-router-nav" in css
+    assert ".hermes-one-capability-router-nav" in css
     assert "hover" in css, "the nav button needs a hover state"
     assert "@media" in css, "the sidebar label collapses on a narrow shell"
     # Colour means state in this system, so a nav button uses contrast, not a hue.

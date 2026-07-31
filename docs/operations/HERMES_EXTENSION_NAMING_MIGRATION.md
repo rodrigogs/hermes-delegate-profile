@@ -40,7 +40,7 @@ ativas, foi removido explicitamente do bundle.
 | Tool Agent | `delegate_profile` | `delegate_profile` | — | **manter** |
 | Biblioteca de extensões One | `hermes-one-extension-kit` | `hermes-one-extension-kit` | Hermes One Extension Kit | **concluído** |
 | Painel Office | `hermes-one-office-3d` | `hermes-one-office-3d` | Office 3D | **concluído** |
-| Painel/sidecar de roteamento | `capability-router` | `hermes-one-profile-router` | Profile Router | renomear |
+| Painel/sidecar de roteamento | `hermes-one-capability-router` | `hermes-one-capability-router` | Capability Router | **concluído — nome mantido** |
 | Painel/sidecar de memória | `memory-graph` | `hermes-one-fact-explorer` | Fact Explorer | renomear |
 | Unit Router | `hermes-router-sidecar.service` | manter inicialmente | Profile Router sidecar | label agora; ID depois |
 | Unit Memory | `hermes-memory-sidecar.service` | manter inicialmente | Fact Explorer sidecar | label agora; ID depois |
@@ -54,8 +54,18 @@ ativas, foi removido explicitamente do bundle.
   bridge de tema para as demais extensões. `hermes-one-extension-kit` descreve
   essa função e não disputa o nome genérico `hermes-panel`.
 - O Office não é mais um launcher separado; é uma view persistente no shell.
-- O router decide o **profile** alvo e só então delega. Ele não é um framework
-  genérico de capability routing. `Profile Router` é a superfície correta.
+- `Profile Router` foi **rejeitado pela evidência**. A justificativa original dizia
+  que o router decide o profile alvo; medido sobre 252 decisões reais em
+  `state/routes.jsonl`, o profile é praticamente constante (`coder` em 230, mais 22
+  vetos de blocklist sem profile) enquanto 7 modelos distintos foram escolhidos. A
+  variável que este componente decide é o modelo, por capacidade: as regras
+  produzem `model` além de `profile`, a tabela de política é `tiers: T1..T4` com
+  `_TIER_ORDER`, o piso de sessão compara tiers de capacidade, `service.routes()`
+  expõe `model` e não `profile`, e o console lê `model` 95 vezes, `tier` 27 e
+  `profile` 3. `Profile Router` apontaria justamente para a dimensão que não varia,
+  e brigaria com o vocabulário do próprio console — uma view "Profile Router" cuja
+  seção principal é "Capability ladder". O prefixo do bundle resolve a colisão de
+  namespace sem trocar a superfície: `hermes-one-capability-router`.
 - A memória apresenta fatos, confiança e alcance; o grafo é somente uma das
   visualizações. `Fact Explorer` descreve a experiência real.
 
@@ -97,10 +107,21 @@ view e não recarrega ao retornar.
 
 ### Fase C — Profile Router
 
-Renomear `capability-router` para `hermes-one-profile-router` em manifest,
-assets, instalador, sidecar, testes e updater. Criar uma migração explícita de
-consentimento/token ou exigir novo consentimento de forma visível — nunca
-silenciar uma falha 403.
+Concluída, com o nome mantido: `capability-router` recebeu apenas o prefixo do
+bundle e virou `hermes-one-capability-router` em manifest, assets, instalador,
+sidecar, console, testes, CI e updater — 53 referências em dois repositórios. A
+`navClass` acompanhou o ID, como nas fases A e B.
+
+Consentimento/token: **nada a migrar, e verificado antes de mexer**. O token vive
+em `~/.hermes/webui/sidecar-auth/<extension-id>.token` e o diretório não existe em
+nenhuma das duas instalações; `read_expected_token()` retorna `present=False` sob
+o ID antigo e sob o novo. O console nunca foi consentido aqui — `/routes` responde
+`sidecar token not provisioned`, e `/health` é auth-exempt, que é por que ele
+respondia mesmo assim. Não houve 403 para silenciar: no primeiro consentimento a
+WebUI provisiona o token já sob o ID novo.
+
+O nome do arquivo da unit segue como `hermes-router-sidecar.service`, conforme a
+regra desta fase; só a descrição muda.
 
 A unit fica com o nome atual na primeira release, mas recebe a descrição
 `Hermes One Profile Router sidecar`. A renomeação da unit é uma operação

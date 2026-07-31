@@ -1,0 +1,5 @@
+.hermes-one-capability-router-nav{color:var(--muted)}
+.hermes-one-capability-router-nav:hover{color:var(--text);background:rgba(255,255,255,.06)}
+.hermes-one-capability-router-nav-label{display:none}
+.sidebar-nav .hermes-one-capability-router-nav-label{display:inline}
+@media(max-width:900px){.sidebar-nav .hermes-one-capability-router-nav-label{display:none}}

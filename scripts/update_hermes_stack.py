@@ -62,7 +62,7 @@ LOCK_NAME = "update-locks/hermes-stack.lock"
 # phase A renamed it to hermes-one-extension-kit, which meant a validation failure
 # on a healthy manifest.
 #
-# Only the two extensions this install actually ships are required. capability-router
+# Only the two extensions this install actually ships are required. hermes-one-capability-router
 # and memory-graph carry sidecars that run on the old box and are deliberately absent
 # from extensions.json here, so requiring them would fail the same way.
 REQUIRED_EXTENSION_IDS = {

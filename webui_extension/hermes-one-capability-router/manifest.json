@@ -1,5 +1,5 @@
 {
-  "id": "capability-router",
+  "id": "hermes-one-capability-router",
   "name": "Capability Router",
   "scripts": ["router-nav.js"],
   "stylesheets": ["router-nav.css"],
