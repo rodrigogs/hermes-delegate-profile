@@ -368,7 +368,15 @@ class TestHandlerIntegration:
         handler = self._make_handler(dp, classify_fn=mock_classify)
         result = handler({"goal": "Debug race condition", "profile": "auto"})
         parsed = json.loads(result)
-        assert parsed.get("failure_kind") in ("unknown_profile", "quota_exhausted", None)
+        # These tests assert only that the ROUTER ran and produced a target; the
+        # spawn itself is not stubbed here, so any downstream provider verdict is
+        # acceptable. "agent_error" joined the list when _reported_agent_failure
+        # learned to recognise a terminal provider failure that exits zero - the
+        # dispatch really does fail in this environment, and reporting that is the
+        # correct behaviour, not a regression.
+        assert parsed.get("failure_kind") in (
+            "unknown_profile", "quota_exhausted", "agent_error", None
+        )
 
     def test_no_profile_triggers_router(self, dp):
         """Omitting profile triggers the router (same as auto)."""
@@ -378,7 +386,15 @@ class TestHandlerIntegration:
         handler = self._make_handler(dp, classify_fn=mock_classify)
         result = handler({"goal": "Rename getCwd in src/utils.py"})
         parsed = json.loads(result)
-        assert parsed.get("failure_kind") in ("unknown_profile", "quota_exhausted", None)
+        # These tests assert only that the ROUTER ran and produced a target; the
+        # spawn itself is not stubbed here, so any downstream provider verdict is
+        # acceptable. "agent_error" joined the list when _reported_agent_failure
+        # learned to recognise a terminal provider failure that exits zero - the
+        # dispatch really does fail in this environment, and reporting that is the
+        # correct behaviour, not a regression.
+        assert parsed.get("failure_kind") in (
+            "unknown_profile", "quota_exhausted", "agent_error", None
+        )
 
     def test_router_failure_falls_through(self, dp, monkeypatch):
         """If router fails, delegation proceeds without crashing.
