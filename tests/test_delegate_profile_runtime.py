@@ -31,6 +31,25 @@ def test_handler_returns_bad_args_when_router_cannot_resolve_profile(monkeypatch
     assert result == {"error": "profile is required", "failure_kind": "bad_args"}
 
 
+def test_explicit_auto_profile_is_a_sentinel_not_a_profile_name(monkeypatch):
+    """profile="auto" asks the router to choose; it is never a real profile.
+
+    Before the fix the sentinel survived a router decline, reached
+    _profile_exists("auto"), and produced "Profile 'auto' does not exist. Create it
+    with: hermes profile create auto" - instructing the operator to create a
+    profile that would then shadow the sentinel. The decline must read as the same
+    bad_args the empty case gives.
+    """
+    monkeypatch.setattr(_dp, "_route_task", lambda *_args: None)
+    handler = _dp._make_handler("parent", lambda _args: "inline")
+    result = json.loads(handler({"goal": "task", "profile": "auto"}))
+    assert result == {"error": "profile is required", "failure_kind": "bad_args"}
+    # And the router still gets to choose when it can.
+    monkeypatch.setattr(_dp, "_route_task", lambda *_a: {"profile": "coder", "model": "m"})
+    routed = json.loads(handler({"goal": "task", "profile": "auto"}))
+    assert routed.get("error") != "profile is required"
+
+
 def test_close_pipes_and_tail_bound_memory():
     class Pipe:
         def __init__(self, fail=False):

@@ -798,6 +798,13 @@ def _make_handler(
         routed_provider = ""
         routed_fallbacks: list = []
         if not profile or profile == "auto":
+            # "auto" is the sentinel asking the router to choose; it is never a
+            # real profile name. Clear it before routing, so a router decline
+            # falls through to the "profile is required" branch instead of
+            # reaching _profile_exists("auto") and telling the operator to run
+            # `hermes profile create auto` - advice that would create a profile
+            # shadowing the sentinel.
+            profile = ""
             routed = _route_task(goal, model, classify_fn)
             if routed is not None:
                 profile = routed.get("profile", "") or profile
