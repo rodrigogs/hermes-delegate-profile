@@ -3,13 +3,29 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSION = ROOT / "webui_extension" / "hermes-one-capability-router"
 
+
+def _node() -> str:
+    """The node binary, or a skip.
+
+    A bare "node" in subprocess.run raises FileNotFoundError, which reads as a
+    failing test rather than an unavailable tool - and the deployment keeps node
+    in ~/.local/bin, which is not on the PATH of every runner that reaches these
+    tests. A syntax check that cannot run is a skip; it is not a syntax error.
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    return node
 
 def test_extension_manifest_declares_token_v1_sidecar():
     manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
@@ -66,7 +82,7 @@ def test_extension_script_mounts_the_console_instead_of_duplicating_it():
         assert destructive_pattern not in script
     assert "textContent" in script
     checked = subprocess.run(
-        ["node", "--check", str(script_path)],
+        [_node(), "--check", str(script_path)],
         text=True,
         capture_output=True,
         check=False,
@@ -101,7 +117,7 @@ def test_console_html_is_xss_safe_and_syntax_valid(tmp_path):
     script_file = tmp_path / "console_inline.js"
     script_file.write_text(script, encoding="utf-8")
     checked = subprocess.run(
-        ["node", "--check", str(script_file)],
+        [_node(), "--check", str(script_file)],
         text=True, capture_output=True, check=False,
     )
     assert checked.returncode == 0, checked.stderr
