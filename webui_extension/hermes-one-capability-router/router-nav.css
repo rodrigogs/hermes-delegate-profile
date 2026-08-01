@@ -24,12 +24,18 @@
   min-height: 0;
 }
 .sidebar .panel-view[data-panel-token="router"] .panel-head {
+  /* Longhands, not the font shorthand: `font: 600 11px/1.3 inherit` is a parse
+     error (the shorthand needs a family, and inherit is only valid as the whole
+     value), so the declaration was dropped and these rows rendered at the UA
+     default instead. The family is deliberately not set: it inherits. */
   min-height: 41px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--muted);
   border-bottom-color: color-mix(in srgb, var(--muted) 28%, transparent);
   color: var(--muted);
-  font: 600 11px/1.3 inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
   text-transform: uppercase;
   letter-spacing: .08em;
   display: flex;
@@ -47,7 +53,9 @@
   border-radius: 8px;
   background: none;
   color: var(--text);
-  font: 500 13px/1.35 inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
   text-align: left;
   cursor: pointer;
 }
@@ -59,7 +67,9 @@
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--accent);
 }
-.router-section-n { color: var(--muted); font: 500 12px/1 inherit; }
+.router-section-n { color: var(--muted); font-size: 12px;
+ font-weight: 500;
+ line-height: 1; }
 /* The host's 44px floor under a coarse pointer applies to every row it draws. */
 @media (hover: none) and (pointer: coarse) {
   .router-section { min-height: 44px; }

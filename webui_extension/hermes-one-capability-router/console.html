@@ -1427,11 +1427,27 @@
 
         const line = (opts) => {
           const step = el('div', `step${opts.editable ? ' editable' : ''}${opts.cold ? ' cold' : ''}`);
+          // Mark the probe winner HERE rather than after the fact. It used to be applied
+          // in probe(), so clicking Edit or Refresh rebuilt the sheet with no .hit while
+          // #probeResult still named the winning rule — the verdict and the list
+          // disagreed until the operator probed again.
+          if (opts.id && !opts.synthetic && String(opts.id) === state.probeRule) {
+            step.classList.add('hit');
+            step.setAttribute('aria-current', 'true');
+          }
           // The dry run names the rule that won; without this the operator has to
           // read a sentence and then find that rule by eye in the list below it.
           // Kong and LaunchDarkly both mark the winning rule in place for the same
           // reason: first-match-wins is only legible if you can see WHERE it stopped.
-          if (opts.id) step.dataset.ruleId = opts.id;
+          // Synthetic rows (default / classifier / fail-safe / blocklist / the runtime
+          // note) share the id namespace with real rule ids, and all of those names are
+          // lint-clean for a rule. Without a prefix a rule named "default" marked two
+          // rows — one of which never matched — and emitted two aria-current. Real ids
+          // are matched against String(matched_rule_id); synthetic ones can never
+          // collide because a policy id cannot start with the marker.
+          if (opts.id) {
+            step.dataset.ruleId = opts.synthetic ? `__${opts.id}` : String(opts.id);
+          }
           step.append(el('div', 'step-ord', opts.ord || ''));
           const what = el('div', 'step-what');
           what.append(el('div', 'step-id', opts.id));
@@ -1472,7 +1488,7 @@
         // condition), --warn for a rule that never fired, --info on the single
         // Stage 1 heading, and the accent on the line a probe matched.
         box.append(line({
-          ord: '', id: 'blocklist',
+          ord: '', id: 'blocklist', synthetic: true,
           when: 'the requested model is banned or cooling down',
           target: 'refuse', targetColor: 'var(--bad-text)',
           hits: byCause.blocklist_veto || 0,
@@ -1494,7 +1510,7 @@
         });
         const def = policy.default || {};
         box.append(line({
-          ord: '·', id: 'default',
+          ord: '·', id: 'default', synthetic: true,
           when: 'nothing above matched',
           target: def.action === 'classify' ? 'classifier' : (def.model || '—'),
           targetColor: '',
@@ -1506,7 +1522,7 @@
         box.append(stage('Stage 1 · asks a model', 'inference', 'costs a model call'));
         const cls = (state.status && state.status.classifier) || policy.classifier || {};
         box.append(line({
-          ord: '', id: 'classifier',
+          ord: '', id: 'classifier', synthetic: true,
           when: `${cls.model || '—'} picks a tier`,
           target: 'a tier', targetColor: '',
           hits: byCause.classifier || 0,
@@ -1516,7 +1532,7 @@
         const fs = policy.fail_safe || {};
         const fsHits = byCause.fail_safe_strong || 0;
         box.append(line({
-          ord: '', id: 'fail-safe',
+          ord: '', id: 'fail-safe', synthetic: true,
           when: fsHits && total
             ? `when the classifier cannot answer — ${Math.round(100 * fsHits / total)}% of the decisions counted here did`
             : 'when the classifier cannot answer',
@@ -1534,7 +1550,7 @@
         // Runtime helpers are honest about being cold on the live path.
         box.append(stage('Runtime'));
         box.append(line({
-          ord: '', id: 'cache · session pin', cold: true,
+          ord: '', id: 'cache · session pin', synthetic: true, cold: true,
           when: 'rebuilt per call on this deployment, so neither carries between tasks',
         }));
       }
@@ -1655,18 +1671,14 @@
         // The rule the evaluation actually stopped at. Was hardcoded to 'default'
         // for every classifier-bound task, which marked the wrong line whenever a
         // real rule had matched and delegated.
-        state.probeRule = dec.matched_rule_id || (d.requires_classifier ? 'classifier' : 'default');
+        // String(): a YAML `id: 7` arrives as a number and dataset values are always
+        // strings, so === never matched and no row was marked at all.
+        state.probeRule = dec.matched_rule_id != null
+          ? String(dec.matched_rule_id)
+          : (d.requires_classifier ? '__classifier' : '__default');
+        // renderSheet's line() applies .hit from state.probeRule, so the mark survives
+        // an Edit/Refresh re-render instead of being painted on afterwards.
         renderSheet();
-        // Match on data-rule-id, not on the rendered label: the label is display
-        // text and the marker silently stopped working the moment one was reworded.
-        $('sheet').querySelectorAll('.step').forEach((s) => {
-          if (s.dataset.ruleId === state.probeRule) {
-            s.classList.add('hit');
-            s.setAttribute('aria-current', 'true');
-          } else {
-            s.removeAttribute('aria-current');
-          }
-        });
       }
 
       // ── Replay: the path a recorded decision really took ─────────────
