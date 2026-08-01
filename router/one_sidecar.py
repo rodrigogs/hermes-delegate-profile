@@ -228,7 +228,17 @@ class SidecarApp:
         supplied = next(
             (value for name, value in headers.items() if name.lower() == TOKEN_HEADER.lower()), None
         )
-        if supplied is None or not hmac.compare_digest(supplied, expected.token):
+        # Compare BYTES, not str. hmac.compare_digest raises TypeError on a str with
+        # any non-ASCII character, and http.server decodes header values as latin-1,
+        # so a header of "café" reached this line as a non-ASCII str and the
+        # TypeError escaped dispatch(). Measured against the running sidecar: the
+        # client got zero bytes back — an empty reply instead of a 401 — on every
+        # token-gated route. surrogateescape so an undecodable byte still compares
+        # rather than raising on the way in.
+        if supplied is None or not hmac.compare_digest(
+            supplied.encode("utf-8", "surrogateescape"),
+            expected.token.encode("utf-8", "surrogateescape"),
+        ):
             return _error(401, "invalid sidecar token")
         return None
 

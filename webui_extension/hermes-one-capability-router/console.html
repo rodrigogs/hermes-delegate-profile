@@ -1585,7 +1585,20 @@
         const dec = d.decision || {};
         const out = dec.output || {};
         const verdict = el('div', 'verdict');
-        if (d.requires_classifier) {
+        // A deny rule refuses the task; it has no model to report. Verified against
+        // rules.match: {'then': {'deny': true}} yields output {deny: true} with no
+        // model, so the routed-to branch rendered "routed to —" for a refusal while
+        // the Pipeline row one line above correctly said "→ refuse". renderSheet
+        // already tests then.deny; this is the same test on the decision side.
+        if (out.deny === true) {
+          verdict.append(el('span', '', 'Caught by '));
+          verdict.append(el('span', 'verdict-model', dec.matched_rule_id || 'default'));
+          verdict.append(el('span', '', ', which '));
+          const refuse = el('span', 'verdict-model', 'refuses');
+          refuse.style.color = 'var(--bad-text)';
+          verdict.append(refuse);
+          verdict.append(el('span', '', ' the task \u2014 no model is asked.'));
+        } else if (d.requires_classifier) {
           // Honest limit: /explain runs Stage 0 only, so a task bound for the
           // classifier cannot be previewed all the way to a model.
           //
