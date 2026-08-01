@@ -770,10 +770,32 @@
        clicking a sidebar row clicks the tab — they are just not drawn twice.
        The head survives without its title: it carries the freshness chip and the
        Edit/Refresh actions, which have no other home. */
-    .is-embedded .view-title { display: none; }
     .is-embedded nav.tabs { display: none; }
-    /* With no title the actions would sit in column 1, hard left. */
-    .is-embedded .view-head > .view-actions { grid-column: 2; }
+    /* The head matches the shell sidebar's .panel-head exactly, measured off the running
+       host: 41px min-height, 8px/16px padding, one hairline below. It was 45px with an
+       18px title, which read as a second navigation row one row off from the real one. */
+    .is-embedded .view-head {
+      min-height: 41px;
+      padding: 8px 16px;
+      align-items: center;
+    }
+    .is-embedded .view-title {
+      font: 600 var(--t-label)/1.3 var(--sans);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    /* The 41px min-height was already applying; the box measured 45 because the
+       ACTIONS were 28px tall and 8px padding top and bottom put it over. 25px of
+       content plus 16px of padding lands on 41 exactly. */
+    .is-embedded .view-head > .view-actions { min-height: 0; }
+    .is-embedded .view-head .btn,
+    .is-embedded .view-head .reach {
+      min-height: 25px;
+      padding-top: 2px;
+      padding-bottom: 2px;
+      font-size: var(--t-label);
+    }
 
     /* Which clause satisfied the rule. Chips rather than a sentence: the operator
        is scanning for a field name, and three conditions in prose becomes a comma

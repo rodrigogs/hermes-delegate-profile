@@ -15,7 +15,10 @@
    Measured live on the running shell: --bg #0D0D1A, --text #FFF8DC, --muted #C0C0C0
    and --accent #FFD700 are defined; --font-sans and --font-mono are NOT, so type
    inherits rather than naming a family that resolves to nothing. */
-.sidebar .panel-view[data-panel-token="router"] {
+/* .active is the host's own switch for "show exactly one panel-view". Setting
+   display unconditionally outranked it and stacked both extension sidebars in
+   the column at once — measured, router and memory both 431px tall together. */
+.sidebar .panel-view[data-panel-token="router"].active {
   display: flex;
   flex-direction: column;
   min-height: 0;
