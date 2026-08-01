@@ -474,8 +474,26 @@ def _reported_agent_failure(stdout: str, stderr: str) -> bool:
     provider, but its process status remains zero. Treating that transcript as
     a successful delegation silently returns an error banner as the agent's
     answer and prevents the router's cross-rail fallback from running.
+
+    The retry count is not fixed: the same banner renders "after 1 retry",
+    "after 3 retries", "after 5 retries" depending on the provider's own retry
+    budget, and pinning the literal "after 3 retries:" meant every other count
+    read as success. Measured against the real function: "after 5 retries" and
+    "after 1 retry" were both missed, as was a bare provider banner carrying only
+    the status code. The pattern now tolerates any count and singular/plural, and
+    a terminal-error line that names no count at all still counts as a failure
+    when it carries an exhaustion signal - reusing _EXHAUSTION_PATTERNS rather
+    than inventing a second, divergent list.
     """
-    return "API call failed after 3 retries:" in f"{stdout}\n{stderr}"
+    blob = f"{stdout}\n{stderr}"
+    if re.search(r"API call failed after \d+ retr(?:y|ies)\s*:", blob, re.IGNORECASE):
+        return True
+    # A provider can also fail terminally without the retry preamble. Only treat
+    # that as failure when the transcript actually names an exhaustion cause, so
+    # an answer that merely discusses a 429 is not misread as one.
+    if re.search(r"\b(?:API|provider|upstream)\s+(?:call\s+)?(?:failed|error)\b", blob, re.IGNORECASE):
+        return _is_exhaustion(blob)
+    return False
 
 
 _EXHAUSTION_PATTERNS = (
