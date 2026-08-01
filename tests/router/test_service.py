@@ -399,6 +399,9 @@ def test_routes_honors_limit_and_bad_limit_falls_back(tmp_path, monkeypatch, con
 
 
 def test_routes_skips_corrupt_lines_and_missing_file(tmp_path, monkeypatch, config_path):
+    # This test asserts the HERMES_HOME-derived path, so it opts out of the
+    # blanket HERMES_ROUTE_TRACE_FILE guard in conftest.
+    monkeypatch.delenv("HERMES_ROUTE_TRACE_FILE", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from router.durable_decision_log import routes_path
     base = routes_path()

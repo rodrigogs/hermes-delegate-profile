@@ -31,3 +31,25 @@ def _no_real_spawn(monkeypatch):
             raising=False,
         )
     yield
+
+@pytest.fixture(autouse=True)
+def _isolate_route_trace(tmp_path, monkeypatch):
+    """Keep test routing decisions out of the operator's live trace.
+
+    ``durable_decision_log.routes_path()`` resolves to a profile-independent file
+    under HERMES_HOME so the plugin and the sidecar converge on one log. That is
+    right in production and wrong under test: the suite drives real routing
+    decisions, so every run appended to the live file. Measured: one run of
+    tests/test_router_integration.py added 10 entries, and the operator's trace
+    held 517 of them across 10 distinct synthetic tasks - a replay surface showing
+    almost nothing but test fixtures, which is worse than showing nothing.
+
+    HERMES_ROUTE_TRACE_FILE is the override the module already honours, so
+    pointing it at tmp_path needs no production change.
+
+    Tests that steer the path themselves - by setting HERMES_HOME to assert the
+    profile-peeling logic - must win over this blanket guard, so they delete the
+    variable. monkeypatch.delenv in the test unwinds cleanly at teardown.
+    """
+    monkeypatch.setenv("HERMES_ROUTE_TRACE_FILE", str(tmp_path / "routes.jsonl"))
+    yield
