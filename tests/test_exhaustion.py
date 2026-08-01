@@ -73,3 +73,42 @@ def test_reported_failure_needs_a_cause_not_just_the_word_error():
     assert _dp._reported_agent_failure("Provider error: 429 Too Many Requests", "") is True
     assert _dp._reported_agent_failure("You should handle HTTP 429 with backoff.", "") is False
     assert _dp._reported_agent_failure("Done. Renamed getCwd in 3 files.", "") is False
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "HTTP 401 Unauthorized. Non-retryable client error (HTTP 401). Aborting.",
+        "HTTP 403 Forbidden. Aborting.",
+        "TLS certificate verification failed",
+        "Connection refused",
+        "Name or service not known",
+    ],
+)
+def test_terminal_failures_without_a_retry_preamble_are_failures(transcript):
+    """Not every terminal provider failure retries first.
+
+    An expired key, a revoked entitlement, a TLS failure and a refused connection
+    all abort immediately, so they never carry "after N retries". Measured before
+    this branch: every one read as SUCCESS, meaning the error transcript was
+    returned to the caller as the agent's answer and no rail-switch was tried.
+    """
+    assert _dp._reported_agent_failure(transcript, "") is True
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "You should return 401 when the token is absent.",
+        "Use TLS 1.3 and verify the certificate chain.",
+        "Handle connection errors with exponential backoff.",
+        "Done. Renamed getCwd in 3 files.",
+    ],
+)
+def test_prose_about_failures_is_not_a_failure(transcript):
+    """A correct answer that discusses these codes must not be retried elsewhere.
+
+    This is the cost of widening the net: every pattern requires an abort marker
+    or an unambiguous transport error, never a bare status code in a sentence.
+    """
+    assert _dp._reported_agent_failure(transcript, "") is False

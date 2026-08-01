@@ -488,12 +488,33 @@ def _reported_agent_failure(stdout: str, stderr: str) -> bool:
     blob = f"{stdout}\n{stderr}"
     if re.search(r"API call failed after \d+ retr(?:y|ies)\s*:", blob, re.IGNORECASE):
         return True
-    # A provider can also fail terminally without the retry preamble. Only treat
-    # that as failure when the transcript actually names an exhaustion cause, so
-    # an answer that merely discusses a 429 is not misread as one.
+    # A provider can also fail terminally with no retry preamble at all, and not
+    # every terminal failure is an exhaustion: an expired key (401), a revoked
+    # entitlement (403), a TLS failure or a refused connection all abort without
+    # ever retrying. Measured before this branch existed, every one of those read
+    # as SUCCESS and the error transcript was returned as the agent's answer.
+    if re.search(_TERMINAL_FAILURE_RE, blob, re.IGNORECASE):
+        return True
+    # A generic "API failed" line counts only when it names an exhaustion cause,
+    # so an answer that merely discusses a 429 is not mistaken for one.
     if re.search(r"\b(?:API|provider|upstream)\s+(?:call\s+)?(?:failed|error)\b", blob, re.IGNORECASE):
         return _is_exhaustion(blob)
     return False
+
+
+# Terminal provider failures that abort WITHOUT retrying, so they never carry the
+# "after N retries" preamble. Each needs an abort/non-retryable marker or an
+# unambiguous transport error - a bare "401" in prose must not trip this.
+_TERMINAL_FAILURE_RE = "|".join((
+    r"non-?retryable[^.\n]{0,40}\b(?:4\d\d|5\d\d)\b",
+    r"\b(?:4\d\d|5\d\d)\b[^.\n]{0,40}\bnon-?retryable",
+    r"\b(?:401|403)\b[^.\n]{0,60}\b(?:abort(?:ing|ed)?|giving up|unauthori[sz]ed|forbidden)\b",
+    r"\b(?:unauthori[sz]ed|forbidden)\b[^.\n]{0,40}\babort(?:ing|ed)?\b",
+    r"\bTLS\b[^.\n]{0,40}\b(?:verification|handshake)\s+failed\b",
+    r"\b(?:certificate\s+verify|certificate\s+verification)\s+failed\b",
+    r"\bconnection\s+(?:refused|reset\s+by\s+peer)\b",
+    r"\b(?:name\s+or\s+service\s+not\s+known|temporary\s+failure\s+in\s+name\s+resolution)\b",
+))
 
 
 _EXHAUSTION_PATTERNS = (
