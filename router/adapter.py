@@ -258,17 +258,26 @@ def _apply_session_floor(
     return result, True
 
 
-def _cause_from_rule(rule_id: str, output: Dict[str, Any]) -> str:
-    """Map rule to cause label."""
+def _cause_from_rule(rule_id: Any, output: Dict[str, Any]) -> str:
+    """Map rule to cause label.
+
+    ``rule_id`` is annotated str but is not one in practice: YAML gives an int for
+    a numbered rule and the classifier path passes None, and every branch here
+    called ``.lower()`` on it. Measured before the fix: _cause_from_rule(7, out)
+    and (None, out) both raised AttributeError, from inside the code whose only
+    job is to label a decision the operator wants explained - so a numbered rule
+    took down the explanation of the very route it selected.
+    """
     if output.get("deny"):
         return "blocklist_veto"
-    if "keyword" in rule_id.lower() or "review" in rule_id.lower():
+    ident = "" if rule_id is None else str(rule_id).lower()
+    if "keyword" in ident or "review" in ident:
         return "keyword_match"
-    if "size" in rule_id.lower():
+    if "size" in ident:
         return "size_rule"
-    if "code" in rule_id.lower() or "trivial" in rule_id.lower():
+    if "code" in ident or "trivial" in ident:
         return "has_code_rule"
-    if "hard" in rule_id.lower():
+    if "hard" in ident:
         return "hard_rule"
     return "default_fallthrough"
 

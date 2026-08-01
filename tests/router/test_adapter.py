@@ -288,3 +288,22 @@ class TestRouteDecisionLog:
         route("Hello", ROUTER_CONFIG, decision_log=dlog)
         entries = dlog.tail(1)
         assert entries[0]["cause"] == "fail_safe_strong"
+
+
+def test_cause_from_rule_survives_a_non_string_rule_id():
+    """A numbered rule must not crash the label that explains its own decision.
+
+    rule_id is annotated str but YAML yields an int for a numbered rule and the
+    classifier path passes None. Every branch called .lower() on it, so
+    _cause_from_rule(7, out) raised AttributeError from inside the explanation
+    path - the route was chosen correctly and then became unexplainable.
+    """
+    from router.adapter import _cause_from_rule
+
+    out = {"model": "glm-5.2-fast", "provider": "zai"}
+    assert _cause_from_rule("hard-verbs", out) == "hard_rule"
+    assert _cause_from_rule(7, out) == "default_fallthrough"
+    assert _cause_from_rule(None, out) == "default_fallthrough"
+    assert _cause_from_rule(1.5, out) == "default_fallthrough"
+    # A numeric id still yields to a deny, which does not consult the id at all.
+    assert _cause_from_rule(7, {"deny": True}) == "blocklist_veto"
