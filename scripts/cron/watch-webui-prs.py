@@ -10,6 +10,7 @@ State lives beside this script. First run records and stays quiet about PRs that
 are simply still open; it reports only what it has not seen before.
 """
 import json
+import os
 import pathlib
 import sys
 import urllib.error
@@ -163,20 +164,35 @@ def main():
             reports.append(msg)
             reports.append(f"    {snap['url']}")
 
-    STATE.write_text(json.dumps(new_all, indent=2) + "\n")
+    # Written via a temp file in the same directory and renamed: os.replace is
+    # atomic, so a crash or a kill between truncate and write cannot leave a
+    # half-written file behind. The state IS the watermark - a truncated one
+    # re-announces every review and every status change on the next run.
+    tmp = STATE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(new_all, indent=2) + "\n")
+    os.replace(tmp, STATE)
 
-    # Every PR resolved: say so once, then the job can be removed.
-    live = [n for n, s in new_all.items() if s["state"] == "open"]
+    # A PR that could not be checked is not a resolved PR. It is missing from
+    # new_all when it errored on a run with no prior state, and counting only
+    # what is present would let an unreachable PR read as closed - the job
+    # would announce "all resolved" and offer to delete itself while still
+    # owing an answer about that PR. So a PR counts as resolved only if this
+    # run actually saw it in a non-open state.
+    unresolved = [
+        n for n in PRS
+        if str(n) not in new_all or new_all[str(n)]["state"] == "open"
+    ]
     if reports:
-        print("hermes-webui pull requests — something changed:")
+        print("hermes-webui pull requests: something changed:")
         print("\n".join(reports))
-        if not live:
-            print("\n  All four are now resolved. This watch job can be removed:")
-            print("    hermes cron rm webui-pr-watch")
-    elif errors and len(errors) == len(PRS):
-        # Total failure is worth one line; partial failures stay quiet.
+    if errors:
+        # Every failure is reported, partial or total. Staying quiet about a PR
+        # that could not be reached is how a stalled watch looks like a calm one.
         print("hermes-webui PR watch could not reach GitHub:")
         print("\n".join(errors))
+    if reports and not unresolved:
+        print(f"\n  All {len(PRS)} are now resolved. This watch job can be removed:")
+        print("    hermes cron rm webui-pr-watch")
     return 0
 
 
