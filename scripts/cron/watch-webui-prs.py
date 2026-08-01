@@ -120,9 +120,16 @@ def describe(number, old, new):
         who = new.get("last_review_by") or "a reviewer"
         verb = REVIEW_VERDICTS.get(state, f"left a {state} review on")
         lines.append(f"{who} {verb} #{number}: {new['title']}")
-    talk = (new["review_comments"] + new["comments"]) - (old["review_comments"] + old["comments"])
-    if talk > 0:
-        lines.append(f"{talk} new comment(s) on #{number} — review feedback to answer")
+    # Each counter is compared on its own, not as a sum. A net delta hides a run
+    # where one thread is resolved and another opened: +1 review comment and -1
+    # issue comment sum to zero, and the run that should have said "answer this"
+    # said nothing. Losing review feedback is the one thing this job exists to
+    # prevent, so an increase in EITHER counter reports.
+    review_delta = new["review_comments"] - old["review_comments"]
+    issue_delta = new["comments"] - old["comments"]
+    if review_delta > 0 or issue_delta > 0:
+        talk = max(review_delta, 0) + max(issue_delta, 0)
+        lines.append(f"{talk} new comment(s) on #{number}: review feedback to answer")
     # dirty: the branch no longer merges cleanly. Ours to rebase.
     if new["mergeable_state"] == "dirty" and old["mergeable_state"] != "dirty":
         lines.append(f"#{number} now CONFLICTS with master — needs a rebase")
