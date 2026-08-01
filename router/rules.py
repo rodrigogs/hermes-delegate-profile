@@ -96,7 +96,9 @@ def explain(
     if rule_id is not None:
         for rule in rules:
             if rule["id"] == rule_id:
-                matched_clauses = _matching_clauses(rule.get("when", {}), features)
+                matched_clauses = _matching_clauses(
+                    rule.get("when", {}), features, blocked_model
+                )
                 break
         # Determine cause from the matched rule
         cause = _determine_cause(rule_id, output)
@@ -331,10 +333,26 @@ def _resolve_tiers(output: Dict[str, Any], tiers: Dict[str, Dict[str, Any]]) -> 
     return result
 
 
-def _matching_clauses(when: Dict[str, Any], features: Dict[str, Any]) -> Dict[str, Any]:
-    """Return the subset of when clauses that matched."""
+def _matching_clauses(
+    when: Dict[str, Any],
+    features: Dict[str, Any],
+    blocked_model: bool = False,
+) -> Dict[str, Any]:
+    """Return the subset of when clauses that matched.
+
+    blocked_model is not a feature: it is computed by the caller and injected, so a
+    plain `field in features` test silently dropped it. The console renders this dict
+    as the "because ..." chips, so dropping it meant a two-clause rule explained
+    itself with one chip and a blocked_model-only rule gave no reason at all.
+    _all_clauses_match special-cases it the same way.
+    """
     matched: Dict[str, Any] = {}
     for field, condition in when.items():
+        if field == "blocked_model":
+            for op, target in condition.items():
+                if _eval_clause(op, blocked_model, target):
+                    matched[field] = condition
+            continue
         if field in features:
             for op, target in condition.items():
                 if _eval_clause(op, features[field], target):
@@ -342,8 +360,14 @@ def _matching_clauses(when: Dict[str, Any], features: Dict[str, Any]) -> Dict[st
     return matched
 
 
-def _determine_cause(rule_id: str, output: Dict[str, Any]) -> str:
-    """Map rule id + output to a closed-set cause label."""
+def _determine_cause(rule_id: Any, output: Dict[str, Any]) -> str:
+    """Map rule id + output to a closed-set cause label.
+
+    rule_id is whatever the policy author wrote. YAML happily yields an int for
+    `id: 7`, and .lower() on that raises AttributeError, which service.explain does
+    not catch — it catches ValueError — so /explain died uncaught. Coerce.
+    """
+    rule_id = "" if rule_id is None else str(rule_id)
     if output.get("deny"):
         return "blocklist_veto"
     if output.get("action") == "classify":
