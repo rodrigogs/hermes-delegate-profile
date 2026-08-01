@@ -60,10 +60,96 @@ def route(
     session_pin: Optional[SessionPin] = None,
     decision_log: Optional[DecisionLog] = None,
 ) -> Dict[str, Any]:
-    """Run the full routing pipeline.
+    """Route a task, and hold the CHOSEN target to the blocklist.
 
-    Returns {profile, model?, provider?, cause, ...} — always a valid
-    delegation target.
+    Stage 0 vets ``requested_model`` - what the caller asked for. That is the one
+    model the router usually does not use: the whole point of auto-routing is that
+    the caller names nothing, so the pre-filter tests an empty string and passes.
+    Everything the pipeline then selects itself - from a rule, a tier, the
+    classifier, or the fail-safe - reached the caller unvetted.
+
+    Measured on the live router.yaml before this wrapper existed: with
+    ``deepseek-v3.2`` in ``manual_ban``, is_blocked() answered True for it and
+    route() still returned ``deepseek-v3.2 @ deepseek``. A ban and a tripped
+    circuit breaker were both advisory over the router's own choices, which is
+    the opposite of what a breaker is for - it exists precisely to steer traffic
+    off a target that is failing, and the router is what picks the target.
+
+    The chosen model is now vetted once, here, after every path has returned. A
+    blocked choice is replaced from the fallback chain when one is available;
+    when none is, the decision is denied rather than dispatched to a target known
+    to be down. This is the only place that can enforce it: the pipeline below
+    exits through seven separate returns.
+    """
+    decision = _route_unchecked(
+        task,
+        config,
+        requested_model=requested_model,
+        requested_provider=requested_provider,
+        classify_fn=classify_fn,
+        blocklist=blocklist,
+        cache=cache,
+        session_pin=session_pin,
+        decision_log=decision_log,
+    )
+    if not isinstance(decision, dict) or decision.get("deny"):
+        return decision
+
+    chosen = str(decision.get("model") or "")
+    if not chosen:
+        return decision
+
+    bl = blocklist or Blocklist(config)
+    if not bl.is_blocked(chosen, str(decision.get("provider") or "")):
+        return decision
+
+    replacement = bl.fallback_for(chosen)
+    # A replacement that is itself blocked is no replacement: walk the chain
+    # rather than swapping one dead target for another.
+    seen = {chosen}
+    while replacement and replacement not in seen:
+        if not bl.is_blocked(replacement, ""):
+            vetted = dict(decision)
+            vetted["model"] = replacement
+            # The provider belonged to the model we just rejected; the chain does
+            # not carry one, so drop it rather than pair a new model with a stale
+            # provider and produce a target that exists nowhere.
+            vetted.pop("provider", None)
+            vetted["blocked_model"] = chosen
+            vetted["cause"] = "blocklist_substituted"
+            return vetted
+        seen.add(replacement)
+        replacement = bl.fallback_for(replacement)
+
+    return {
+        "deny": True,
+        "blocked_model": chosen,
+        "cause": "blocklist_veto",
+        "reason": (
+            f"routed model {chosen!r} is blocked and the fallback chain offers no "
+            "reachable replacement"
+        ),
+    }
+
+
+
+def _route_unchecked(
+    task: str,
+    config: Dict[str, Any],
+    *,
+    requested_model: str = "",
+    requested_provider: str = "",
+    classify_fn: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None,
+    blocklist: Optional[Blocklist] = None,
+    cache: Optional[Cache] = None,
+    session_pin: Optional[SessionPin] = None,
+    decision_log: Optional[DecisionLog] = None,
+) -> Dict[str, Any]:
+    """Run the full routing pipeline, without vetting the chosen target.
+
+    Returns {profile, model?, provider?, cause, ...}. Callers want :func:`route`,
+    which additionally holds the CHOSEN model to the blocklist - this function
+    exits through seven separate returns and cannot enforce that itself.
     """
     bl = blocklist or Blocklist(config)
     cch = cache or Cache()

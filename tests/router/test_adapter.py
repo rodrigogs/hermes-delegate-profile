@@ -307,3 +307,51 @@ def test_cause_from_rule_survives_a_non_string_rule_id():
     assert _cause_from_rule(1.5, out) == "default_fallthrough"
     # A numeric id still yields to a deny, which does not consult the id at all.
     assert _cause_from_rule(7, {"deny": True}) == "blocklist_veto"
+
+
+def _live_config():
+    import yaml
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent.parent
+    return yaml.safe_load((root / "router.yaml").read_text(encoding="utf-8"))
+
+
+def test_a_blocked_model_the_router_chose_itself_is_not_dispatched():
+    """The blocklist must bind the router's own choice, not just the request.
+
+    Stage 0 vets requested_model. Under auto-routing the caller names nothing, so
+    that check tested "" and passed, and whatever the pipeline then selected -
+    rule, tier, classifier or fail-safe - was dispatched unvetted. Measured on the
+    live config: with deepseek-v3.2 banned, is_blocked said True and route() still
+    returned deepseek-v3.2. A tripped circuit breaker was advisory over exactly the
+    decision it exists to steer.
+    """
+    import copy
+    from router.adapter import route
+    from router.blocklist import Blocklist
+
+    cfg = _live_config()
+    task = "Rename getCwd in src/utils.py"
+    chosen = route(task, cfg).get("model")
+    assert chosen, "the live config must route this task somewhere"
+
+    banned = copy.deepcopy(cfg)
+    banned["blocklist"]["manual_ban"].append({"model": chosen, "provider": "", "reason": "test"})
+    bl = Blocklist(banned)
+    assert bl.is_blocked(chosen, "") is True
+
+    out = route(task, banned, blocklist=bl)
+    assert out.get("model") != chosen, f"dispatched a banned model: {out}"
+    # Either a reachable replacement, or an explicit denial - never the dead target.
+    assert out.get("deny") is True or out.get("cause") == "blocklist_substituted"
+    assert out.get("blocked_model") == chosen
+
+
+def test_an_explicit_request_for_a_clean_model_is_untouched():
+    """The wrapper must not disturb the ordinary path."""
+    from router.adapter import route
+
+    cfg = _live_config()
+    out = route("Rename getCwd in src/utils.py", cfg)
+    assert out.get("deny") is not True
+    assert out.get("cause") != "blocklist_substituted"
