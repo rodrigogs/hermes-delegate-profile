@@ -383,3 +383,44 @@ class TestExplain:
         )
         assert result["cause"] == "blocklist_veto"
         assert result["output"]["deny"] is True
+
+
+@pytest.mark.parametrize(
+    "condition,blocked,expected",
+    [
+        ({"eq": True}, True, True),    ({"eq": True}, False, False),
+        ({"eq": False}, True, False),  ({"eq": False}, False, True),
+        ({"ne": True}, True, False),   ({"ne": True}, False, True),
+        ({"ne": False}, True, True),   ({"ne": False}, False, False),
+        ({"nin": [True]}, True, False),({"nin": [True]}, False, True),
+    ],
+)
+def test_blocked_model_honours_the_authors_operator(condition, blocked, expected):
+    """A blocked_model clause must mean what it says.
+
+    The matcher used to re-read the value under condition["eq"], discarding the
+    written operator and defaulting the target to True. `{ne: true}` - the natural
+    "only when NOT blocked" guard - therefore evaluated as `eq true`: False exactly
+    when the model was healthy, making the rule dead on the live path. lint()
+    accepted it and _matching_clauses reported a chip for it, so /explain claimed a
+    clause matched that the engine had rejected.
+    """
+    from router.rules import _all_clauses_match
+
+    feats = {"verb_class": "trivial", "has_code": True, "size_lines": 10}
+    assert _all_clauses_match({"blocked_model": condition}, feats, blocked) is expected
+
+
+@pytest.mark.parametrize(
+    "condition", [{"eq": True}, {"eq": False}, {"ne": True}, {"ne": False}, {"nin": [True]}]
+)
+@pytest.mark.parametrize("blocked", [True, False])
+def test_the_matcher_and_the_chips_never_disagree(condition, blocked):
+    """The explanation surface must not claim a clause the engine rejected."""
+    from router.rules import _all_clauses_match, _matching_clauses
+
+    feats = {"verb_class": "trivial", "has_code": True, "size_lines": 10}
+    when = {"blocked_model": condition}
+    matched = _all_clauses_match(when, feats, blocked)
+    chips = bool(_matching_clauses(when, feats, blocked))
+    assert chips == matched, f"{condition} at blocked={blocked}: engine={matched} chips={chips}"

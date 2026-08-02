@@ -260,7 +260,18 @@ def _all_clauses_match(
     for field, condition in when.items():
         # Special case: blocked_model injected boolean (never in features)
         if field == "blocked_model":
-            if not _eval_clause("eq", blocked_model, condition.get("eq", True)):
+            # Evaluate the AUTHOR'S operators, not a hardcoded eq. Re-reading the
+            # value under condition["eq"] discarded whatever op was written and
+            # defaulted the target to True, so `{ne: true}` - the natural "only
+            # when NOT blocked" guard - evaluated as `eq true` and was False
+            # exactly when the model was healthy. Such a rule is dead on the live
+            # path (rules only run with blocked_model=False; a block returns
+            # early at the veto), while _matching_clauses reported a chip for it,
+            # so /explain claimed a clause matched that the engine had rejected.
+            if not all(
+                _eval_clause(op, blocked_model, target)
+                for op, target in condition.items()
+            ):
                 return False
             continue
 
@@ -344,7 +355,10 @@ def _matching_clauses(
     plain `field in features` test silently dropped it. The console renders this dict
     as the "because ..." chips, so dropping it meant a two-clause rule explained
     itself with one chip and a blocked_model-only rule gave no reason at all.
-    _all_clauses_match special-cases it the same way.
+    _all_clauses_match evaluates the same operators against the same value, so
+    a chip appears here exactly when that clause held there. They diverged once:
+    the matcher hardcoded `eq` while this function honoured the author's op, so
+    /explain showed a chip for a `{ne: true}` clause the engine had rejected.
     """
     matched: Dict[str, Any] = {}
     for field, condition in when.items():
