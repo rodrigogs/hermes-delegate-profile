@@ -205,8 +205,15 @@ def _route_unchecked(
                   "out": {"output": dict(output), "rule_id": rule_id},
                   "cause": _cause_from_rule(rule_id, output) if rule_id else "default_fallthrough"})
 
-    # If rule matched and gave concrete output → route now
-    if rule_id is not None and "action" not in output:
+    # A concrete decision routes now, whether a rule or the default made it. This
+    # used to require `rule_id is not None`, so a `default:` naming a model was
+    # resolved by rules.match and then thrown away: the task fell through to the
+    # classifier, or with the classifier down to fail_safe. Measured with
+    # default {profile: coder, model: T2} (resolving to deepseek-v4-pro): the
+    # classifier gave deepseek-v3.2 (cheaper and weaker than configured), and with
+    # no classifier it gave claude-opus-5 on the Mac-gated rail. A default that
+    # names a model is an instruction, not a hint.
+    if "action" not in output and output.get("model"):
         # Concrete route — check session pin upward-only ratchet
         if pin.is_set() and output.get("model"):
             output, pin_applied = _apply_session_floor(output, pin, tiers)
@@ -224,7 +231,18 @@ def _route_unchecked(
         return output
 
     # --- Stage 1: classifier ---
-    if output.get("action") == "classify" or rule_id is None:
+    # Enter the classifier when the POLICY asks for it, or when nothing concrete
+    # was decided. The gate used to read `or rule_id is None`, which sent every
+    # unmatched task to the classifier even when `default:` had named a concrete
+    # target that rules.match had already resolved through _resolve_tiers.
+    # Measured with default {profile: coder, model: T2}, which resolves to
+    # deepseek-v4-pro: with a classifier the task got deepseek-v3.2 (T1, cheaper
+    # and weaker than configured), and with the classifier down it got
+    # claude-opus-5 on the Mac-gated rail - the opposite of the cheap
+    # deterministic default that was asked for. A default that names a model is an
+    # instruction, not a hint.
+    needs_classifier = output.get("action") == "classify" or not output.get("model")
+    if needs_classifier:
         # Check cache first
         cached = cch.get(task)
         if cached:

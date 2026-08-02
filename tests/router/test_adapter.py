@@ -407,3 +407,42 @@ def test_the_classifier_tier_supplies_both_model_and_provider(tier):
     assert out.get("provider") == expected["provider"], (
         f"{tier}: {out.get('model')} @ {out.get('provider')} is a cross-rail pair"
     )
+
+
+@pytest.mark.parametrize("has_classifier", [True, False])
+def test_a_default_that_names_a_model_is_honoured_not_reclassified(has_classifier):
+    """A concrete `default:` is an instruction, not a hint.
+
+    rules.match resolves `default: {model: T2}` through _resolve_tiers into a real
+    target, and the adapter threw it away: the Stage-1 gate read
+    `or rule_id is None`, so every unmatched task went to the classifier regardless.
+    Measured with T2 = deepseek-v4-pro: with a classifier the task got
+    deepseek-v3.2 (T1 - cheaper and weaker than configured); with the classifier
+    down it got claude-opus-5 on the Mac-gated copilot-acp rail, the opposite of the
+    cheap deterministic default that was asked for.
+    """
+    import copy
+    from router.adapter import route
+
+    cfg = _live_config()
+    steered = copy.deepcopy(cfg)
+    steered["default"] = {"profile": "coder", "model": "T2"}
+    fn = (lambda _t, _f: {"tier": "T1", "confidence": "high"}) if has_classifier else None
+
+    out = route("an entirely ambiguous request", steered, classify_fn=fn)
+    expected = cfg["tiers"]["T2"]
+    assert out.get("model") == expected["model"], out
+    assert out.get("provider") == expected["provider"], out
+
+
+def test_a_default_asking_to_classify_still_classifies():
+    """The fix must not stop `action: classify` from reaching the classifier.
+
+    The live config's default is exactly that, so this is the regression guard for
+    every unmatched task in production.
+    """
+    from router.adapter import route
+
+    cfg = _live_config()
+    out = route("do something", cfg, classify_fn=lambda _t, _f: {"tier": "T3", "confidence": "high"})
+    assert out.get("model") == cfg["tiers"]["T3"]["model"]
