@@ -206,11 +206,19 @@ class TestRouteTask:
         assert result["profile"] == "coder"
         assert result["model"] == "glm-5.2-fast"  # T1
 
-    def test_routes_review_task_uses_failsafe(self, dp):
-        """A review task with no classifier → fail-safe (claude-opus).
+    def test_routes_review_task_uses_failsafe_model_but_keeps_the_role(self, dp):
+        """A review task with no classifier: fail-safe MODEL, the rule's own ROLE.
 
-        The review-request rule has action:classify. With classify_fn=None,
-        the adapter falls back to fail_safe (trusted strong model).
+        review-request has action:classify, so with classify_fn=None the adapter
+        falls back to fail_safe for the model - picking a tier was the only thing
+        the classifier was going to do. The role axis is a separate decision the
+        rule already made deterministically, and it is still true when the
+        classifier is down.
+
+        This previously asserted profile == "coder", pinning the bug: the
+        fail-safe overwrote the role, so /explain reported reviewer while route()
+        dispatched coder - the explanation surface and the dispatch disagreed
+        about the same task.
         """
         result = dp._route_task(
             goal="Review this PR for security issues",
@@ -218,7 +226,7 @@ class TestRouteTask:
             classify_fn=None,
         )
         assert result is not None
-        assert result["profile"] == "coder"
+        assert result["profile"] == "reviewer"     # the rule decision survives
         assert result["model"] == "claude-opus"  # fail_safe
 
     def test_returns_none_when_router_disabled(self, dp):

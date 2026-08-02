@@ -26,7 +26,10 @@ def _copy_fallbacks(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str,
     return target
 
 
-def _fail_safe_result(config: Dict[str, Any]) -> Dict[str, Any]:
+def _fail_safe_result(
+    config: Dict[str, Any],
+    rule_output: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Build the fail-safe routing target.
 
     Defaults are NON-Mac and routable (deepseek-v4-pro) — the old
@@ -37,8 +40,16 @@ def _fail_safe_result(config: Dict[str, Any]) -> Dict[str, Any]:
     PROPAGATED so the delegate_profile executor can try them in order.
     """
     fs = config.get("fail_safe", {}) or {}
+    # A rule that matched has already decided the ROLE axis (`profile`); the
+    # classifier was only ever going to choose the MODEL. Overwriting the role
+    # with the fail-safe's own default throws away a decision that was made
+    # deterministically and is still valid when the classifier is down. Measured:
+    # "Review this PR for security issues" matched review-request (profile:
+    # reviewer) and /explain reported reviewer, while route() returned coder -
+    # the explanation surface and the dispatch disagreed about the same task.
+    role = str((rule_output or {}).get("profile") or "") if rule_output else ""
     result = {
-        "profile": fs.get("profile", "coder"),
+        "profile": role or fs.get("profile", "coder"),
         "model": fs.get("model", "deepseek-v4-pro"),
         "provider": fs.get("provider", "deepseek"),
     }
@@ -234,7 +245,7 @@ def _route_unchecked(
 
         if classify_fn is None:
             # No classifier available → fail-safe
-            result = _fail_safe_result(config)
+            result = _fail_safe_result(config, output)
             steps.append({"stage": "fail_safe", "in": {"reason": "no_classifier"},
                           "out": dict(result), "cause": "fail_safe_strong"})
             dlog.record("fail_safe_strong", result, task_preview=task[:120], steps=steps)
@@ -280,7 +291,7 @@ def _route_unchecked(
 
         except Exception:
             # Classifier failed → fail-safe
-            result = _fail_safe_result(config)
+            result = _fail_safe_result(config, output)
             steps.append({"stage": "fail_safe", "in": {"reason": "classifier_error"},
                           "out": dict(result), "cause": "fail_safe_strong"})
             dlog.record("fail_safe_strong", result, task_preview=task[:120], steps=steps)
