@@ -114,3 +114,32 @@ class TestClassifier:
                                          {"verb_class": "trivial"})
         assert "test task" in prompt
         assert "trivial" in prompt
+
+
+@pytest.mark.parametrize("confidence", ["low", "Low", "LOW", "low ", " low", "LOW ", "very low"])
+def test_ratchet_fires_for_any_casing_or_hedge_of_low(confidence):
+    """The classifier is an LLM, not a typed API.
+
+    It is prompted for "high|med|low" and returns "Low", "LOW", "very low". An
+    exact == "low" comparison missed all of those, and a missed ratchet is the
+    expensive direction: work the classifier was NOT confident about goes to the
+    CHEAPEST tier. Measured before the fix, only exact lowercase "low" ratcheted.
+    """
+    c = Classifier(SAMPLE_CONFIG)
+    tier, _ = c.safety_ratchet("T1", confidence)
+    assert tier == "T2", f"{confidence!r} should have ratcheted T1 -> T2"
+
+
+@pytest.mark.parametrize("confidence", ["high", "med", "", None, 0.1])
+def test_ratchet_stays_put_when_confidence_is_not_low(confidence):
+    """Normalising must not make the ratchet fire on everything."""
+    c = Classifier(SAMPLE_CONFIG)
+    tier, _ = c.safety_ratchet("T1", confidence)
+    assert tier == "T1"
+
+
+@pytest.mark.parametrize("tier,expected", [("t1", "T1"), ("T1 ", "T1"), ("bogus", "T4"), ("", "T4"), (None, "T4")])
+def test_tier_is_normalised_and_an_unknown_tier_fails_upward(tier, expected):
+    """An unrecognised tier must resolve to the strongest, never the cheapest."""
+    c = Classifier(SAMPLE_CONFIG)
+    assert c.safety_ratchet(tier, "high")[0] == expected

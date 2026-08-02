@@ -113,10 +113,21 @@ class Classifier:
         Low confidence or boundary straddle → bump up one tier.
         Returns (final_tier, {model, provider}).
         """
-        if tier not in _UPWARD_RATCHET:
-            tier = "T4"  # unknown → strongest
+        # The classifier is an LLM answering a prompt, not a typed API. It is asked
+        # for "high|med|low" and returns "Low", "LOW", "very low", " low " - and
+        # occasionally a float or nothing. An exact == "low" comparison missed every
+        # variant, and the ratchet exists precisely to catch uncertain answers: a
+        # missed ratchet sends work the classifier was NOT sure about to the CHEAPEST
+        # tier. Measured before this fix: only exact lowercase "low" ratcheted;
+        # "Low", "LOW", "low ", "very low" all did not.
+        conf = str(confidence if confidence is not None else "").strip().lower()
 
-        if confidence == "low":
+        tier = str(tier or "").strip().upper()
+        if tier not in _UPWARD_RATCHET:
+            tier = "T4"  # unknown -> strongest
+
+        # endswith, not ==, so a hedged "very low" still counts as low.
+        if conf.endswith("low"):
             tier = _UPWARD_RATCHET.get(tier, "T4")
 
         tier_cfg = self._tiers.get(tier, self._tiers.get("T4", {}))
