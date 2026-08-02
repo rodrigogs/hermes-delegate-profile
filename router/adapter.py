@@ -272,11 +272,21 @@ def _route_unchecked(
             # Cache the effective result, not the raw classifier answer.
             cch.set(task, {"tier": effective_tier, **tier_cfg})
 
-            # Merge profile from output (role axis) with model from classifier
+            # Merge the ROLE axis from the rule with the MODEL axis from the tier.
+            # (model, provider) is one decision: assigning the model while the
+            # provider used setdefault let a provider named by the rule or the
+            # default outlive the model it belonged to. Measured with
+            # default {provider: zai, action: classify} and the classifier
+            # answering T4: `gpt-5.6-terra @ zai`, while T4 is openai-codex - a
+            # pair that names no real rail, failing opaquely at spawn.
             result = dict(output)
             result.pop("action", None)
             result["model"] = tier_cfg.get("model")
-            result.setdefault("provider", tier_cfg.get("provider"))
+            tier_provider = tier_cfg.get("provider")
+            if tier_provider:
+                result["provider"] = tier_provider
+            else:
+                result.pop("provider", None)
             _copy_fallbacks(result, tier_cfg)
             if "profile" not in result:
                 result["profile"] = "coder"
@@ -389,9 +399,23 @@ def _resolve_output(
     """Merge classifier result with rule output."""
     result = dict(rule_output)
     result.pop("action", None)
+    # (model, provider) is ONE decision, not two. The model was assigned
+    # unconditionally while the provider used setdefault, so a provider already
+    # present in the rule or the default won over the tier that supplied the
+    # model. Measured: default {provider: zai, action: classify} with the
+    # classifier answering T4 produced `gpt-5.6-terra @ zai` - the T4 model on the
+    # default's rail. gpt-5.6-terra lives on openai-codex, so that pair names a
+    # target that exists nowhere, and the failure surfaces as an opaque provider
+    # error at spawn time rather than as a routing fault.
     if "model" in classifier_result:
         result["model"] = classifier_result["model"]
-    if "provider" in classifier_result:
+        # The provider travels with the model it belongs to. Absent from the
+        # classifier result, drop the stale one rather than pair them.
+        if "provider" in classifier_result:
+            result["provider"] = classifier_result["provider"]
+        else:
+            result.pop("provider", None)
+    elif "provider" in classifier_result:
         result.setdefault("provider", classifier_result["provider"])
     _copy_fallbacks(result, classifier_result)
     if "profile" not in result:

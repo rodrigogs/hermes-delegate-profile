@@ -377,3 +377,33 @@ def test_a_failsafe_after_a_matched_rule_still_names_that_rule():
     e = entries[0]
     assert e.get("cause") == "fail_safe_strong"
     assert e.get("rule_id") == "review-request", e
+
+
+@pytest.mark.parametrize("tier", ["T1", "T2", "T3", "T4"])
+def test_the_classifier_tier_supplies_both_model_and_provider(tier):
+    """(model, provider) is one decision and must travel together.
+
+    The model was assigned from the chosen tier while the provider used setdefault,
+    so a provider named by the rule or the default outlived the model it belonged
+    to. Measured with default {provider: zai, action: classify} and the classifier
+    answering T4: gpt-5.6-terra @ zai, while T4 is openai-codex. That pair names no
+    real rail; the spawn fails with an opaque provider error, and because
+    nonzero_exit is not retryable the cross-rail fallback never advances.
+    """
+    import copy
+    from router.adapter import route
+
+    cfg = _live_config()
+    steered = copy.deepcopy(cfg)
+    steered["default"] = {"profile": "coder", "provider": "zai", "action": "classify"}
+
+    out = route(
+        "an entirely ambiguous request",
+        steered,
+        classify_fn=lambda _t, _f: {"tier": tier, "confidence": "high"},
+    )
+    expected = cfg["tiers"][tier]
+    assert out.get("model") == expected["model"]
+    assert out.get("provider") == expected["provider"], (
+        f"{tier}: {out.get('model')} @ {out.get('provider')} is a cross-rail pair"
+    )
