@@ -355,3 +355,25 @@ def test_an_explicit_request_for_a_clean_model_is_untouched():
     out = route("Rename getCwd in src/utils.py", cfg)
     assert out.get("deny") is not True
     assert out.get("cause") != "blocklist_substituted"
+
+
+def test_a_failsafe_after_a_matched_rule_still_names_that_rule():
+    """cause=fail_safe_strong must not erase which rule got us there.
+
+    A rule with action:classify decides the role and hands the model choice to the
+    classifier. When the classifier is down the cause is legitimately
+    fail_safe_strong, but rule_id was recorded as None - so the trace showed a
+    fail-safe with no explanation, and an operator counting hits per rule saw
+    review-request as never firing when it fired every time.
+    """
+    from router.adapter import route
+    from router.decision_log import DecisionLog
+
+    cfg = _live_config()
+    log = DecisionLog()
+    route("Review this PR for security issues", cfg, classify_fn=None, decision_log=log)
+    entries = log.tail(1)
+    assert entries, "the decision should have been recorded"
+    e = entries[0]
+    assert e.get("cause") == "fail_safe_strong"
+    assert e.get("rule_id") == "review-request", e

@@ -248,7 +248,8 @@ def _route_unchecked(
             result = _fail_safe_result(config, output)
             steps.append({"stage": "fail_safe", "in": {"reason": "no_classifier"},
                           "out": dict(result), "cause": "fail_safe_strong"})
-            dlog.record("fail_safe_strong", result, task_preview=task[:120], steps=steps)
+            dlog.record("fail_safe_strong", result, matched_rule_id=rule_id,
+                        task_preview=task[:120], steps=steps)
             return result
 
         # Call the classifier
@@ -294,7 +295,8 @@ def _route_unchecked(
             result = _fail_safe_result(config, output)
             steps.append({"stage": "fail_safe", "in": {"reason": "classifier_error"},
                           "out": dict(result), "cause": "fail_safe_strong"})
-            dlog.record("fail_safe_strong", result, task_preview=task[:120], steps=steps)
+            dlog.record("fail_safe_strong", result, matched_rule_id=rule_id,
+                        task_preview=task[:120], steps=steps)
             return result
 
     # Fail-safe fallback
