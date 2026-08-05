@@ -4,22 +4,17 @@ classifier:
   provider: zai
   temperature: 0
   max_tokens: 128
-  timeout_seconds: 8
+  timeout_seconds: 15
 fail_safe:
   profile: coder
-  model: gpt-5.6-terra
-  provider: openai-codex
+  model: us.anthropic.claude-opus-5
+  provider: copilot-acp
   fallback:
-  - model: glm-4.5-flash
-    provider: zai
-  - model: deepseek-v4-pro
-    provider: deepseek
+    - { model: deepseek-v4-flash, provider: deepseek }
+    - { model: glm-5.2,          provider: zai }
 blocklist:
   manual_ban: []
-  fallback_chain:
-  - gpt-5.6-terra
-  - glm-4.7
-  - deepseek-v4-pro
+  fallback_chain: [deepseek-v4-flash, gpt-5.6-terra, glm-5.2]
   auto_breaker:
     enabled: true
     threshold: 5
@@ -27,6 +22,7 @@ blocklist:
     base_cooldown_seconds: 60
     max_cooldown_seconds: 900
     backoff_multiplier: 2.0
+# Watchdog params live in config.yaml: plugins.entries.delegate-profile.watchdog
 rules:
 - id: trivial-mechanical-edit
   status: stable
@@ -60,24 +56,17 @@ default:
   action: classify
 tiers:
   T1:
-    model: glm-4.5-flash
-    provider: zai
+    model: deepseek-v4-flash
+    provider: deepseek
   T2:
-    model: glm-4.7
-    provider: zai
+    model: deepseek-v4-flash
+    provider: deepseek
   T3:
-    model: gpt-5.6-terra
-    provider: openai-codex
-    fallback:
-    - model: glm-4.5-flash
-      provider: zai
-    - model: deepseek-v4-pro
-      provider: deepseek
+    model: glm-5.2
+    provider: zai
   T4:
     model: gpt-5.6-terra
     provider: openai-codex
     fallback:
-    - model: glm-4.5-flash
-      provider: zai
-    - model: deepseek-v4-pro
-      provider: deepseek
+    - { model: us.anthropic.claude-opus-5, provider: copilot-acp }
+    - { model: deepseek-v4-flash,         provider: deepseek }

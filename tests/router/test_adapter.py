@@ -446,3 +446,116 @@ def test_a_default_asking_to_classify_still_classifies():
     cfg = _live_config()
     out = route("do something", cfg, classify_fn=lambda _t, _f: {"tier": "T3", "confidence": "high"})
     assert out.get("model") == cfg["tiers"]["T3"]["model"]
+
+
+def test_decision_without_model_passes_through_unvetted():
+    """A pipeline result with no model is returned as-is (nothing to vet)."""
+    from router.adapter import route
+
+    cfg = _live_config()
+    # A config with NO tiers: the classifier can name T4 but no tier exists,
+    # so the merged result carries no model — the wrapper must not crash.
+    no_tiers = copy.deepcopy(cfg)
+    no_tiers["tiers"] = {}
+    out = route(
+        "some ambiguous task",
+        no_tiers,
+        classify_fn=lambda _t, _f: {"tier": "T4", "confidence": "high"},
+    )
+    assert out.get("model") is None
+    assert out.get("deny") is not True
+
+
+def test_blocklist_chain_fully_blocked_denies():
+    """When every candidate in the fallback chain is blocked, deny — don't dispatch."""
+    from router.adapter import route
+    from router.blocklist import Blocklist
+
+    # First discover what the router picks for this task, then ban the whole
+    # chain INCLUDING the chosen model so no reachable replacement remains.
+    cfg = copy.deepcopy(_live_config())
+    task = "rename a variable in utils.py"
+    chosen = route(task, cfg).get("model")
+    assert chosen, "the live config must route this task somewhere"
+
+    chain = [chosen, "fallback-a", "fallback-b"]
+    cfg["blocklist"]["fallback_chain"] = chain
+    cfg["blocklist"]["manual_ban"] = [
+        {"model": m, "provider": "", "reason": "test-ban"} for m in chain
+    ]
+    bl = Blocklist(cfg)
+    out = route(task, cfg, blocklist=bl)
+    assert out.get("deny") is True
+    assert out.get("cause") == "blocklist_veto"
+    assert out.get("blocked_model") == chosen
+
+
+def test_classifier_tier_without_provider_drops_stale_provider():
+    """A tier that names no provider must not pair a stale provider with its model."""
+    from router.adapter import route
+
+    cfg = copy.deepcopy(_live_config())
+    # T3 without provider — the merged result must not keep a stale provider.
+    cfg["tiers"]["T3"] = {"model": "providerless-model"}
+    out = route(
+        "do something",
+        cfg,
+        classify_fn=lambda _t, _f: {"tier": "T3", "confidence": "high"},
+    )
+    assert out.get("model") == "providerless-model"
+    assert "provider" not in out, f"stale provider leaked: {out}"
+
+
+def test_default_with_model_and_unknown_action_falls_through_to_fail_safe():
+    """A default with a model but a non-classify action reaches the fail-safe."""
+    from router.adapter import route
+    from router.decision_log import DecisionLog
+
+    cfg = copy.deepcopy(_live_config())
+    # action present (so the concrete-route gate at Stage 0 is skipped) but not
+    # "classify" (so the classifier gate is skipped too) → final fail-safe.
+    cfg["default"] = {"profile": "coder", "model": "T1", "action": "weird-action"}
+    log = DecisionLog()
+    out = route("some ambiguous task", cfg, decision_log=log)
+    assert out.get("model") == cfg["fail_safe"]["model"]
+    entries = log.tail(1)
+    assert entries and entries[0].get("cause") == "fail_safe_strong"
+
+
+def test_cache_resolve_output_model_without_provider_drops_stale_provider():
+    """A cached classifier result with model but no provider drops the stale one."""
+    from router.adapter import route
+    from router.cache import Cache
+
+    cfg = copy.deepcopy(_live_config())
+    cch = Cache()
+    # Cached result has a model but NO provider: the rule output's stale
+    # provider must be dropped rather than paired with the new model.
+    cch.set("cached-task", {"tier": "T4", "model": "model-only"})
+    out = route(
+        "cached-task",
+        cfg,
+        classify_fn=lambda _t, _f: {"tier": "T1", "confidence": "high"},  # must not fire
+        cache=cch,
+    )
+    assert out.get("model") == "model-only"
+    assert "provider" not in out, f"stale provider leaked: {out}"
+
+
+def test_cache_resolve_output_provider_without_model_uses_setdefault():
+    """A cached result with provider but no model keeps an existing rule provider."""
+    from router.adapter import route
+    from router.cache import Cache
+
+    cfg = copy.deepcopy(_live_config())
+    cch = Cache()
+    # Rule output already carries a provider (review-request names reviewer);
+    # cached classifier result contributes only a provider → setdefault keeps rule's.
+    cch.set("cached-review", {"tier": "T4", "provider": "cached-provider"})
+    out = route(
+        "cached-review",
+        cfg,
+        classify_fn=lambda _t, _f: {"tier": "T1", "confidence": "high"},
+        cache=cch,
+    )
+    assert out.get("provider") is not None

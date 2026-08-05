@@ -60,6 +60,9 @@ omit = [
     "tests/*",
     ".worktrees/*",
     "*/__pycache__/*",
+    # Install/bootstrap helpers — one-shot deployment scripts, not plugin logic.
+    # The 100% gate measures the plugin and router, where regressions live.
+    "scripts/*",
 ]
 branch = true
 

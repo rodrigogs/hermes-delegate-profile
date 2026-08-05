@@ -45,14 +45,29 @@ exact "stuck run" failure mode observed in the gateway). This plugin instead:
 * **classifies** the outcome (``failure_kind`` + ``retryable``) so an
   orchestrator can decide retry / fallback / give-up.
 
-All thresholds are env-tunable:
+All thresholds are config-tunable in config.yaml (canonical Hermes plugin
+location ``plugins.entries.delegate-profile.watchdog``), falling back to env
+vars, then to tuned defaults:
 
-  HERMES_DELEGATE_PROFILE_TIMEOUT        hard ceiling seconds (default 300; also the `timeout` arg)
-  HERMES_DELEGATE_PROFILE_TTFB           no-first-output kill seconds (default 60)
-  HERMES_DELEGATE_PROFILE_IDLE           inter-output idle kill seconds (default 180)
+  config.yaml (preferred — canonical plugin config):
+    plugins:
+      entries:
+        delegate-profile:
+          watchdog:
+            hard_seconds: 600       # absolute ceiling
+            ttfb_seconds: 120       # time-to-first-byte
+            idle_seconds: 300       # inter-output silence
+            kill_grace_seconds: 10  # SIGTERM -> SIGKILL grace
+            max_concurrent: 4       # bounded concurrency
+            queue_wait_seconds: 30  # slot wait (0 = up to hard ceiling)
+
+  Env vars (legacy override when config.yaml key is absent):
+  HERMES_DELEGATE_PROFILE_TIMEOUT        hard ceiling seconds (default 600; also the `timeout` arg)
+  HERMES_DELEGATE_PROFILE_TTFB           no-first-output kill seconds (default 120)
+  HERMES_DELEGATE_PROFILE_IDLE           inter-output idle kill seconds (default 300)
   HERMES_DELEGATE_PROFILE_KILL_GRACE     SIGTERM->SIGKILL grace seconds (default 10)
   HERMES_DELEGATE_PROFILE_MAX_CONCURRENT max concurrent subprocesses (default 4)
-  HERMES_DELEGATE_PROFILE_QUEUE_WAIT     seconds to wait for a slot; 0 = up to the hard ceiling
+  HERMES_DELEGATE_PROFILE_QUEUE_WAIT     seconds to wait for a slot; 0 = up to the hard ceiling (default 30)
 
 Installation:
     hermes plugins install rodrigogs/hermes-delegate-profile
@@ -97,18 +112,22 @@ _MAX_STDERR_CHARS = 2000
 # TAIL (that's what the result/stderr fields report anyway).
 _OUTPUT_BUFFER_CAP = 1_000_000
 
-# Timeout ladder defaults (seconds). See module docstring for env overrides.
+# Timeout ladder defaults (seconds).
+# Tuned for reasoning-capable primaries (deepseek-v4-flash, glm-4.5-flash) at
+# reasoning_effort=high: such models routinely spend 30-90 s per turn before
+# streaming, and deep code reviews / research fan-outs run 5-10 min while making
+# steady progress. The Hermes core delegation layer removed its blanket cap for
+# the same reason — see commit history in delegate_tool.py and issue #14726.
 # Invariant enforced at resolve time: ttfb < idle <= hard.
-_DEFAULT_TIMEOUT_S = 300      # absolute hard ceiling (also the `timeout` arg)
-_DEFAULT_TTFB_S = 60          # no first byte of output => startup wedged
-_DEFAULT_IDLE_S = 180         # no NEW output for this long => mid-run stall
+_DEFAULT_TIMEOUT_S = 600      # absolute hard ceiling (also the `timeout` arg)
+_DEFAULT_TTFB_S = 120         # no first byte of output => startup wedged
+_DEFAULT_IDLE_S = 300         # no NEW output for this long => mid-run stall
 _DEFAULT_KILL_GRACE_S = 10    # SIGTERM -> grace -> SIGKILL (supervisord default)
 _DEFAULT_MAX_CONCURRENT = 4   # bounded concurrency (rate-limit friendly)
+_DEFAULT_QUEUE_WAIT_S = 30.0  # seconds to wait for a concurrency slot (0 = unbounded)
 _SIGKILL_NUM = 9              # numeric to stay importable on Windows
 
 
-# ---------------------------------------------------------------------------
-# Env helpers
 # ---------------------------------------------------------------------------
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name)
@@ -122,20 +141,40 @@ def _env_float(name: str, default: float) -> float:
     return val if val > 0 else default
 
 
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None or raw == "":
-        return default
+def _watchdog_cfg() -> Dict[str, Any]:
+    """Return the plugin's ``watchdog:`` config from config.yaml.
+
+    Canonical Hermes location: ``plugins.entries.delegate-profile.watchdog``
+    (see hermes_cli/plugins.py — every plugin reads its per-plugin config from
+    ``plugins.entries.<plugin_id>``). Uses the same loader pattern as the
+    holographic memory plugin: ``load_config_readonly`` + ``cfg_get``. Falls
+    back to ``{}`` when the key is absent or config cannot be loaded — the
+    resolvers then fall through to env vars, then module defaults.
+    """
     try:
-        val = int(raw)
-    except (TypeError, ValueError):
-        logger.warning("delegate_profile: invalid %s=%r, using %s", name, raw, default)
-        return default
-    return val if val > 0 else default
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        all_config = load_config_readonly()
+        return cfg_get(all_config, "plugins", "entries", "delegate-profile", "watchdog", default={}) or {}
+    except Exception:
+        return {}
+
+
+def _cfg_value(key: str, env_name: str, default: float) -> float:
+    """Resolve one numeric watchdog param: config.yaml > env var > default.
+
+    ``key`` is the config.yaml key under ``plugins.entries.delegate-profile.watchdog``;
+    ``env_name`` is the legacy env var kept for backward compatibility.
+    Invalid (non-numeric, <= 0) config values fall through to the env/default rung.
+    """
+    val = _watchdog_cfg().get(key)
+    if isinstance(val, (int, float)) and val > 0:
+        return float(val)
+    return _env_float(env_name, default)
 
 
 def _resolve_timeout(explicit: Any) -> int:
-    """Resolve the hard-ceiling timeout: explicit arg > env > default.
+    """Resolve the hard-ceiling timeout: explicit arg > config.yaml > env > default.
 
     Invalid values (non-int, <= 0) fall through to the next rung rather than
     raising — the handler must always return a usable int.
@@ -147,7 +186,7 @@ def _resolve_timeout(explicit: Any) -> int:
                 return val
         except (TypeError, ValueError):
             logger.warning("delegate_profile: invalid timeout %r, ignoring", explicit)
-    return _env_int("HERMES_DELEGATE_PROFILE_TIMEOUT", _DEFAULT_TIMEOUT_S)
+    return int(_cfg_value("hard_seconds", "HERMES_DELEGATE_PROFILE_TIMEOUT", _DEFAULT_TIMEOUT_S))
 
 
 def _resolve_ladder(hard: int) -> Tuple[float, float, float, float]:
@@ -156,14 +195,16 @@ def _resolve_ladder(hard: int) -> Tuple[float, float, float, float]:
     The child cannot legitimately be silent longer than the hard ceiling, and
     TTFB is meaningless once it exceeds idle, so clamp both under the ceiling
     and keep ttfb <= idle. This makes the three watchdogs strictly nested.
+
+    Each value resolves as: config.yaml watchdog.<key> > env var > default.
     """
-    ttfb = _env_float("HERMES_DELEGATE_PROFILE_TTFB", _DEFAULT_TTFB_S)
-    idle = _env_float("HERMES_DELEGATE_PROFILE_IDLE", _DEFAULT_IDLE_S)
-    grace = _env_float("HERMES_DELEGATE_PROFILE_KILL_GRACE", _DEFAULT_KILL_GRACE_S)
+    ttfb = _cfg_value("ttfb_seconds", "HERMES_DELEGATE_PROFILE_TTFB", _DEFAULT_TTFB_S)
+    idle = _cfg_value("idle_seconds", "HERMES_DELEGATE_PROFILE_IDLE", _DEFAULT_IDLE_S)
+    grace = _cfg_value("kill_grace_seconds", "HERMES_DELEGATE_PROFILE_KILL_GRACE", _DEFAULT_KILL_GRACE_S)
     hard_f = float(hard)
-    idle = min(idle, hard_f)
-    ttfb = min(ttfb, idle)
-    return ttfb, idle, hard_f, grace
+    idle = min(float(idle), hard_f)
+    ttfb = min(float(ttfb), idle)
+    return ttfb, idle, hard_f, float(grace)
 
 
 def _resolve_hermes_bin() -> str:
@@ -730,6 +771,7 @@ class _Pool:
     """
 
     def __init__(self, max_concurrent: int) -> None:
+        self.capacity = max_concurrent
         self._sem = threading.BoundedSemaphore(max_concurrent)
         self._live: Dict[int, Tuple[subprocess.Popen, Optional[int], dict]] = {}
         self._lock = threading.Lock()
@@ -777,8 +819,11 @@ def _get_pool() -> _Pool:
     global _POOL
     with _POOL_LOCK:
         if _POOL is None:
-            _POOL = _Pool(_env_int("HERMES_DELEGATE_PROFILE_MAX_CONCURRENT",
-                                   _DEFAULT_MAX_CONCURRENT))
+            cap = int(_cfg_value(
+                "max_concurrent", "HERMES_DELEGATE_PROFILE_MAX_CONCURRENT",
+                float(_DEFAULT_MAX_CONCURRENT),
+            ))
+            _POOL = _Pool(cap)
             atexit.register(_POOL.kill_all)
     return _POOL
 
@@ -903,14 +948,20 @@ def _make_handler(
 
         ttfb, idle, hard, grace = _resolve_ladder(hard_timeout)
         pool = _get_pool()
-        queue_wait = _env_float("HERMES_DELEGATE_PROFILE_QUEUE_WAIT", 0.0)
+        # queue_wait accepts 0 (0 = wait up to the hard ceiling), so it needs
+        # a dedicated resolution that allows zero rather than falling through.
+        qw_cfg = _watchdog_cfg().get("queue_wait_seconds")
+        if isinstance(qw_cfg, (int, float)) and qw_cfg >= 0:
+            queue_wait = float(qw_cfg)
+        else:
+            queue_wait = _env_float("HERMES_DELEGATE_PROFILE_QUEUE_WAIT", _DEFAULT_QUEUE_WAIT_S)
         if not pool.acquire(queue_wait if queue_wait > 0 else hard):
             return json.dumps({
                 "success": False, "failure_kind": "at_capacity", "retryable": True,
                 "error": (
                     "Too many concurrent delegate_profile subprocesses "
-                    f"(cap={_env_int('HERMES_DELEGATE_PROFILE_MAX_CONCURRENT', _DEFAULT_MAX_CONCURRENT)}). "
-                    "Retry shortly or raise HERMES_DELEGATE_PROFILE_MAX_CONCURRENT."
+                    f"(cap={pool.capacity}). "
+                    "Retry shortly or raise plugins.entries.delegate-profile.watchdog.max_concurrent."
                 ),
             })
 

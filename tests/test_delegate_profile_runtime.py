@@ -374,6 +374,7 @@ class FakePool:
         self.registered = []
         self.unregistered = []
         self.released = 0
+        self.capacity = 4  # mirrors _Pool.capacity (used in at_capacity error text)
 
     def acquire(self, _wait: float) -> bool:
         return self.acquire_result
@@ -465,6 +466,41 @@ def test_cross_profile_refuses_when_pool_is_at_capacity(monkeypatch):
     result = json.loads(handler({"goal": "task", "profile": "child", "timeout": 2}))
     assert result["failure_kind"] == "at_capacity"
     assert pool.released == 0
+
+
+def test_cross_profile_queue_wait_from_config(monkeypatch):
+    """queue_wait_seconds from config.yaml feeds the pool acquire wait (0 accepted)."""
+    calls = []
+    test_pool = FakePool()
+    # Track the wait value passed to acquire.
+    def _tracking_acquire(_wait: float) -> bool:
+        calls.append(_wait)
+        return True
+    test_pool.acquire = _tracking_acquire
+    handler, _ = _cross_handler(monkeypatch, pool=test_pool)
+    # _cross_handler stubs _get_pool to return test_pool, but _watchdog_cfg is
+    # the real one; stub it so queue_wait_seconds resolves from "config".
+    monkeypatch.setattr(_dp, "_watchdog_cfg", lambda: {"queue_wait_seconds": 5}, raising=False)
+    result = json.loads(handler({"goal": "task", "profile": "child"}))
+    assert result["success"] is True
+    assert calls == [5.0], f"acquire should see queue_wait from config, got {calls}"
+
+
+def test_cross_profile_queue_wait_zero_means_up_to_hard_ceiling(monkeypatch):
+    """queue_wait_seconds=0 must be honoured as 'wait up to the hard ceiling'."""
+    calls = []
+    test_pool = FakePool()
+    def _tracking_acquire(_wait: float) -> bool:
+        calls.append(_wait)
+        return True
+    test_pool.acquire = _tracking_acquire
+    handler, _ = _cross_handler(monkeypatch, pool=test_pool)
+    # _resolve_ladder is stubbed to (1.0, 2.0, 3.0, 0.1) in _cross_handler, so
+    # hard=3.0: queue_wait=0 must pass hard (3.0) to acquire, not 0.
+    monkeypatch.setattr(_dp, "_watchdog_cfg", lambda: {"queue_wait_seconds": 0}, raising=False)
+    result = json.loads(handler({"goal": "task", "profile": "child"}))
+    assert result["success"] is True
+    assert calls == [3.0], f"acquire should see the hard ceiling when queue_wait=0, got {calls}"
 
 
 def test_cross_profile_agent_error_on_zero_exit_with_failure_banner(monkeypatch):

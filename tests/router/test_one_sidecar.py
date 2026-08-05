@@ -454,6 +454,14 @@ def test_resolve_core_config_path_precedence(monkeypatch, tmp_path):
     assert resolve_core_config_path() == tmp_path / ".hermes" / "profiles" / "bob" / "config.yaml"
 
 
+def test_resolve_core_config_path_already_profile_scoped(monkeypatch, tmp_path):
+    """A HERMES_HOME that already ends in profiles/<name> resolves in place."""
+    scoped = tmp_path / "h" / "profiles" / "alice"
+    scoped.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(scoped))
+    assert resolve_core_config_path() == scoped / "config.yaml"
+
+
 def test_default_restart_runner_missing_launcher(monkeypatch, tmp_path):
     monkeypatch.setattr(sidecar_mod, "_SAFE_RESTART", tmp_path / "absent.sh")
     result = _default_restart_runner(tmp_path / "cand.yaml")

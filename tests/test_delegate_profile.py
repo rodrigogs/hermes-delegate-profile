@@ -142,8 +142,8 @@ def test_inline_dispatch_failure_returns_error(monkeypatch):
 # Timeout resolution ladder
 # ---------------------------------------------------------------------------
 def test_timeout_default():
-    assert dp._resolve_timeout(None) == 300
-    assert dp._resolve_timeout("") == 300
+    assert dp._resolve_timeout(None) == 600
+    assert dp._resolve_timeout("") == 600
 
 
 def test_timeout_explicit_arg_wins(monkeypatch):
@@ -163,7 +163,7 @@ def test_timeout_invalid_arg_falls_through(monkeypatch):
 
 def test_timeout_invalid_env_falls_to_default(monkeypatch):
     monkeypatch.setenv("HERMES_DELEGATE_PROFILE_TIMEOUT", "garbage")
-    assert dp._resolve_timeout(None) == 300
+    assert dp._resolve_timeout(None) == 600
 
 
 def test_timeout_zero_or_negative_rejected(monkeypatch):
@@ -200,6 +200,94 @@ def test_resolve_hermes_bin_returns_string():
 def test_get_active_profile_name_returns_string():
     name = dp._get_active_profile_name()
     assert isinstance(name, str) and len(name) > 0
+
+
+def test_resolve_hermes_bin_falls_back_to_path_lookup(monkeypatch):
+    """When the interpreter's own directory has no `hermes`, fall back to PATH."""
+    monkeypatch.setattr(sys, "executable", "/nonexistent/dir/bin/python3")
+    assert dp._resolve_hermes_bin() == "hermes"
+
+
+def test_get_active_profile_name_falls_back_to_env_on_import_failure(monkeypatch):
+    """A broken hermes_cli.profiles must not crash the resolver — env fallback.
+
+    monkeypatch the imported function to raise (deterministic regardless of
+    whether hermes_cli.profiles was already imported by earlier tests).
+    """
+    import hermes_cli.profiles as profiles_mod
+
+    def _boom():
+        raise RuntimeError("simulated import failure")
+
+    monkeypatch.setattr(profiles_mod, "get_active_profile_name", _boom)
+    monkeypatch.setenv("HERMES_PROFILE", "fallback-profile")
+    assert dp._get_active_profile_name() == "fallback-profile"
+
+
+def test_profile_exists_falls_back_to_home_dir(monkeypatch, tmp_path):
+    """When hermes_cli.profiles is unavailable, resolve via HERMES_HOME dirs."""
+    import hermes_cli.profiles as profiles_mod
+
+    def _boom(_profile):
+        raise RuntimeError("simulated import failure")
+
+    monkeypatch.setattr(profiles_mod, "profile_exists", _boom)
+    home = tmp_path / "home"
+    (home / "profiles" / "existing").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    assert dp._profile_exists("existing") is True
+    assert dp._profile_exists("missing") is False
+
+
+def test_profile_exists_returns_false_when_every_resolver_fails(monkeypatch):
+    """hermes_cli AND hermes_constants both down → refuse to guess (False)."""
+    import hermes_cli.profiles as profiles_mod
+
+    def _boom(_profile):
+        raise RuntimeError("simulated import failure")
+
+    monkeypatch.setattr(profiles_mod, "profile_exists", _boom)
+    # Force get_hermes_home to fail too so the inner except fires.
+    import hermes_constants as hc_mod
+
+    def _boom_home():
+        raise RuntimeError("home resolver down")
+
+    monkeypatch.setattr(hc_mod, "get_hermes_home", _boom_home)
+    assert dp._profile_exists("some-profile") is False
+
+
+def test_list_known_profiles_falls_back_to_home_dir(monkeypatch, tmp_path):
+    """When hermes_cli.profiles is unavailable, list via HERMES_HOME dirs."""
+    import hermes_cli.profiles as profiles_mod
+
+    def _boom():
+        raise RuntimeError("simulated import failure")
+
+    monkeypatch.setattr(profiles_mod, "list_profiles", _boom)
+    home = tmp_path / "home"
+    (home / "profiles" / "alpha").mkdir(parents=True)
+    (home / "profiles" / "beta").mkdir(parents=True)
+    (home / "profiles" / "ignored.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    assert dp._list_known_profiles() == ["alpha", "beta"]
+
+
+def test_list_known_profiles_returns_empty_when_every_resolver_fails(monkeypatch):
+    """hermes_cli AND hermes_constants both down → empty list, not a crash."""
+    import hermes_cli.profiles as profiles_mod
+
+    def _boom():
+        raise RuntimeError("simulated import failure")
+
+    monkeypatch.setattr(profiles_mod, "list_profiles", _boom)
+    import hermes_constants as hc_mod
+
+    def _boom_home():
+        raise RuntimeError("home resolver down")
+
+    monkeypatch.setattr(hc_mod, "get_hermes_home", _boom_home)
+    assert dp._list_known_profiles() == []
 
 
 # ---------------------------------------------------------------------------
@@ -259,8 +347,8 @@ import time as _time
 # Timeout-ladder resolution + ordering invariant
 # ---------------------------------------------------------------------------
 def test_ladder_defaults():
-    ttfb, idle, hard, grace = dp._resolve_ladder(300)
-    assert (ttfb, idle, hard, grace) == (60.0, 180.0, 300.0, 10.0)
+    ttfb, idle, hard, grace = dp._resolve_ladder(600)
+    assert (ttfb, idle, hard, grace) == (120.0, 300.0, 600.0, 10.0)
 
 
 def test_ladder_clamps_under_hard_ceiling():
@@ -281,8 +369,67 @@ def test_ladder_env_overrides(monkeypatch):
 
 def test_ladder_invalid_env_falls_back(monkeypatch):
     monkeypatch.setenv("HERMES_DELEGATE_PROFILE_IDLE", "not-a-number")
-    _, idle, _, _ = dp._resolve_ladder(300)
-    assert idle == 180.0
+    _, idle, _, _ = dp._resolve_ladder(600)
+    assert idle == 300.0
+
+
+# ---------------------------------------------------------------------------
+# Watchdog config via config.yaml (config.yaml > env > default)
+# ---------------------------------------------------------------------------
+def test_watchdog_config_overrides_default(monkeypatch):
+    """config.yaml plugins.entries.delegate-profile.watchdog.hard_seconds wins."""
+    monkeypatch.setattr(dp, "_watchdog_cfg", lambda: {"hard_seconds": 42}, raising=False)
+    assert dp._resolve_timeout(None) == 42
+
+
+def test_watchdog_config_ladder(monkeypatch):
+    """config.yaml watchdog.ttfb/idle/grace values flow into _resolve_ladder."""
+    monkeypatch.setattr(
+        dp, "_watchdog_cfg",
+        lambda: {"ttfb_seconds": 15, "idle_seconds": 45, "kill_grace_seconds": 7},
+        raising=False,
+    )
+    ttfb, idle, hard, grace = dp._resolve_ladder(100)
+    assert ttfb == 15.0
+    assert idle == 45.0
+    assert grace == 7.0
+    assert hard == 100.0  # explicit hard arg wins
+
+
+def test_watchdog_config_absent_falls_to_env(monkeypatch):
+    """When config.yaml watchdog section is empty, env var is used."""
+    monkeypatch.setattr(dp, "_watchdog_cfg", lambda: {}, raising=False)
+    monkeypatch.setenv("HERMES_DELEGATE_PROFILE_TTFB", "9")
+    ttfb, _, _, _ = dp._resolve_ladder(600)
+    assert ttfb == 9.0
+
+
+def test_watchdog_explicit_arg_beats_config(monkeypatch):
+    """Explicit timeout arg wins over config.yaml watchdog.hard_seconds."""
+    monkeypatch.setattr(dp, "_watchdog_cfg", lambda: {"hard_seconds": 42}, raising=False)
+    assert dp._resolve_timeout(777) == 777
+
+
+def test_watchdog_max_concurrent_from_config(monkeypatch):
+    """config.yaml watchdog.max_concurrent flows into the pool cap."""
+    monkeypatch.setattr(dp, "_watchdog_cfg", lambda: {"max_concurrent": 2}, raising=False)
+    # Reset the pool singleton so it picks up the new cap.
+    monkeypatch.setattr(dp, "_POOL", None, raising=False)
+    pool = dp._get_pool()
+    assert pool._sem._value == 2  # BoundedSemaphore internal value reflects capacity
+
+
+def test_watchdog_invalid_config_falls_to_env(monkeypatch):
+    """Invalid (non-positive) config values fall through to env/default."""
+    monkeypatch.setattr(
+        dp, "_watchdog_cfg",
+        lambda: {"hard_seconds": -5, "ttfb_seconds": "garbage"},
+        raising=False,
+    )
+    assert dp._resolve_timeout(None) == 600  # default
+    monkeypatch.setenv("HERMES_DELEGATE_PROFILE_TTFB", "7")
+    ttfb, _, _, _ = dp._resolve_ladder(600)
+    assert ttfb == 7.0
 
 
 # ---------------------------------------------------------------------------
@@ -518,3 +665,21 @@ def test_router_config_returns_empty_when_neither_file_exists(tmp_path, monkeypa
     plugin_dir.mkdir()
     monkeypatch.setattr(dp, "__file__", str(plugin_dir / "__init__.py"))
     assert dp._load_router_config() == {}
+
+
+def test_router_config_oserror_falls_back_to_reading_example(tmp_path, monkeypatch):
+    """A read-only plugin dir must not crash: read the example directly."""
+    plugin_dir = tmp_path / "ro-plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "router.example.yaml").write_text(
+        "enabled: false\ntiers: {}\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(dp, "__file__", str(plugin_dir / "__init__.py"))
+    # Make the seed write fail (simulate a read-only install).
+    real_write = plugin_dir / "router.yaml"
+    def _blocking_write(*_a, **_k):
+        raise OSError("read-only filesystem")
+    monkeypatch.setattr(dp.Path, "write_text", _blocking_write, raising=False)
+    cfg = dp._load_router_config()
+    assert cfg.get("enabled") is False
+    assert not real_write.exists(), "seed write failed, so no live file should exist"
