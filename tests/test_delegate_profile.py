@@ -222,9 +222,22 @@ def test_get_active_profile_name_falls_back_to_env_on_import_failure(monkeypatch
 
 
 def test_profile_exists_falls_back_to_home_dir(monkeypatch, tmp_path):
-    """When hermes_cli.profiles is unavailable, resolve via HERMES_HOME dirs."""
+    """When hermes_cli.profiles is unavailable, resolve via HERMES_HOME dirs.
+
+    Injects a hermes_constants fake (absent on CI, real in dev venv) so the
+    home-dir fallback path runs identically in both environments.
+    """
+    import types
+
     monkeypatch.setitem(sys.modules, "hermes_cli", None)
     monkeypatch.delitem(sys.modules, "hermes_cli.profiles", raising=False)
+    fake_hc = types.ModuleType("hermes_constants")
+
+    def _get_home():
+        return Path(os.environ["HERMES_HOME"])
+
+    fake_hc.get_hermes_home = _get_home
+    monkeypatch.setitem(sys.modules, "hermes_constants", fake_hc)
     home = tmp_path / "home"
     (home / "profiles" / "existing").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -234,26 +247,33 @@ def test_profile_exists_falls_back_to_home_dir(monkeypatch, tmp_path):
 
 def test_profile_exists_returns_false_when_every_resolver_fails(monkeypatch):
     """hermes_cli AND hermes_constants both down → refuse to guess (False)."""
+    import types
+
     monkeypatch.setitem(sys.modules, "hermes_cli", None)
     monkeypatch.delitem(sys.modules, "hermes_cli.profiles", raising=False)
-    # Force get_hermes_home to fail too so the inner except fires. On CI the
-    # package is absent, so the plugin's own import fails naturally.
-    try:
-        import hermes_constants as hc_mod
-    except ImportError:
-        hc_mod = None
+    fake_hc = types.ModuleType("hermes_constants")
 
-    if hc_mod is not None:
-        def _boom_home():
-            raise RuntimeError("home resolver down")
-        monkeypatch.setattr(hc_mod, "get_hermes_home", _boom_home)
+    def _boom_home():
+        raise RuntimeError("home resolver down")
+
+    fake_hc.get_hermes_home = _boom_home
+    monkeypatch.setitem(sys.modules, "hermes_constants", fake_hc)
     assert dp._profile_exists("some-profile") is False
 
 
 def test_list_known_profiles_falls_back_to_home_dir(monkeypatch, tmp_path):
     """When hermes_cli.profiles is unavailable, list via HERMES_HOME dirs."""
+    import types
+
     monkeypatch.setitem(sys.modules, "hermes_cli", None)
     monkeypatch.delitem(sys.modules, "hermes_cli.profiles", raising=False)
+    fake_hc = types.ModuleType("hermes_constants")
+
+    def _get_home():
+        return Path(os.environ["HERMES_HOME"])
+
+    fake_hc.get_hermes_home = _get_home
+    monkeypatch.setitem(sys.modules, "hermes_constants", fake_hc)
     home = tmp_path / "home"
     (home / "profiles" / "alpha").mkdir(parents=True)
     (home / "profiles" / "beta").mkdir(parents=True)
@@ -264,17 +284,17 @@ def test_list_known_profiles_falls_back_to_home_dir(monkeypatch, tmp_path):
 
 def test_list_known_profiles_returns_empty_when_every_resolver_fails(monkeypatch):
     """hermes_cli AND hermes_constants both down → empty list, not a crash."""
+    import types
+
     monkeypatch.setitem(sys.modules, "hermes_cli", None)
     monkeypatch.delitem(sys.modules, "hermes_cli.profiles", raising=False)
-    try:
-        import hermes_constants as hc_mod
-    except ImportError:
-        hc_mod = None
+    fake_hc = types.ModuleType("hermes_constants")
 
-    if hc_mod is not None:
-        def _boom_home():
-            raise RuntimeError("home resolver down")
-        monkeypatch.setattr(hc_mod, "get_hermes_home", _boom_home)
+    def _boom_home():
+        raise RuntimeError("home resolver down")
+
+    fake_hc.get_hermes_home = _boom_home
+    monkeypatch.setitem(sys.modules, "hermes_constants", fake_hc)
     assert dp._list_known_profiles() == []
 
 
