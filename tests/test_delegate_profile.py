@@ -221,6 +221,18 @@ def test_get_active_profile_name_falls_back_to_env_on_import_failure(monkeypatch
     assert dp._get_active_profile_name() == "fallback-profile"
 
 
+def test_get_active_profile_name_delegates_to_hermes_cli(monkeypatch):
+    """Happy path: hermes_cli.profiles answers, the resolver trusts it."""
+    import types
+
+    fake_cli = types.ModuleType("hermes_cli")
+    fake_profiles = types.ModuleType("hermes_cli.profiles")
+    fake_profiles.get_active_profile_name = lambda: "specialist"
+    monkeypatch.setitem(sys.modules, "hermes_cli", fake_cli)
+    monkeypatch.setitem(sys.modules, "hermes_cli.profiles", fake_profiles)
+    assert dp._get_active_profile_name() == "specialist"
+
+
 def test_profile_exists_falls_back_to_home_dir(monkeypatch, tmp_path):
     """When hermes_cli.profiles is unavailable, resolve via HERMES_HOME dirs.
 
@@ -261,6 +273,19 @@ def test_profile_exists_returns_false_when_every_resolver_fails(monkeypatch):
     assert dp._profile_exists("some-profile") is False
 
 
+def test_profile_exists_delegates_to_hermes_cli(monkeypatch):
+    """Happy path: hermes_cli.profiles answers, _profile_exists trusts it."""
+    import types
+
+    fake_cli = types.ModuleType("hermes_cli")
+    fake_profiles = types.ModuleType("hermes_cli.profiles")
+    fake_profiles.profile_exists = lambda p: p == "known-profile"
+    monkeypatch.setitem(sys.modules, "hermes_cli", fake_cli)
+    monkeypatch.setitem(sys.modules, "hermes_cli.profiles", fake_profiles)
+    assert dp._profile_exists("known-profile") is True
+    assert dp._profile_exists("unknown") is False
+
+
 def test_list_known_profiles_falls_back_to_home_dir(monkeypatch, tmp_path):
     """When hermes_cli.profiles is unavailable, list via HERMES_HOME dirs."""
     import types
@@ -296,6 +321,23 @@ def test_list_known_profiles_returns_empty_when_every_resolver_fails(monkeypatch
     fake_hc.get_hermes_home = _boom_home
     monkeypatch.setitem(sys.modules, "hermes_constants", fake_hc)
     assert dp._list_known_profiles() == []
+
+
+def test_list_known_profiles_delegates_to_hermes_cli(monkeypatch):
+    """Happy path: hermes_cli.profiles.list_profiles answers, we trust it."""
+    import types
+
+    fake_cli = types.ModuleType("hermes_cli")
+    fake_profiles = types.ModuleType("hermes_cli.profiles")
+
+    class _FakeProfile:
+        def __init__(self, name):
+            self.name = name
+
+    fake_profiles.list_profiles = lambda: [_FakeProfile("alpha"), _FakeProfile("beta")]
+    monkeypatch.setitem(sys.modules, "hermes_cli", fake_cli)
+    monkeypatch.setitem(sys.modules, "hermes_cli.profiles", fake_profiles)
+    assert dp._list_known_profiles() == ["alpha", "beta"]
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +480,44 @@ def test_watchdog_invalid_config_falls_to_env(monkeypatch):
     monkeypatch.setenv("HERMES_DELEGATE_PROFILE_TTFB", "7")
     ttfb, _, _, _ = dp._resolve_ladder(600)
     assert ttfb == 7.0
+
+
+def test_watchdog_cfg_reads_config_yaml(monkeypatch):
+    """Happy path: cfg_get resolves plugins.entries.delegate-profile.watchdog."""
+    import types
+
+    fake_cli = types.ModuleType("hermes_cli")
+    fake_config = types.ModuleType("hermes_cli.config")
+
+    def _fake_load():
+        return {
+            "plugins": {
+                "entries": {
+                    "delegate-profile": {
+                        "watchdog": {"hard_seconds": 42, "ttfb_seconds": 9},
+                    }
+                }
+            }
+        }
+
+    def _fake_cfg_get(cfg, *keys, default=None):
+        cur = cfg
+        for k in keys:
+            if isinstance(cur, dict) and k in cur:
+                cur = cur[k]
+            else:
+                return default
+        return cur
+
+    fake_config.load_config_readonly = _fake_load
+    fake_config.cfg_get = _fake_cfg_get
+    monkeypatch.setitem(sys.modules, "hermes_cli", fake_cli)
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", fake_config)
+
+    wd = dp._watchdog_cfg()
+    assert wd.get("hard_seconds") == 42
+    assert dp._resolve_timeout(None) == 42
+    assert dp._resolve_ladder(100)[0] == 9.0
 
 
 # ---------------------------------------------------------------------------
