@@ -211,27 +211,20 @@ def test_resolve_hermes_bin_falls_back_to_path_lookup(monkeypatch):
 def test_get_active_profile_name_falls_back_to_env_on_import_failure(monkeypatch):
     """A broken hermes_cli.profiles must not crash the resolver — env fallback.
 
-    monkeypatch the imported function to raise (deterministic regardless of
-    whether hermes_cli.profiles was already imported by earlier tests).
+    Breaks the parent import (None) and drops the submodule from sys.modules so
+    the resolver's `from hermes_cli.profiles import ...` raises ImportError
+    deterministically — whether hermes_cli is installed (dev venv) or not (CI).
     """
-    import hermes_cli.profiles as profiles_mod
-
-    def _boom():
-        raise RuntimeError("simulated import failure")
-
-    monkeypatch.setattr(profiles_mod, "get_active_profile_name", _boom)
+    monkeypatch.setitem(sys.modules, "hermes_cli", None)
+    monkeypatch.delitem(sys.modules, "hermes_cli.profiles", raising=False)
     monkeypatch.setenv("HERMES_PROFILE", "fallback-profile")
     assert dp._get_active_profile_name() == "fallback-profile"
 
 
 def test_profile_exists_falls_back_to_home_dir(monkeypatch, tmp_path):
     """When hermes_cli.profiles is unavailable, resolve via HERMES_HOME dirs."""
-    import hermes_cli.profiles as profiles_mod
-
-    def _boom(_profile):
-        raise RuntimeError("simulated import failure")
-
-    monkeypatch.setattr(profiles_mod, "profile_exists", _boom)
+    monkeypatch.setitem(sys.modules, "hermes_cli", None)
+    monkeypatch.delitem(sys.modules, "hermes_cli.profiles", raising=False)
     home = tmp_path / "home"
     (home / "profiles" / "existing").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -241,30 +234,26 @@ def test_profile_exists_falls_back_to_home_dir(monkeypatch, tmp_path):
 
 def test_profile_exists_returns_false_when_every_resolver_fails(monkeypatch):
     """hermes_cli AND hermes_constants both down → refuse to guess (False)."""
-    import hermes_cli.profiles as profiles_mod
+    monkeypatch.setitem(sys.modules, "hermes_cli", None)
+    monkeypatch.delitem(sys.modules, "hermes_cli.profiles", raising=False)
+    # Force get_hermes_home to fail too so the inner except fires. On CI the
+    # package is absent, so the plugin's own import fails naturally.
+    try:
+        import hermes_constants as hc_mod
+    except ImportError:
+        hc_mod = None
 
-    def _boom(_profile):
-        raise RuntimeError("simulated import failure")
-
-    monkeypatch.setattr(profiles_mod, "profile_exists", _boom)
-    # Force get_hermes_home to fail too so the inner except fires.
-    import hermes_constants as hc_mod
-
-    def _boom_home():
-        raise RuntimeError("home resolver down")
-
-    monkeypatch.setattr(hc_mod, "get_hermes_home", _boom_home)
+    if hc_mod is not None:
+        def _boom_home():
+            raise RuntimeError("home resolver down")
+        monkeypatch.setattr(hc_mod, "get_hermes_home", _boom_home)
     assert dp._profile_exists("some-profile") is False
 
 
 def test_list_known_profiles_falls_back_to_home_dir(monkeypatch, tmp_path):
     """When hermes_cli.profiles is unavailable, list via HERMES_HOME dirs."""
-    import hermes_cli.profiles as profiles_mod
-
-    def _boom():
-        raise RuntimeError("simulated import failure")
-
-    monkeypatch.setattr(profiles_mod, "list_profiles", _boom)
+    monkeypatch.setitem(sys.modules, "hermes_cli", None)
+    monkeypatch.delitem(sys.modules, "hermes_cli.profiles", raising=False)
     home = tmp_path / "home"
     (home / "profiles" / "alpha").mkdir(parents=True)
     (home / "profiles" / "beta").mkdir(parents=True)
@@ -275,18 +264,17 @@ def test_list_known_profiles_falls_back_to_home_dir(monkeypatch, tmp_path):
 
 def test_list_known_profiles_returns_empty_when_every_resolver_fails(monkeypatch):
     """hermes_cli AND hermes_constants both down → empty list, not a crash."""
-    import hermes_cli.profiles as profiles_mod
+    monkeypatch.setitem(sys.modules, "hermes_cli", None)
+    monkeypatch.delitem(sys.modules, "hermes_cli.profiles", raising=False)
+    try:
+        import hermes_constants as hc_mod
+    except ImportError:
+        hc_mod = None
 
-    def _boom():
-        raise RuntimeError("simulated import failure")
-
-    monkeypatch.setattr(profiles_mod, "list_profiles", _boom)
-    import hermes_constants as hc_mod
-
-    def _boom_home():
-        raise RuntimeError("home resolver down")
-
-    monkeypatch.setattr(hc_mod, "get_hermes_home", _boom_home)
+    if hc_mod is not None:
+        def _boom_home():
+            raise RuntimeError("home resolver down")
+        monkeypatch.setattr(hc_mod, "get_hermes_home", _boom_home)
     assert dp._list_known_profiles() == []
 
 

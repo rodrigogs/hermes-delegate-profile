@@ -7,7 +7,27 @@ plugin module so every test runs offline and fast. It deliberately does NOT touc
 `_profile_exists` — individual tests set that to assert existence behavior.
 """
 import sys
+from pathlib import Path
+
 import pytest
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _seed_live_router_config():
+    """Reproduce the production seeding: live router.yaml is generated from
+    router.example.yaml on first load (_load_router_config does the same).
+
+    In a fresh CI checkout router.yaml is absent (gitignored); tests that read
+    the live policy (test_adapter._live_config, test_classifier_trust,
+    test_one_sidecar_e2e) expect it to exist. Seeding here keeps the checkout
+    clean (router.yaml stays gitignored) and the tests hermetic.
+    """
+    root = Path(__file__).resolve().parent.parent
+    live = root / "router.yaml"
+    example = root / "router.example.yaml"
+    if not live.exists() and example.exists():
+        live.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+    yield
 
 
 class _FakeProc:
