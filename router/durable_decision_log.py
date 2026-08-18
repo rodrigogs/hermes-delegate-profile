@@ -17,6 +17,11 @@ Safety properties (every one load-bearing):
     append + size-check + rotation critical section.
   * Bounded on disk — at most ``(_TRACE_BACKUPS + 1) * _TRACE_MAX_BYTES``: on
     rotation the backups cascade (.1→.2…) and the oldest is unlinked.
+  * Bounded per entry — the chain plan's ``rejected`` list is truncated by
+    :func:`decision_log.bound_chain_plan` before it ever reaches the disk.
+  * Forward/backward readable — :func:`read_entries` skips corrupt lines and
+    :func:`decision_log.chain_plan_of` gives OLD entries (written before the
+    chain-plan feature) an empty default instead of a KeyError.
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .decision_log import DecisionLog
+from .decision_log import DecisionLog, chain_plan_of
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +72,74 @@ def routes_path() -> Path:
     return home / "delegate-profile" / "state" / "routes.jsonl"
 
 
+# ---------------------------------------------------------------------------
+# Readers — fail-safe, tolerant of every historical entry shape
+# ---------------------------------------------------------------------------
+
+def trace_files() -> List[Path]:
+    """Current trace file plus its rotated backups, newest file first.
+
+    Reading the backups too keeps a replay non-empty right after a rotation,
+    when the current file is still fresh.
+    """
+    base = routes_path()
+    files = [base]
+    for n in range(1, _TRACE_BACKUPS + 1):
+        files.append(base.with_suffix(base.suffix + f".{n}"))
+    return files
+
+
+def read_entries(limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Parsed trace entries oldest→newest across the rotated files.
+
+    Defensive by construction — this runs in the console/CLI read path against a
+    file another process is appending to:
+      * missing/unreadable file -> that file contributes nothing;
+      * truncated or corrupt JSON line -> that line is skipped;
+      * a line that is valid JSON but not a mapping -> skipped;
+      * entries WITHOUT ``chain_plan`` (everything written before that feature)
+        are returned untouched — use :func:`decision_log.chain_plan_of` for the
+        empty default rather than indexing the key.
+    Never raises.
+    """
+    collected: List[Dict[str, Any]] = []
+    for path in trace_files():
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        file_entries: List[Dict[str, Any]] = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(obj, dict):
+                file_entries.append(obj)
+        # Older files come first so the combined list stays oldest→newest.
+        collected = file_entries + collected
+    if limit is not None:
+        try:
+            n = int(limit)
+        except (TypeError, ValueError):
+            return collected
+        if n > 0:
+            return collected[-n:]
+    return collected
+
+
+def read_chain_plans(limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """``read_entries`` narrowed to chain plans, one per entry, never raising.
+
+    Old entries yield the empty default, so the list is always the same length
+    as the entry list and callers need no presence check.
+    """
+    return [chain_plan_of(entry) for entry in read_entries(limit)]
+
+
 class DurableDecisionLog(DecisionLog):
     """A DecisionLog that also appends each entry to ``routes.jsonl``."""
 
@@ -78,9 +151,17 @@ class DurableDecisionLog(DecisionLog):
         task_preview: str = "",
         *,
         steps: Optional[List[Dict[str, Any]]] = None,
+        chain_plan: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Record in memory and persist one JSON line.
+
+        ``chain_plan`` rides along unchanged (the base class bounds it), so a
+        persisted trace can be replayed with the capability filter's verdict —
+        eligible order, rejected+reason, strategy — intact.
+        """
         super().record(
-            cause, output, matched_rule_id, task_preview, steps=steps,
+            cause, output, matched_rule_id, task_preview,
+            steps=steps, chain_plan=chain_plan,
         )
         # The entry we just appended in-memory is the one to persist.
         try:

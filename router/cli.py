@@ -1,22 +1,92 @@
-"""CLI governance — router explain, lint, blocklist, log.
+"""CLI governance — router explain, chain, lint, blocklist, log.
 
 v1: file-config + CLI governance. No webui panel.
+
+Read-only except for what the subcommand explicitly does: every command here
+loads router.yaml and prints. ``chain`` is the shell-side view of the capability
+filter + fallback strategy, so the feature is verifiable on the box without the
+webui; ``--json`` makes it scriptable.
+
+This module is the EDGE, so it is the layer allowed to do IO: it reads
+router.yaml and it reads the wall clock. ``signals``/``rules``/``capabilities``
+stay pure — the clock is injected downwards as a ``datetime`` parameter exactly
+like the ``random.Random`` used by the ``random`` fallback strategy, never read
+inside them. ``--at`` overrides that clock so "why did the 04:00 cron route
+there" is answerable from a shell at 14:00; ``--time-agnostic`` passes no clock
+at all (time-dependent features are omitted and time-dependent ordering
+degrades to sequential).
+
+Imports of the newer router modules are GUARDED: the CLI is the operator's tool
+of last resort, so it must still start (and still lint) when ``capabilities.py``
+or a newer ``rules`` helper is absent or mid-write. Every time-layer entry point
+(``rules.plan_chain(..., when=)``, ``capabilities.price_multiplier``,
+``capabilities.effective_price``) is therefore called through a guard that
+degrades to "not shown" rather than raising.
 """
 
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
+import random
+import re
 import sys
 import yaml
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .signals import extract
+from . import rules as _rules
 from .rules import explain as rules_explain, lint as rules_lint
 from .blocklist import Blocklist
-from .decision_log import DecisionLog
+from .decision_log import DecisionLog, chain_plan_of
 from .cache import Cache, SessionPin
+
+try:
+    from . import capabilities as _caps
+except ImportError:  # capabilities.py absent or mid-write — degrade, never crash
+    try:
+        from router import capabilities as _caps  # flat-layout fallback
+    except ImportError:
+        _caps = None
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+#: Seed used when no ``--seed`` is given, mirroring ``rules.explain``'s dry-run
+#: preview seed. A bare ``chain`` call must stay reproducible across runs, so it
+#: reuses the preview stream rather than reaching for real randomness.
+_PREVIEW_SEED = getattr(_rules, "_PREVIEW_SEED", 0)
+
+#: Keys on a chain entry that are routing/identity, never a capability or price
+#: declaration. Everything else is handed to the registry as a per-elo override,
+#: because ``declared`` WINS over the registry (see capabilities.py docstring).
+_ROUTING_KEYS = frozenset(
+    getattr(_rules, "_NON_CAPABILITY_KEYS", ())
+    or {"model", "provider", "fallback", "fallback_strategy",
+        "pin_primary", "requirements"}
+) | {"reject_reason"}
+
+#: Plan fields the time layer sets, printed ONLY when set: an absent or falsey
+#: flag is noise in the common case and would bury the one that fired.
+_TIME_FLAG_KEYS: Tuple[str, ...] = (
+    "capped", "demoted", "promoted", "time_cap_bypassed", "strategy_degraded",
+)
+
+# Price lookup outcomes. "unpriced" and "unavailable" are deliberately
+# DISTINCT: the first means the vendor publishes no per-token dollar rate (a
+# plan model — never $0, which would make it win every cost comparison), the
+# second means this build of capabilities.py cannot answer yet.
+_PRICE_OK = "priced"
+_PRICE_UNPRICED = "unpriced"
+_PRICE_UNAVAILABLE = "unavailable"
+
+_BARE_HOUR_RE = re.compile(r"^(\d{1,2})$")
+_HOUR_MINUTE_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
 
 
 # ---------------------------------------------------------------------------
@@ -34,15 +104,123 @@ def load_config(path: str = "router.yaml") -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# The injected clock — parsed here, never read downstream
+# ---------------------------------------------------------------------------
+
+def resolve_when(args: argparse.Namespace) -> Tuple[Optional[datetime], str]:
+    """Return ``(when, source)`` — the clock to inject and where it came from.
+
+    ``source`` is one of ``now``, ``--at`` or ``--time-agnostic``, so the
+    rendered plan says which clock produced it.
+
+    ``--at`` accepts, in this order:
+      * a bare UTC hour, ``0``-``23``       -> today's UTC date at that hour
+      * ``HH:MM`` (UTC)                     -> today's UTC date at that time
+      * an ISO-8601 timestamp               -> ``2026-08-17T07:00:00Z``,
+        ``...+00:00`` or naive (naive is read as UTC); anything with an offset
+        is converted to UTC
+      * ``now``                             -> the real current UTC time
+
+    The bare-hour form deliberately inherits TODAY's weekday, because the zai
+    peak window is weekday-only: an hour with no date could not answer "is this
+    inside the Mon-Fri peak" at all. Pass a full timestamp to pick the day.
+
+    Fail-closed: an unparseable value exits 2 rather than silently falling back
+    to "now" — an audit tool that answers a different question than the one
+    asked is worse than one that refuses.
+    """
+    if getattr(args, "time_agnostic", False):
+        return None, "--time-agnostic"
+    raw = getattr(args, "at", None)
+    if raw is None or raw == "":
+        return _utc_now(), "now"
+    try:
+        return _parse_when(str(raw)), "--at"
+    except ValueError as exc:
+        print(f"router: --at {raw!r}: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+
+def _utc_now() -> datetime:
+    """The real current UTC time. The ONLY clock read in the router."""
+    return datetime.now(timezone.utc)
+
+
+def _parse_when(raw: str) -> datetime:
+    """Parse one ``--at`` value into an aware UTC datetime, or raise ValueError."""
+    text = raw.strip()
+    if not text:
+        raise ValueError("empty value")
+    if text.lower() == "now":
+        return _utc_now()
+
+    bare = _BARE_HOUR_RE.match(text)
+    if bare:
+        return _at_time_today(int(bare.group(1)), 0)
+    hm = _HOUR_MINUTE_RE.match(text)
+    if hm:
+        return _at_time_today(int(hm.group(1)), int(hm.group(2)))
+
+    iso = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+    try:
+        parsed = datetime.fromisoformat(iso)
+    except ValueError:
+        raise ValueError(
+            "expected a UTC hour 0-23, HH:MM, or an ISO-8601 timestamp"
+        ) from None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _at_time_today(hour: int, minute: int) -> datetime:
+    """Today's UTC date at ``hour:minute``, bounds-checked."""
+    if not 0 <= hour <= 23:
+        raise ValueError("UTC hour must be 0..23")
+    if not 0 <= minute <= 59:
+        raise ValueError("minute must be 0..59")
+    return _utc_now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def _time_features(when: Optional[datetime]) -> Dict[str, Any]:
+    """The two injected time features, or {} when no clock was supplied.
+
+    Matches the spec exactly: with no clock the features are OMITTED, so a
+    time-keyed ``when`` clause is inert (an absent feature never matches) rather
+    than matching against a guessed hour.
+    """
+    if when is None:
+        return {}
+    return {"utc_hour": when.hour, "utc_weekday": when.weekday()}
+
+
+def _time_payload(when: Optional[datetime], source: str) -> Dict[str, Any]:
+    """The machine-readable description of the injected clock."""
+    return {
+        "at": when.isoformat() if when is not None else None,
+        "at_source": source,
+        "utc_hour": when.hour if when is not None else None,
+        "utc_weekday": when.weekday() if when is not None else None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 
 def cmd_explain(args: argparse.Namespace) -> None:
-    """Run explain() on a task and print the decision trace."""
+    """Run explain() on a task and print the decision trace.
+
+    The injected clock (``--at``/``--time-agnostic``, default now) adds
+    ``utc_hour``/``utc_weekday`` to the feature vector, so a time-keyed rule is
+    traceable here at any hour and not only at the hour you happen to be at.
+    """
     task = args.task
     config = load_config(args.config)
 
+    when, at_source = resolve_when(args)
     features = extract(task)
+    features.update(_time_features(when))
     blocklist = Blocklist(config)
 
     # Check if a model override is in the task
@@ -56,26 +234,117 @@ def cmd_explain(args: argparse.Namespace) -> None:
         }, indent=2))
         return
 
-    result = rules_explain(
-        task, features, blocked,
-        config.get("rules", []),
-        config.get("default", {}),
-        config.get("tiers", {}),
-    )
+    result, _time_aware = _call_explain(task, features, blocked, config, when)
+    result = dict(result)
+    result.update(_time_payload(when, at_source))
 
     print(json.dumps(result, indent=2, default=str))
 
 
+def cmd_chain(args: argparse.Namespace) -> None:
+    """Print the capability/fallback chain plan for a task.
+
+    Shows the injected clock, the derived requirements, the eligible order
+    actually tried, the per-elo price multiplier and effective price at that
+    clock, the rejected elos with their reason, the fallback strategy, the
+    time-layer flags that fired (``capped``, ``demoted``, ``promoted``,
+    ``time_cap_bypassed``, ``strategy_degraded``) and the number of independent
+    upstream rails. ``--json`` prints the same payload machine readable.
+
+    ``--seed N`` plans with ``random.Random(N)`` instead of reusing explain's
+    fixed-seed preview, so different seeds really do produce different
+    ``random``-strategy orders and the same seed reproduces byte-identically —
+    which is the whole point of the flag. Without ``--seed`` the preview path is
+    kept, so a bare ``chain`` call stays stable across runs. ``plan_source``
+    always names the path that produced the printed order.
+
+    Never raises on a missing newer module: the plan degrades to the empty shape
+    plus a ``plan_source`` of ``unavailable``, and an unanswerable price renders
+    as ``n/a``.
+    """
+    config = load_config(args.config)
+    task = args.task
+    when, at_source = resolve_when(args)
+    features = extract(task)
+    features.update(_time_features(when))
+
+    requested_model = getattr(args, "model", "") or ""
+    blocked = Blocklist(config).is_blocked(requested_model, "")
+
+    result, explain_time_aware = _call_explain(task, features, blocked, config, when)
+    output = result.get("output", {}) if isinstance(result, dict) else {}
+    seed = getattr(args, "seed", None)
+    plan, source, plan_time_aware = _chain_plan_for(
+        result, output, features,
+        seed=seed, when=when, explain_time_aware=explain_time_aware,
+    )
+
+    payload: Dict[str, Any] = {
+        "task": task,
+        "matched_rule_id": result.get("matched_rule_id"),
+        "cause": result.get("cause"),
+        "output": output,
+        "seed": seed,
+        "plan_source": source,
+        "plan_time_aware": plan_time_aware,
+        "chain_plan": plan,
+        "pricing": _pricing_rows(plan, when),
+    }
+    payload.update(_time_payload(when, at_source))
+
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, default=str))
+        return
+    _print_chain_plan(payload)
+
+
 def cmd_lint(args: argparse.Namespace) -> None:
-    """Validate router.yaml, fail-closed."""
+    """Validate router.yaml, fail-closed on errors, advisory on warnings.
+
+    Hard errors are the fail-closed gate and exit 1. ``rules.lint_warnings`` is
+    advisory only (a tier whose first two hops share an upstream is legal but
+    gives no real redundancy) — it prints in its own clearly-labelled block and
+    NEVER changes the exit code, so a warning can never wedge a deploy.
+    """
     config = load_config(args.config)
     errors = rules_lint(config)
+    warnings = _lint_warnings(config)
     if errors:
         print(f"router: {len(errors)} config error(s):")
         for e in errors:
             print(f"  - {e}")
+        _print_warnings(warnings)
         sys.exit(1)
     print("router: config valid")
+    _print_warnings(warnings)
+
+
+def _print_warnings(warnings: List[str]) -> None:
+    """Print the advisory block. Exit code is deliberately untouched."""
+    if not warnings:
+        return
+    print(f"router: {len(warnings)} warning(s) (advisory, exit code unaffected):")
+    for w in warnings:
+        print(f"  ! {w}")
+
+
+def _lint_warnings(config: Dict[str, Any]) -> List[str]:
+    """``rules.lint_warnings(config)`` if that helper exists, else no warnings.
+
+    Guarded twice over: the helper may not exist yet (older rules.py), and a
+    defect inside it must not turn ``lint`` — the fail-closed gate every write
+    runs through — into a traceback.
+    """
+    fn = getattr(_rules, "lint_warnings", None)
+    if not callable(fn):
+        return []
+    try:
+        warnings = fn(config)
+    except Exception as exc:  # advisory path: degrade to a note, never raise
+        return [f"lint_warnings unavailable: {exc}"]
+    if not isinstance(warnings, list):
+        return []
+    return [str(w) for w in warnings]
 
 
 def cmd_blocklist(args: argparse.Namespace) -> None:
@@ -132,8 +401,499 @@ def cmd_log(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Chain plan — resolution (guarded) and rendering
+# ---------------------------------------------------------------------------
+
+def _accepts(fn: Any, name: str) -> bool:
+    """True when ``fn`` takes a keyword argument called ``name``.
+
+    Asked by signature rather than by catching TypeError, because a TypeError
+    raised INSIDE a mid-write module would otherwise be misread as "does not
+    take this argument" and silently drop the clock. Unintrospectable callables
+    (C builtins, some mocks) answer False: the guarded call then omits the
+    argument, which is the degraded-but-correct direction.
+    """
+    if not callable(fn):
+        return False
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    for param in params.values():
+        if param.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+    param = params.get(name)
+    return param is not None and param.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY,
+    )
+
+
+def _call_explain(
+    task: str,
+    features: Dict[str, Any],
+    blocked: bool,
+    config: Dict[str, Any],
+    when: Optional[datetime],
+) -> Tuple[Dict[str, Any], bool]:
+    """Run ``rules.explain``, injecting the clock only if it accepts one.
+
+    Returns ``(result, time_aware)``. ``time_aware`` is False when a clock was
+    supplied but this build of ``rules.explain`` has no ``when`` parameter — the
+    preview plan is then time-blind, and the caller must NOT present it as the
+    plan for the requested hour.
+    """
+    pass_when = when is not None and _accepts(rules_explain, "when")
+    kwargs: Dict[str, Any] = {"when": when} if pass_when else {}
+    result = rules_explain(
+        task, features, blocked,
+        config.get("rules", []),
+        config.get("default", {}),
+        config.get("tiers", {}),
+        **kwargs,
+    )
+    if not isinstance(result, dict):
+        return {}, False
+    # No clock to reflect => the preview is trivially consistent with it.
+    return result, pass_when or when is None
+
+
+def _chain_plan_for(
+    result: Dict[str, Any],
+    output: Dict[str, Any],
+    features: Dict[str, Any],
+    *,
+    seed: Optional[int] = None,
+    when: Optional[datetime] = None,
+    explain_time_aware: bool = True,
+) -> Tuple[Dict[str, Any], str, bool]:
+    """Return ``(plan, source, time_aware)`` for a decision, degrading in steps.
+
+    Preference order — most authoritative first:
+      1. ``explain()``'s own ``chain_plan`` key (already computed for this turn),
+         used ONLY when no ``--seed`` was given and that preview saw the same
+         clock. explain plans with a FIXED ``random.Random(0)``, so reusing it
+         under ``--seed N`` would make the seed a no-op;
+      2. ``rules.plan_chain(output, features, rng=..., when=...)``;
+      3. locally composed from ``capabilities`` primitives (older rules.py);
+      4. the empty plan with source ``unavailable`` — printing "no plan" beats
+         a traceback in the operator's only shell-side tool.
+
+    ``source`` names the path AND the rng that produced the order
+    (``rules.plan_chain(seed=7)`` vs ``rules.plan_chain(preview)``), because an
+    order you cannot attribute is indistinguishable from a bug. ``seed`` makes
+    the ``random`` strategy reproducible: same task + same seed => same order.
+    Without a seed the preview stream (``random.Random(0)``) is reused so a bare
+    ``chain`` call stays stable across runs.
+
+    ``time_aware`` reports whether the returned plan actually saw ``when``.
+    """
+    seeded = seed is not None
+    rng = random.Random(seed if seeded else _PREVIEW_SEED)
+    label = f"seed={seed}" if seeded else "preview"
+
+    explained = result.get("chain_plan") if isinstance(result, dict) else None
+    if not seeded and explain_time_aware and isinstance(explained, dict):
+        return _normalize_plan(explained), "explain", True
+
+    fn = getattr(_rules, "plan_chain", None)
+    if callable(fn):
+        plan, time_aware = _call_plan_chain(fn, output, features, rng, when)
+        if plan is not None:
+            return _normalize_plan(plan), f"rules.plan_chain({label})", time_aware
+
+    plan, time_aware = _compose_plan(output, features, rng, when)
+    if plan is not None:
+        return _normalize_plan(plan), f"capabilities({label})", time_aware
+
+    return _normalize_plan(None), "unavailable", when is None
+
+
+def _call_plan_chain(
+    fn: Any,
+    output: Dict[str, Any],
+    features: Dict[str, Any],
+    rng: Optional[random.Random],
+    when: Optional[datetime],
+) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """Call ``rules.plan_chain`` tolerantly.
+
+    Returns ``(plan, time_aware)``; ``(None, ...)`` when the planner is
+    unusable. ``when`` is passed only when the planner declares it, so a
+    pre-time-layer ``rules.py`` still plans (time-blind, and reported as such)
+    instead of dying on an unexpected keyword.
+    """
+    kwargs: Dict[str, Any] = {}
+    time_aware = when is None
+    if _accepts(fn, "when"):
+        kwargs["when"] = when
+        time_aware = True
+    try:
+        plan = fn(output, features, rng=rng, **kwargs)
+    except TypeError:
+        try:
+            plan = fn(output, features)
+        except Exception:
+            return None, False
+        time_aware = when is None
+    except Exception:
+        return None, False
+    return (plan if isinstance(plan, dict) else None), time_aware
+
+
+def _compose_plan(
+    output: Dict[str, Any],
+    features: Dict[str, Any],
+    rng: Optional[random.Random],
+    when: Optional[datetime] = None,
+) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """Build a plan straight from the capabilities primitives.
+
+    Used only when ``rules`` has no ``plan_chain`` yet. Every call is inside one
+    guard: this is a diagnostic path and must never be the thing that breaks.
+    Returns ``(plan, time_aware)`` — the ordering primitive only sees the clock
+    when this build of ``capabilities.order_chain`` declares a ``when``.
+    """
+    if _caps is None:
+        return None, False
+    chain: List[Dict[str, Any]] = []
+    if output.get("model"):
+        head = {"model": output.get("model")}
+        if output.get("provider"):
+            head["provider"] = output["provider"]
+        chain.append(head)
+    fallback = output.get("fallback")
+    if isinstance(fallback, list):
+        chain.extend(t for t in fallback if isinstance(t, dict))
+    if not chain:
+        return None, False
+
+    tier_requirements = output.get("requirements")
+    strategy = output.get("fallback_strategy") or "sequential"
+    pin_primary = output.get("pin_primary", True)
+    order_kwargs: Dict[str, Any] = {}
+    time_aware = when is None
+    if _accepts(getattr(_caps, "order_chain", None), "when"):
+        order_kwargs["when"] = when
+        time_aware = True
+    try:
+        requirements = _caps.derive_requirements(
+            features,
+            tier_requirements if isinstance(tier_requirements, dict) else None,
+        )
+        filtered = _caps.filter_chain(chain, requirements)
+        eligible = _caps.order_chain(
+            filtered.get("eligible", []), str(strategy),
+            pin_primary=bool(pin_primary), rng=rng, **order_kwargs,
+        )
+        return {
+            "chain": eligible,
+            "requirements": requirements,
+            "rejected": filtered.get("rejected", []),
+            "unknown": filtered.get("unknown", []),
+            "bypassed": bool(filtered.get("bypassed", False)),
+            "strategy": str(strategy),
+            "independent_rails": _caps.independent_rails(eligible),
+        }, time_aware
+    except Exception:
+        return None, False
+
+
+def _normalize_plan(plan: Any) -> Dict[str, Any]:
+    """Guarantee every rendered key exists, keeping any extra keys the plan has.
+
+    Reuses the decision-log parser so the CLI and a replayed trace agree on what
+    a missing or corrupt plan means: the empty default, never an exception.
+    """
+    normalized = chain_plan_of({"chain_plan": plan})
+    if isinstance(plan, dict):
+        for key, value in plan.items():
+            if key not in normalized:
+                normalized[key] = value
+    return normalized
+
+
+# ---------------------------------------------------------------------------
+# Time-relative pricing — what each elo costs at the injected clock
+# ---------------------------------------------------------------------------
+
+def _pricing_rows(
+    plan: Dict[str, Any],
+    when: Optional[datetime],
+) -> List[Dict[str, Any]]:
+    """Per-elo multiplier + effective price at ``when``, in chain order.
+
+    The multiplier the PLANNER used wins when the plan carries one (``plan
+    ['multipliers']``), because that is the number the ordering decision was
+    actually made on; otherwise it is recomputed from the registry. A model with
+    no published per-token price is reported as ``unpriced`` with null prices —
+    NEVER 0.0, which would make a plan model look free and win every cost
+    comparison.
+    """
+    rows: List[Dict[str, Any]] = []
+    chain = plan.get("chain")
+    if not isinstance(chain, list):
+        return rows
+    declared_multipliers = plan.get("multipliers")
+    if not isinstance(declared_multipliers, dict):
+        declared_multipliers = {}
+
+    for target in chain:
+        if not isinstance(target, dict):
+            continue
+        model = target.get("model")
+        model = model if isinstance(model, str) else str(model)
+        multiplier = declared_multipliers.get(model)
+        if not _is_number(multiplier):
+            multiplier = _price_multiplier(model, target, when)
+        status, price = _effective_price(model, target, when)
+        rows.append({
+            "model": model,
+            "provider": target.get("provider"),
+            "multiplier": float(multiplier) if _is_number(multiplier) else None,
+            "pricing": status,
+            "unpriced": status == _PRICE_UNPRICED,
+            "price_in": price[0] if price is not None else None,
+            "price_out": price[1] if price is not None else None,
+        })
+    return rows
+
+
+def _is_number(value: Any) -> bool:
+    """True for a real int/float. bool is an int subclass and is NOT a price."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _declared_of(target: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Per-elo registry overrides declared on a chain entry, or None."""
+    declared = {
+        key: value for key, value in target.items() if key not in _ROUTING_KEYS
+    }
+    return declared or None
+
+
+def _price_multiplier(
+    model: str,
+    target: Dict[str, Any],
+    when: Optional[datetime],
+) -> Optional[float]:
+    """``capabilities.price_multiplier`` if this build has it, else None."""
+    fn = getattr(_caps, "price_multiplier", None) if _caps is not None else None
+    if not callable(fn):
+        return None
+    try:
+        value = fn(model, when=when, declared=_declared_of(target))
+    except TypeError:
+        try:
+            value = fn(model, when)
+        except Exception:
+            return None
+    except Exception:
+        return None
+    return float(value) if _is_number(value) else None
+
+
+def _effective_price(
+    model: str,
+    target: Dict[str, Any],
+    when: Optional[datetime],
+) -> Tuple[str, Optional[Tuple[float, float]]]:
+    """``(status, (price_in, price_out))`` at ``when``.
+
+    ``status`` separates the two zero-like answers on purpose: ``unpriced``
+    (vendor publishes no dollar rate — plan credits) from ``unavailable`` (this
+    build of capabilities.py cannot answer). Neither is ever rendered as $0.
+    """
+    fn = getattr(_caps, "effective_price", None) if _caps is not None else None
+    if not callable(fn):
+        return _PRICE_UNAVAILABLE, None
+    try:
+        price = fn(model, when=when, declared=_declared_of(target))
+    except TypeError:
+        try:
+            price = fn(model, when)
+        except Exception:
+            return _PRICE_UNAVAILABLE, None
+    except Exception:
+        return _PRICE_UNAVAILABLE, None
+    if price is None:
+        return _PRICE_UNPRICED, None
+    if (
+        isinstance(price, (tuple, list))
+        and len(price) == 2
+        and all(_is_number(p) for p in price)
+    ):
+        return _PRICE_OK, (float(price[0]), float(price[1]))
+    return _PRICE_UNAVAILABLE, None
+
+
+def _print_chain_plan(payload: Dict[str, Any]) -> None:
+    """Human-readable rendering — the shell-side answer to 'why this elo?'."""
+    plan = payload.get("chain_plan", {})
+    print(f"task: {payload.get('task', '')}")
+    print(f"matched_rule: {payload.get('matched_rule_id') or '-'} "
+          f"cause={payload.get('cause') or '-'}")
+    print(f"plan_source: {payload.get('plan_source', 'unavailable')}")
+    print(_at_line(payload))
+    if payload.get("at") is not None and not payload.get("plan_time_aware", True):
+        # An order computed without the clock must not be read as the order for
+        # the requested hour, even though the prices below are for that hour.
+        print("plan_time_aware: false (the planner has no clock parameter in "
+              "this build — order is time-blind)")
+    print(f"strategy: {plan.get('strategy', 'sequential')}")
+    print(f"independent_rails: {plan.get('independent_rails', 0)}")
+    print(f"bypassed: {str(bool(plan.get('bypassed', False))).lower()}")
+    for line in _time_flag_lines(plan):
+        print(line)
+
+    requirements = plan.get("requirements") or {}
+    print("requirements:")
+    if requirements:
+        for key in sorted(requirements):
+            print(f"  {key} = {requirements[key]}")
+    else:
+        print("  (none derived)")
+
+    print("eligible:")
+    chain = plan.get("chain") or []
+    if chain:
+        for i, target in enumerate(chain, start=1):
+            print(f"  {i}. {_target_label(target)}")
+    else:
+        print("  (empty)")
+
+    _print_pricing(payload)
+
+    print("rejected:")
+    rejected = plan.get("rejected") or []
+    if rejected:
+        for target in rejected:
+            reason = "unknown"
+            if isinstance(target, dict):
+                reason = target.get("reject_reason") or "unknown"
+            print(f"  - {_target_label(target)} reject_reason={reason}")
+    else:
+        print("  (none)")
+    truncated = plan.get("rejected_truncated", 0)
+    if truncated:
+        print(f"  ... {truncated} more rejected (truncated)")
+
+    unknown = plan.get("unknown") or []
+    if unknown:
+        print(f"unknown_capabilities: {', '.join(str(u) for u in unknown)}")
+
+
+def _at_line(payload: Dict[str, Any]) -> str:
+    """The clock header — every price and order below is relative to it."""
+    at = payload.get("at")
+    source = payload.get("at_source", "now")
+    if at is None:
+        return ("at: (time-agnostic — no clock injected; time-dependent features "
+                f"omitted, time-dependent ordering degrades to sequential) "
+                f"source={source}")
+    return (f"at: {at} (utc_hour={payload.get('utc_hour')} "
+            f"utc_weekday={payload.get('utc_weekday')}) source={source}")
+
+
+def _print_pricing(payload: Dict[str, Any]) -> None:
+    """Per-elo multiplier + effective price, aligned with the eligible order."""
+    rows = payload.get("pricing")
+    if not isinstance(rows, list) or not rows:
+        return
+    print("pricing:")
+    for i, row in enumerate(rows, start=1):
+        label = _target_label(row)
+        print(f"  {i}. {label} {_multiplier_str(row.get('multiplier'))} "
+              f"{_price_str(row)}")
+
+
+def _multiplier_str(multiplier: Any) -> str:
+    """``x2.0`` / ``x0.8`` / ``x1.25`` / ``x?`` when nothing can price the elo.
+
+    A whole multiplier keeps one decimal on purpose: ``x2`` reads like a count,
+    ``x2.0`` reads like a rate, and this line is scanned for "am I in a peak".
+    """
+    if not _is_number(multiplier):
+        return "x?"
+    value = float(multiplier)
+    return f"x{value:.1f}" if value == int(value) else f"x{value:g}"
+
+
+def _price_str(row: Dict[str, Any]) -> str:
+    """The price fragment of one pricing row. Never renders an unpriced $0."""
+    status = row.get("pricing")
+    if status == _PRICE_OK:
+        return (f"in=${row.get('price_in'):.4g}/1M "
+                f"out=${row.get('price_out'):.4g}/1M")
+    if status == _PRICE_UNPRICED:
+        return "unpriced (no per-token $ rate published — plan/subscription credits)"
+    return "price=n/a (this build of capabilities.py cannot price it)"
+
+
+def _time_flag_lines(plan: Dict[str, Any]) -> List[str]:
+    """Render the time-layer flags that fired, and only those.
+
+    ``time_cap_bypassed`` is the one an operator must never miss: it means a
+    cost cap was dropped to keep the chain non-empty (a cost control must not be
+    able to cause an outage), so it is annotated rather than printed bare.
+    """
+    lines: List[str] = []
+    for key in _TIME_FLAG_KEYS:
+        if key not in plan:
+            continue
+        value = plan[key]
+        if value is None or value is False or value == [] or value == {} or value == "":
+            continue
+        rendered = _flag_value(value)
+        if key == "time_cap_bypassed":
+            rendered += " (time_cap would have emptied the chain — cap dropped)"
+        elif key == "strategy_degraded":
+            rendered += " (declared strategy needed a clock/rng it did not get)"
+        lines.append(f"{key}: {rendered}")
+    return lines
+
+
+def _flag_value(value: Any) -> str:
+    """Flag rendering: bools lowercase, lists joined, anything else stringified."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        return ", ".join(_target_label(item) for item in value)
+    if isinstance(value, dict):
+        return ", ".join(f"{k}={value[k]}" for k in sorted(value, key=str))
+    return str(value)
+
+
+def _target_label(target: Any) -> str:
+    """``model (provider)`` for a chain entry, tolerant of any junk value."""
+    if not isinstance(target, dict):
+        return str(target)
+    model = target.get("model", "?")
+    provider = target.get("provider")
+    return f"{model} ({provider})" if provider else str(model)
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
+
+def _add_time_args(parser: argparse.ArgumentParser) -> None:
+    """Add the injected-clock flags. Mutually exclusive: they are two answers
+    to the same question, and accepting both would leave which one won implicit.
+    """
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--at", default=None, metavar="TIME",
+        help="Evaluate at this UTC time instead of now: a bare hour 0-23, "
+             "HH:MM, or an ISO-8601 timestamp (2026-08-17T07:00:00Z; naive is "
+             "read as UTC). Hour-only forms inherit today's UTC date, which "
+             "matters for the weekday-only zai peak window",
+    )
+    group.add_argument(
+        "--time-agnostic", action="store_true",
+        help="Inject no clock at all: time features are omitted and "
+             "time-dependent ordering degrades to sequential",
+    )
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -149,7 +909,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_explain = sub.add_parser("explain", help="Trace routing decision for a task")
     p_explain.add_argument("task", help="Task description to classify")
     p_explain.add_argument("--model", default="", help="Requested model (for blocklist check)")
+    _add_time_args(p_explain)
     p_explain.set_defaults(func=cmd_explain)
+
+    # chain — capability filter + fallback strategy for one task
+    p_chain = sub.add_parser(
+        "chain",
+        help="Show the capability/fallback chain plan for a task",
+    )
+    p_chain.add_argument("task", help="Task description to plan")
+    p_chain.add_argument("--model", default="",
+                         help="Requested model (for blocklist check)")
+    p_chain.add_argument("--seed", type=int, default=None,
+                         help="RNG seed for the 'random' fallback strategy "
+                              "(same seed => same order; different seeds => "
+                              "different orders). Omit to reuse the fixed-seed "
+                              "preview plan")
+    _add_time_args(p_chain)
+    p_chain.add_argument("--json", action="store_true",
+                         help="Emit the plan as JSON")
+    p_chain.set_defaults(func=cmd_chain)
 
     # lint
     p_lint = sub.add_parser("lint", help="Validate router.yaml")

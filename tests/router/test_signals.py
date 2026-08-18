@@ -1,7 +1,19 @@
 """Unit tests for signal extraction (router/signals.py)."""
 
+import math
+from pathlib import Path
+
 import pytest
-from router.signals import extract
+from router import signals as signals_module
+from router.signals import (
+    EXTRACTED_FEATURE_NAMES,
+    INJECTED_FEATURE_NAMES,
+    KNOWN_FEATURE_NAMES,
+    _QUESTION_MARKERS,
+    _TOOL_MARKERS,
+    _estimate_input_tokens,
+    extract,
+)
 
 
 class TestExtract:
@@ -106,3 +118,441 @@ KeyError: 'user:123'"""
         task = "Modify 2 files"
         fv = extract(task)
         assert fv["num_files"] == 2
+
+
+class TestContextSignals:
+    """est_input_tokens — heuristic context need, base plus allowances."""
+
+    def test_base_estimate_is_chars_over_ratio(self):
+        task = "Summarize what this project does."
+        fv = extract(task)
+        assert fv["char_len"] == 33
+        assert fv["num_files"] == 0
+        assert fv["est_input_tokens"] == math.ceil(33 / 3.6) == 10
+
+    def test_empty_turn_estimates_zero(self):
+        fv = extract("")
+        assert fv["est_input_tokens"] == 0
+
+    def test_whole_repo_allowance(self):
+        # Same length, one word pair apart: the delta is the allowance itself.
+        whole = extract("Audit the entire repo for unsafe subprocess usage.")
+        narrow = extract("Audit the single file for unsafe subprocess usage.")
+        assert whole["char_len"] == narrow["char_len"]
+        assert narrow["est_input_tokens"] == math.ceil(50 / 3.6)
+        assert whole["est_input_tokens"] - narrow["est_input_tokens"] == 40000
+
+    @pytest.mark.parametrize(
+        "phrase",
+        ["entire repo", "whole codebase", "every file", "all files", "across the repo"],
+    )
+    def test_whole_repo_phrases_all_fire(self, phrase):
+        fv = extract(f"Check {phrase} for TODO markers")
+        assert fv["est_input_tokens"] >= 40000
+
+    def test_no_whole_repo_allowance_without_marker(self):
+        fv = extract("Check the auth module for TODO markers")
+        assert fv["est_input_tokens"] < 40000
+
+    def test_file_allowance_compounds_with_char_len(self):
+        task = "Update 3 files to use the new import pattern"
+        fv = extract(task)
+        assert fv["num_files"] == 3
+        assert fv["est_input_tokens"] == math.ceil(len(task) / 3.6) + 3 * 4000
+        assert fv["est_input_tokens"] == 12013
+
+    def test_both_allowances_compound(self):
+        task = "Refactor 2 files across the repo"
+        fv = extract(task)
+        expected = math.ceil(len(task) / 3.6) + 2 * 4000 + 40000
+        assert fv["est_input_tokens"] == expected
+
+    def test_estimate_is_int(self):
+        fv = extract("Modify 2 files")
+        assert isinstance(fv["est_input_tokens"], int)
+        assert not isinstance(fv["est_input_tokens"], bool)
+
+    def test_estimate_clamps_at_zero_for_a_nonsense_char_len(self):
+        # The clamp is the reason a garbage count upstream cannot produce a
+        # negative feature that would silently satisfy an `lt` clause.
+        assert _estimate_input_tokens(-500, 0, "") == 0
+        assert _estimate_input_tokens(-500, 0, "audit the entire repo") == 40000
+
+    def test_estimate_is_never_negative_for_any_turn(self):
+        for task in ["", " ", "\n", "x", "Modify 2 files", "no files at all"]:
+            assert extract(task)["est_input_tokens"] >= 0
+
+
+class TestCapabilitySignals:
+    """needs_vision — the unambiguous markers, which fire on the marker alone."""
+
+    @pytest.mark.parametrize(
+        "task",
+        [
+            "Here is a screenshot of the failing page",
+            "Compare the two png exports",
+            "The jpg is blurry, the jpeg less so",
+            "Convert the webp asset",
+            "Rebuild the header from the Figma file",
+            "Match the mockup exactly",
+            "Turn this wireframe into HTML",
+            "Look at this design and tell me what is off",
+            "see attached and fix it",
+            "the UI looks broken on mobile",
+        ],
+    )
+    def test_needs_vision_positive(self, task):
+        assert extract(task)["needs_vision"] is True
+
+    def test_needs_vision_negative(self):
+        fv = extract("Refactor the retry helper to use exponential backoff")
+        assert fv["needs_vision"] is False
+
+
+class TestVisionInputVersusVisualNoun:
+    """A visual noun is not visual input.
+
+    needs_vision selects the vision rule, and the capability filter then drops
+    every elo that cannot see — which on this registry can leave a single hop
+    on one subscription rail. So a text-only turn that merely *mentions* a
+    chart must not be read as a turn that *supplies* one. Both directions of
+    every ambiguous noun are pinned here.
+    """
+
+    @pytest.mark.parametrize(
+        "noun,supplied,mentioned",
+        [
+            (
+                "chart",
+                "look at this chart and tell me why the bars are wrong",
+                "plot a chart from the csv",
+            ),
+            (
+                "diagram",
+                "the attached diagram shows the wrong arrows",
+                "generate a mermaid diagram of the request flow",
+            ),
+            (
+                "image",
+                "here is the image of the crash dialog",
+                "rebuild the docker image and push it",
+            ),
+            (
+                "design",
+                "look at this design and say what is off",
+                "the design of the retry helper is wrong",
+            ),
+            (
+                "plot",
+                "the plot I pasted has the axes swapped",
+                "plot the latency distribution by percentile",
+            ),
+        ],
+    )
+    def test_ambiguous_noun_needs_a_cue(self, noun, supplied, mentioned):
+        assert noun in supplied and noun in mentioned
+        assert extract(supplied)["needs_vision"] is True
+        assert extract(mentioned)["needs_vision"] is False
+
+    @pytest.mark.parametrize(
+        "task",
+        [
+            "the flow chart of the module",
+            "Redraw the chart with a log scale",
+            "Explain the sequence diagram",
+            "in this file the diagram is generated",
+            "plot these points on a log axis",
+            "chart the rollout week by week",
+        ],
+    )
+    def test_visual_noun_without_a_cue_is_not_vision(self, task):
+        assert extract(task)["needs_vision"] is False
+
+    @pytest.mark.parametrize(
+        "task",
+        [
+            "the chart above is wrong",
+            "see the diagram I attached",
+            "have a look at the design here",
+            "check out this chart",
+            "the uploaded wiring diagram is out of date",
+        ],
+    )
+    def test_cue_next_to_the_noun_is_vision(self, task):
+        assert extract(task)["needs_vision"] is True
+
+    def test_mockup_stays_unconditional_and_that_is_deliberate(self):
+        # "mockup" is retained as an unambiguous marker: unlike chart/plot it
+        # names a design artefact rather than something code produces, so it
+        # fires with or without a deictic cue. Recorded as an asserted
+        # asymmetry rather than left to be rediscovered as a surprise.
+        assert extract("Match the mockup exactly")["needs_vision"] is True
+        assert extract("the mockup is out of date")["needs_vision"] is True
+
+    def test_unambiguous_markers_need_no_cue(self):
+        for task in [
+            "screenshot",
+            "mockup.png",
+            "the figma frame",
+            "wireframe first, code second",
+        ]:
+            assert extract(task)["needs_vision"] is True, task
+
+    def test_bare_deictic_without_a_visual_noun_is_not_vision(self):
+        # "look at this" used to be a marker on its own, so a stack trace was
+        # a vision turn.
+        assert extract("look at this traceback")["needs_vision"] is False
+        assert extract("look at this function signature")["needs_vision"] is False
+
+
+class TestOtherCapabilitySignals:
+    """needs_structured_output / needs_tools / attachment_kinds."""
+
+    @pytest.mark.parametrize(
+        "task",
+        [
+            "Conform to this json schema",
+            "We need structured output here",
+            "Return json for each row",
+            "Emit the result as json",
+            "Set response_format on the call",
+            "Enforce a strict schema",
+            "typed output only, please",
+        ],
+    )
+    def test_needs_structured_output_positive(self, task):
+        assert extract(task)["needs_structured_output"] is True
+
+    def test_needs_structured_output_negative(self):
+        fv = extract("Write a short paragraph explaining the cache design")
+        assert fv["needs_structured_output"] is False
+
+    @pytest.mark.parametrize(
+        "task",
+        [
+            "Run the migration",
+            "execute the smoke suite",
+            "Edit the config",
+            "Write the adapter",
+            "Create a fixture",
+            "Delete the stale branch data",
+            "Install the dev extras",
+            "Commit the fix",
+            "Add a test for the parser",
+            "Build the wheel",
+            "Deploy to staging",
+            "Search for callers of extract()",
+            "Fetch the release notes",
+            "read the file and summarise it",
+            "apply the suggested change",
+        ],
+    )
+    def test_needs_tools_positive(self, task):
+        assert extract(task)["needs_tools"] is True
+
+    def test_needs_tools_true_on_empty_turn(self):
+        assert extract("")["needs_tools"] is True
+
+
+class TestNeedsToolsIsBidirectional:
+    """needs_tools must be able to say False, or the marker set is decoration.
+
+    The detector is asymmetric on purpose. An action verb says True; only
+    positive evidence of a pure question — explanatory or interrogative
+    phrasing, no action verb, no file or path reference — says False; anything
+    else keeps the fail-closed default. The False direction is what makes a
+    `needs_tools: {eq: false}` rule reachable and what lets an elo declaring
+    `tool_calling: False` be eligible for a question turn.
+    """
+
+    @pytest.mark.parametrize(
+        "task",
+        [
+            "Why is my mutex approach slower than a spinlock?",
+            "What is a semaphore?",
+            "Explain the difference between optimistic and pessimistic locking",
+            "How does exponential backoff interact with a token bucket?",
+            "Describe when a B-tree beats a hash index",
+            "Tell me about the CAP theorem",
+            "Compare a mutex with a spinlock",
+            "Summarize why TCP slow start exists",
+            "walk me through how a bloom filter avoids false negatives",
+            "what are the pros and cons of optimistic concurrency",
+        ],
+    )
+    def test_pure_question_is_not_a_tool_turn(self, task):
+        lower = task.lower()
+        assert not any(marker in lower for marker in _TOOL_MARKERS)
+        assert any(marker in lower for marker in _QUESTION_MARKERS)
+        assert extract(task)["needs_tools"] is False
+
+    @pytest.mark.parametrize(
+        "task",
+        [
+            "explain what users.py does",
+            "explain the file layout",
+            "what is in the repo root",
+            "describe how this codebase handles retries",
+            "why does router/signals.py import math",
+        ],
+    )
+    def test_question_about_a_path_stays_a_tool_turn(self, task):
+        # Interrogative phrasing, but the answer lives in material only a tool
+        # can reach, so the fail-closed default stands.
+        assert extract(task)["needs_tools"] is True
+
+    def test_action_evidence_outranks_question_phrasing(self):
+        # "read the file" is a tool marker; "summarise" is a question marker.
+        # Order matters and the action wins.
+        assert extract("read the file and summarise it")["needs_tools"] is True
+        assert extract("explain the bug, then apply the fix")["needs_tools"] is True
+
+    @pytest.mark.parametrize(
+        "task",
+        [
+            "Thoughts on mutexes versus spinlocks?",
+            "the retry helper seems slow",
+            "hmm",
+            "",
+        ],
+    )
+    def test_neither_signal_keeps_the_fail_closed_default(self, task):
+        lower = task.lower()
+        assert not any(marker in lower for marker in _TOOL_MARKERS)
+        assert not any(marker in lower for marker in _QUESTION_MARKERS)
+        assert extract(task)["needs_tools"] is True
+
+    def test_tool_markers_are_reachable_in_both_directions(self):
+        # The regression this pins: the detector used to return True on every
+        # input, which made _TOOL_MARKERS dead code.
+        results = {
+            extract("Run the migration")["needs_tools"],
+            extract("What is a semaphore?")["needs_tools"],
+        }
+        assert results == {True, False}
+
+
+class TestAttachmentKinds:
+    """attachment_kinds — what the turn references, independent of vision."""
+
+    def test_attachment_kinds_sorted_and_deduplicated(self):
+        task = (
+            "Here is a screenshot.png plus another image.PNG, the server.log "
+            "and the rest of the logs, a git diff, report.pdf and rows.csv"
+        )
+        kinds = extract(task)["attachment_kinds"]
+        assert kinds == ["csv", "diff", "image", "log", "pdf"]
+        assert kinds == sorted(kinds)
+        assert len(kinds) == len(set(kinds))
+
+    @pytest.mark.parametrize(
+        "task,kind",
+        [
+            ("attached screenshot", "image"),
+            ("see report.pdf", "pdf"),
+            ("parse the csv", "csv"),
+            ("check server.log", "log"),
+            ("review the git diff", "diff"),
+            ("scrape the html", "html"),
+        ],
+    )
+    def test_attachment_kind_inferred(self, task, kind):
+        assert extract(task)["attachment_kinds"] == [kind]
+
+    def test_attachment_kinds_empty_when_nothing_referenced(self):
+        fv = extract("Explain the difference between a mutex and a semaphore")
+        assert fv["attachment_kinds"] == []
+
+
+class TestBackwardCompatibility:
+    """Live rules and the operator console read these keys — they must not move."""
+
+    LEGACY_KEYS = (
+        "char_len", "has_code", "size_lines", "num_files", "has_stacktrace",
+        "num_requirements", "verb_class", "lang", "keywords",
+    )
+
+    def test_legacy_keys_present_with_unchanged_values(self):
+        task = "Rename getCwd to getCurrentWorkingDirectory in 3 files, ~40 lines"
+        fv = extract(task)
+        assert set(self.LEGACY_KEYS).issubset(fv.keys())
+        assert fv["char_len"] == 65
+        assert fv["has_code"] is True
+        assert fv["size_lines"] == 40
+        assert fv["num_files"] == 3
+        assert fv["has_stacktrace"] is False
+        assert fv["num_requirements"] == 0
+        assert fv["verb_class"] == "trivial"
+        assert fv["lang"] == ""
+        assert fv["keywords"] == []
+
+    def test_feature_vector_is_flat_and_depth_one(self):
+        fv = extract("Debug the 2 files in the entire repo, see screenshot.png")
+        for key, value in fv.items():
+            assert isinstance(key, str)
+            if isinstance(value, list):
+                assert all(isinstance(item, str) for item in value)
+            else:
+                assert isinstance(value, (int, float, str, bool)), key
+
+    def test_extract_is_deterministic(self):
+        task = "Refactor 3 files across the repo, see the git diff and mockup.png"
+        assert extract(task) == extract(task)
+
+
+class TestExportedFeatureVocabulary:
+    """EXTRACTED_FEATURE_NAMES is a public surface with a consumer.
+
+    `rules.py`'s `when.<field>` lint imports it instead of keeping its own copy,
+    so these assertions are the anti-drift guard: a key added to `extract()`
+    without being added to the set (or vice versa) fails here rather than
+    silently making a valid rule field look like a typo, or a typo look valid.
+    """
+
+    TURNS = (
+        "",
+        "hello",
+        "Rename getCwd in 3 files, ~40 lines",
+        "Debug the 2 files in the entire repo, see screenshot.png",
+        "What is a semaphore?",
+        "Return json for each row of the csv",
+    )
+
+    @pytest.mark.parametrize("task", TURNS)
+    def test_extract_keys_are_exactly_the_exported_set(self, task):
+        assert set(extract(task).keys()) == set(EXTRACTED_FEATURE_NAMES)
+
+    def test_key_set_does_not_vary_with_the_turn(self):
+        key_sets = {frozenset(extract(task).keys()) for task in self.TURNS}
+        assert key_sets == {EXTRACTED_FEATURE_NAMES}
+
+    def test_exported_sets_are_frozensets_of_str(self):
+        for exported in (
+            EXTRACTED_FEATURE_NAMES,
+            INJECTED_FEATURE_NAMES,
+            KNOWN_FEATURE_NAMES,
+        ):
+            assert isinstance(exported, frozenset)
+            assert all(isinstance(name, str) for name in exported)
+
+    def test_legacy_keys_are_all_in_the_exported_set(self):
+        assert set(TestBackwardCompatibility.LEGACY_KEYS) <= EXTRACTED_FEATURE_NAMES
+
+    def test_injected_time_features_are_not_produced_here(self):
+        # The clock is a parameter supplied at the edge, never read in this
+        # module, so `extract()` must not emit these — but a rule may key on
+        # them, which is why they are named and exported.
+        assert INJECTED_FEATURE_NAMES == frozenset({"utc_hour", "utc_weekday"})
+        assert not INJECTED_FEATURE_NAMES & EXTRACTED_FEATURE_NAMES
+        for task in self.TURNS:
+            assert not set(extract(task)) & INJECTED_FEATURE_NAMES
+
+    def test_known_names_is_the_union(self):
+        assert KNOWN_FEATURE_NAMES == EXTRACTED_FEATURE_NAMES | INJECTED_FEATURE_NAMES
+
+    def test_module_reads_no_clock(self):
+        # Cheap structural guard on the purity contract the module docstring
+        # states: no wall-clock read may creep into a signal.
+        source = Path(signals_module.__file__).read_text(encoding="utf-8")
+        for forbidden in ("import time", "datetime", "time.time("):
+            assert forbidden not in source
