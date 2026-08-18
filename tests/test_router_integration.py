@@ -19,6 +19,7 @@ import pytest
 import copy
 import importlib.util
 import subprocess
+import threading
 import types
 
 _PLUGIN_INIT = Path(__file__).resolve().parent.parent / "__init__.py"
@@ -241,24 +242,64 @@ class TestRouteTask:
             result = dp._route_task("any task", "", None)
         assert result is None
 
-    def test_recursion_guard(self, dp):
-        """When HERMES_ROUTER_CLASSIFYING is set, _route_task returns None."""
-        old = os.environ.get(dp._ROUTER_SENTINEL)
-        os.environ[dp._ROUTER_SENTINEL] = "1"
+    def test_recursion_guard_blocks_same_thread(self, dp):
+        """A re-entrant call on the SAME thread (mid-classifier) is stopped."""
+        dp._router_guard.active = True
         try:
             result = dp._route_task("Debug race condition", "", None)
+            assert result is None
         finally:
-            if old is None:
-                os.environ.pop(dp._ROUTER_SENTINEL, None)
-            else:
-                os.environ[dp._ROUTER_SENTINEL] = old
-        assert result is None
+            dp._router_guard.active = False
 
     def test_recursion_guard_cleared_after_call(self, dp):
-        """After _route_task returns, the sentinel is cleared."""
-        assert dp._ROUTER_SENTINEL not in os.environ
-        dp._route_task("Rename getCwd in src/utils.py", "", None)
-        assert dp._ROUTER_SENTINEL not in os.environ
+        """After _route_task returns, the per-thread guard is released."""
+        assert getattr(dp._router_guard, "active", False) is False
+        dp._route_task(
+            "Rename getCwd to getCurrentWorkingDirectory in src/utils.py", "", None
+        )
+        assert getattr(dp._router_guard, "active", False) is False
+
+    def test_concurrent_routes_do_not_interfere(self, dp):
+        """A slow classifier on one thread must not suppress a concurrent route.
+
+        The recursion guard is per-thread. The previous process-global
+        ``os.environ`` sentinel made one in-flight classifier suppress every
+        concurrent ``_route_task`` — a second delegation returned None and the
+        handler answered "profile is required". Reproducing that here: thread A
+        blocks inside the classifier (guard held), thread B routes a trivial
+        task and must still get its concrete T1 target.
+        """
+        started = threading.Event()
+        release = threading.Event()
+        holder_result = {}
+
+        def slow_classify(task, features):
+            started.set()
+            release.wait(timeout=10)
+            return {"tier": "T4", "confidence": "high"}
+
+        def holder():
+            holder_result["r"] = dp._route_task(
+                "ambiguous task with no clear signal", "", slow_classify
+            )
+
+        t = threading.Thread(target=holder)
+        t.start()
+        assert started.wait(timeout=5), "classifier never started"
+        try:
+            result = dp._route_task(
+                "Rename getCwd to getCurrentWorkingDirectory in src/utils.py",
+                "", None,
+            )
+        finally:
+            release.set()
+            t.join(timeout=5)
+
+        assert result is not None
+        assert result["profile"] == "coder"
+        assert result["model"] == "glm-5.2-fast"  # T1
+        # The held thread also completed once released (no deadlock / lost guard).
+        assert holder_result["r"] is not None
 
     def test_blocklist_veto_returns_none(self, dp):
         """When requested_model is blocklisted, _route_task returns None."""

@@ -576,7 +576,17 @@ def _is_exhaustion(text: str) -> bool:
 # Capability Router integration
 # ---------------------------------------------------------------------------
 
-_ROUTER_SENTINEL = "HERMES_ROUTER_CLASSIFYING"
+# Thread-local recursion guard for the capability router. The classifier LLM
+# dispatch (``ctx.llm.complete``) is synchronous and can re-enter the router on
+# the SAME thread, so a re-entrant ``_route_task`` must bail to stop the
+# classifier's own dispatch from looping. It must NOT be process-global:
+# ``delegate_profile`` runs concurrently across threads (``_Pool`` /
+# ``max_concurrent``), and a process-global flag made one in-flight classifier
+# suppress every concurrent route — a second delegation read a sentinel the
+# first one had set and silently skipped routing (surfacing as "profile is
+# required" when no profile was named). A per-thread flag still catches the
+# same-thread recursion while leaving every other thread's routing untouched.
+_router_guard = threading.local()
 
 
 def _load_router_config() -> Dict[str, Any]:
@@ -740,11 +750,11 @@ def _route_task(
     Best-effort: routing failure → caller falls through to normal delegation.
     Never blocks — all errors are caught.
     """
-    # Recursion guard: don't re-enter the router during a classifier dispatch
-    if os.environ.get(_ROUTER_SENTINEL):
+    # Recursion guard: don't re-enter the router during a classifier dispatch.
+    if getattr(_router_guard, "active", False):
         return None
 
-    os.environ[_ROUTER_SENTINEL] = "1"
+    _router_guard.active = True
     try:
         if _LOADED_AS_PACKAGE:
             from .router.adapter import route
@@ -793,7 +803,7 @@ def _route_task(
         logger.debug("hermes-one-capability-router: _route_task failed: %s", exc)
         return None
     finally:
-        os.environ.pop(_ROUTER_SENTINEL, None)
+        _router_guard.active = False
 
 
 def _provider_of_declared_model(model: str, config: Dict[str, Any]) -> str:
