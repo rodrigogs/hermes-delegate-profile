@@ -87,13 +87,17 @@
       --accent-text: var(--host-accent-text, var(--host-accent, #f3f3f6));
       --accent-bg: var(--host-accent-bg, rgba(243, 243, 246, .08));
       --accent-bg-strong: var(--host-accent-bg-strong, rgba(243, 243, 246, .15));
-      /* #fff, matching the host's own `color: var(--panel-head-primary-fg, #fff)`
-         (style.css:6526) and hermes-panel.css:94. The host declares that token ONLY
-         under `:root.dark` (style.css:6525), so in every LIGHT skin the bridge has
-         nothing to forward and this fallback is what lands — a near-black glyph on a
-         light accent, which is the one filled button on the screen. Dark skins are
-         unaffected either way, because there the token IS forwarded. */
-      --accent-fg: var(--host-accent-fg, #fff);
+      /* The host declares --panel-head-primary-fg ONLY under `:root.dark`
+         (style.css:6525), so in every LIGHT skin the bridge has nothing to forward
+         and THIS FALLBACK is what lands on the one filled button on the screen.
+         It is near-black, not #fff, and the reason is measured: this file's own
+         fail-safe accent is paper white (#f3f3f6, and #ffffff on hover), so a #fff
+         foreground computed 1.1:1 and 1.0:1 — an invisible label on the only
+         committing control the console has, in exactly the situation the fallbacks
+         exist for (no bridge, no host theme). A light accent takes a dark glyph;
+         dark skins are unaffected either way, because there the token IS
+         forwarded. */
+      --accent-fg: var(--host-accent-fg, #0a0a0c);
 
       /* Condition. Ours are ok/warn/bad/info, the host's are success/warning/
          error/info; the mapping lives here, once. */
@@ -352,6 +356,9 @@
       font: 600 var(--t-label) var(--sans); letter-spacing: .05em;
       text-transform: uppercase; color: var(--muted);
     }
+    /* A second heading inside a group follows content, so it needs the space
+       above it that the group's own margin gives the first one. */
+    .group-head.later { margin-top: 26px; }
     .nothing { color: var(--muted); font-size: var(--t-body); padding: 4px 0; }
 
     /* Rows: the console's one structural primitive. */
@@ -390,6 +397,31 @@
     /* The denominator of a fraction, under the number it belongs to: "208,352"
        above "of 272,000" says the relationship without a fifth type size. */
     .fact-note { color: var(--muted); font: var(--t-label) var(--mono); margin-top: 1px; }
+
+    /* ── the pricing clock ─────────────────────────────────────────────
+       Three of the rails this router uses price by wall-clock window, and the
+       swing is 2x — large enough to decide where a task should go. So the
+       console carries ONE persistent line: what hour it is, and which rails are
+       expensive at it. It is a line and not a card for the same reason every
+       other group here is (DESIGN.md §2.4), and it sits above the warnings
+       because it is a standing fact rather than a condition to act on.
+
+       The clock is a FACT about the router's cost, not a condition of the
+       router, so only the expensive state takes a hue — --warn-text, the
+       "this needs your attention" colour, because paying double is exactly
+       that. A cheap window stays muted: a discount needs no alarm, and green
+       here would collide with alive. The multiplier is in the text either way,
+       so colour is never the only channel. */
+    .clockbar {
+      display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 20px;
+      padding: 9px 0 11px; margin-bottom: 16px; border-bottom: 1px solid var(--line);
+    }
+    .clock-now { color: var(--text); font: 500 var(--t-small) var(--mono); }
+    .clock-local { color: var(--muted); font: var(--t-small) var(--mono); }
+    .clock-rails { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 0; padding: 0; list-style: none; }
+    .clock-rail { color: var(--muted); font-size: var(--t-small); }
+    .clock-rail-name { font-family: var(--mono); }
+    .clock-rail.peak { color: var(--warn-text); }
 
     /* ── the decision sheet ────────────────────────────────────────────
        A router IS an ordered first-match table, so the surface is a numbered
@@ -496,18 +528,113 @@
        one of only three hues this screen is allowed. */
     .step-hits.zero { color: var(--warn-text); }
 
-    /* The ladder: the tiers a rule or the classifier can send a task to, each
-       rung with its cross-rail fallbacks. Same starvation guard as .step. */
-    .rung {
-      display: grid; grid-template-columns: 34px minmax(0, 1fr) minmax(0, max-content);
-      align-items: baseline; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--line);
+    /* ── a rule's conditions, one chip per clause ──────────────────────
+       A `when` block now mixes three FAMILIES of predicate: the task's shape
+       (what it looks like), the context it needs (how big it is), and the
+       capabilities it requires of a model. An operator has to tell them apart
+       at a glance, and the colour language is already spent — the four
+       semantic hues report CONDITION and the accent reports SELECTION, so a
+       family cannot have a hue without lying about one of those.
+       So the families are told apart the way this console already makes its
+       third text step: in TYPE and PLANE, plus the family's own word.
+         shape      no label, transparent plane, --muted     ("verb is hard")
+         context    CONTEXT label, raised plane, --text      ("over 400,000 tokens")
+         capability NEEDS label, stronger hairline, --text    ("vision")
+       The label is a real word inside the chip, so the family survives being
+       read aloud — which a border colour does not. */
+    .whens { display: flex; flex-wrap: wrap; gap: 6px; margin: 5px 0 0; padding: 0; list-style: none; }
+    .chip {
+      display: inline-flex; align-items: baseline; gap: 6px;
+      padding: 2px 9px; border: 1px solid var(--line); border-radius: var(--radius-pill);
+      color: var(--muted); font: var(--t-small)/1.5 var(--sans); min-width: 0;
     }
-    .rung:last-child { border-bottom: 0; }
-    .rung-tier { font: 600 var(--t-body) var(--mono); letter-spacing: .04em; color: var(--text); }
-    .rung-model { font: 500 var(--t-body) var(--mono); }
-    .rung-rail { color: var(--muted); font: var(--t-small) var(--mono); margin-top: 2px; }
-    .rung-fallback { color: var(--muted); font: var(--t-small) var(--mono); text-align: right; min-width: 0; overflow-wrap: anywhere; }
-    .rung-fallback.none { color: var(--warn-text); }
+    .chip-kind {
+      flex: 0 0 auto; color: var(--muted);
+      font: 600 var(--t-label) var(--sans); letter-spacing: .05em; text-transform: uppercase;
+    }
+    .chip-val { min-width: 0; overflow-wrap: anywhere; }
+    .chip.context { background: var(--surface-raised); color: var(--text); }
+    .chip.capability { border-color: var(--line-strong); color: var(--text); }
+
+    /* ── tier chains ───────────────────────────────────────────────────
+       A tier is no longer one model with a trailing list of names: it is an
+       ordered (or deliberately unordered) chain of elos, each with the rail it
+       runs on, the way it is billed and the context it can hold. The tier head
+       carries the three facts an operator judges the chain by — how it picks the
+       next hop, how many INDEPENDENT upstreams it really has, and any capability
+       floor the tier declares. */
+    .tier { padding: 14px 0 15px; border-bottom: 1px solid var(--line); }
+    .tier:last-child { border-bottom: 0; }
+    .tier-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; }
+    .tier-name { font: 600 var(--t-body) var(--mono); letter-spacing: .04em; color: var(--text); }
+    .tier-fact { color: var(--muted); font-size: var(--t-small); }
+    .tier-fact.thin { color: var(--warn-text); }
+    /* A finding about the chain, in a line — the same shape the console uses for
+       every other condition that needs an operator, one step quieter. */
+    .tier-fact.rails { margin-top: 9px; }
+    .tier-note { margin-top: 8px; color: var(--warn-text); font-size: var(--t-small); }
+
+    /* SEQUENTIAL IS ORDERED AND MUST LOOK ORDERED; RANDOM MUST NOT.
+       An ordered chain is drawn the way this console draws every other sequence:
+       numbered, down one spine (DESIGN.md §3). A random chain is a SET — it has
+       no first and no next — so it loses the ordinals and the spine and wraps
+       across the line instead of stacking down it, because a stack is the thing
+       that implies an order it does not have. */
+    .hops { margin: 10px 0 0; padding: 0; list-style: none; }
+    .hops.ordered { position: relative; padding-left: 26px; }
+    .hops.ordered::before {
+      content: ""; position: absolute; left: 7px; top: 12px; bottom: 12px; width: 1px;
+      background: var(--line-strong);
+    }
+    /* The drawn set keeps the ordered list's left indent — without it a random
+       tier's elos start 26px left of a sequential one's and the eye has to
+       re-find the model on every tier, which is the ragged edge DESIGN.md §3
+       exists to remove. It just does not get the spine, because there is no
+       sequence to run down. */
+    .hops.drawn { display: flex; flex-wrap: wrap; gap: 8px 26px; padding-left: 26px; }
+    .hop { position: relative; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 5px 0; }
+    .hops.ordered > .hop::before {
+      content: ""; position: absolute; left: -19px; top: 14px; width: 8px; height: 1px; background: var(--line);
+    }
+    .hops.drawn > .hop { padding: 0; }
+    .hop-ord {
+      position: absolute; left: -26px; top: 4px; width: 14px; text-align: center;
+      color: var(--muted); font: 500 var(--t-label) var(--mono);
+    }
+    .hop-model { font: 500 var(--t-body) var(--mono); overflow-wrap: anywhere; }
+    .hop-rail, .hop-ctx { color: var(--muted); font: var(--t-small) var(--mono); }
+    .hop-ctx.unverified { color: var(--warn-text); font-family: var(--sans); }
+    /* What this elo costs AT THE HOUR the plan was made for: the multiplier the
+       comparison used — the router's own whenever the plan reports one — and the
+       effective prices where a rate is published. Mono, because these are numbers
+       an operator checks against an invoice. Amber only inside an expensive
+       window — the same meaning the clock line gives it. */
+    .hop-price { color: var(--muted); font: var(--t-small) var(--mono); }
+    .hop-price.peak { color: var(--warn-text); }
+    /* Why this elo is where it is: the time policy moved it. A sentence, so it
+       is sans, and muted — the position it describes is already visible. */
+    .hop-move { color: var(--muted); font-size: var(--t-small); }
+    /* How the request is PAID for. A badge, not a state: billing is not a
+       condition, so it takes the metadata treatment (11px, tracked, uppercase)
+       and no hue — until it is missing, which an operator cannot cost a
+       request without and so is a real finding. */
+    .badge {
+      flex: 0 0 auto; padding: 1px 8px; border: 1px solid var(--line); border-radius: var(--radius-pill);
+      color: var(--muted); font: 600 var(--t-label) var(--sans); letter-spacing: .05em; text-transform: uppercase;
+    }
+    .badge.is-unknown { color: var(--warn-text); border-color: var(--line-strong); }
+
+    /* An elo the capability filter dropped, and the reason in words. The model
+       keeps mono (it is a machine fact the operator will copy); the reason is a
+       sentence, so it is sans. */
+    .reject { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+    .reject:last-child { border-bottom: 0; }
+    /* Muted, not --bad-text. The heading above already says these were dropped,
+       and painting every reason spent this screen's loudest channel on its least
+       news — with a bypassed filter (a real refusal) in the same viewport, that
+       put three reds against one amber. DESIGN.md §3, colour budget. */
+    .reject-why { color: var(--muted); font-size: var(--t-small); }
+    .reject-num { color: var(--muted); font: var(--t-small) var(--mono); }
 
     /* ── replay ────────────────────────────────────────────────────────
        A trace is a short sequence, so it is drawn as one: the same spine-and-
@@ -688,8 +815,13 @@
       .step-to { grid-column: 2; max-width: none; grid-template-columns: minmax(0, 1fr) auto; }
       .step-dest { justify-content: flex-start; }
       .step-target { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
-      .rung { grid-template-columns: 34px minmax(0, 1fr); row-gap: 4px; }
-      .rung-fallback { grid-column: 2; text-align: left; }
+      /* The tier head's facts stack rather than truncate: "2 of 3 independent
+         rails" is the whole point of the line and must not become "2 of 3 ind…". */
+      .tier-head { gap: 4px 12px; }
+      /* A drawn (random) chain keeps wrapping, but at 390px there is room for one
+         elo per line — so the words carry the "no order here" fact instead of the
+         layout, which is why the head says it too. */
+      .hops.drawn { gap: 10px 16px; }
 
       /* The row stops being a three-column grid and becomes one wrapping line:
          dot, name, rail, state. At 390px the grid gave the state a column of its
@@ -799,15 +931,17 @@
 
     /* Which clause satisfied the rule. Chips rather than a sentence: the operator
        is scanning for a field name, and three conditions in prose becomes a comma
-       list nobody parses. */
+       list nobody parses.
+       The chips themselves are `.chip` — the same component the rule rows and the
+       chain plan use — rather than a second near-identical `.clause`. Two chip
+       shapes for one concept is how a surface comes to look like two products, and
+       the family label the shared chip carries is exactly what the verdict wants:
+       "CONTEXT over 400,000 tokens" says which of the three families did the work.
+       The list keeps its own margin off, because here it sits beside the label on
+       one baseline instead of under a rule id. */
     .verdict-why { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-top: 6px; }
     .verdict-why-label { color: var(--muted); font-size: var(--t-label); }
-    .clause {
-      display: inline-flex; align-items: baseline; gap: 5px;
-      padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px;
-      font-size: var(--t-label);
-    }
-    .clause { color: var(--text); }
+    .verdict-why .whens { margin: 0; }
 </style>
 </head>
 <body>
@@ -859,6 +993,21 @@
 
   <main class="body" id="shell">
     <div class="measure">
+      <!-- The pricing clock, on every screen because the hour decides what a
+           route costs on three of the rails below: deepseek and zai bill 2x at
+           06:00-10:00 UTC (zai on weekdays only), xiaomi discounts to 0.8x from
+           16:00 UTC. The windows are the ones the rails declare, and where the
+           router has already priced an hour itself — a chain plan's own multiplier —
+           that number wins, so the console and the router never price the same hour
+           differently. The hour is shown in UTC (the unit every window is declared
+           in) AND in the operator's own time, each labelled, because an operator
+           reasons in local time and guessing which one a bare "07:14" meant is how
+           a peak gets read three hours off. -->
+      <div class="clockbar" id="clockbar" hidden>
+        <time class="clock-now" id="clockNow"></time>
+        <span class="clock-local" id="clockLocal"></span>
+        <ul class="clock-rails" id="clockRails"></ul>
+      </div>
       <div id="warnings"></div>
 
       <!-- ── Health: which models can this router reach right now ────── -->
@@ -915,11 +1064,17 @@
           <button class="btn" type="submit">Route it</button>
         </form>
         <div id="probeResult"></div>
+        <!-- The chain the probed task would actually walk: the requirements the
+             signals derived, the elos still eligible in the order they will be
+             tried, and the ones the capability filter dropped with the reason.
+             Driven by chain_plan on the /explain response; absent until a task is
+             probed, because there is no chain plan without a task. -->
+        <div id="chainPlan"></div>
 
         <div class="sheet" id="sheet"></div>
 
         <div class="group">
-          <div class="group-head"><h2>Capability ladder</h2><span class="screen-note">Where the rules and the classifier can send a task.</span></div>
+          <div class="group-head"><h2>Tier chains</h2><span class="screen-note" id="ladderNote"></span></div>
           <div id="ladder"></div>
         </div>
 
@@ -965,6 +1120,12 @@
           <div class="replay-col">
             <div class="path" id="replayPath"></div>
             <div id="stepDetail"></div>
+            <!-- The chain plan the router persisted WITH this decision: the order
+                 it really meant to try, what it dropped and why, and any cost
+                 control it bypassed. Same presentation as the Explain panel — one
+                 chain vocabulary, learned once — and absent for the historical
+                 entries written before plans were recorded. -->
+            <div id="replayPlan"></div>
           </div>
         </div>
       </section>
@@ -986,6 +1147,12 @@
         mode: 'reading',   // 'reading' or 'editing'
         health: null, status: null, policy: null, blocklist: null,
         liveness: null, compaction: null, routes: [],
+        // The model capability registry, when the sidecar publishes one, and the
+        // chain plan for the last probed task. Both are optional — a task bound for
+        // the classifier has no resolved chain, and an older sidecar reports neither
+        // at all — so the console shows what it can verify and says so where it
+        // cannot.
+        capabilities: null, chainPlan: null,
         plan: null, draft: null, selected: null, replay: null,
         pending: new Set(), unreachable: false, checkedAt: null,
         // Until the first response lands, "nothing here" is not a fact yet.
@@ -995,6 +1162,11 @@
         routesTotal: 0,
         // Which subset of decisions is on screen. 'all' or 'off-rule'.
         scope: 'all',
+        // THE INJECTED CLOCK. null means "use the wall clock", which only nowUtc()
+        // ever does. Everything downstream takes the instant as a parameter, so a
+        // rendering test pins an hour instead of passing at 05:59 and failing at
+        // 06:00 — the same reason rules.py refuses to read a clock at all.
+        clock: null,
       };
 
       const $ = (id) => document.getElementById(id);
@@ -1027,6 +1199,10 @@
         return `${Math.round(s / 86400)}d ago`;
       };
       const clock = (d) => d.toTimeString().slice(0, 5);
+      // The ONE place this console reads a wall clock. Everything time-dependent
+      // takes the result as a parameter, so the clock is injected exactly once and
+      // a test can pin it by setting state.clock.
+      const nowUtc = () => (state.clock instanceof Date ? state.clock : new Date());
       // Token counts are six digits here. 208352 has to be counted digit by digit
       // to be compared with 272000; 208,352 does not. Thin spaces would be prettier
       // and would break copy-paste into a shell, which is what these numbers are
@@ -1090,6 +1266,13 @@
       // The engine's vocabulary is closed (router/signals.py fields,
       // router/rules.py operators), so it can be translated exactly rather than
       // dumped as JSON.
+      //
+      // Three FAMILIES now share that vocabulary, and the family is part of the
+      // meaning: `size_lines: {gt: 400}` describes the TASK, `est_input_tokens:
+      // {gt: 400000}` describes the CONTEXT it needs, and `needs_vision: {eq:
+      // true}` describes a CAPABILITY the model must have. `family` below is what
+      // the chip renders as its own word, so the distinction survives being read
+      // aloud rather than living in a border colour.
       const FIELD = {
         verb_class:       { noun: 'verb' },
         lang:             { noun: 'language' },
@@ -1100,6 +1283,16 @@
         num_files:        { unit: 'files' },
         num_requirements: { unit: 'requirements' },
         char_len:         { unit: 'characters' },
+        // Context: how much the turn needs held, in tokens. Six-digit numbers, so
+        // they take the thousands separator the facts strip already uses — 400000
+        // has to be counted digit by digit against a 272,000 window.
+        est_input_tokens: { noun: 'estimated context', unit: 'tokens', num: true, family: 'context' },
+        // Capability: what the model must be able to do. Phrased as the capability
+        // itself, because the chip's own NEEDS label supplies the verb.
+        needs_vision:            { yes: 'vision', no: 'no vision', family: 'capability' },
+        needs_tools:             { yes: 'tool calls', no: 'no tool calls', family: 'capability' },
+        needs_structured_output: { yes: 'structured output', no: 'no structured output', family: 'capability' },
+        attachment_kinds:        { noun: 'attachments', family: 'capability' },
       };
       const AMOUNT = { gt: 'over', gte: 'at least', lt: 'under', lte: 'at most' };
 
@@ -1108,10 +1301,13 @@
         const noun = spec.noun || field;
         const parts = [];
         Object.keys(condition || {}).forEach((op) => {
-          const value = condition[op];
+          const raw = condition[op];
+          // A token count is read against another token count, so it is written
+          // the way this console writes every other one.
+          const value = spec.num ? fmt(raw) : raw;
           if (spec.yes && (op === 'eq' || op === 'ne')) {
             // A boolean signal reads as presence, never as "= true".
-            const affirmative = (op === 'eq') === (value === true);
+            const affirmative = (op === 'eq') === (raw === true);
             parts.push(affirmative ? spec.yes : spec.no);
             return;
           }
@@ -1119,8 +1315,8 @@
           switch (op) {
             case 'eq': parts.push(`${noun} is ${value}`); break;
             case 'ne': parts.push(`${noun} is not ${value}`); break;
-            case 'in': parts.push(`${noun} is ${[].concat(value).join(' or ')}`); break;
-            case 'nin': parts.push(`${noun} is not ${[].concat(value).join(' or ')}`); break;
+            case 'in': parts.push(`${noun} is ${[].concat(raw).join(' or ')}`); break;
+            case 'nin': parts.push(`${noun} is not ${[].concat(raw).join(' or ')}`); break;
             case 'contains': parts.push(`${noun} include “${value}”`); break;
             case 'starts_with': parts.push(`${noun} start with “${value}”`); break;
             case 'ends_with': parts.push(`${noun} end with “${value}”`); break;
@@ -1134,12 +1330,560 @@
         return parts.join(' and ');
       }
 
+      // Which family a predicate belongs to. Unknown fields are task shape: that
+      // is what every field in signals.py was before context and capability
+      // arrived, so it is the honest default for one this console has not learned.
+      const CHIP_KIND = { context: 'context', capability: 'needs' };
+      function predicateFamily(field) {
+        const spec = FIELD[field];
+        return (spec && spec.family) || 'shape';
+      }
+      function predicateChip(field, condition) {
+        const family = predicateFamily(field);
+        return { family, kind: CHIP_KIND[family] || '', text: phraseCondition(field, condition) };
+      }
+      function predicateChips(when) {
+        if (!when || typeof when !== 'object') return [];
+        return Object.keys(when)
+          .map((field) => predicateChip(field, when[field]))
+          .filter((chip) => chip.text);
+      }
+
+      // The requirements the planner DERIVED from the signals, said in the same
+      // three-family vocabulary as the rule that asked for them — so "why is this
+      // elo ineligible" and "what did the rule ask for" read as one language.
+      const REQUIREMENT_CHIP = {
+        min_context:       (v) => ({ family: 'context', kind: 'context', text: `at least ${fmt(v)} tokens` }),
+        vision:            () => ({ family: 'capability', kind: 'needs', text: 'vision' }),
+        tool_calling:      () => ({ family: 'capability', kind: 'needs', text: 'tool calls' }),
+        structured_output: () => ({ family: 'capability', kind: 'needs', text: 'structured output' }),
+      };
+      function requirementChips(requirements) {
+        const req = requirements && typeof requirements === 'object' ? requirements : {};
+        return Object.keys(req).map((key) => {
+          const value = req[key];
+          const build = REQUIREMENT_CHIP[key];
+          // A requirement key this console has not learned still renders: a
+          // silently dropped one makes an unexplainable rejection.
+          if (!build) return { family: 'capability', kind: 'needs', text: `${key.replace(/_/g, ' ')} ${say(value)}` };
+          // Only a TRUE boolean constrains anything (capabilities.satisfies), so a
+          // false one is not a requirement and must not be drawn as one.
+          if (key !== 'min_context' && !value) return null;
+          return build(value);
+        }).filter(Boolean);
+      }
+
       function phraseWhen(when) {
         if (!when || typeof when !== 'object') return 'every task';
         const clauses = Object.keys(when)
           .map((field) => phraseCondition(field, when[field]))
           .filter(Boolean);
         return clauses.length ? clauses.join(', ') : 'every task';
+      }
+
+      // ── elos: how they are billed, how big they are, whose rail they use ──
+      // An elo is a tier member: the primary or a fallback hop. Three facts decide
+      // whether a chain is any good, and none of them is a colour.
+
+      // Billing is the operator's cost question, and the words are router.yaml's
+      // own (BILLING_MODES in router/capabilities.py). A mode the console does not
+      // recognise is shown as written rather than swallowed — and a MISSING one is
+      // a finding, because a request whose rail is undeclared cannot be costed.
+      const BILLING = {
+        plan:         'covered by a plan — no per-token invoice',
+        subscription: 'covered by a subscription seat',
+        metered:      'invoiced per token',
+        free:         'no charge',
+      };
+      function billingBadge(mode) {
+        const key = String(mode == null ? '' : mode).trim().toLowerCase();
+        if (BILLING[key]) return { word: key, meaning: BILLING[key], unknown: false };
+        if (!key) return { word: 'billing undeclared', meaning: 'this elo declares no billing_mode, so its cost cannot be read here', unknown: true };
+        return { word: key.replace(/_/g, ' '), meaning: 'not a billing mode this router knows', unknown: true };
+      }
+
+      // A context window is compared, not counted: 1M against 200K is the whole
+      // reading, and 1,048,576 spends four characters saying nothing an operator
+      // acts on. '' means "we do not know", which must never render as zero.
+      function ctxWindow(tokens) {
+        const value = Number(tokens);
+        if (!Number.isFinite(value) || value <= 0) return '';
+        if (value >= 1e6) {
+          const millions = Math.round(value / 1e5) / 10;
+          return `${millions}M`;
+        }
+        if (value >= 1000) return `${Math.round(value / 1000)}K`;
+        return fmt(value);
+      }
+
+      // Why an elo was dropped, in words an operator can act on. The engine's
+      // reason set is closed (router/capabilities.py _REASONS), so it translates
+      // exactly; an unknown one still renders, because a rejection with no reason
+      // is the one thing this panel must never show.
+      const REJECT = {
+        context_too_small:    'its context window is smaller than this task needs',
+        no_vision:            'it cannot read images',
+        no_tool_calling:      'it cannot call tools',
+        no_structured_output: 'it cannot return schema-constrained output',
+        capability_unknown:   'its capabilities are unverified',
+        // The time cap is a COST refusal, not a capability one: the elo can do the
+        // work, the tier declines to pay this hour's price for it.
+        time_cap:             'it costs more this hour than the tier’s price cap allows',
+        over_time_cap:        'it costs more this hour than the tier’s price cap allows',
+      };
+      function rejectWhy(reason) {
+        const key = String(reason == null ? '' : reason).trim();
+        if (REJECT[key]) return REJECT[key];
+        if (!key) return 'the capability filter gave no reason';
+        return key.replace(/_/g, ' ');
+      }
+      // The two numbers that make a context rejection actionable: what the elo
+      // holds against what the task asked for.
+      function contextShortfall(windowTokens, neededTokens) {
+        const have = ctxWindow(windowTokens);
+        const need = ctxWindow(neededTokens);
+        if (!have || !need) return '';
+        return `holds ${have}, needs ${need}`;
+      }
+
+      // ── the clock, and what it does to a price ──────────────────────
+      // THE CLOCK IS INJECTED, NEVER READ, in every function below. The router's
+      // rules.py and capabilities.py hold that contract because reading a wall
+      // clock inside a pure function makes every test time-dependent; the console
+      // holds it for the same reason, and because a rendering test that depends on
+      // the hour it runs at is a test that fails at 06:00 UTC and nowhere else.
+      // So `when` is a parameter — {hour, weekday} with weekday 0 = Monday, the
+      // router's own two injected features (utc_hour / utc_weekday) — and
+      // `when === null` means TIME-AGNOSTIC: the multiplier is 1.0, no window is
+      // reported, and time-relative ordering degrades to sequential. Nothing here
+      // guesses an hour. Only nowUtc(), at the edge, touches the real clock.
+      //
+      // WHERE THE ROUTER HAS ALREADY DONE THE ARITHMETIC, ITS NUMBER WINS. A chain
+      // plan reports the hour it planned against (planWhen) and the multiplier the
+      // ordering decision was actually made on (plan.multipliers), and both are
+      // preferred over anything computed here — the console must not quietly
+      // overwrite the router's reasoning with its own. The functions below are what
+      // answers the question where no plan reported one, which is every screen that
+      // shows DECLARED config rather than a probed task.
+      function whenOf(date) {
+        if (!date || typeof date.getUTCHours !== 'function') return null;
+        const hour = date.getUTCHours();
+        if (!Number.isFinite(hour)) return null;
+        // JS counts weekdays from Sunday; the router counts from Monday, because
+        // that is what a vendor means by "Mon-Fri". Convert once, here.
+        return { hour, weekday: (date.getUTCDay() + 6) % 7 };
+      }
+      const hourLabel = (hour) => {
+        const value = Number(hour);
+        if (!Number.isFinite(value)) return '—';
+        return `${String(Math.floor(value) % 24).padStart(2, '0')}:00 UTC`;
+      };
+      // A multiplier is read, not computed: "2×" and "0.8×" say the whole thing,
+      // and 2.0 would read as a price.
+      const times = (value) => `${Number(value)}×`;
+
+      // Both clocks, each LABELLED. The windows are published in UTC and the
+      // operator lives in a local zone (UTC−03 here), so a bare "07:14" is
+      // ambiguous by exactly the offset — which is the difference between "the
+      // peak is on now" and "the peak is three hours off". The offset is passed
+      // in rather than read, so this stays pure and testable in any timezone.
+      function timeFace(date, offsetMinutes) {
+        if (!date || typeof date.getUTCHours !== 'function') return null;
+        const pad = (n) => String(n).padStart(2, '0');
+        const utcMinutes = date.getUTCHours() * 60 + date.getUTCMinutes();
+        const offset = Number.isFinite(Number(offsetMinutes)) ? Math.round(Number(offsetMinutes)) : 0;
+        const localMinutes = ((utcMinutes + offset) % 1440 + 1440) % 1440;
+        const sign = offset < 0 ? '−' : '+';   // U+2212, so a minus is not a hyphen
+        const abs = Math.abs(offset);
+        return {
+          utc: `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())} UTC`,
+          local: `${pad(Math.floor(localMinutes / 60))}:${pad(localMinutes % 60)} local`,
+          zone: `UTC${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`,
+        };
+      }
+
+      // The declared windows, per RAIL. Two entries short of the registry's, and
+      // deliberately here rather than fetched: /capabilities is an OPTIONAL read
+      // (DESIGN.md §7), so a sidecar that does not publish it would leave the
+      // clock line blank — and "no window declared" is indistinguishable on
+      // screen from "off-peak right now", which is the one confusion this line
+      // exists to remove. A registry entry that DOES declare price_windows wins
+      // over this table, exactly as `declared` wins over the registry.
+      // Verified against each vendor's own wording:
+      //   deepseek 2.0× at 01:00-04:00 and 06:00-10:00 UTC, every day
+      //   zai      2.0× at 06:00-10:00 UTC, Mon-Fri only (14:00-18:00 UTC+8)
+      //   xiaomi   0.8× at 16:00-00:00 UTC — a CHEAP window, not a peak
+      // Hours are half-open [start, end): hour 10 already bills at base. A window
+      // that wraps midnight is written as two entries, so nothing here has to do
+      // wrap-around arithmetic. No other rail in this policy varies by clock —
+      // OpenAI Batch/Flex and Gemini Batch are 50% off but are separate
+      // ENDPOINTS, not hours, and modelling them as windows would misprice every
+      // interactive request.
+      const RAIL_WINDOWS = {
+        deepseek: [{ hours: [1, 4], multiplier: 2 }, { hours: [6, 10], multiplier: 2 }],
+        zai: [{ hours: [6, 10], weekdays: [0, 1, 2, 3, 4], multiplier: 2 }],
+        xiaomi: [{ hours: [16, 24], multiplier: 0.8 }],
+      };
+
+      // A registry entry's windows, read defensively: the payload is a sidecar's,
+      // so a shape nobody agreed on must leave the console reporting flat pricing
+      // rather than throwing on the first elo. Two spellings are accepted because
+      // both are real — `price_windows` is the declared form, and
+      // `peak_windows_utc` + `peak_multiplier` is what the registry carried for
+      // deepseek before the windows were generalised.
+      function entryWindows(entry) {
+        const e = entry && typeof entry === 'object' ? entry : {};
+        const out = [];
+        const push = (hours, multiplier, weekdays) => {
+          const pair = Array.isArray(hours) ? hours : [];
+          const start = Number(pair[0]);
+          const end = Number(pair[1]);
+          const m = Number(multiplier);
+          if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+          if (!Number.isFinite(m) || m <= 0) return;
+          const days = (Array.isArray(weekdays) ? weekdays.map(Number) : [])
+            .filter((d) => Number.isFinite(d));
+          out.push({ hours: [start, end], multiplier: m, weekdays: days.length ? days : null });
+        };
+        if (Array.isArray(e.price_windows)) {
+          e.price_windows.forEach((w) => {
+            if (w && typeof w === 'object') push(w.hours_utc || w.hours, w.multiplier, w.weekdays);
+          });
+        }
+        if (!out.length && Array.isArray(e.peak_windows_utc)) {
+          e.peak_windows_utc.forEach((w) => push(w, e.peak_multiplier, e.peak_weekdays));
+        }
+        return out;
+      }
+      // One elo's windows: what it declares itself, else what its rail declares.
+      function eloWindows(caps) {
+        const own = entryWindows(caps);
+        if (own.length) return own;
+        const rail = String((caps && caps.provider) || '').trim().toLowerCase();
+        return RAIL_WINDOWS[rail] ? RAIL_WINDOWS[rail].slice() : [];
+      }
+
+      // 1.0 when no window matches, when the clock is not supplied, and when
+      // nothing declares a window — the same three answers capabilities.
+      // price_multiplier gives. Overlapping windows are a lint error upstream, so
+      // the last match wins here rather than inventing a resolution order.
+      function priceMultiplier(windows, when) {
+        if (!when || typeof when !== 'object') return 1;
+        const hour = Number(when.hour);
+        if (!Number.isFinite(hour)) return 1;
+        const weekday = Number(when.weekday);
+        let multiplier = 1;
+        (Array.isArray(windows) ? windows : []).forEach((w) => {
+          if (!w || !Array.isArray(w.hours)) return;
+          if (hour < w.hours[0] || hour >= w.hours[1]) return;
+          // A weekday-restricted window with no weekday to check against does not
+          // match: claiming a peak on an unknown day would overstate the price.
+          if (w.weekdays && !(Number.isFinite(weekday) && w.weekdays.indexOf(weekday) >= 0)) return;
+          multiplier = w.multiplier;
+        });
+        return multiplier;
+      }
+
+      // The UTC hour at which this multiplier next changes — what powers "2×
+      // until 10:00 UTC". A week of hours is enough to find it: the longest cycle
+      // any declared window has is weekly (zai's Mon-Fri peak). null when nothing
+      // changes, which is the honest answer for a flat rail.
+      function nextWindowChange(windows, when) {
+        const list = (Array.isArray(windows) ? windows : []).filter(Boolean);
+        if (!list.length || !when || !Number.isFinite(Number(when.hour))) return null;
+        const from = priceMultiplier(list, when);
+        const hour0 = Math.floor(Number(when.hour));
+        const weekday0 = Number.isFinite(Number(when.weekday)) ? Number(when.weekday) : null;
+        for (let ahead = 1; ahead <= 24 * 7; ahead += 1) {
+          const hour = (hour0 + ahead) % 24;
+          const weekday = weekday0 === null ? null : (weekday0 + Math.floor((hour0 + ahead) / 24)) % 7;
+          const multiplier = priceMultiplier(list, { hour, weekday });
+          if (multiplier !== from) return { hour, weekday, hoursAhead: ahead, multiplier };
+        }
+        return null;
+      }
+
+      // What a rail costs right now, and until when. Written as one clause so the
+      // clock line reads as a sentence rather than a table of numbers.
+      function windowWords(windows, when) {
+        const list = (Array.isArray(windows) ? windows : []).filter(Boolean);
+        if (!list.length) return 'no time-varying price';
+        if (!when || typeof when !== 'object') return 'time-agnostic — no clock supplied';
+        const multiplier = priceMultiplier(list, when);
+        const next = nextWindowChange(list, when);
+        const until = next ? ` until ${hourLabel(next.hour)}` : '';
+        if (multiplier > 1) return `${times(multiplier)} peak${until}`;
+        if (multiplier < 1) return `${times(multiplier)} cheap window${until}`;
+        if (!next) return 'base rate at every hour';
+        return `base rate until ${hourLabel(next.hour)}, then ${times(next.multiplier)}`;
+      }
+
+      // The clock line's own rows: one per rail that prices by the hour, the
+      // expensive ones first because they are the ones that change a decision.
+      function railWindowRows(registry, when) {
+        const rails = {};
+        Object.keys(RAIL_WINDOWS).forEach((rail) => { rails[rail] = RAIL_WINDOWS[rail].slice(); });
+        const table = registry && typeof registry === 'object' ? registry : {};
+        const fromRegistry = {};
+        Object.keys(table).forEach((model) => {
+          const entry = table[model];
+          const rail = String((entry && entry.provider) || '').trim().toLowerCase();
+          const windows = entryWindows(entry);
+          if (!rail || !windows.length || fromRegistry[rail]) return;
+          rails[rail] = windows;   // a published window beats the built-in table
+          fromRegistry[rail] = true;
+        });
+        return Object.keys(rails).map((rail) => {
+          const windows = rails[rail];
+          const multiplier = priceMultiplier(windows, when);
+          const next = nextWindowChange(windows, when);
+          return {
+            rail,
+            multiplier,
+            expensive: multiplier > 1,
+            cheap: multiplier < 1,
+            changesAt: next ? next.hour : null,
+            words: windowWords(windows, when),
+          };
+        }).sort((a, b) => (b.multiplier - a.multiplier) || (a.rail < b.rail ? -1 : 1));
+      }
+
+      // The price the comparison actually used. null — never (0, 0) — when nothing
+      // publishes a per-token rate: a plan model is not free, its cost is
+      // denominated in credits, and a rendered $0 would make it look like the
+      // cheapest thing on the screen when it is merely the least priced. A real
+      // 0.00 (a genuinely free rail) is a published price and survives.
+      //
+      // WHERE THE RATE COMES FROM: the elo's own declared keys, which reach here
+      // through GET /policy (a tier's `declared_capabilities` is merged onto the
+      // primary by rules._build_chain, and a fallback hop arrives whole), and
+      // otherwise the capability registry where the sidecar publishes one. Declared
+      // wins, so an operator who corrects a stale rate in router.yaml sees their own
+      // number. Where NEITHER publishes a rate the console says nothing about
+      // price, which is the only honest answer available to it.
+      function effectivePrices(caps, multiplier) {
+        const e = caps && typeof caps === 'object' ? caps : {};
+        if (e.price_in == null || e.price_out == null) return null;
+        const inRate = Number(e.price_in);
+        const outRate = Number(e.price_out);
+        if (!Number.isFinite(inRate) || !Number.isFinite(outRate)) return null;
+        const m = Number.isFinite(Number(multiplier)) ? Number(multiplier) : 1;
+        return { in: inRate * m, out: outRate * m };
+      }
+      // USD per 1M tokens. Two decimals, three under a cent — a cache-hit rate of
+      // $0.007 must not round to "$0.01" on a screen used to check an invoice.
+      function money(value) {
+        const v = Number(value);
+        if (!Number.isFinite(v)) return '';
+        if (v === 0) return '$0';
+        return `$${v < 0.01 ? v.toFixed(3) : v.toFixed(2)}`;
+      }
+      // One elo's cost at the hour it was planned for: the multiplier that was
+      // applied — the ROUTER'S whenever the plan reports one — and the two prices
+      // the comparison ran on. Empty when there is nothing to say: a flat rail with
+      // no published rate spends no line on saying so twice. Where a rate is
+      // missing but the elo is plan- or subscription-covered, the words name the
+      // credits it is billed in, because an absent price is not a zero one.
+      function priceWords(caps, multiplier, billingMode) {
+        const m = Number.isFinite(Number(multiplier)) ? Number(multiplier) : 1;
+        const prices = effectivePrices(caps, m);
+        const parts = [];
+        if (m > 1) parts.push(`${times(m)} peak`);
+        else if (m < 1) parts.push(`${times(m)} cheap window`);
+        if (prices) parts.push(`${money(prices.in)} in / ${money(prices.out)} out per 1M`);
+        else {
+          const mode = String(billingMode == null ? '' : billingMode).trim().toLowerCase();
+          const covered = mode === 'plan' || mode === 'subscription';
+          if (m !== 1 || covered) {
+            parts.push(covered
+              ? `billed in ${mode} credits — no per-token price published`
+              : 'no per-token price published');
+          }
+        }
+        return parts.join(' · ');
+      }
+
+      // Sequential, random and cheapest_now must be distinguishable instantly AND
+      // honestly: one is a list with a first and a next, the second is a set with
+      // neither, and the third is a list whose order is only true of one hour. The
+      // renderer reads `ordered` to decide whether the chain gets ordinals and a
+      // spine at all. An unrecognised strategy degrades to sequential exactly as
+      // capabilities.order_chain does, and says so — silently pretending the
+      // typo'd word worked is how a chain gets read backwards.
+      //
+      // pin_primary is now THREE-VALUED here, and that is the point. true and
+      // false are what the tier declares; null means nobody told us. The console
+      // used to read an absent field as true, so a chain plan that never carried
+      // the key at all printed "the primary stays first" and drew hop 1 as
+      // ordinal 1 while order_chain had shuffled index 0 — the console stating
+      // the opposite of what ran. Unknown therefore draws NO ordinals and says
+      // the ordering is unreported: a missing fact must fail toward saying so,
+      // never toward a confident wrong claim.
+      const STRATEGIES = { sequential: true, random: true, cheapest_now: true };
+      function strategyWords(strategy, options) {
+        const opts = options || {};
+        const raw = String(strategy == null ? '' : strategy).trim().toLowerCase();
+        const key = raw || 'sequential';
+        const pinPrimary = opts.pinPrimary === true ? true : (opts.pinPrimary === false ? false : null);
+        const when = opts.when && typeof opts.when === 'object' ? opts.when : null;
+        const degraded = opts.degraded === true;
+        const ordered = (extra) => Object.assign({
+          declared: key, key: 'sequential', ordered: true, pinPrimary,
+          timeRelative: false, label: 'tried in order', note: '',
+        }, extra || {});
+
+        if (!STRATEGIES[key]) {
+          return ordered({ note: `“${raw}” is not a strategy the router knows, so it falls back to trying them in order` });
+        }
+        if (key === 'random') {
+          // The router degrades `random` to declared order when no random source
+          // was injected, and the plan still reports the declared word — so the
+          // console reports the DEGRADATION, not the label it was handed.
+          if (degraded) {
+            return ordered({ note: '“random” needed a random source the caller did not supply, so the chain was tried in declared order' });
+          }
+          return {
+            declared: 'random', key: 'random', ordered: false, pinPrimary, timeRelative: false,
+            label: 'tried in a random order',
+            note: pinPrimary === true
+              ? 'the primary stays first; the rest are drawn at random on every request'
+              : pinPrimary === false
+                ? 'every elo is drawn at random on every request'
+                : 'pin_primary is not reported here, so which elo runs first is unknown — none is drawn as first',
+          };
+        }
+        if (key === 'cheapest_now') {
+          // With no clock, cheapest_now IS sequential (capabilities.order_chain),
+          // and an order labelled "cheapest" that is really declared order is the
+          // most expensive kind of wrong on this screen.
+          if (degraded || !when) {
+            return ordered({ note: '“cheapest now” needs a clock; none was supplied, so the chain was tried in declared order' });
+          }
+          return {
+            declared: 'cheapest_now', key: 'cheapest_now', ordered: true, pinPrimary, timeRelative: true,
+            label: 'tried cheapest first',
+            note: `ordered by output price at ${hourLabel(when.hour)} — TIME-RELATIVE, not the declared order${pinPrimary === true ? ', primary pinned first' : ''}`,
+          };
+        }
+        // No note for the ordinary case: "top to bottom, every time" is one fact
+        // written twice beside "tried in order", which DESIGN.md §2.3 forbids. A
+        // note exists only where the strategy does something the label cannot
+        // imply — a random draw, a price-ordered chain, or a word the router did
+        // not understand.
+        return ordered();
+      }
+
+      // pin_primary as the ROUTER reads it off a tier: rules._pin_primary_of
+      // defaults it to True and coerces a non-boolean to True. The console reads
+      // the same file the router does, so absence in the POLICY is the documented
+      // default rather than missing information — unlike absence in a chain plan,
+      // which is a computed result that simply did not report it.
+      const declaredPin = (value) => (typeof value === 'boolean' ? value : true);
+
+      // Redundancy is about UPSTREAMS, not names. Nous Portal is a white-label
+      // reseller in front of OpenRouter, so a chain that hops from one to the
+      // other survives nothing — this mirrors capabilities._UPSTREAM_GROUPS, and
+      // it is two entries rather than a fetch because getting it wrong overstates
+      // redundancy, which is the failure this line exists to catch.
+      const UPSTREAM = { nous: 'openrouter', openrouter: 'openrouter' };
+      function upstreamGroup(provider) {
+        const name = String(provider == null ? '' : provider).trim().toLowerCase();
+        if (!name) return '';
+        return UPSTREAM[name] || name;
+      }
+      function independentRails(hops) {
+        const groups = [];
+        (Array.isArray(hops) ? hops : []).forEach((hop) => {
+          const group = upstreamGroup(hop && hop.provider);
+          // An unattributable hop is not evidence of independence.
+          if (group && groups.indexOf(group) < 0) groups.push(group);
+        });
+        return groups.length;
+      }
+      // The first two hops are the ones that matter: a chain whose primary and
+      // first fallback share an upstream has no redundancy where redundancy is
+      // actually used, however many vendors are listed below them.
+      function sharedUpstream(hops) {
+        const list = Array.isArray(hops) ? hops : [];
+        for (let i = 0; i < list.length; i += 1) {
+          for (let j = i + 1; j < list.length; j += 1) {
+            const a = upstreamGroup(list[i] && list[i].provider);
+            const b = upstreamGroup(list[j] && list[j].provider);
+            if (a && a === b) return { group: a, first: i + 1, second: j + 1 };
+          }
+        }
+        return null;
+      }
+
+      // Capability facts for one elo. The keys are the capability and commercial
+      // fields router.yaml may carry on an elo, and they arrive through GET /policy;
+      // `declared` keys on the elo itself WIN over the registry — the same
+      // precedence capabilities.capabilities_for applies, so an operator who
+      // corrects a stale window or rate in YAML sees THEIR number here. Nothing is
+      // inferred: an absent window renders as no claim, never as zero. `verified`
+      // false means nothing knows this model: it routes, but unchecked, which the
+      // chain view has to say out loud.
+      // The price fields are in this list for the same reason the window is: an
+      // operator who corrects a stale rate on the elo in router.yaml must see
+      // THEIR number in the comparison, not the registry's.
+      const CAP_FIELDS = ['provider', 'context_window', 'max_input_tokens', 'max_output',
+                          'vision', 'tool_calling', 'structured_output', 'billing_mode',
+                          'price_in', 'price_out', 'price_windows',
+                          'peak_multiplier', 'peak_windows_utc'];
+      function hopCaps(hop, registry) {
+        const elo = hop && typeof hop === 'object' ? hop : {};
+        const model = String(elo.model || '');
+        const table = registry && typeof registry === 'object' ? registry : {};
+        const entry = model && table[model] && typeof table[model] === 'object' ? table[model] : null;
+        const caps = Object.assign({}, entry);
+        CAP_FIELDS.forEach((key) => { if (elo[key] !== undefined) caps[key] = elo[key]; });
+        return { caps, verified: !!entry || caps.context_window !== undefined };
+      }
+
+      // The registry as this console needs it: {model: {context_window, ...}}. The
+      // payload is read defensively rather than trusted — a sidecar that answers
+      // 404, or answers with a shape nobody agreed on, must leave the chain view
+      // saying "unverified" instead of throwing on the first tier.
+      function capabilityRegistry(result) {
+        const res = result && typeof result === 'object' ? result : {};
+        if (res.missing || res.error) return null;
+        const data = res.data && typeof res.data === 'object' ? res.data : {};
+        const table = [data.models, data.capabilities, data].find(
+          (candidate) => candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+            && Object.keys(candidate).some((key) => candidate[key] && typeof candidate[key] === 'object'),
+        );
+        if (!table) return null;
+        const clean = {};
+        Object.keys(table).forEach((model) => {
+          const entry = table[model];
+          if (entry && typeof entry === 'object' && !Array.isArray(entry)) clean[model] = entry;
+        });
+        return Object.keys(clean).length ? clean : null;
+      }
+
+      // Every billing mode the POLICY declares, indexed by model. The chain plan's
+      // primary hop carries only {model, provider} (rules._build_chain), so without
+      // this the elo an operator reads most often would be the one whose rail is
+      // reported as undeclared — false, and about the most important hop.
+      function billingIndex(policy) {
+        const index = {};
+        const learn = (elo) => {
+          if (!elo || typeof elo !== 'object') return;
+          const model = String(elo.model || '');
+          if (model && !index[model] && elo.billing_mode) index[model] = elo.billing_mode;
+        };
+        const walk = (elo) => {
+          learn(elo);
+          if (elo && Array.isArray(elo.fallback)) elo.fallback.forEach(learn);
+          if (elo && Array.isArray(elo.chain)) elo.chain.forEach(learn);
+        };
+        const p = policy && typeof policy === 'object' ? policy : {};
+        const tiers = p.tiers && typeof p.tiers === 'object' ? p.tiers : {};
+        Object.keys(tiers).forEach((name) => walk(tiers[name]));
+        walk(p.fail_safe);
+        walk(p.classifier);
+        walk(p.default);
+        return index;
       }
 
       // ── state semantics ─────────────────────────────────────────────
@@ -1205,6 +1949,37 @@
           : state.checkedAt ? `checked ${clock(state.checkedAt)}` : 'checking';
       }
 
+      // ── the pricing clock ───────────────────────────────────────────
+      // One persistent line, on every screen: what hour it is and which rails are
+      // expensive at it. It is persistent because the hour is not a screen's
+      // subject — it changes what every screen means, and an operator who opens
+      // the console at 06:30 UTC to ask why a task went to the subscription rail
+      // has to be able to see the answer without probing anything.
+      function renderClock() {
+        const bar = $('clockbar');
+        if (!bar) return;
+        const at = nowUtc();
+        const face = timeFace(at, -at.getTimezoneOffset());
+        const rows = railWindowRows(state.capabilities, whenOf(at));
+        bar.hidden = !face || !rows.length;
+        if (bar.hidden) return;
+        const utc = $('clockNow');
+        utc.textContent = face.utc;
+        // A real <time> with a machine-readable instant, so the value is not only
+        // a string that happens to look like a clock.
+        utc.setAttribute('datetime', at.toISOString());
+        // The local reading names its own offset. "04:14 local" alone is the
+        // ambiguity this line exists to remove, not a shorter way of saying it.
+        $('clockLocal').textContent = `${face.local} (${face.zone})`;
+        const list = $('clockRails');
+        clear(list);
+        rows.forEach((row) => {
+          const item = el('li', `clock-rail${row.expensive ? ' peak' : ''}`);
+          item.append(el('span', 'clock-rail-name', row.rail), el('span', '', ` ${row.words}`));
+          list.append(item);
+        });
+      }
+
       // ── warnings: only conditions that need an operator ─────────────
       function renderWarnings() {
         const box = $('warnings');
@@ -1215,6 +1990,18 @@
                       el('span', '', 'Reads and writes are unavailable until the proxy answers.'));
           box.append(line);
           return;
+        }
+        // A policy that fails lint is the one condition that stops the console
+        // answering its own questions: RouterService.explain refuses outright, so
+        // the probe and the chain plan are dead until it passes. The errors are
+        // named here, where the operator is, rather than left in the lint endpoint.
+        const errors = Array.isArray(state.status && state.status.validation_errors)
+          ? state.status.validation_errors : [];
+        if (errors.length) {
+          const line = el('div', 'warn-line');
+          line.append(el('strong', '', `Policy invalid — ${errors.length} error${errors.length === 1 ? '' : 's'}.`),
+                      el('span', '', `Dry runs are refused until it passes lint. First: ${String(errors[0])}`));
+          box.append(line);
         }
         if (state.mode === 'editing' && !csrf()) {
           const line = el('div', 'warn-line');
@@ -1385,6 +2172,179 @@
         }
       }
 
+      // ── chain views: the shared vocabulary ──────────────────────────
+      // One set of builders serves the rule sheet, the tier chains and the probed
+      // task's chain plan, so an elo looks the same wherever it is read and an
+      // operator learns the row once. Text only — every string here reaches the DOM
+      // through textContent.
+
+      function chipList(chips) {
+        const list = el('ul', 'whens');
+        chips.forEach((chip) => {
+          const item = el('li', `chip ${chip.family}`);
+          if (chip.kind) item.append(el('span', 'chip-kind', chip.kind));
+          item.append(el('span', 'chip-val', chip.text));
+          list.append(item);
+        });
+        return list;
+      }
+
+      // One elo: what it is, whose rail it runs on, how it is billed, how much it
+      // can hold. `ord` is null for a chain with no order, and then no ordinal is
+      // drawn at all — a "1" on a random draw would be a lie about which runs first.
+      function eloRow(hop, opts) {
+        const o = opts || {};
+        const elo = hop && typeof hop === 'object' ? hop : {};
+        const { caps, verified } = hopCaps(elo, o.registry);
+        const row = el('li', 'hop');
+        if (o.ord) row.append(el('span', 'hop-ord', String(o.ord)));
+        row.append(el('span', 'hop-model', elo.model || '—'));
+        const rail = caps.provider || elo.provider;
+        if (rail) row.append(el('span', 'hop-rail', rail));
+        const billing = billingBadge(elo.billing_mode !== undefined ? elo.billing_mode
+                                    : (caps.billing_mode !== undefined ? caps.billing_mode : o.billing));
+        const badge = el('span', `badge${billing.unknown ? ' is-unknown' : ''}`, billing.word);
+        badge.title = billing.meaning;
+        row.append(badge);
+        const window = ctxWindow(caps.context_window);
+        // An unverified elo is not a blank cell. Nothing in the registry knows this
+        // model, so it routes UNCHECKED — the capability filter cannot reject it and
+        // cannot vouch for it either, and that is the operator's problem to know.
+        if (window) row.append(el('span', 'hop-ctx', `${window} context`));
+        else row.append(el('span', 'hop-ctx unverified', verified ? 'context unpublished' : 'unverified'));
+        // What it costs at the injected hour. The multiplier the PLANNER used wins
+        // when the plan reports one, because that is the number the ordering
+        // decision was made on; otherwise it is read off the declared windows.
+        // Rendered when it is news — inside a window, or when the order itself is
+        // price-relative and the operator has to be able to check it.
+        if (o.when || o.multiplier !== undefined) {
+          const multiplier = o.multiplier !== undefined && Number.isFinite(Number(o.multiplier))
+            ? Number(o.multiplier)
+            : priceMultiplier(eloWindows(caps), o.when || null);
+          const words = priceWords(caps, multiplier,
+            elo.billing_mode !== undefined ? elo.billing_mode : (caps.billing_mode !== undefined ? caps.billing_mode : o.billing));
+          if (words && (multiplier !== 1 || o.showPrice)) {
+            row.append(el('span', `hop-price${multiplier > 1 ? ' peak' : ''}`, words));
+          }
+        }
+        // Why it sits where it sits: the tier's time policy moved it, and a
+        // position an operator cannot explain reads as a bug in the console.
+        const moved = timePolicyMove(elo, o.flags);
+        if (moved) row.append(el('span', 'hop-move', moved));
+        return row;
+      }
+
+      // `avoid_peak` demotes an elo to the end of the chain while its rail is in
+      // an expensive window; `prefer` promotes one that is not. Both are said in
+      // words an operator can act on — the flag alone ("demoted: true") describes
+      // a position, not a reason.
+      function timePolicyMove(elo, flags) {
+        const f = flags && typeof flags === 'object' ? flags : {};
+        const own = elo && typeof elo === 'object' ? elo : {};
+        const rail = String(own.provider || '').trim().toLowerCase();
+        if (own.demoted === true || f.demoted === true) {
+          return `moved to the end — ${rail || 'its rail'} is in an expensive window, so it is tried only if everything ahead of it fails`;
+        }
+        if (own.promoted === true || f.promoted === true) {
+          return `moved to the front — this tier prefers it while it is not in an expensive window`;
+        }
+        return '';
+      }
+
+      // Which elos the time layer touched. The plan may report a flag per elo or
+      // as a plan-level list of entries (router/cli.py reads both shapes), so the
+      // console accepts both and indexes by model.
+      const TIME_FLAGS = ['capped', 'demoted', 'promoted'];
+      function timeFlagIndex(plan) {
+        const p = plan && typeof plan === 'object' ? plan : {};
+        const index = {};
+        const mark = (model, flag) => {
+          const key = String(model || '');
+          if (!key) return;
+          index[key] = Object.assign({}, index[key]);
+          index[key][flag] = true;
+        };
+        TIME_FLAGS.forEach((flag) => {
+          const value = p[flag];
+          if (!Array.isArray(value)) return;
+          value.forEach((item) => {
+            if (item && typeof item === 'object') mark(item.model, flag);
+            else if (typeof item === 'string') mark(item, flag);
+          });
+        });
+        return index;
+      }
+
+      // A chain, drawn as what it IS. Sequential gets ordinals down a spine;
+      // random gets neither, because a set has no first. pin_primary is the honest
+      // middle: hop 1 is genuinely first, and the tail genuinely is not ordered, so
+      // the primary is drawn ordered and the rest as a set beneath it.
+      function chainList(hops, opts) {
+        const o = opts || {};
+        const list = Array.isArray(hops) ? hops.filter((h) => h && typeof h === 'object') : [];
+        const box = el('div');
+        if (!list.length) return box;
+        const strategy = o.strategy || strategyWords('sequential');
+        const draw = (subset, ordered, startAt) => {
+          const ul = el('ul', `hops ${ordered ? 'ordered' : 'drawn'}`);
+          subset.forEach((hop, i) => {
+            const model = String(hop.model || '');
+            ul.append(eloRow(hop, {
+              ord: ordered ? startAt + i : null,
+              registry: o.registry,
+              billing: o.billing && o.billing[model],
+              when: o.when,
+              showPrice: o.showPrice,
+              multiplier: o.multipliers && o.multipliers[model],
+              flags: o.flags && o.flags[model],
+            }));
+          });
+          return ul;
+        };
+        if (strategy.ordered) { box.append(draw(list, true, 1)); return box; }
+        // pinPrimary === true is the only value that earns an ordinal on hop 1.
+        // null means the plan did not report it, and an unreported pin drawn as a
+        // pin is the exact claim F7 was: "hop 1 runs first" about a chain whose
+        // index 0 may have been shuffled.
+        if (strategy.pinPrimary === true && list.length > 1) {
+          box.append(draw(list.slice(0, 1), true, 1));
+          box.append(draw(list.slice(1), false, 0));
+          return box;
+        }
+        box.append(draw(list, false, 0));
+        return box;
+      }
+
+      // An elo the capability filter dropped. The reason is a sentence, and where
+      // the numbers exist they follow it, because "too small" without "holds 200K,
+      // needs 500K" is not something an operator can fix.
+      function rejectRow(hop, opts) {
+        const o = opts || {};
+        const elo = hop && typeof hop === 'object' ? hop : {};
+        const { caps } = hopCaps(elo, o.registry);
+        const row = el('div', 'reject');
+        row.append(el('span', 'hop-model', elo.model || '—'));
+        const rail = caps.provider || elo.provider;
+        if (rail) row.append(el('span', 'hop-rail', rail));
+        row.append(el('span', 'reject-why', rejectWhy(elo.reject_reason)));
+        if (String(elo.reject_reason || '') === 'context_too_small') {
+          const numbers = contextShortfall(caps.context_window, o.needed);
+          if (numbers) row.append(el('span', 'reject-num', numbers));
+        }
+        // A price refusal is only fixable next to the two numbers behind it: what
+        // this hour multiplies the rate by, and what the tier is willing to pay.
+        const capped = /time_cap/.test(String(elo.reject_reason || '')) || (o.flags && o.flags.capped === true);
+        if (capped) {
+          const multiplier = o.multiplier !== undefined && Number.isFinite(Number(o.multiplier))
+            ? Number(o.multiplier)
+            : priceMultiplier(eloWindows(caps), o.when || null);
+          const cap = Number.isFinite(Number(o.cap)) ? Number(o.cap) : null;
+          row.append(el('span', 'reject-num',
+            cap !== null ? `${times(multiplier)} now, cap ${times(cap)}` : `${times(multiplier)} now`));
+        }
+        return row;
+      }
+
       // ── The decision sheet ──────────────────────────────────────────
       // Hit counts come from the recorded traces (cause + rule_id), never from
       // invented telemetry. A rule with zero hits is a real finding, so it is
@@ -1451,7 +2411,12 @@
           step.append(el('div', 'step-ord', opts.ord || ''));
           const what = el('div', 'step-what');
           what.append(el('div', 'step-id', opts.id));
-          if (opts.when) what.append(el('div', 'step-when', opts.when));
+          // A rule's conditions are a LIST of independent clauses, so they are
+          // marked up as one: a real <ul> keeps them separately announced instead
+          // of running together into "has codeover 400,000 tokens" — the same trap
+          // the probe verdict fell into when a flex gap stood in for a space.
+          if (opts.chips && opts.chips.length) what.append(chipList(opts.chips));
+          else if (opts.when) what.append(el('div', 'step-when', opts.when));
           step.append(what);
           const to = el('div', 'step-to');
           const dest = el('div', 'step-dest');
@@ -1500,6 +2465,10 @@
           box.append(line({
             ord: String(i + 1),
             id: r.id != null ? String(r.id) : `rule ${i + 1}`,
+            // Chips when there are clauses; the prose form when there are none,
+            // because "every task" is a sentence about the rule, not a condition
+            // chip an operator can compare against another rule's.
+            chips: predicateChips(r.when),
             when: phraseWhen(r.when),
             target,
             targetColor: then.deny ? 'var(--bad-text)' : '',
@@ -1555,29 +2524,329 @@
         }));
       }
 
+      // The elos a tier declares, primary first — the same assembly
+      // rules._build_chain performs, so the console shows the chain the router
+      // will actually walk rather than a prettier one.
+      function tierChain(tier) {
+        const t = tier && typeof tier === 'object' ? tier : {};
+        const chain = [];
+        if (t.model) {
+          const primary = { model: t.model, provider: t.provider };
+          if (t.billing_mode !== undefined) primary.billing_mode = t.billing_mode;
+          const declared = t.declared_capabilities;
+          if (declared && typeof declared === 'object') Object.assign(primary, declared);
+          chain.push(primary);
+        }
+        if (Array.isArray(t.fallback)) {
+          t.fallback.forEach((hop) => { if (hop && typeof hop === 'object' && hop.model) chain.push(hop); });
+        }
+        return chain;
+      }
+
+      // A tier's declared time knobs, said as what they DO. Each is rendered only
+      // when declared: a tier with no cap and no policy spends no words saying so.
+      function timeKnobWords(tier) {
+        const t = tier && typeof tier === 'object' ? tier : {};
+        const words = [];
+        const cap = t.time_cap && typeof t.time_cap === 'object' ? Number(t.time_cap.max_multiplier) : NaN;
+        if (Number.isFinite(cap)) {
+          words.push(`declines any rail over ${times(cap)} — the cap is dropped if that would empty the chain`);
+        }
+        const policy = t.time_policy && typeof t.time_policy === 'object' ? t.time_policy : {};
+        const avoid = Array.isArray(policy.avoid_peak)
+          ? policy.avoid_peak.map((p) => String(p)).filter(Boolean) : [];
+        if (avoid.length) words.push(`moves ${avoid.join(' and ')} to the end while they are in a peak window`);
+        const prefer = Array.isArray(policy.prefer)
+          ? policy.prefer.map((m) => String(m)).filter(Boolean) : [];
+        if (prefer.length) words.push(`prefers ${prefer.join(' and ')} while they are off-peak`);
+        return words;
+      }
+
+      // ── Tier chains ─────────────────────────────────────────────────
+      // A tier used to read as one model with a trailing list of names, which hid
+      // the three things that decide whether the chain is any good: how it picks
+      // the next hop, whether its hops share an upstream, and what each elo costs
+      // and can hold.
       function renderLadder() {
         const box = $('ladder');
         clear(box);
+        const note = $('ladderNote');
         const tiers = (state.policy && state.policy.tiers) || {};
         const names = Object.keys(tiers);
-        if (!names.length) { box.append(el('p', 'nothing', absence('No tiers defined.'))); return; }
+        if (!names.length) {
+          note.textContent = '';
+          box.append(el('p', 'nothing', absence('No tiers defined — every task lands on the default.')));
+          return;
+        }
+        const registry = state.capabilities;
+        const billing = billingIndex(state.policy);
+        // The tier chains are DECLARED config, so they are read at the console's own
+        // hour: there is no plan here to carry one, and a tier using cheapest_now
+        // has to show that the order on screen is only true of this hour.
+        const when = whenOf(nowUtc());
+        let unverified = 0;
+
         names.forEach((name) => {
           const t = tiers[name] || {};
-          const rung = el('div', 'rung');
-          rung.append(el('div', 'rung-tier', name));
-          const mid = el('div');
-          mid.append(el('div', 'rung-model', t.model || '—'));
-          if (t.provider) mid.append(el('div', 'rung-rail', t.provider));
-          rung.append(mid);
-          const fb = Array.isArray(t.fallback) ? t.fallback : [];
-          // A tier with no fallback has nowhere to go if its rail fails — worth
-          // saying out loud rather than leaving blank.
-          const chain = fb.length
-            ? fb.map((f) => f.model).join(' → ')
-            : 'no fallback';
-          rung.append(el('div', `rung-fallback${fb.length ? '' : ' none'}`, chain));
-          box.append(rung);
+          const hops = tierChain(t);
+          // pin_primary absent HERE is the router's documented default (True), not
+          // an unreported fact: this is the same file rules._pin_primary_of reads.
+          const strategy = strategyWords(t.fallback_strategy, {
+            pinPrimary: declaredPin(t.pin_primary), when,
+          });
+          const rails = independentRails(hops);
+          const shared = sharedUpstream(hops);
+          hops.forEach((hop) => { if (!hopCaps(hop, registry).verified) unverified += 1; });
+
+          const block = el('div', 'tier');
+          const head = el('div', 'tier-head');
+          head.append(el('span', 'tier-name', name));
+          head.append(el('span', 'tier-fact', hops.length > 1 ? strategy.label : 'one elo, nothing to pick'));
+          // Redundancy in the only terms that mean anything: distinct upstreams. A
+          // count of vendors would call two OpenRouter resellers two rails.
+          head.append(el('span', `tier-fact${rails < 2 ? ' thin' : ''}`,
+                          `${rails} independent rail${rails === 1 ? '' : 's'} of ${hops.length} hop${hops.length === 1 ? '' : 's'}`));
+          // The tier's own time knobs, in the operator's words. They are facts about
+          // the CONFIG — what it will decline to pay, and which rails it steps
+          // around — while "which rail is expensive right now" belongs to the clock
+          // line at the top of the screen and is said only there.
+          timeKnobWords(t).forEach((words) => head.append(el('span', 'tier-fact', words)));
+          const floorChips = requirementChips(t.requirements);
+          block.append(head);
+          if (strategy.note) block.append(el('div', 'tier-fact', strategy.note));
+          // A per-tier floor is a condition on every elo in the chain, so it is
+          // said in the same chips a rule's own conditions use.
+          if (floorChips.length) block.append(chipList(floorChips));
+          block.append(chainList(hops, {
+            strategy, registry, billing, when,
+            // A price-ordered chain must show the prices it was ordered by; an
+            // ordinary tier shows one only where a window is actually moving it.
+            showPrice: strategy.timeRelative,
+          }));
+
+          if (hops.length < 2) {
+            block.append(el('div', 'tier-note',
+              `No fallback declared — if ${hops.length ? (hops[0].provider || 'this rail') : 'this tier'} refuses, the tier has nowhere to go. Add a hop on another vendor.`));
+          } else if (shared && shared.first === 1 && shared.second === 2) {
+            block.append(el('div', 'tier-note',
+              `Hops 1 and 2 both resolve to ${shared.group}, so the first fallback survives nothing the primary does not. Reorder so hop 2 is on another upstream.`));
+          } else if (shared) {
+            block.append(el('div', 'tier-note',
+              `Hops ${shared.first} and ${shared.second} both resolve to ${shared.group} — one upstream outage takes both.`));
+          }
+          box.append(block);
         });
+
+        // The registry is what turns a model id into a context window. Without it
+        // the chain still routes and still bills, so the honest report is which
+        // elos are unchecked — not a note about a missing endpoint.
+        note.textContent = unverified
+          ? `${unverified} elo${unverified === 1 ? '' : 's'} unverified — no capability record, so the filter cannot check them.`
+          : 'Every elo a tier can try, and how it picks the next one.';
+      }
+
+      // ── The chain plan for one probed task ──────────────────────────
+      // /explain returns chain_plan: the requirements the signals derived, the
+      // elos still eligible IN THE ORDER THEY WILL BE TRIED, the ones the filter
+      // dropped with a reason, and two conditions an operator must never discover
+      // by accident — a bypassed filter and an unverified elo.
+      // Which clock the plan was made against. `plan` when it reports the hour it
+      // used, `console` when it does not — and in that case the console's own hour
+      // is the one the clock line at the top of the screen names, so the two can
+      // never disagree. A plan that says it was time-agnostic is honoured as such:
+      // that is a real answer, and it is the one that makes cheapest_now degrade.
+      function planWhen(plan, fallback) {
+        const p = plan && typeof plan === 'object' ? plan : {};
+        const hour = Number(p.utc_hour);
+        if (Number.isFinite(hour) && hour >= 0 && hour <= 23) {
+          const weekday = Number(p.utc_weekday);
+          return {
+            when: { hour: Math.floor(hour), weekday: Number.isFinite(weekday) ? weekday : null },
+            source: 'plan',
+          };
+        }
+        if (p.time_agnostic === true) return { when: null, source: 'plan' };
+        return { when: whenOf(fallback), source: 'console' };
+      }
+      // The tier's declared price ceiling, read from wherever the plan carries it.
+      function timeCapOf(plan) {
+        const p = plan && typeof plan === 'object' ? plan : {};
+        const raw = p.time_cap && typeof p.time_cap === 'object' ? p.time_cap.max_multiplier
+          : (p.time_cap !== undefined ? p.time_cap : p.max_multiplier);
+        const value = Number(raw);
+        return Number.isFinite(value) ? value : null;
+      }
+      // Elos the cap refused that the capability filter did not already report, so
+      // the Dropped list names each elo exactly once.
+      function cappedEntries(plan, rejected) {
+        const p = plan && typeof plan === 'object' ? plan : {};
+        const already = {};
+        (Array.isArray(rejected) ? rejected : []).forEach((hop) => {
+          if (hop && typeof hop === 'object') already[String(hop.model || '')] = true;
+        });
+        const list = Array.isArray(p.capped) ? p.capped : [];
+        const out = [];
+        list.forEach((item) => {
+          const hop = typeof item === 'string' ? { model: item }
+            : (item && typeof item === 'object' ? item : null);
+          if (!hop) return;
+          const model = String(hop.model || '');
+          if (!model || already[model]) return;
+          already[model] = true;
+          out.push(Object.assign({}, hop, { reject_reason: hop.reject_reason || 'time_cap' }));
+        });
+        return out;
+      }
+
+      function renderChainPlan(plan) {
+        const box = $('chainPlan');
+        clear(box);
+        if (!plan || typeof plan !== 'object') return;
+        const chain = Array.isArray(plan.chain) ? plan.chain : [];
+        const rejected = Array.isArray(plan.rejected) ? plan.rejected : [];
+        const unknown = Array.isArray(plan.unknown) ? plan.unknown.map(String) : [];
+        const req = plan.requirements && typeof plan.requirements === 'object' ? plan.requirements : {};
+        const chips = requirementChips(req);
+        // Nothing to plan is not a section (DESIGN.md §2.1): a task that reaches
+        // the classifier has no resolved chain yet, and a framed void saying so
+        // would be the console reporting on itself.
+        if (!chain.length && !rejected.length && !chips.length) return;
+
+        // The hour every price and every position below is relative to. The plan's
+        // own hour wins when it reports one — that is the clock the router planned
+        // against; otherwise the console's, which is the hour the clock line at the
+        // top of the screen already names, so there is still one authority for it.
+        const clock = planWhen(plan, nowUtc());
+        const when = clock.when;
+        // "planned at 03:00 UTC" is only worth a line when the plan was made at
+        // ANOTHER hour than the one the clock line at the top of the screen is
+        // reporting. Saying it about the current hour is the same fact twice
+        // (DESIGN.md §2.3), and it was the second "07:00 UTC" in one sentence.
+        const consoleWhen = whenOf(nowUtc());
+        const elsewhere = clock.source === 'plan' && when
+          && (!consoleWhen || consoleWhen.hour !== when.hour);
+        const strategy = strategyWords(plan.strategy, {
+          pinPrimary: plan.pin_primary,
+          when,
+          degraded: plan.strategy_degraded === true,
+        });
+        const registry = state.capabilities;
+        const billing = billingIndex(state.policy);
+        const flags = timeFlagIndex(plan);
+        const multipliers = plan.multipliers && typeof plan.multipliers === 'object' ? plan.multipliers : null;
+        const cap = timeCapOf(plan);
+
+        // BYPASSED FIRST, and as loud as this console gets. It means the filter
+        // disqualified every elo and was overridden to keep routing alive: the task
+        // will run on a model that cannot meet its stated requirements.
+        if (plan.bypassed) {
+          const line = el('div', 'warn-line bad');
+          line.append(el('strong', '', 'Capability filter bypassed.'),
+                      el('span', '', 'No elo in this chain can meet these requirements, so the router will try them all anyway rather than refuse the task. '
+                                   + 'Add an elo that qualifies, or lower the tier’s requirements.'));
+          box.append(line);
+        }
+        // The time cap bypassing is the same class of event and gets the same
+        // volume: a cost control was DROPPED, deliberately, because enforcing it
+        // would have left the task with no route. The request pays peak price, and
+        // an operator who finds that out from an invoice instead of this line has
+        // been failed by the console.
+        if (plan.time_cap_bypassed === true) {
+          const line = el('div', 'warn-line bad');
+          line.append(el('strong', '', 'Time cap bypassed.'),
+                      el('span', '', `Every elo was over the tier’s price cap${cap !== null ? ` of ${times(cap)}` : ''} at ${when ? hourLabel(when.hour) : 'this hour'}, so the cap was dropped rather than leave the task with no rail. `
+                                   + 'This request pays peak price. Add a rail that is off-peak at this hour, raise the cap, or move the work to an off-peak hour.'));
+          box.append(line);
+        }
+        // A strategy that did not run is not a strategy. The plan reports the
+        // DECLARED word either way, so the console has to say which one happened.
+        if (plan.strategy_degraded === true) {
+          const line = el('div', 'warn-line');
+          line.append(el('strong', '', 'Fallback order degraded.'),
+                      el('span', '', `The tier declares “${strategy.declared}”, but it did not run: ${strategy.note || 'the caller supplied neither a clock nor a random source'}. `
+                                   + 'The order below is the declared one.'));
+          box.append(line);
+        }
+
+        const group = el('div', 'group');
+        const head = el('div', 'group-head');
+        head.append(el('h2', '', 'Chain plan'));
+        // The degradation already has a line of its own above, and it says more
+        // than this note can; repeating it here would be the same fact twice in one
+        // viewport, which is what the head note is not for (DESIGN.md §2.2).
+        const note = plan.strategy_degraded === true ? '' : strategy.note;
+        head.append(el('span', 'screen-note',
+                       `${strategy.label}${note ? ` — ${note}` : ''}`
+                       + (elsewhere ? ` · planned at ${hourLabel(when.hour)}` : '')));
+        group.append(head);
+
+        if (chips.length) group.append(chipList(chips));
+        else group.append(el('p', 'nothing', 'No capability requirements derived, so every elo in the chain qualifies.'));
+
+        // A bypass with no per-elo reasons is the one empty state this panel cannot
+        // fill in for itself: the filter dropped every elo and then reported which
+        // ones as an empty list, so the reasons exist nowhere. Saying that is the
+        // honest answer — an absent Dropped section beside "bypassed" otherwise
+        // reads as "nothing was dropped", which is the opposite of what happened.
+        if (plan.bypassed && !rejected.length) {
+          group.append(el('div', 'tier-note',
+            'The router reported no per-elo reasons for this bypass, so compare the requirements above against each elo below yourself.'));
+        }
+
+        if (chain.length) {
+          group.append(chainList(chain, {
+            strategy, registry, billing, when, flags, multipliers,
+            // The Explain panel is where the cost comparison is audited, so every
+            // eligible elo shows the prices it was compared on — not only the ones
+            // that happen to be inside a window.
+            showPrice: true,
+          }));
+          const rails = independentRails(chain);
+          group.append(el('div', `tier-fact rails${rails < 2 ? ' thin' : ''}`,
+                          `${rails} independent rail${rails === 1 ? '' : 's'} across ${chain.length} eligible hop${chain.length === 1 ? '' : 's'}`));
+          // A chain that filtering collapsed onto ONE upstream has no fallback at
+          // all, and it does not look any different from a healthy three-hop tier
+          // unless the console says so. The declared chain still lists three hops,
+          // so this is invisible in router.yaml — it is a property of THIS task.
+          if (rails < 2) {
+            group.append(el('div', 'tier-note',
+              `No fallback for this task: every eligible hop resolves to ${upstreamGroup(chain[0] && chain[0].provider) || 'one upstream'}. `
+              + 'One outage there and the task has nowhere to go — the declared chain is wider, but this task’s requirements ruled the rest out.'));
+          }
+        } else {
+          group.append(el('p', 'nothing', 'No elo survived the filter — see the rejections below.'));
+        }
+
+        // Unverified elos run UNCHECKED: the filter neither cleared nor rejected
+        // them, so their eligibility is an assumption.
+        if (unknown.length) {
+          group.append(el('div', 'tier-note',
+            `Unverified, so eligible by assumption: ${unknown.join(', ')}. `
+            + 'Nothing published their capabilities — declare the window and flags on the elo in router.yaml to have them checked.'));
+        }
+
+        // Elos the time cap refused but the filter did not: a cost refusal, listed
+        // with the capability rejections because both answer "why is it not in the
+        // chain?" — and kept in one list so an operator does not have to know which
+        // subsystem said no in order to find the elo.
+        const cappedElos = cappedEntries(plan, rejected);
+        const dropped = rejected.concat(cappedElos);
+        if (dropped.length) {
+          const rejectHead = el('div', 'group-head later');
+          rejectHead.append(el('h2', '', `Dropped (${dropped.length})`));
+          rejectHead.append(el('span', 'screen-note', 'Ineligible for this task — not banned, not down.'));
+          group.append(rejectHead);
+          dropped.forEach((hop) => group.append(rejectRow(hop, {
+            registry,
+            needed: req.min_context,
+            when,
+            cap,
+            flags: flags[String(hop && hop.model || '')],
+            multiplier: multipliers ? multipliers[String(hop && hop.model || '')] : undefined,
+          })));
+        }
+
+        box.append(group);
       }
 
       function pickBind(node) {
@@ -1589,12 +2858,21 @@
       async function probe(task) {
         const box = $('probeResult');
         clear(box);
+        // A stale chain plan under a fresh verdict would describe the previous
+        // task, so the plan is dropped the moment a new probe starts.
+        state.chainPlan = null;
+        renderChainPlan(null);
         if (!task) return;
         box.append(el('div', 'verdict', 'Routing…'));
         const res = await call(`/explain?task=${encodeURIComponent(task)}`);
         clear(box);
         if (res.missing || res.error) {
-          box.append(el('p', 'nothing', 'The dry run is unavailable on this sidecar.'));
+          // Two different obstacles, two different next actions: a policy that
+          // fails lint is the operator's to fix, an absent endpoint is not.
+          const why = (res.data && (res.data.error || res.data.message)) || '';
+          box.append(el('p', 'nothing', /invalid/i.test(why)
+            ? 'The router policy is invalid, so a dry run is refused. Fix the errors named above, then try again.'
+            : 'The dry run is unavailable on this sidecar.'));
           return;
         }
         const d = res.data || {};
@@ -1667,6 +2945,11 @@
           });
           box.append(why);
         }
+        // The chain plan rides on the decision (rules.explain), with the envelope
+        // accepted too so a sidecar that hoists it does not silently show nothing.
+        state.chainPlan = (dec.chain_plan && typeof dec.chain_plan === 'object') ? dec.chain_plan
+          : (d.chain_plan && typeof d.chain_plan === 'object') ? d.chain_plan : null;
+        renderChainPlan(state.chainPlan);
         // Mark the winning line on the sheet itself.
         // The rule the evaluation actually stopped at. Was hardcoded to 'default'
         // for every classifier-bound task, which marked the wrong line whenever a
@@ -2193,12 +3476,16 @@
 
       // ── load ────────────────────────────────────────────────────────
       function renderAll() {
+        renderClock();
         renderWarnings();
         renderRail();
         renderHealth();
         renderRoutes();
         renderSheet();
         renderLadder();
+        // A refresh must not silently drop the plan the operator is reading; it is
+        // re-rendered from state so new capability data lands in it.
+        renderChainPlan(state.chainPlan);
         if (!state.selected) renderInspector(null);
         if (state.replay) renderStep();
         if (state.mode !== 'editing' || !$('policyEditor').value) {
@@ -2218,9 +3505,13 @@
 
       async function fetchAll() {
         state.unreachable = false;
-        const [health, status, policy, blocklist, liveness, compaction, routes] = await Promise.all([
+        const [health, status, policy, blocklist, liveness, compaction, routes, capabilities] = await Promise.all([
           call('/health'), call('/status'), call('/policy'), call('/blocklist'),
           call('/liveness'), call('/compaction'), call('/routes?limit=200'),
+          // Optional: the capability registry is what turns a model id into a
+          // context window. A sidecar without it is not an error — the chain view
+          // reports those elos as unverified, which is the truth either way.
+          call('/capabilities'),
         ]);
         state.health = health.data || null;
         state.status = status.data || null;
@@ -2228,6 +3519,7 @@
         state.blocklist = blocklist.data || null;
         state.liveness = liveness.data || null;
         state.compaction = compaction.missing ? null : (compaction.data || null);
+        state.capabilities = capabilityRegistry(capabilities);
         state.routes = (routes.data && Array.isArray(routes.data.routes)) ? routes.data.routes : [];
         // The envelope reports how many decisions EXIST; we were discarding it and
         // then presenting the page we happened to receive as the whole record.
@@ -2295,6 +3587,12 @@
         const setScope = (scope) => { state.scope = scope; renderRoutes(); };
         $('scopeAll').addEventListener('click', () => setScope('all'));
         $('scopeOffRule').addEventListener('click', () => setScope('off-rule'));
+        // The clock line has to stay true without a refresh: a window that opened
+        // five minutes ago while the console sat open is exactly the case it exists
+        // for. One minute is fine — every boundary it reports is on the hour — and
+        // it repaints two spans and three list items, nothing else. Guarded because
+        // a headless harness need not provide timers.
+        if (typeof setInterval === 'function') setInterval(renderClock, 60000);
         window.addEventListener('resize', applyLayout);
         // visualViewport fires for the keyboard; resize does not, on iOS.
         window.visualViewport?.addEventListener('resize', syncKeyboard);
@@ -2304,13 +3602,32 @@
       wire();
       applyLayout();
       syncKeyboard();
+      // The clock needs no sidecar: its windows are declared, so it is true before
+      // the first read answers and stays true if none ever does.
+      renderClock();
       setMode('reading');
       load();
 
       globalThis.__router = {
         state, setMode, renderRail, renderHealth, renderRoutes, renderStep, renderInspector,
+        renderWarnings,
         drawPath, stepNode, stepOutcome, causeColor, worstOf, modelState,
         phraseCondition, phraseWhen, renderSheet, renderLadder, ruleHits, probe,
+        // Context, capability and fallback-strategy reading: every one of these is
+        // pure, so the words an operator acts on are pinned by tests rather than
+        // eyeballed on a screenshot.
+        predicateFamily, predicateChip, predicateChips, requirementChips,
+        billingBadge, ctxWindow, rejectWhy, contextShortfall, strategyWords,
+        upstreamGroup, independentRails, sharedUpstream, hopCaps, billingIndex,
+        capabilityRegistry, tierChain, renderChainPlan,
+        // The time layer. Every one of these takes its clock as a PARAMETER, which
+        // is what keeps them pure and what keeps these tests from passing at 05:00
+        // UTC and failing at 07:00 — the failure mode the injected clock exists to
+        // prevent in the router itself.
+        whenOf, timeFace, hourLabel, entryWindows, eloWindows, priceMultiplier,
+        nextWindowChange, windowWords, railWindowRows, effectivePrices, money,
+        priceWords, declaredPin, timePolicyMove, timeFlagIndex, timeKnobWords,
+        planWhen, timeCapOf, cappedEntries, renderClock, nowUtc,
         say, ago, fmt, isNarrow, csrf, writable, call, load, absence, matchesQuery,
         syncKeyboard,
         // The write spine: the only code here that changes how the agent routes

@@ -145,10 +145,25 @@ Added to `router/capabilities.py`:
     def in_expensive_window(model, when=None, declared=None) -> bool
         # True only when a matching window has multiplier > 1.0.
 
-    def next_window_change(model, when=None, declared=None) -> Optional[int]
-        # UTC hour at which this model's multiplier next changes. None when it
-        # never changes (flat-priced or unknown model, or no clock). Powers the
-        # console's "peak ends in 2h" affordance and any future deferral logic.
+    def next_window_change(model, when=None, declared=None) -> Optional[Dict[str, Any]]
+        # WHEN this model's multiplier next changes, and to what:
+        #   {"hour": 6, "weekday": 0, "hours_ahead": 47, "multiplier": 2.0}
+        # None when it never changes (flat-priced or unknown model, or no clock).
+        # Powers the console's "peak ends in 2h" affordance and any future
+        # deferral logic.
+
+*Corrected in phase 2:* this returned a bare UTC hour, which cannot express the answer a
+weekday-gated window produces. `next_window_change("glm-4.7", Saturday 07:00Z)` is hour 6 — read as
+a bare hour that says "23 hours away" when the real answer is Monday 06:00, **47 hours** away, and
+the whole point of the function is the countdown. So it returns a day-aware mapping: `hour` and
+`weekday` (0 = Monday … 6 = Sunday, matching `datetime.weekday()`) label the instant the change
+lands on, `hours_ahead` is the whole-hour countdown any consumer must read instead of subtracting
+hours itself, and `multiplier` is the rate that takes effect then. Minutes are deliberately not
+modelled — windows begin on the hour. The search scans forward one full week, which is the whole
+period of the schedule (`weekdays` is a window's only date dependence), so "never changes" is a
+proof rather than a give-up. `service.liveness()` carries the mapping through per elo rather than
+reducing it to its hour, and reports the day as unknown rather than guessing "today" if it is ever
+handed an older bare-int answer.
 
 and the two stage functions the plan applies, each returning its own diagnostics rather than only a
 reordered list:

@@ -6,7 +6,7 @@ import random
 import re
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -459,6 +459,26 @@ def time_config_file(tmp_path):
     return str(path)
 
 
+#: The instant ``_utc_now()`` returns under the ``frozen_now`` fixture. A
+#: Wednesday (weekday 2) at 13:47:31 UTC: not a Monday, so a test that asserts
+#: "today's weekday" cannot accidentally pass against ``_MON_PEAK``'s 0, and an
+#: odd minute/second so a truncating bug in the hour-only forms is visible.
+_FROZEN_NOW = datetime(2026, 8, 19, 13, 47, 31, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def frozen_now(monkeypatch):
+    """Freeze the CLI's ONE clock read, and return the instant it now yields.
+
+    The addendum's testing notes are explicit that no test reads a clock — a test
+    that did would be the exact bug the injected-clock design exists to prevent.
+    So the default-clock tests below pin ``cli._utc_now`` and compare against
+    this value instead of calling ``datetime.now()`` a second time.
+    """
+    monkeypatch.setattr(cli, "_utc_now", lambda: _FROZEN_NOW)
+    return _FROZEN_NOW
+
+
 _HARD_TASK = "Debug a race condition in 3 files"
 # A Monday 07:00 UTC — inside BOTH the deepseek peak and the weekday-only zai
 # peak. 15:00 is outside both. Saturday 07:00 is peak for deepseek only.
@@ -677,7 +697,7 @@ class TestCLIChainTime:
         self, time_config_file, shuffling_planner, fake_caps, capsys
     ):
         text = _chain_text(capsys, time_config_file, "--at", _MON_PEAK)
-        assert "at: 2026-08-17T07:00:00+00:00 (utc_hour=7 utc_weekday=0) source=--at" in text
+        assert "at: 2026-08-17T07:00:00+00:00 (utc_hour=7 utc_weekday=0) source=explicit" in text
         assert "pricing:" in text
         assert "deepseek-v4-pro (deepseek) x2.0 in=$1.32/1M out=$3.96/1M" in text
 
@@ -732,27 +752,33 @@ class TestCLIChainTime:
         text = _chain_text(capsys, time_config_file, "--seed", "1", "--time-agnostic")
         assert "time-agnostic" in text
 
-    def test_default_is_the_real_current_utc_time(
-        self, time_config_file, shuffling_planner, capsys
+    def test_default_is_the_current_utc_time_from_the_single_clock_read(
+        self, time_config_file, shuffling_planner, frozen_now, capsys
     ):
-        before = datetime.now(timezone.utc)
+        """The default clock is ``_utc_now()`` — the ONE wall-clock read there is.
+
+        Asserted against the FROZEN instant rather than a second
+        ``datetime.now()``: the addendum's testing notes forbid a test reading a
+        clock, and a re-read here would disagree with the CLI's read on any run
+        that crossed a second (or, for the weekday, UTC midnight) between them.
+        """
         payload = _chain_json(capsys, time_config_file)
-        after = datetime.now(timezone.utc)
-        at = datetime.fromisoformat(payload["at"])
         assert payload["at_source"] == "now"
-        assert before <= at <= after
-        assert payload["utc_hour"] == at.hour
-        assert payload["utc_weekday"] == at.weekday()
+        assert datetime.fromisoformat(payload["at"]) == frozen_now
+        assert payload["utc_hour"] == frozen_now.hour
+        assert payload["utc_weekday"] == frozen_now.weekday()
 
     def test_a_bare_hour_and_an_iso_timestamp_are_both_accepted(
-        self, time_config_file, capsys
+        self, time_config_file, frozen_now, capsys
     ):
         by_hour = _chain_json(capsys, time_config_file, "--at", "7")
         by_clock = _chain_json(capsys, time_config_file, "--at", "07:30")
         by_iso = _chain_json(capsys, time_config_file, "--at", _MON_PEAK)
         assert by_hour["utc_hour"] == by_clock["utc_hour"] == by_iso["utc_hour"] == 7
-        # The hour-only forms inherit today's UTC date; ISO carries its own.
-        assert by_hour["utc_weekday"] == datetime.now(timezone.utc).weekday()
+        # The hour-only forms inherit today's UTC date — "today" being the frozen
+        # injected clock, never a second read of the real one.
+        assert by_hour["utc_weekday"] == frozen_now.weekday()
+        assert by_clock["utc_weekday"] == frozen_now.weekday()
         assert by_iso["utc_weekday"] == 0
 
     def test_a_naive_and_an_offset_timestamp_normalise_to_utc(
@@ -763,6 +789,44 @@ class TestCLIChainTime:
                              "--at", "2026-08-17T09:00:00+02:00")
         assert naive["utc_hour"] == 7
         assert offset["utc_hour"] == 7
+
+    def test_the_feature_producers_normalise_an_offset_clock_to_utc(self):
+        """``_time_features``/``_time_payload`` must agree with the other four.
+
+        The features the CLI injects and the multipliers ``capabilities`` derives
+        are two readings of ONE clock; if they disagree about the hour, the trace
+        names a window that did not price the call. So this asserts the CLI pair
+        against the other clock-feature producers directly rather than only
+        through ``resolve_when`` (which already hands them aware UTC, and so hides
+        the divergence).
+        """
+        # Midnight Monday at UTC+12 is NOON SUNDAY in UTC: normalising changes
+        # both fields, so a producer that skipped it is unmistakable.
+        aware = datetime(2026, 8, 17, 0, 0,
+                         tzinfo=timezone(timedelta(hours=12)))
+        assert cli._time_features(aware) == {"utc_hour": 12, "utc_weekday": 6}
+        payload = cli._time_payload(aware, "explicit")
+        assert payload["utc_hour"] == 12
+        assert payload["utc_weekday"] == 6
+        # ... and the registry that prices against the same instant agrees.
+        if cli._caps is not None and hasattr(cli._caps, "_utc_parts"):
+            assert cli._caps._utc_parts(aware) == (12, 6)
+        # A naive clock is read as UTC already — no shifting, no guessing.
+        naive = datetime(2026, 8, 17, 7, 0)
+        assert cli._time_features(naive) == {"utc_hour": 7, "utc_weekday": 0}
+        # No clock => the features are omitted, not zeroed.
+        assert cli._time_features(None) == {}
+        assert cli._time_payload(None, "time-agnostic")["utc_hour"] is None
+
+    def test_at_source_uses_the_service_vocabulary_not_the_flag_spelling(
+        self, time_config_file, shuffling_planner, frozen_now, capsys
+    ):
+        """One vocabulary across surfaces: no per-field translation table."""
+        assert _chain_json(capsys, time_config_file,
+                           "--at", _MON_PEAK)["at_source"] == "explicit"
+        assert _chain_json(capsys, time_config_file)["at_source"] == "now"
+        assert _chain_json(capsys, time_config_file,
+                           "--time-agnostic")["at_source"] == "time-agnostic"
 
     def test_an_unparseable_time_fails_closed(self, time_config_file, capsys):
         """Answering a different question than the one asked is worse than refusing."""
@@ -861,7 +925,7 @@ class TestCLIChainTime:
         result = json.loads(capsys.readouterr().out)
         assert result["utc_hour"] == 7
         assert result["utc_weekday"] == 0
-        assert result["at_source"] == "--at"
+        assert result["at_source"] == "explicit"
 
 
 class TestCLIChainTimeFlags:

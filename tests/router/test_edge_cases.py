@@ -294,7 +294,15 @@ def test_rule_helper_edges_and_lint_errors():
     assert _all_clauses_match({"blocked_model": {"eq": True}}, {}, True)
     assert not _all_clauses_match({"blocked_model": {"eq": True}}, {}, False)
     assert _matching_clauses({"x": {"eq": 1}, "missing": {"eq": 2}}, {"x": 1}) == {"x": {"eq": 1}}
-    assert _is_shadowed({"x": {"eq": 1}}, {"x": {"eq": 2}})
+    # NOT shadowed, and that is the correct answer. `x eq 1` and `x eq 2` are
+    # CONTRADICTORY: no feature vector matches both, so the later row is genuinely
+    # reachable and must be allowed to ship. The old assertion expected True and
+    # came from the key-set-only shadow check, which treated "same field names"
+    # as "same condition"; _is_shadowed now decides containment per operator
+    # family. Do NOT invert this back: lint() is the fail-closed write gate, so a
+    # false shadow here refuses a legitimate config and strands the operator
+    # outside the guarded path.
+    assert _is_shadowed({"x": {"eq": 1}}, {"x": {"eq": 2}}) is False
     assert not _is_shadowed({}, {"x": {"eq": 1}})
     errors = lint({
         "default": {}, "tiers": {"T1": {}},
@@ -483,9 +491,26 @@ def test_rules_remaining_pure_branches():
     })
     assert any("missing 'id'" in error for error in errors)
     assert any("missing or invalid 'then'" in error for error in errors)
+    # Happy path: a fully valid config lints CLEAN. The branch under test is
+    # 'then.model' naming a LITERAL model rather than a tier alias — the
+    # dangling-tier-alias check must stay silent for it. Two inputs had to be
+    # updated to keep exercising that branch: every tier now has to declare its
+    # own model+provider (a bare `{}` tier is genuinely invalid), and 'when'
+    # field names are checked against the known signal set (the old invented
+    # 'x' field was a dead row lint is now right to reject).
     assert lint({
-        "default": {}, "tiers": {"T1": {}, "T2": {}, "T3": {}, "T4": {}},
-        "rules": [{"id": "literal", "when": {"x": {"eq": 1}}, "then": {"model": "literal-model"}}],
+        "default": {},
+        "tiers": {
+            "T1": {"model": "small", "provider": "p"},
+            "T2": {"model": "medium", "provider": "p"},
+            "T3": {"model": "large", "provider": "p"},
+            "T4": {"model": "largest", "provider": "p"},
+        },
+        "rules": [{
+            "id": "literal",
+            "when": {"has_code": {"eq": True}},
+            "then": {"model": "literal-model"},
+        }],
     }) == []
     assert _is_shadowed({"x": {"eq": 1}}, {"x": {"eq": 1}, "y": {"eq": 2}})
     assert not _is_shadowed(

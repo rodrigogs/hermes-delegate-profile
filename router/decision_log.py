@@ -20,6 +20,25 @@ Chain-plan persistence (additive, backward compatible):
     * routes.jsonl is size-bounded and rotated, so the entry is bounded:
       ``rejected`` is truncated to :data:`MAX_REJECTED_ENTRIES` and the number
       of dropped rows is reported as ``rejected_truncated``.
+
+  The read-back whitelist covers the PHASE-2 plan too — the time layer's
+  ``multipliers``/``capped``/``demoted``/``promoted``/``time_cap*`` keys, the
+  strategy-degrade triple, ``pin_primary``, ``unsatisfiable`` and the clock keys.
+  It has to: :func:`bound_chain_plan` persists whatever the planner produced, so
+  a narrower whitelist silently dropped every one of those fields on the way back
+  out and the console rendered a phase-1 plan for a phase-2 decision. Anything
+  the planner adds and this module does not list is invisible on replay, which is
+  a worse failure than a missing key because it looks like data.
+
+Attempted head (additive, and the reason it exists):
+  ``output["model"]`` is the DECLARED tier primary — the tier identity the rule
+  or the classifier settled on. The model production actually attempts FIRST is
+  the head of the planned chain, and after a capability filter or a shuffle the
+  two differ. A reader of routes.jsonl had no way to tell: a vision decision was
+  labelled ``glm-5.3`` while ``gpt-5.6-luna`` is what ran. :func:`record`
+  therefore records the planned head alongside it as ``output.attempted_model`` /
+  ``output.attempted_provider`` (see :func:`attempted_head_of`) rather than
+  redefining ``model``, because other consumers read ``model`` as the tier.
 """
 
 from __future__ import annotations
@@ -52,22 +71,60 @@ MAX_REJECTED_ENTRIES = 8
 # The persisted chain-plan keys: rules.plan_chain()'s return shape plus the
 # truncation counter added here. Built by a factory, never a shared constant —
 # the values are mutable and callers are free to mutate what they get back.
+#
+# ``utc_hour``/``utc_weekday``/``time_cap`` are listed as persisted keys but are
+# NOT members of the empty default: plan_chain omits them rather than nulling
+# them, because a JSON consumer reads ``Number(null)`` as 0, so a null hour
+# renders as midnight and a null cap as a ceiling of 0x. Absence plus
+# ``time_agnostic: True`` is unambiguous; a null is not.
 CHAIN_PLAN_KEYS: frozenset = frozenset({
+    # phase 1
     "chain", "requirements", "rejected", "unknown",
     "bypassed", "strategy", "independent_rails", "rejected_truncated",
+    # phase 2 — capability/strategy diagnostics
+    "unsatisfiable", "strategy_declared", "strategy_degraded",
+    "strategy_degraded_reason", "pin_primary",
+    # phase 2 — the time layer
+    "time_agnostic", "time_cap_bypassed", "capped", "demoted", "promoted",
+    "multipliers", "time_cap", "utc_hour", "utc_weekday",
+})
+
+# Keys omitted from the empty default on purpose (see above). Present in a read
+# plan only when the persisted entry carried a usable value.
+_OPTIONAL_CHAIN_PLAN_KEYS: frozenset = frozenset({
+    "time_cap", "utc_hour", "utc_weekday",
 })
 
 
 def empty_chain_plan() -> Dict[str, Any]:
-    """A fresh, mutable empty chain plan — the default for OLD/corrupt entries."""
+    """A fresh, mutable empty chain plan — the default for OLD/corrupt entries.
+
+    A MIRROR of ``rules._empty_chain_plan()`` (and of
+    ``service._empty_chain_plan()``) plus this module's own
+    ``rejected_truncated`` counter. One shape, because a console branches on
+    these keys and cannot see which module produced the plan it was handed;
+    ``time_agnostic: True`` in particular is what stops a consumer pricing a
+    plan against the BROWSER's hour when no clock was ever involved.
+    """
     return {
         "chain": [],
         "requirements": {},
         "rejected": [],
         "unknown": [],
         "bypassed": False,
+        "unsatisfiable": [],
         "strategy": "sequential",
+        "strategy_declared": "sequential",
+        "strategy_degraded": False,
+        "strategy_degraded_reason": "",
+        "pin_primary": True,
         "independent_rails": 0,
+        "time_agnostic": True,
+        "time_cap_bypassed": False,
+        "capped": [],
+        "demoted": [],
+        "promoted": [],
+        "multipliers": {},
         "rejected_truncated": 0,
     }
 
@@ -99,6 +156,28 @@ def bound_chain_plan(plan: Any) -> Optional[Dict[str, Any]]:
     return bounded
 
 
+# Read-back field groups. One table instead of one branch per key, so widening
+# the plan is adding a name to a tuple and cannot half-happen: a key that is
+# persisted but listed nowhere here is silently dropped on read-back, which is
+# the phase-2 defect this table exists to make structurally impossible.
+_PLAN_LIST_KEYS = (
+    "chain", "rejected", "unknown", "unsatisfiable",
+    "capped", "demoted", "promoted",
+)
+_PLAN_DICT_KEYS = ("requirements", "multipliers", "time_cap")
+_PLAN_BOOL_KEYS = (
+    "bypassed", "strategy_degraded", "time_agnostic", "time_cap_bypassed",
+    "pin_primary",
+)
+# Non-empty strings: an empty strategy name is corrupt, not a choice.
+_PLAN_NAME_KEYS = ("strategy", "strategy_declared")
+# Free strings: "" is the legitimate "no reason, nothing degraded" value.
+_PLAN_TEXT_KEYS = ("strategy_degraded_reason",)
+_PLAN_COUNT_KEYS = ("independent_rails", "rejected_truncated")
+#: Clock keys and their inclusive valid range — the addendum's, 0=Monday.
+_PLAN_CLOCK_RANGES = {"utc_hour": (0, 23), "utc_weekday": (0, 6)}
+
+
 def chain_plan_of(entry: Any) -> Dict[str, Any]:
     """Read the chain plan out of a recorded entry, defensively.
 
@@ -108,6 +187,17 @@ def chain_plan_of(entry: Any) -> Dict[str, Any]:
       * ``chain_plan`` present and a mapping -> merged over the empty default,
         with each field type-checked individually so ONE bad field cannot
         discard the rest of the plan.
+
+    Entries written by a PHASE-1 writer simply lack the phase-2 keys and read
+    back with the documented defaults, which is why widening the whitelist is
+    backward compatible: the tolerance is per field, not per entry version.
+
+    ``utc_hour``/``utc_weekday``/``time_cap`` are the three keys that stay ABSENT
+    when the persisted plan has no usable value, rather than being defaulted —
+    see :data:`CHAIN_PLAN_KEYS`. An out-of-range hour is treated as corrupt for
+    the same reason: a consumer prices a plan by its hour, so a plausible-looking
+    wrong hour is worse than no hour.
+
     Never raises.
     """
     plan = empty_chain_plan()
@@ -117,24 +207,62 @@ def chain_plan_of(entry: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         return plan  # missing (old entry) or corrupt value -> skipped
 
-    for key in ("chain", "rejected", "unknown"):
+    for key in _PLAN_LIST_KEYS:
         value = raw.get(key)
         if isinstance(value, list):
             plan[key] = list(value)
-    requirements = raw.get("requirements")
-    if isinstance(requirements, dict):
-        plan["requirements"] = dict(requirements)
-    if isinstance(raw.get("bypassed"), bool):
-        plan["bypassed"] = raw["bypassed"]
-    strategy = raw.get("strategy")
-    if isinstance(strategy, str) and strategy:
-        plan["strategy"] = strategy
-    for key in ("independent_rails", "rejected_truncated"):
+    for key in _PLAN_DICT_KEYS:
+        value = raw.get(key)
+        if isinstance(value, dict):
+            plan[key] = dict(value)
+    for key in _PLAN_BOOL_KEYS:
+        value = raw.get(key)
+        if isinstance(value, bool):
+            plan[key] = value
+    for key in _PLAN_NAME_KEYS:
+        value = raw.get(key)
+        if isinstance(value, str) and value:
+            plan[key] = value
+    for key in _PLAN_TEXT_KEYS:
+        value = raw.get(key)
+        if isinstance(value, str):
+            plan[key] = value
+    for key in _PLAN_COUNT_KEYS:
         value = raw.get(key)
         # bool is an int subclass — a boolean here is corrupt, not a count.
         if isinstance(value, int) and not isinstance(value, bool):
             plan[key] = value
+    for key, (low, high) in _PLAN_CLOCK_RANGES.items():
+        value = raw.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and low <= value <= high:
+            plan[key] = value
     return plan
+
+
+def attempted_head_of(entry: Any) -> Tuple[str, str]:
+    """(model, provider) production attempted FIRST for a recorded decision.
+
+    The single accessor for "what actually ran", so a surface never has to know
+    that ``output.model`` is the declared TIER primary while the planned head is
+    what the executor dispatches. Prefers the recorded ``attempted_model``
+    (written by :meth:`DecisionLog.record` whenever a plan supplied a head) and
+    falls back to ``output.model``, which is the honest answer for a decision
+    with no plan — every entry written before this feature, and every path with
+    nothing to attempt.
+
+    Never raises: an entry of the wrong shape yields ``("", "")``.
+    """
+    if not isinstance(entry, dict):
+        return "", ""
+    out = entry.get("output")
+    if not isinstance(out, dict):
+        return "", ""
+    model = out.get("attempted_model") or out.get("model") or ""
+    if out.get("attempted_model"):
+        provider = out.get("attempted_provider") or ""
+    else:
+        provider = out.get("provider") or ""
+    return str(model), str(provider)
 
 
 class DecisionLog:

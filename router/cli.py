@@ -110,8 +110,12 @@ def load_config(path: str = "router.yaml") -> Dict[str, Any]:
 def resolve_when(args: argparse.Namespace) -> Tuple[Optional[datetime], str]:
     """Return ``(when, source)`` — the clock to inject and where it came from.
 
-    ``source`` is one of ``now``, ``--at`` or ``--time-agnostic``, so the
-    rendered plan says which clock produced it.
+    ``source`` is one of ``now``, ``explicit`` or ``time-agnostic``, so the
+    rendered plan says which clock produced it. That vocabulary is deliberately
+    the one ``RouterService._evaluated_at`` reports and NOT the flag spelling
+    (``--at``): the two surfaces answer the same question, and a console that had
+    to translate this one field per surface would be carrying a table that only
+    exists because two authors named the same concept twice.
 
     ``--at`` accepts, in this order:
       * a bare UTC hour, ``0``-``23``       -> today's UTC date at that hour
@@ -130,12 +134,12 @@ def resolve_when(args: argparse.Namespace) -> Tuple[Optional[datetime], str]:
     asked is worse than one that refuses.
     """
     if getattr(args, "time_agnostic", False):
-        return None, "--time-agnostic"
+        return None, "time-agnostic"
     raw = getattr(args, "at", None)
     if raw is None or raw == "":
         return _utc_now(), "now"
     try:
-        return _parse_when(str(raw)), "--at"
+        return _parse_when(str(raw)), "explicit"
     except ValueError as exc:
         print(f"router: --at {raw!r}: {exc}", file=sys.stderr)
         sys.exit(2)
@@ -182,6 +186,25 @@ def _at_time_today(hour: int, minute: int) -> datetime:
     return _utc_now().replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
+def _utc_parts(when: Optional[datetime]) -> Optional[Tuple[int, int]]:
+    """Return ``(utc_hour, utc_weekday)`` for ``when``, or None for "no clock".
+
+    The same normalisation as ``capabilities._utc_parts``, ``rules._clock_parts``
+    and ``adapter._clock_features``: an AWARE datetime is converted to UTC, a
+    NAIVE one is assumed to be UTC already. Every caller here comes through
+    :func:`resolve_when`, which already returns aware UTC, so this is belt and
+    braces — but a feature vector that named a different hour than the price
+    multipliers derived from the same clock is the one inconsistency the
+    injected-clock design forbids, so the normalisation lives here rather than in
+    the convention that callers happen to follow.
+    """
+    if when is None:
+        return None
+    if when.tzinfo is not None:
+        when = when.astimezone(timezone.utc)
+    return when.hour, when.weekday()
+
+
 def _time_features(when: Optional[datetime]) -> Dict[str, Any]:
     """The two injected time features, or {} when no clock was supplied.
 
@@ -189,18 +212,27 @@ def _time_features(when: Optional[datetime]) -> Dict[str, Any]:
     time-keyed ``when`` clause is inert (an absent feature never matches) rather
     than matching against a guessed hour.
     """
-    if when is None:
+    parts = _utc_parts(when)
+    if parts is None:
         return {}
-    return {"utc_hour": when.hour, "utc_weekday": when.weekday()}
+    hour, weekday = parts
+    return {"utc_hour": hour, "utc_weekday": weekday}
 
 
 def _time_payload(when: Optional[datetime], source: str) -> Dict[str, Any]:
-    """The machine-readable description of the injected clock."""
+    """The machine-readable description of the injected clock.
+
+    ``at_source`` uses the SAME vocabulary as ``RouterService`` (``now`` /
+    ``explicit`` / ``time-agnostic``) rather than the flag spelling, so a console
+    can render either surface without a per-field translation table.
+    """
+    parts = _utc_parts(when)
+    hour, weekday = parts if parts is not None else (None, None)
     return {
         "at": when.isoformat() if when is not None else None,
         "at_source": source,
-        "utc_hour": when.hour if when is not None else None,
-        "utc_weekday": when.weekday() if when is not None else None,
+        "utc_hour": hour,
+        "utc_weekday": weekday,
     }
 
 

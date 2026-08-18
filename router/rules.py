@@ -2,19 +2,67 @@
 
 Pure: no IO, no state, no model calls. Deterministic.
 Reads blocked_model boolean, never writes it.
+
+Capability filtering, time-windowed pricing and fallback ordering (plan_chain)
+stay pure too. The only impurities are INJECTED: a ``random.Random`` for the
+``random`` strategy and a ``datetime`` clock (``when``) for everything
+time-dependent. Same inputs plus the same rng and the same clock always produce
+the same plan. This module never reads the wall clock — it does not even import
+``datetime`` at run time — and ``when=None`` means time-agnostic, reported as
+such rather than guessed at.
+
+plan_chain applies its stages in ONE fixed order, and the order is load-bearing:
+
+    capability filter  ->  time_cap  ->  time_policy  ->  fallback_strategy
+
+Membership is decided first, position second. A reordering stage running before a
+filtering stage could promote an elo that the next stage then removes, and the
+trace would show a promotion that never took effect.
 """
 
 from __future__ import annotations
 
+import inspect
+import random
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
+
+if TYPE_CHECKING:  # pragma: no cover - annotations only, never imported at run time
+    # The clock is a PARAMETER, so ``datetime`` is needed for the annotation and
+    # for nothing else. Importing it under TYPE_CHECKING is what makes "this
+    # module cannot read a clock" a property of the file rather than a promise in
+    # a docstring.
+    from datetime import datetime
+
+# Capability registry lives in a sibling module. It is imported defensively so
+# this engine still loads (and degrades to pre-capability behaviour) when the
+# registry is absent — every capability code path below is skipped when
+# ``_caps is None``.
+try:
+    from router import capabilities as _caps
+except ImportError:  # pragma: no cover - registry not installed
+    _caps = None  # type: ignore[assignment]
+
+# Signal vocabulary, imported for ONE reason: lint validates every
+# ``when.<field>`` name against it. The list is NOT mirrored here — a mirror is
+# how the linter and the extractor drift, and a drifted mirror rejects a
+# legitimate field at the write gate. Without the module the field-name check is
+# skipped (see :func:`_known_when_fields`).
+try:
+    from router import signals as _signals
+except ImportError:  # pragma: no cover - signals not installed
+    _signals = None  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
 # Closed operator set — extend ONLY by adding a row, never a new operator family
 # ---------------------------------------------------------------------------
-
-# Operators that need no value (boolean checks)
-_UNARY_OPS: Set[str] = {"eq", "ne", "contains", "in", "nin"}
+#
+# Context-conditional routing (est_input_tokens, needs_vision, ...) needs NO new
+# operator: those are ordinary signal fields compared with the existing
+# gt/gte/lt/lte/eq predicates. Time-conditional routing (utc_hour, utc_weekday)
+# needs none either, for the same reason. Do NOT "helpfully" add a range/size
+# operator — the set below is closed, and rules.lint() rejects anything outside
+# it.
 
 # All recognized operators
 _VALID_OPS: Set[str] = {
@@ -22,14 +70,97 @@ _VALID_OPS: Set[str] = {
     "contains", "starts_with", "ends_with", "matches",
 }
 
+# Operator FAMILIES, used only by shadow detection: each family describes a
+# region of one field's value space that can be compared for containment.
+# Anything outside them (contains/starts_with/ends_with/matches) describes a
+# region this module refuses to reason about — see :func:`_is_shadowed`.
+_COMPARISON_OPS: Set[str] = {"gt", "gte", "lt", "lte"}
+_INCLUDE_OPS: Set[str] = {"eq", "in"}
+_EXCLUDE_OPS: Set[str] = {"ne", "nin"}
+
 # Regex `matches` is gated to this single field
 _MATCHES_ALLOWED_FIELD = "verb_class"
 
 # Closed output set
 _VALID_OUTPUT_KEYS: Set[str] = {"profile", "model", "provider", "deny", "action"}
 
-# Valid operator sets for config lint
-_ALLOWED_OPS = _VALID_OPS
+# ---------------------------------------------------------------------------
+# Tier fallback strategy / capability vocabulary
+# ---------------------------------------------------------------------------
+
+_DEFAULT_FALLBACK_STRATEGY = "sequential"
+
+# Mirrors of the capability registry's closed sets, used only when the registry
+# is unavailable so lint stays a fail-closed gate either way.
+_FALLBACK_STRATEGIES = frozenset({"sequential", "random", "cheapest_now"})
+_FALLBACK_REQUIREMENT_KEYS = frozenset(
+    {"min_context", "vision", "tool_calling", "structured_output"}
+)
+_FALLBACK_BILLING_MODES = frozenset({"plan", "subscription", "metered", "free"})
+
+# The requirement keys that are booleans; `min_context` is the only numeric one.
+# Lint checks requirement VALUES against this split, because a requirement whose
+# value has the wrong type is silently DISCARDED at plan time (`_as_int` returns
+# None), i.e. a floor an operator believes they set and never got.
+_BOOL_REQUIREMENT_KEYS = frozenset({"vision", "tool_calling", "structured_output"})
+
+# Closed KEY sets for the two clock knobs, held to the same standard as
+# ``fallback_strategy``. A closed strategy set exists so a typo is refused at the
+# write gate instead of degrading to sequential at run time; a typo'd KEY is
+# worse than a typo'd value, because `time_policy: {avoid_peek: [...]}` and
+# `time_cap: {max_multipler: 1.5}` read in the file as active cost controls,
+# lint clean, and do nothing whatsoever — the plan reports `demoted: []` /
+# `capped: []` and the operator finds out from an invoice.
+_TIME_CAP_KEYS = frozenset({"max_multiplier"})
+_TIME_POLICY_KEYS = frozenset({"avoid_peak", "prefer"})
+
+# Keys on a tier/hop mapping that are routing or identity, never a capability
+# declaration. Everything else is handed to capabilities_for() as a per-elo
+# override; the registry filters out fields it does not recognize, so this
+# module does not have to mirror the capability field list. ``time_cap`` and
+# ``time_policy`` are routing knobs like ``fallback_strategy``: they say when to
+# use an elo, never what it can do. Mirrored by ``service._NON_CAPABILITY_KEYS``.
+_NON_CAPABILITY_KEYS: Set[str] = {
+    "model", "provider", "fallback", "fallback_strategy",
+    "pin_primary", "requirements", "time_cap", "time_policy",
+}
+
+# Tier aliases are Tn, n >= 1. Matching the real shape rather than a bare "T"
+# prefix is what keeps a concrete model id that happens to start with a capital
+# T (``Titan-70B``) from being rejected as an unknown tier.
+_TIER_NAME_RE = re.compile(r"^T\d+$")
+
+# `when` fields the CALLER injects that no signal produces. `blocked_model` is
+# the blocklist boolean threaded through match(); `utc_hour`/`utc_weekday` are
+# the clock features and are declared by signals.INJECTED_FEATURE_NAMES, so they
+# arrive through _known_when_fields() instead of being named twice.
+_INJECTED_WHEN_FIELDS = frozenset({"blocked_model"})
+
+# Bounds for the injected clock features. A `when` clause outside them is a row
+# that can never match: the feature is an int in [0, 23] / [0, 6] by
+# construction. `lt`/`lte` may name the one-past-the-end value, because that is
+# how the half-open `[start, end)` window an operator is copying from reads.
+_UTC_HOUR_MAX = 23
+_UTC_WEEKDAY_MAX = 6
+
+# A price cap below 1.0 would exclude every flat-priced elo at every hour, so the
+# cap could only ever empty the chain and bypass itself. Rejected at the gate.
+_MIN_TIME_CAP = 1.0
+
+# Fixed seed for explain()'s dry-run preview (see explain docstring).
+_PREVIEW_SEED = 0
+
+# Whether the installed capabilities.order_chain accepts an injected clock.
+# Resolved once, at import: a stale registry then loses only the time-relative
+# ORDERING instead of the whole plan (the alternative — a TypeError inside
+# plan_chain — degrades every stage, including capability filtering).
+try:
+    _ORDER_CHAIN_ACCEPTS_WHEN = (
+        _caps is not None
+        and "when" in inspect.signature(_caps.order_chain).parameters
+    )
+except (AttributeError, TypeError, ValueError):  # pragma: no cover - odd registry
+    _ORDER_CHAIN_ACCEPTS_WHEN = False
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +207,124 @@ def resolve_tiers(output: Dict[str, Any], tiers: Dict[str, Dict[str, str]]) -> D
     return _resolve_tiers(output, tiers)
 
 
+def plan_chain(
+    output: Dict[str, Any],
+    features: Dict[str, Any],
+    *,
+    rng: Optional[random.Random] = None,
+    when: Optional["datetime"] = None,
+) -> Dict[str, Any]:
+    """Build the effective attempt chain for an already tier-resolved output.
+
+    Pure and deterministic: the only impurities are the injected ``rng`` and the
+    injected clock ``when``. ``when=None`` is time-agnostic — every
+    time-dependent stage is a no-op, ``cheapest_now`` degrades to sequential, and
+    the plan says so — never a wall-clock read.
+
+    Stages, in the one shipped order (see the module docstring for why it cannot
+    be permuted)::
+
+        [primary] + fallback hops
+          -> capability filter   (membership: derived requirements + tier floor)
+          -> time_cap            (membership: price ceiling at `when`)
+          -> time_policy         (position: avoid_peak / prefer at `when`)
+          -> fallback_strategy   (position: sequential / random / cheapest_now)
+
+    Returns, always::
+
+        {chain, requirements, rejected, unknown, bypassed, unsatisfiable,
+         strategy, strategy_declared, strategy_degraded, strategy_degraded_reason,
+         pin_primary, independent_rails,
+         time_agnostic, time_cap_bypassed, capped, demoted, promoted, multipliers}
+
+    plus ``utc_hour`` / ``utc_weekday`` when a clock was injected, and
+    ``time_cap`` when the tier declares one. Those three are OMITTED rather than
+    set to None: a JSON consumer reads ``Number(null)`` as ``0``, so a null hour
+    would render as midnight and a null cap as a ceiling of 0x — the exact class
+    of silent wrongness ``time_agnostic`` exists to prevent.
+
+    ``unsatisfiable`` names the requirement keys NO available model could meet,
+    carried straight through from the filter. It is a different fact from
+    ``rejected``: "this request is pathological" has to be distinguishable from
+    "these particular elos were rejected" without an operator reconstructing it
+    from three coincidental ``context_too_small`` reasons.
+
+    ``strategy`` is the strategy that ACTUALLY RAN. A declared strategy that
+    could not run (``random`` with no rng, ``cheapest_now`` with no clock, a
+    strategy outside the closed set) degrades to sequential and is reported as
+    ``strategy_declared`` + ``strategy_degraded: True`` + a reason, because a
+    sequential chain labelled "random" is indistinguishable from a routing bug.
+
+    ``pin_primary`` is reported for the same reason: the console's strategy
+    wording defaults it to True when absent, so a shuffled primary would be
+    described as pinned.
+
+    When the capability registry is unavailable (or misbehaves) this degrades to
+    the declared chain in declared order with requirements {} and bypassed
+    False — i.e. exactly the pre-capability routing behaviour.
+    """
+    chain = _build_chain(output)
+    declared_strategy = _strategy_of(output)
+    pin_primary = _pin_primary_of(output)
+    cap = _time_cap_of(output)
+
+    # One reading of the clock, normalised once: an unusable `when` (a string
+    # decoded from a trace, a bare date) is EXACTLY the no-clock case, so every
+    # stage and every reported key agree about which hour — if any — this plan was
+    # made at. Deciding it per stage is how `time_agnostic: True` would end up
+    # sitting next to a cap that fired.
+    clock = when if _clock_parts(when) is not None else None
+
+    if _caps is None:
+        # No registry: no filtering, no reordering — today's behaviour exactly.
+        return _unfiltered_plan(chain, declared_strategy, pin_primary, cap, clock)
+
+    try:
+        requirements = _caps.derive_requirements(features or {}, _tier_floor_of(output))
+        filtered = _caps.filter_chain(chain, requirements)
+        eligible = filtered.get("eligible") or chain
+
+        # Membership first: the cap decides WHICH elos are attemptable at this
+        # hour, so it runs before anything decides their order.
+        capped = _apply_time_cap(eligible, cap, clock)
+        # Position second, over the set that will actually be attempted.
+        policy = _apply_time_policy(capped["chain"], output.get("time_policy"), clock)
+        strategy, degraded_reason = _effective_strategy(declared_strategy, rng, clock)
+        ordered = _order_chain(policy["chain"], strategy, pin_primary, rng, clock)
+        rails = _caps.independent_rails(ordered)
+        multipliers = _multipliers_for(ordered, capped["capped"], clock)
+    except (AttributeError, TypeError, ValueError, KeyError):
+        # Defensive: a stale/partial registry must never break routing. Report
+        # the declared chain instead of raising into the request path.
+        return _unfiltered_plan(chain, declared_strategy, pin_primary, cap, clock)
+
+    plan: Dict[str, Any] = {
+        "chain": ordered,
+        "requirements": requirements,
+        "rejected": list(filtered.get("rejected") or []),
+        "unknown": list(filtered.get("unknown") or []),
+        "bypassed": bool(filtered.get("bypassed", False)),
+        # Carried, not re-derived: the filter owns "no model could ever meet
+        # this", and a second implementation here would be a second answer.
+        "unsatisfiable": list(filtered.get("unsatisfiable") or []),
+        "strategy": strategy,
+        "strategy_declared": declared_strategy,
+        "strategy_degraded": bool(degraded_reason),
+        "strategy_degraded_reason": degraded_reason,
+        "pin_primary": pin_primary,
+        "independent_rails": rails,
+        "time_cap_bypassed": bool(capped["bypassed"]),
+        "capped": list(capped["capped"]),
+        "demoted": list(policy["demoted"]),
+        "promoted": list(policy["promoted"]),
+        "multipliers": multipliers,
+    }
+    plan.update(_clock_keys(clock))
+    if cap is not None:
+        plan["time_cap"] = {"max_multiplier": cap}
+    return plan
+
+
 def explain(
     task: str,
     features: Dict[str, Any],
@@ -83,11 +332,27 @@ def explain(
     rules: List[Dict[str, Any]],
     default: Dict[str, Any],
     tiers: Dict[str, Dict[str, str]],
+    rng: Optional[random.Random] = None,
+    when: Optional["datetime"] = None,
 ) -> Dict[str, Any]:
     """Full transparency: run match() and return the decision trace.
 
-    Returns {matched_rule_id, output, matched_clauses, cause}.
-    cause is from the closed set (see spec).
+    Returns {matched_rule_id, output, matched_clauses, cause, chain_plan}.
+    cause is from the closed set (see spec). chain_plan is plan_chain()'s
+    result, so the console and CLI can show which elos were eligible, which
+    were rejected and why, and which fallback strategy applied.
+
+    ``rng`` is passed straight through to plan_chain. When it is None explain
+    uses a FIXED-seed random.Random(0): the dry-run preview must be stable
+    across reloads, so an operator refreshing the console does not see the
+    random-strategy order churn. Production callers inject a request-derived
+    seed instead, so real traffic actually spreads across the tail.
+
+    ``when`` is passed straight through too, and is NOT defaulted to a live
+    clock: a trace is a diagnostic, and a diagnostic that invents an input has
+    invented its answer. With no clock the preview is time-agnostic and labelled
+    as such (``chain_plan.time_agnostic``), so a caller that wants the plan for a
+    given hour must say which hour.
     """
     output, rule_id = match(features, blocked_model, rules, default, tiers)
     matched_clauses: Dict[str, Any] = {}
@@ -110,11 +375,22 @@ def explain(
         cause = "blocklist_veto"
     # default_fallthrough stays as-is — classifier hasn't fired yet at pure-core stage
 
+    preview_rng = rng if rng is not None else random.Random(_PREVIEW_SEED)
+
+    try:
+        chain_plan = plan_chain(output, features, rng=preview_rng, when=when)
+    except Exception:  # noqa: BLE001 - a trace must never break the decision
+        # explain() is a diagnostic surface (console, CLI, decision log). A
+        # planner that blows up must degrade to "no plan" rather than take the
+        # operator's only view of the router down with it.
+        chain_plan = _empty_chain_plan()
+
     return {
         "matched_rule_id": rule_id,
         "output": output,
         "matched_clauses": matched_clauses,
         "cause": cause,
+        "chain_plan": chain_plan,
     }
 
 
@@ -132,11 +408,24 @@ def lint(config: Dict[str, Any]) -> List[str]:
       - rules have required fields (id, when, then)
       - rule ids unique
       - when clauses use closed operators
+      - when clause FIELD NAMES are known signals (a typo is a dead rule)
+      - when.utc_hour / when.utc_weekday bounds are reachable
       - then clauses use closed output keys
       - matches op gated to allowlisted field
-      - default refers to a real tier or concrete profile/model
-      - no dead/shadowed row detection
+      - then.model / default.model name a real tier when they name a tier at all
+      - dead/shadowed row detection (by condition, not by key set)
       - tiers T1-T4 present
+      - every tier declares its own model + provider
+      - tier fallback_strategy / pin_primary / billing_mode / requirements
+        (keys AND value types) / time_cap / time_policy (keys AND value shapes)
+      - tier fallback hops are {model, provider} mappings
+      - declared price_windows are well formed and non-overlapping
+
+    lint() returns HARD errors only: service.py runs it before every write, so
+    anything returned here blocks the write. Advisory findings (shared upstream,
+    model unknown to the capability registry, a cap that will bypass, a defect in
+    the capability registry itself) are legitimate configs an operator may want
+    to ship, so they live in lint_warnings() instead.
     """
     errors: List[str] = []
 
@@ -160,12 +449,28 @@ def lint(config: Dict[str, Any]) -> List[str]:
             if tn not in tiers_cfg:
                 errors.append(f"missing tier {tn}")
 
+    errors.extend(_lint_tier_shapes(tiers_cfg))
+
+    # The default is the route EVERY fall-through takes, so an unresolvable tier
+    # alias there misroutes more traffic than any single rule can. The identical
+    # check has always existed for rules; this is the same check, symmetrically.
+    default_cfg = config.get("default")
+    if isinstance(default_cfg, dict):
+        default_model = default_cfg.get("model")
+        if _is_dangling_tier_alias(default_model, tiers_cfg):
+            errors.append(
+                f"default: 'model' references unknown tier '{default_model}'"
+            )
+
     rules_raw = config.get("rules", [])
     if not isinstance(rules_raw, list):
         errors.append("'rules' must be a list")
         return errors
     rules: List[Dict[str, Any]] = rules_raw
     # Empty rules with a default is valid — everything falls through to default.
+
+    # Resolved once for the whole file: the vocabulary cannot change mid-lint.
+    known_fields = _known_when_fields()
 
     seen_ids: Set[str] = set()
     for i, rule in enumerate(rules):
@@ -192,6 +497,12 @@ def lint(config: Dict[str, Any]) -> List[str]:
 
         # Validate when clauses
         for field, condition in when.items():
+            # A field no signal produces is a DEAD ROW, not a runtime error:
+            # _all_clauses_match returns False for an absent feature, so a typo'd
+            # `need_vision` reads in the file as working policy and simply never
+            # fires. Lint is the only place the two can be told apart.
+            if known_fields is not None and field not in known_fields:
+                errors.append(f"rule '{rid}': 'when.{field}' is not a known signal")
             if not isinstance(condition, dict):
                 errors.append(f"rule '{rid}': 'when.{field}' must be an op map")
                 continue
@@ -205,22 +516,24 @@ def lint(config: Dict[str, Any]) -> List[str]:
                         f"rule '{rid}': 'matches' operator only allowed on "
                         f"'{_MATCHES_ALLOWED_FIELD}', found on '{field}'"
                     )
+            errors.extend(_lint_clock_bounds(rid, field, condition))
 
         # Validate then output keys
         for key in then:
             if key not in _VALID_OUTPUT_KEYS:
                 errors.append(f"rule '{rid}': 'then.{key}' not in closed output set")
-            if key == "model":
-                model_val = then[key]
-                if isinstance(model_val, str) and model_val.startswith("T"):
-                    tn = model_val
-                    if tn not in tiers_cfg:
-                        errors.append(f"rule '{rid}': 'then.model' references unknown tier '{tn}'")
+            if key == "model" and _is_dangling_tier_alias(then[key], tiers_cfg):
+                errors.append(
+                    f"rule '{rid}': 'then.model' references unknown tier "
+                    f"'{then[key]}'"
+                )
             if key == "deny" and not isinstance(then[key], bool):
                 errors.append(f"rule '{rid}': 'then.deny' must be boolean")
 
-    # Detect shadowed rows — a rule whose when is a superset of a later row
-    # (always matched by the earlier rule, so it can never fire)
+    # Detect shadowed rows — a later rule every one of whose matching feature
+    # vectors ALSO matches an earlier rule, so first-match means it can never
+    # fire. Decided from the conditions themselves; see _is_shadowed for why an
+    # undecidable pair is silence rather than an error.
     for i in range(len(rules)):
         for j in range(i + 1, len(rules)):
             ri, rj = rules[i], rules[j]
@@ -244,9 +557,937 @@ def lint(config: Dict[str, Any]) -> List[str]:
     return errors
 
 
+def lint_warnings(config: Dict[str, Any]) -> List[str]:
+    """Advisory findings that must NOT block a write.
+
+    Split from lint() on purpose: lint() is the fail-closed write gate, so a
+    string returned from there stops the operator's apply. These findings are
+    about redundancy quality, not validity — a tier whose first two hops share
+    an upstream still routes, a model missing from the capability registry is
+    only unverifiable rather than wrong, and a time_cap that will bypass at some
+    hour is a cost control the operator may knowingly be shipping anyway.
+
+    The capability registry's own self-check is folded in here too, and it is
+    reported FIRST and unconditionally — before the per-tier findings and before
+    the config-shape guards below. A registry defect is a property of the router,
+    not of the operator's file, so it has to surface even for a config this
+    function otherwise has nothing to say about.
+
+    Returns a list of warning strings (empty = nothing to report).
+    """
+    warnings: List[str] = _registry_warnings()
+
+    if not isinstance(config, dict):
+        return warnings
+    tiers_cfg = config.get("tiers")
+    if not isinstance(tiers_cfg, dict):
+        return warnings
+
+    for tn, tier in tiers_cfg.items():
+        if not isinstance(tier, dict):
+            continue  # shape errors are lint()'s job, not ours
+        chain = _tier_chain(tier)
+
+        # Two hops behind the same upstream are one rail, not two.
+        if len(chain) >= 2:
+            first = _upstream_group(str(chain[0].get("provider") or ""))
+            second = _upstream_group(str(chain[1].get("provider") or ""))
+            if first and first == second:
+                warnings.append(
+                    f"tier '{tn}': first two hops share upstream '{first}' "
+                    f"— no independent fallback"
+                )
+
+        # Unverifiable capabilities: neither the registry nor the YAML knows.
+        if _caps is None:
+            continue
+        seen_models: Set[str] = set()
+        for hop in chain:
+            model = hop.get("model")
+            if not isinstance(model, str) or model in seen_models:
+                continue
+            seen_models.add(model)
+            # provider/model are identity, not capability: a hop that only names
+            # its provider still "declares no capabilities".
+            declared = _declared_capabilities(hop)
+            try:
+                known = _caps.capabilities_for(model, declared or None)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if known is None:
+                warnings.append(
+                    f"tier '{tn}': model '{model}' is unknown to the capability "
+                    f"registry and declares no capabilities"
+                )
+
+        warnings.extend(_time_warnings(tn, tier, chain))
+
+    return warnings
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _registry_warnings() -> List[str]:
+    """``capabilities.registry_diagnostics()``, folded into the advisory channel.
+
+    This is that check's production caller, and it needs one: a diagnostic
+    nobody calls is a diagnostic that does not exist. YAML-declared
+    ``price_windows`` are validated per tier by :func:`_lint_price_windows`, but
+    a malformed or overlapping window shipped in ``MODEL_CAPABILITIES`` itself is
+    invisible to every other gate — and the router and the console then price the
+    same hour differently, each taking a different one of two matching windows.
+
+    Advisory rather than blocking, unlike the YAML window check: the defect is in
+    the router's own registry, not in the operator's file, so refusing their
+    write for it would strand them outside the guarded path over something they
+    cannot fix from YAML. The strings are already shaped
+    ``model '<id>': <defect>``, so they append verbatim.
+    """
+    fn = getattr(_caps, "registry_diagnostics", None) if _caps else None
+    if not callable(fn):
+        return []
+    try:
+        return [str(problem) for problem in fn() or []]
+    except Exception:  # noqa: BLE001 - an optional self-check must not break lint
+        # A registry too broken to describe itself must not break the lint
+        # report that would have told the operator everything else.
+        #
+        # Broad HERE and only here: `fn` is an OPTIONAL hook looked up by name on
+        # whatever object `_caps` happens to be, so its failure modes are not
+        # ours to enumerate. A narrow tuple would say "this self-check may fail in
+        # these four ways", which is a claim about foreign code we cannot make; the
+        # contract we can state is "however this self-check fails, it must not take
+        # the lint path — and therefore the whole write gate — down with it".
+        # Everywhere else in this module the exception set IS knowable (our own
+        # parsing of the operator's YAML), so it stays narrow: a broad catch there
+        # would swallow real defects instead of reporting them as diagnostics.
+        return []
+
+
+def _requirement_keys() -> frozenset:
+    """Closed requirement key set, from the registry when it is importable."""
+    if _caps is not None:
+        keys = getattr(_caps, "REQUIREMENT_KEYS", None)
+        if isinstance(keys, (frozenset, set)):
+            return frozenset(keys)
+    return _FALLBACK_REQUIREMENT_KEYS
+
+
+def _billing_modes() -> frozenset:
+    """Closed billing mode set, from the registry when it is importable."""
+    if _caps is not None:
+        modes = getattr(_caps, "BILLING_MODES", None)
+        if isinstance(modes, (frozenset, set)):
+            return frozenset(modes)
+    return _FALLBACK_BILLING_MODES
+
+
+def _fallback_strategies() -> frozenset:
+    """Closed strategy set, from the registry when it is importable.
+
+    Read from the registry (which owns ``order_chain``) so lint can never reject
+    a strategy the orderer supports, or accept one it silently degrades.
+    """
+    if _caps is not None:
+        strategies = getattr(_caps, "FALLBACK_STRATEGIES", None)
+        if isinstance(strategies, (frozenset, set)):
+            return frozenset(strategies)
+    return _FALLBACK_STRATEGIES
+
+
+def _known_when_fields() -> Optional[frozenset]:
+    """Every legal ``when.<field>`` name, or None when it cannot be known.
+
+    ``signals`` owns the list (extracted + injected clock features) and it is
+    imported, never mirrored: a mirror drifts, and a drifted mirror rejects a
+    legitimate field at the write gate. ``blocked_model`` is added here because
+    it is threaded through ``match()`` rather than produced by ``extract()``.
+
+    None means "do not check" — without ``signals`` there is no canonical list,
+    and guessing one would risk blocking a valid config, which is the failure
+    mode this whole check is trying to avoid.
+    """
+    if _signals is None:
+        return None
+    names = getattr(_signals, "KNOWN_FEATURE_NAMES", None)
+    if not isinstance(names, (frozenset, set)) or not names:
+        return None
+    return frozenset(names) | _INJECTED_WHEN_FIELDS
+
+
+def _is_dangling_tier_alias(value: Any, tiers_cfg: Dict[str, Any]) -> bool:
+    """True when ``value`` looks like a tier alias that the table does not have.
+
+    A name the table DOES carry resolves, whatever it is spelled like, so custom
+    tier names keep working. Only a Tn-shaped name that is absent is an error:
+    matching the real alias shape rather than a bare "T" prefix is what stops a
+    concrete model id such as ``Titan-70B`` from being read as a broken tier
+    reference.
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    if isinstance(tiers_cfg, dict) and value in tiers_cfg:
+        return False
+    return bool(_TIER_NAME_RE.match(value))
+
+
+def _upstream_group(provider: str) -> str:
+    """Upstream group for a provider.
+
+    Delegates to the registry, which knows the reseller aliases. Without it,
+    fall back to provider identity: that still catches the literal
+    same-provider pair without duplicating the alias table here.
+    """
+    if _caps is not None:
+        try:
+            return str(_caps.upstream_group(provider))
+        except (AttributeError, TypeError, ValueError):
+            return provider
+    return provider
+
+
+def _empty_chain_plan() -> Dict[str, Any]:
+    """The plan shape with nothing in it — the last-resort degraded default.
+
+    Time-agnostic by construction: nothing was planned, so no hour can be claimed
+    for it. ``utc_hour``/``utc_weekday``/``time_cap`` are absent for the reason
+    plan_chain documents — a null there reads as 0 in a JSON consumer.
+    """
+    return {
+        "chain": [],
+        "requirements": {},
+        "rejected": [],
+        "unknown": [],
+        "bypassed": False,
+        "unsatisfiable": [],
+        "strategy": _DEFAULT_FALLBACK_STRATEGY,
+        "strategy_declared": _DEFAULT_FALLBACK_STRATEGY,
+        "strategy_degraded": False,
+        "strategy_degraded_reason": "",
+        "pin_primary": True,
+        "independent_rails": 0,
+        "time_agnostic": True,
+        "time_cap_bypassed": False,
+        "capped": [],
+        "demoted": [],
+        "promoted": [],
+        "multipliers": {},
+    }
+
+
+def _unfiltered_plan(
+    chain: List[Dict[str, Any]],
+    declared_strategy: str,
+    pin_primary: bool,
+    cap: Optional[float],
+    when: Optional["datetime"],
+) -> Dict[str, Any]:
+    """Declared chain in declared order — the pre-capability plan shape.
+
+    independent_rails degrades to a distinct-provider count because upstream
+    grouping (reseller aliases) is knowledge that lives in the registry.
+    ``unsatisfiable`` is empty for the same reason: without the registry there is
+    no largest-registered-window to compare a floor against, and an empty list
+    claims nothing rather than claiming nothing is wrong.
+
+    Every time-dependent field reports the honest nothing: no stage ran, so no
+    elo was capped, demoted, promoted or repriced, and the strategy that ran is
+    sequential. A declared strategy other than sequential is therefore a REPORTED
+    degrade — without the registry there is no orderer to run it, and a plan that
+    claimed otherwise would be describing an order nobody produced.
+    """
+    reason = (
+        ""
+        if declared_strategy == _DEFAULT_FALLBACK_STRATEGY
+        else "the capability registry is unavailable, so nothing was reordered"
+    )
+    plan: Dict[str, Any] = {
+        "chain": chain,
+        "requirements": {},
+        "rejected": [],
+        "unknown": [],
+        "bypassed": False,
+        "unsatisfiable": [],
+        "strategy": _DEFAULT_FALLBACK_STRATEGY,
+        "strategy_declared": declared_strategy,
+        "strategy_degraded": bool(reason),
+        "strategy_degraded_reason": reason,
+        "pin_primary": pin_primary,
+        "independent_rails": len({hop.get("provider") for hop in chain}),
+        "time_cap_bypassed": False,
+        "capped": [],
+        "demoted": [],
+        "promoted": [],
+        "multipliers": {},
+    }
+    plan.update(_clock_keys(when))
+    if cap is not None:
+        plan["time_cap"] = {"max_multiplier": cap}
+    return plan
+
+
+def _declared_capabilities(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Per-elo capability overrides declared on a tier or fallback hop."""
+    return {
+        key: value
+        for key, value in entry.items()
+        if key not in _NON_CAPABILITY_KEYS
+    }
+
+
+def _tier_chain(tier: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """[primary hop] + declared fallback hops for one tier mapping."""
+    chain: List[Dict[str, Any]] = []
+    if isinstance(tier.get("model"), str):
+        primary = {"model": tier["model"], "provider": tier.get("provider")}
+        primary.update(_declared_capabilities(tier))
+        chain.append(primary)
+    fallback = tier.get("fallback")
+    if isinstance(fallback, list):
+        for hop in fallback:
+            if isinstance(hop, dict) and hop.get("model"):
+                chain.append(dict(hop))
+    return chain
+
+
+def _lint_tier_shapes(tiers_cfg: Dict[str, Any]) -> List[str]:
+    """Hard-error checks for the per-tier routing knobs."""
+    errors: List[str] = []
+    if not isinstance(tiers_cfg, dict):
+        return errors
+
+    strategies = _fallback_strategies()
+    for tn, tier in tiers_cfg.items():
+        if not isinstance(tier, dict):
+            errors.append(f"tier '{tn}' must be a mapping")
+            continue
+
+        # The tier's OWN elo, checked with the same rigour as its fallback hops.
+        # Without this, _resolve_tiers fills a missing model from the alias
+        # itself, so deleting one line from T2 lints clean and routes 100% of
+        # that tier's traffic to a model literally named "T2".
+        for key in ("model", "provider"):
+            if key not in tier:
+                errors.append(f"tier '{tn}': missing '{key}'")
+            elif not isinstance(tier[key], str) or not tier[key].strip():
+                errors.append(f"tier '{tn}': '{key}' must be a non-empty string")
+
+        # The isinstance guard is not decoration: `x in frozenset` raises
+        # TypeError for an unhashable x, and YAML can legally produce a list or a
+        # mapping here. lint() is the write gate, so it has to REPORT that, not
+        # raise through the operator's apply.
+        if "fallback_strategy" in tier:
+            declared = tier["fallback_strategy"]
+            if not isinstance(declared, str) or declared not in strategies:
+                errors.append(
+                    f"tier '{tn}': 'fallback_strategy' must be one of "
+                    f"{', '.join(sorted(strategies))}"
+                )
+
+        if "pin_primary" in tier and not isinstance(tier["pin_primary"], bool):
+            errors.append(f"tier '{tn}': 'pin_primary' must be boolean")
+
+        if "billing_mode" in tier:
+            mode = tier["billing_mode"]
+            if not isinstance(mode, str) or mode not in _billing_modes():
+                errors.append(
+                    f"tier '{tn}': 'billing_mode' must be one of "
+                    f"{sorted(_billing_modes())}"
+                )
+
+        errors.extend(_lint_requirements(tn, tier))
+        errors.extend(_lint_time_knobs(tn, tier))
+
+        fallback = tier.get("fallback")
+        if fallback is not None:
+            if not isinstance(fallback, list):
+                errors.append(f"tier '{tn}': 'fallback' must be a list")
+            else:
+                for i, hop in enumerate(fallback):
+                    if (
+                        not isinstance(hop, dict)
+                        or not hop.get("model")
+                        or not hop.get("provider")
+                    ):
+                        errors.append(
+                            f"tier '{tn}': fallback[{i}] must be a mapping with "
+                            f"'model' and 'provider'"
+                        )
+
+        errors.extend(_lint_price_windows(tier))
+
+    return errors
+
+
+def _lint_requirements(tn: str, tier: Dict[str, Any]) -> List[str]:
+    """Key AND value checks for one tier's ``requirements`` floor.
+
+    Values matter as much as keys: a requirement whose type is wrong is silently
+    DISCARDED at plan time (``min_context: "lots"`` reads back as None), so the
+    operator gets a floor they believe they set and never had. A discarded floor
+    fails in the direction of routing to a model that cannot serve the request,
+    which is exactly what the floor exists to prevent.
+    """
+    if "requirements" not in tier:
+        return []
+    reqs = tier["requirements"]
+    if not isinstance(reqs, dict):
+        return [f"tier '{tn}': 'requirements' must be a mapping"]
+
+    errors: List[str] = []
+    for key, value in reqs.items():
+        if key not in _requirement_keys():
+            errors.append(
+                f"tier '{tn}': 'requirements.{key}' not in closed requirement set"
+            )
+            continue
+        if key == "min_context":
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                errors.append(
+                    f"tier '{tn}': 'requirements.min_context' must be a "
+                    f"positive integer"
+                )
+        elif key in _BOOL_REQUIREMENT_KEYS and not isinstance(value, bool):
+            errors.append(f"tier '{tn}': 'requirements.{key}' must be a boolean")
+    return errors
+
+
+def _lint_time_knobs(tn: str, tier: Dict[str, Any]) -> List[str]:
+    """Key AND value checks for ``time_cap`` and ``time_policy``.
+
+    KEYS are a closed set, exactly like ``fallback_strategy``'s values. An
+    unrecognised key is a HARD error naming the key, because the failure it
+    causes is invisible everywhere else: ``time_policy: {avoid_peek: [deepseek]}``
+    and ``time_cap: {max_multipler: 1.5}`` are one character from a working cost
+    control, read in the file as if they were one, pass a fail-closed gate, and
+    then do nothing at all — the plan reports ``demoted: []`` / ``capped: []``
+    and the tier keeps billing at 2.0x through every peak. Silently ignoring an
+    unknown key is what makes that possible, so it is not silently ignored.
+
+    ``max_multiplier`` must be >= 1.0: a cap below the base rate excludes every
+    flat-priced elo at every hour, so it could only ever empty the chain and
+    bypass itself — a cost control that is guaranteed not to control cost. The
+    module honours such a value literally; the gate is where it is refused.
+    """
+    errors: List[str] = []
+
+    if "time_cap" in tier:
+        cap_cfg = tier["time_cap"]
+        if not isinstance(cap_cfg, dict):
+            errors.append(f"tier '{tn}': 'time_cap' must be a mapping")
+        else:
+            for key in cap_cfg:
+                if key not in _TIME_CAP_KEYS:
+                    errors.append(
+                        f"tier '{tn}': 'time_cap.{key}' not in closed "
+                        f"time_cap key set"
+                    )
+            if "max_multiplier" in cap_cfg:
+                cap = _as_number(cap_cfg["max_multiplier"])
+                if cap is None or cap < _MIN_TIME_CAP:
+                    errors.append(
+                        f"tier '{tn}': 'time_cap.max_multiplier' must be a "
+                        f"number >= 1.0"
+                    )
+
+    if "time_policy" in tier:
+        policy = tier["time_policy"]
+        if not isinstance(policy, dict):
+            errors.append(f"tier '{tn}': 'time_policy' must be a mapping")
+        else:
+            for key in policy:
+                if key not in _TIME_POLICY_KEYS:
+                    errors.append(
+                        f"tier '{tn}': 'time_policy.{key}' not in closed "
+                        f"time_policy key set"
+                    )
+            if "avoid_peak" in policy and not _is_name_list(policy["avoid_peak"]):
+                errors.append(
+                    f"tier '{tn}': 'time_policy.avoid_peak' must be a list of "
+                    f"provider names"
+                )
+            if "prefer" in policy and not _is_name_list(policy["prefer"]):
+                errors.append(
+                    f"tier '{tn}': 'time_policy.prefer' must be a list of model names"
+                )
+
+    return errors
+
+
+def _lint_price_windows(tier: Dict[str, Any]) -> List[str]:
+    """Validate every ``price_windows`` list this tier declares in YAML.
+
+    Delegated to ``capabilities.price_window_diagnostics`` — the same function the
+    registry self-check uses — because ``price_windows`` is overridable per elo
+    and a second implementation of the window rules is a second set of answers.
+    Its strings are already shaped ``model '<id>': <defect>``, so they are
+    appended verbatim. Overlapping windows are a HARD error here: with two
+    matching multipliers the winner would be an accident of list order.
+    """
+    fn = getattr(_caps, "price_window_diagnostics", None) if _caps else None
+    if not callable(fn):
+        return []
+    errors: List[str] = []
+    for hop in _tier_chain(tier):
+        if "price_windows" not in hop:
+            continue
+        model = hop.get("model")
+        try:
+            errors.extend(
+                fn(model if isinstance(model, str) else "", hop["price_windows"])
+            )
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return errors
+
+
+def _time_warnings(
+    tn: str,
+    tier: Dict[str, Any],
+    chain: List[Dict[str, Any]],
+) -> List[str]:
+    """Advisory findings about a tier's time knobs — never write-blocking.
+
+    Each one describes a config that is valid and does something other than what
+    it reads like:
+
+    * a ``time_cap`` every elo can exceed at some hour is a cap that will bypass
+      itself rather than shed cost, and the operator finds out from an invoice;
+    * an ``avoid_peak`` provider absent from the tier is a typo or a stale copy —
+      the knob is inert either way;
+    * ``cheapest_now`` over elos that publish no dollar price cannot compare
+      dollars, so it ranks by billing mode alone. That is the documented
+      behaviour, not a bug, but it is not what "cheapest" reads like.
+
+    Needs the registry (prices and windows live there); returns [] without it.
+    """
+    if _caps is None or not chain:
+        return []
+
+    warnings: List[str] = []
+    cap = _time_cap_of(tier)
+    if cap is not None and all(_exceeds_cap_at_some_hour(hop, cap) for hop in chain):
+        warnings.append(
+            f"tier '{tn}': every elo is in an expensive window at some hour "
+            f"— time_cap will bypass"
+        )
+
+    policy = tier.get("time_policy")
+    if isinstance(policy, dict) and _is_name_list(policy.get("avoid_peak")):
+        present = {
+            _upstream_provider(hop.get("provider"))
+            for hop in chain
+            if isinstance(hop.get("provider"), str)
+        }
+        for name in policy["avoid_peak"]:
+            if _upstream_provider(name) not in present:
+                warnings.append(
+                    f"tier '{tn}': 'time_policy.avoid_peak' names provider "
+                    f"'{name}', absent from this tier"
+                )
+
+    if _strategy_of(tier) == "cheapest_now" and not any(
+        _has_dollar_price(hop) for hop in chain
+    ):
+        warnings.append(
+            f"tier '{tn}': 'cheapest_now' with no priced elo degrades to "
+            f"billing_mode rank only"
+        )
+
+    return warnings
+
+
+def _exceeds_cap_at_some_hour(hop: Dict[str, Any], cap: float) -> bool:
+    """Whether any window declared for ``hop`` is priced above ``cap``.
+
+    Reads the declared windows rather than sampling 168 hours: the multiplier a
+    window carries IS the answer, and an elo with no window is flat-priced at 1.0
+    and can never exceed a cap of at least 1.0.
+    """
+    model = hop.get("model")
+    if not isinstance(model, str) or not model:
+        return False
+    try:
+        caps = _caps.capabilities_for(model, _declared_capabilities(hop) or None)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if not isinstance(caps, dict):
+        return False
+    windows = caps.get("price_windows")
+    if not isinstance(windows, list):
+        return False
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        multiplier = _as_number(window.get("multiplier"))
+        if multiplier is not None and multiplier > cap:
+            return True
+    return False
+
+
+def _has_dollar_price(hop: Dict[str, Any]) -> bool:
+    """Whether this elo publishes a per-token price the router can compare.
+
+    Asked through ``effective_price`` so "priced" means exactly what
+    ``cheapest_now`` means by it — never a re-derivation that could disagree.
+    """
+    model = hop.get("model")
+    if not isinstance(model, str) or not model:
+        return False
+    try:
+        priced = _caps.effective_price(model, None, _declared_capabilities(hop) or None)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return priced is not None
+
+
+def _upstream_provider(provider: Any) -> str:
+    """Provider name normalised for comparison — case and whitespace only.
+
+    Matches ``capabilities.apply_time_policy``'s provider matching, which is
+    case-insensitive, so lint agrees with the stage it is warning about. Upstream
+    GROUPING is deliberately not applied: ``avoid_peak: [nous]`` names a
+    provider's windows, not a rail's redundancy.
+    """
+    return provider.strip().lower() if isinstance(provider, str) else ""
+
+
+def _is_name_list(value: Any) -> bool:
+    """Whether ``value`` is a non-empty list of non-empty name strings."""
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(item, str) and item.strip() for item in value)
+    )
+
+
+def _lint_clock_bounds(rid: str, field: str, condition: Any) -> List[str]:
+    """Reject a clock clause no legal hour / weekday could ever satisfy.
+
+    ``utc_hour`` is an int in 0..23 and ``utc_weekday`` an int in 0..6 by
+    construction, so a bound outside those is a row that never fires — the same
+    invisible-dead-row failure the field-name check exists for. ``lt``/``lte`` may
+    name the one-past-the-end value (``lt: 24``), because that is how the half-open
+    ``[start, end)`` price window an operator is copying from reads, and it is
+    perfectly satisfiable.
+    """
+    if field == "utc_hour":
+        limit, label = _UTC_HOUR_MAX, "0..23"
+    elif field == "utc_weekday":
+        limit, label = _UTC_WEEKDAY_MAX, "0..6"
+    else:
+        return []
+    if not isinstance(condition, dict):
+        return []
+
+    for op, value in condition.items():
+        if op not in _VALID_OPS:
+            continue  # already reported as an unknown operator
+        ceiling = limit + 1 if op in ("lt", "lte") else limit
+        for candidate in (value if isinstance(value, list) else [value]):
+            number = _as_number(candidate)
+            if number is None or not 0 <= number <= ceiling:
+                return [
+                    f"rule '{rid}': 'when.{field}' must be bounded to {label}"
+                ]
+    return []
+
+
+def _strategy_of(output: Dict[str, Any]) -> str:
+    """Declared fallback strategy, defaulting to sequential."""
+    strategy = output.get("fallback_strategy", _DEFAULT_FALLBACK_STRATEGY)
+    if not isinstance(strategy, str):
+        return _DEFAULT_FALLBACK_STRATEGY
+    return strategy
+
+
+def _pin_primary_of(output: Dict[str, Any]) -> bool:
+    """Declared pin_primary, defaulting to True (keep the tier's own elo first)."""
+    pin = output.get("pin_primary", True)
+    return pin if isinstance(pin, bool) else True
+
+
+def _time_cap_of(output: Dict[str, Any]) -> Optional[float]:
+    """Declared price ceiling as a float, or None for "no cap".
+
+    Reads the documented ``{max_multiplier: N}`` mapping. A bare number is
+    tolerated because this function is handed whatever a caller assembled, and
+    coercing here costs less than a TypeError in the request path — but a bare
+    number is NOT a spelling a tier can use: ``_resolve_tiers`` carries
+    ``time_cap`` only when it is a mapping, and lint refuses ``time_cap: 1.5``
+    outright. Fail-closed in both directions, deliberately.
+
+    An unusable value is no cap at all: lint refuses it at the write gate, and a
+    cost control that cannot be parsed must not become a cost control of zero.
+    """
+    raw = output.get("time_cap")
+    if isinstance(raw, dict):
+        raw = raw.get("max_multiplier")
+    return _as_number(raw)
+
+
+def _tier_floor_of(output: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The tier's requirement floor, reduced to what can only TIGHTEN.
+
+    ``requirements`` is documented as a floor, and a floor can raise a
+    requirement, never lower one. A boolean requirement of False cannot tighten
+    anything — ``satisfies()`` only ever constrains on a True requirement — but
+    ``derive_requirements`` unions the floor by OVERWRITING, so passing
+    ``{vision: false}`` through would erase a signal-derived ``vision: True`` and
+    silently let a screenshot route to a blind model. Falsy booleans are therefore
+    dropped here, where the floor is assembled, rather than trusted downstream.
+
+    ``min_context`` needs no guard: ``derive_requirements`` takes the MAX of the
+    two, which is already floor semantics.
+    """
+    floor = output.get("requirements")
+    if not isinstance(floor, dict):
+        return None
+    keys = _requirement_keys()
+    tightening = {
+        key: value
+        for key, value in floor.items()
+        if key in keys and not (key in _BOOL_REQUIREMENT_KEYS and not value)
+    }
+    return tightening or None
+
+
+def _effective_strategy(
+    declared: str,
+    rng: Optional[random.Random],
+    when: Optional["datetime"],
+) -> Tuple[str, str]:
+    """Return (strategy that can actually run, degrade reason or "").
+
+    ``order_chain`` degrades to sequential rather than reaching for global
+    randomness or the wall clock, which is the right BEHAVIOUR and the wrong
+    REPORT: a sequential chain labelled "random" is indistinguishable from a bug,
+    and the caller who forgot to inject never learns they forgot. So the degrade
+    is computed here, on the same conditions, and reported beside the plan.
+    """
+    if declared not in _fallback_strategies():
+        return (
+            _DEFAULT_FALLBACK_STRATEGY,
+            f"'{declared}' is not a known fallback strategy",
+        )
+    if declared == "random" and rng is None:
+        return (
+            _DEFAULT_FALLBACK_STRATEGY,
+            "no rng was injected, so the tail was not shuffled",
+        )
+    if declared == "cheapest_now" and _clock_parts(when) is None:
+        return (
+            _DEFAULT_FALLBACK_STRATEGY,
+            "no clock was injected, so prices could not be compared",
+        )
+    return declared, ""
+
+
+def _order_chain(
+    chain: List[Dict[str, Any]],
+    strategy: str,
+    pin_primary: bool,
+    rng: Optional[random.Random],
+    when: Optional["datetime"],
+) -> List[Dict[str, Any]]:
+    """capabilities.order_chain, with the clock only when it accepts one."""
+    if _ORDER_CHAIN_ACCEPTS_WHEN:
+        return _caps.order_chain(
+            chain, strategy=strategy, pin_primary=pin_primary, rng=rng, when=when
+        )
+    return _caps.order_chain(
+        chain, strategy=strategy, pin_primary=pin_primary, rng=rng
+    )
+
+
+def _apply_time_cap(
+    chain: List[Dict[str, Any]],
+    cap: Optional[float],
+    when: Optional["datetime"],
+) -> Dict[str, Any]:
+    """Run the price-ceiling stage, or return the no-op result.
+
+    No clock, no declared cap, or no usable stage function means the chain passes
+    through untouched with empty diagnostics. A stage that raises degrades the
+    SAME way — the time layer is a cost control, so its failure mode must be
+    "no cost control", never "no route" and never "no plan".
+
+    A stage that returns an empty chain is overridden with the input: never
+    emptying the chain is the invariant the cap's own bypass exists to hold, and
+    it is cheap to hold it twice.
+    """
+    neutral = {"chain": list(chain), "capped": [], "bypassed": False}
+    fn = getattr(_caps, "apply_time_cap", None) if _caps else None
+    if cap is None or when is None or not callable(fn):
+        return neutral
+    try:
+        result = fn(chain, cap, when=when)
+    except (AttributeError, TypeError, ValueError, KeyError):
+        return neutral
+    if not isinstance(result, dict):
+        return neutral
+    capped_chain = result.get("chain")
+    usable = isinstance(capped_chain, list) and bool(capped_chain)
+    return {
+        "chain": list(capped_chain) if usable else list(chain),
+        "capped": [
+            item for item in (result.get("capped") or []) if isinstance(item, dict)
+        ],
+        "bypassed": bool(result.get("bypassed", False)),
+    }
+
+
+def _apply_time_policy(
+    chain: List[Dict[str, Any]],
+    policy: Any,
+    when: Optional["datetime"],
+) -> Dict[str, Any]:
+    """Run the avoid_peak / prefer stage, or return the no-op result.
+
+    Same degrade contract as :func:`_apply_time_cap`. The returned chain must be a
+    PERMUTATION of the input — this stage moves elos, it never removes one — so a
+    result of a different length is discarded in favour of the input rather than
+    trusted.
+    """
+    neutral = {"chain": list(chain), "demoted": [], "promoted": []}
+    fn = getattr(_caps, "apply_time_policy", None) if _caps else None
+    if when is None or not isinstance(policy, dict) or not callable(fn):
+        return neutral
+    try:
+        result = fn(chain, policy, when=when)
+    except (AttributeError, TypeError, ValueError, KeyError):
+        return neutral
+    if not isinstance(result, dict):
+        return neutral
+    moved = result.get("chain")
+    if not isinstance(moved, list) or len(moved) != len(chain):
+        return neutral
+    return {
+        "chain": list(moved),
+        "demoted": [m for m in (result.get("demoted") or []) if isinstance(m, str)],
+        "promoted": [m for m in (result.get("promoted") or []) if isinstance(m, str)],
+    }
+
+
+def _multipliers_for(
+    chain: List[Dict[str, Any]],
+    capped: List[Dict[str, Any]],
+    when: Optional["datetime"],
+) -> Dict[str, float]:
+    """model -> the price multiplier this plan was made on, at ``when``.
+
+    Empty without a clock: 1.0 for everything would be a claim about prices that
+    nobody checked, and the console needs to be able to tell "the planner saw the
+    base rate" from "the planner had no clock".
+
+    Capped elos are included — they are not in the chain, and their multiplier is
+    the number that explains why. Their own reported multiplier wins, because that
+    is the value the cap decided on.
+    """
+    if _clock_parts(when) is None:
+        return {}
+    fn = getattr(_caps, "price_multiplier", None) if _caps else None
+    if not callable(fn):
+        return {}
+
+    multipliers: Dict[str, float] = {}
+    for item in capped or []:
+        model = item.get("model") if isinstance(item, dict) else None
+        value = _as_number(item.get("multiplier")) if isinstance(item, dict) else None
+        if isinstance(model, str) and model and value is not None:
+            multipliers.setdefault(model, value)
+    for entry in chain or []:
+        if not isinstance(entry, dict):
+            continue
+        model = entry.get("model")
+        if not isinstance(model, str) or not model or model in multipliers:
+            continue
+        try:
+            value = _as_number(fn(model, when, entry))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if value is not None:
+            multipliers[model] = value
+    return multipliers
+
+
+def _clock_parts(when: Any) -> Optional[Tuple[int, int]]:
+    """(utc_hour, utc_weekday) for an injected clock, or None for "no clock".
+
+    Mirrors ``capabilities._utc_parts`` deliberately: the plan's reported hour and
+    the multipliers applied to it must come from the same reading of the same
+    clock, or the trace explains an order that was decided at another hour.
+
+    An AWARE datetime is converted to UTC, a NAIVE one is taken to be UTC already
+    — both via ``utctimetuple()``, which is what lets this module answer the
+    question WITHOUT importing datetime and therefore without being able to read
+    a clock. Anything that cannot supply both an hour and a weekday (a bare
+    ``date``, a ``time``, a string decoded from a trace) is no clock at all rather
+    than an exception: a diagnostic must not break the request path.
+    """
+    if when is None:
+        return None
+    try:
+        stamp = getattr(when, "utctimetuple", None)
+        weekday_of = getattr(when, "weekday", None)
+        if not callable(stamp) or not callable(weekday_of):
+            return None
+        if getattr(when, "hour", None) is None:
+            return None  # a date has a weekday and no hour: not a clock
+        parts = stamp()
+        hour = int(parts.tm_hour)
+        weekday = int(parts.tm_wday)
+    except (AttributeError, TypeError, ValueError, OSError, OverflowError):
+        return None
+    if not 0 <= hour <= _UTC_HOUR_MAX or not 0 <= weekday <= _UTC_WEEKDAY_MAX:
+        return None
+    return hour, weekday
+
+
+def _clock_keys(when: Optional["datetime"]) -> Dict[str, Any]:
+    """The plan's clock keys: the hour it was planned at, or "time-agnostic".
+
+    ``utc_hour``/``utc_weekday`` are OMITTED when there is no clock rather than
+    set to None. A JSON consumer reads ``Number(null)`` as ``0``, so a null hour
+    renders as midnight — a plan that silently claims an hour it never saw is
+    exactly what ``time_agnostic`` exists to prevent.
+    """
+    parts = _clock_parts(when)
+    if parts is None:
+        return {"time_agnostic": True}
+    return {"time_agnostic": False, "utc_hour": parts[0], "utc_weekday": parts[1]}
+
+
+def _as_number(value: Any) -> Optional[float]:
+    """A real number as float, or None. Booleans are not numbers here.
+
+    ``True`` is an int in Python, so a config saying ``max_multiplier: true``
+    would otherwise become a cap of 1.0 — a value the operator never wrote.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _build_chain(output: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """[{model, provider, ...declared}] + output['fallback'] — new dicts only."""
+    chain: List[Dict[str, Any]] = []
+    model = output.get("model")
+    if isinstance(model, str) and model:
+        primary: Dict[str, Any] = {"model": model, "provider": output.get("provider")}
+        declared = output.get("declared_capabilities")
+        if isinstance(declared, dict):
+            primary.update(declared)
+        chain.append(primary)
+    fallback = output.get("fallback")
+    if isinstance(fallback, list):
+        for hop in fallback:
+            if isinstance(hop, dict) and hop.get("model"):
+                chain.append(dict(hop))
+    return chain
+
 
 def _all_clauses_match(
     when: Dict[str, Any],
@@ -327,7 +1568,19 @@ def _eval_clause(op: str, actual: Any, target: Any) -> bool:
 def _resolve_tiers(output: Dict[str, Any], tiers: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """Resolve Tn aliases in output['model'] against Table 2.
 
-    Returns a new dict — never mutates the input.
+    Besides model/provider/fallback, a resolved output carries the tier's
+    routing knobs when the tier DECLARES them: 'fallback_strategy',
+    'pin_primary', 'billing_mode', 'requirements' (the per-tier capability
+    floor), 'time_cap' and 'time_policy' (the per-tier clock knobs) and
+    'declared_capabilities' (capability keys declared on the tier itself, used as
+    the primary hop's overrides). Absent keys are not materialised — a tier that
+    declares none of them resolves byte-identically to the pre-capability engine
+    — and the documented defaults (fallback_strategy "sequential", pin_primary
+    True, no cap, no policy) are applied by plan_chain, which reads them through
+    _strategy_of / _pin_primary_of / _time_cap_of.
+
+    Returns a new dict — never mutates the input: the time knobs are COPIED, so a
+    plan can never write back into the tier table it was resolved from.
     """
     result = dict(output)
     model = result.get("model")
@@ -341,6 +1594,41 @@ def _resolve_tiers(output: Dict[str, Any], tiers: Dict[str, Dict[str, Any]]) -> 
             result["fallback"] = [
                 dict(target) for target in fallback if isinstance(target, dict)
             ]
+
+        # Carried, not validated: lint() is the gate that rejects a bad strategy
+        # or a non-boolean pin_primary. Resolution stays permissive (and
+        # normalising) so a stale config still routes.
+        if "fallback_strategy" in tier:
+            result["fallback_strategy"] = _strategy_of(tier)
+        if "pin_primary" in tier:
+            result["pin_primary"] = _pin_primary_of(tier)
+
+        billing_mode = tier.get("billing_mode")
+        if isinstance(billing_mode, str):
+            result["billing_mode"] = billing_mode
+
+        requirements = tier.get("requirements")
+        if isinstance(requirements, dict):
+            result["requirements"] = {
+                key: value
+                for key, value in requirements.items()
+                if key in _requirement_keys()
+            }
+
+        time_cap = tier.get("time_cap")
+        if isinstance(time_cap, dict):
+            result["time_cap"] = dict(time_cap)
+
+        time_policy = tier.get("time_policy")
+        if isinstance(time_policy, dict):
+            result["time_policy"] = {
+                key: list(value) if isinstance(value, list) else value
+                for key, value in time_policy.items()
+            }
+
+        declared = _declared_capabilities(tier)
+        if declared:
+            result["declared_capabilities"] = declared
     return result
 
 
@@ -404,25 +1692,213 @@ def _is_shadowed(
     earlier_when: Dict[str, Any],
     later_when: Dict[str, Any],
 ) -> bool:
-    """Return True if earlier_when is a superset of later_when.
+    """Return True when ``later_when`` can never fire because the earlier row will.
 
-    A rule is shadowed when an earlier rule will ALWAYS match before it.
-    This is a conservative check: if the earlier rule's when is broader
-    (fewer or same fields with same ops), the later rule can never fire.
+    First-match semantics: the later row is dead when EVERY feature vector that
+    matches it also matches the earlier row. Two things have to hold.
+
+      1. Every field the earlier row constrains is constrained by the later row
+         too. Otherwise a vector matching the later row is free to violate the
+         earlier row on a field the later row never mentions.
+      2. On each of those fields the later row's condition is CONTAINED in the
+         earlier row's: every value the later admits, the earlier admits as well
+         (see :func:`_condition_contains`).
+
+    Containment is decided per operator family, and the undecidable answer is
+    False, never True. That asymmetry is deliberate. ``lint()`` is the write gate,
+    so a FALSE shadow refuses a legitimate config and strands the operator outside
+    the guarded path — the exact failure the gate exists to prevent. A MISSED
+    shadow leaves a dead row that is visible in the file, visible in ``explain()``
+    as a rule that never matches, and visible in the decision log as a rule id
+    with zero hits. Hence: two disjoint context thresholds shadow nothing and must
+    ship, while a genuinely contained interval is still reported.
     """
+    if not isinstance(earlier_when, dict) or not isinstance(later_when, dict):
+        return False
     if not earlier_when or not later_when:
         return False
+    if not set(earlier_when).issubset(set(later_when)):
+        return False
+    return all(
+        _condition_contains(earlier_when[field], later_when[field])
+        for field in earlier_when
+    )
 
-    # Same fields? Then earlier wins (first-match semantics)
-    if set(earlier_when.keys()) == set(later_when.keys()):
+
+def _condition_contains(earlier: Any, later: Any) -> bool:
+    """Whether every value satisfying ``later`` also satisfies ``earlier``.
+
+    Decidable families only — anything else is False:
+
+      * identical conditions: trivially contained;
+      * comparisons (gt/gte/lt/lte) with numeric bounds: interval containment, so
+        ``{gt: 400000}`` contains ``{gt: 800000}`` (the later row is genuinely
+        dead) while ``{gt: 800000}`` and ``{lt: 2000}`` contain nothing of each
+        other (both must ship);
+      * membership (eq/in): set containment;
+      * exclusion (ne/nin): excluding LESS admits more, so the earlier row's
+        excluded set must be a subset of the later's;
+      * an earlier exclusion against a later membership: contained when none of
+        the later row's values are excluded.
+
+    Substring and regex operators (contains/starts_with/ends_with/matches) describe
+    regions this module does not model — comparing them would mean deciding
+    whether one regex's language contains another's — so only the identical case
+    above ever decides them. An empty condition constrains nothing beyond the
+    field's presence, which the later row also requires, so it contains anything.
+    """
+    if not isinstance(earlier, dict) or not isinstance(later, dict):
+        return False
+    if not earlier:
+        return True
+    if not later:
+        return False
+    if earlier == later:
         return True
 
-    # Earlier has subset of fields? Then it's broader - fires first always
-    if set(earlier_when.keys()).issubset(set(later_when.keys())):
-        # Check if the conditions are identical for shared fields
-        for field in set(earlier_when.keys()) & set(later_when.keys()):
-            if earlier_when[field] != later_when[field]:
-                return False
-        return True
-
+    earlier_ops, later_ops = set(earlier), set(later)
+    if earlier_ops <= _COMPARISON_OPS and later_ops <= _COMPARISON_OPS:
+        return _interval_contains(earlier, later)
+    if earlier_ops <= _INCLUDE_OPS and later_ops <= _INCLUDE_OPS:
+        outer, inner = _include_set(earlier), _include_set(later)
+        return outer is not None and inner is not None and inner <= outer
+    if earlier_ops <= _EXCLUDE_OPS and later_ops <= _EXCLUDE_OPS:
+        outer, inner = _exclude_set(earlier), _exclude_set(later)
+        return outer is not None and inner is not None and outer <= inner
+    if earlier_ops <= _EXCLUDE_OPS and later_ops <= _INCLUDE_OPS:
+        excluded, admitted = _exclude_set(earlier), _include_set(later)
+        return (
+            excluded is not None
+            and admitted is not None
+            and not (excluded & admitted)
+        )
     return False
+
+
+def _interval_contains(earlier: Dict[str, Any], later: Dict[str, Any]) -> bool:
+    """Interval containment for two comparison-only conditions on one field."""
+    outer = _bounds_of(earlier)
+    inner = _bounds_of(later)
+    if outer is None or inner is None:
+        return False
+    return _lower_covers(outer[0], inner[0]) and _upper_covers(outer[1], inner[1])
+
+
+def _bounds_of(condition: Dict[str, Any]) -> Optional[Tuple[Any, Any]]:
+    """((lower, strict) | None, (upper, strict) | None), or None if undecidable.
+
+    ``strict`` marks an EXCLUSIVE bound (gt/lt). Two bounds on the same side are
+    reduced to the tighter one, so ``{gt: 10, gte: 20}`` is ``> 20``. A non-numeric
+    bound makes the interval unknowable: ``gt`` coerces with ``float()`` at match
+    time, so ``{gt: "200k"}`` is a row that never matches rather than a bound this
+    function may invent a number for.
+    """
+    lower: Optional[Tuple[float, bool]] = None
+    upper: Optional[Tuple[float, bool]] = None
+    for op, raw in condition.items():
+        value = _as_number(raw)
+        if value is None:
+            return None
+        if op in ("gt", "gte"):
+            lower = _tighter_lower(lower, (value, op == "gt"))
+        elif op in ("lt", "lte"):
+            upper = _tighter_upper(upper, (value, op == "lt"))
+        else:
+            return None
+    return lower, upper
+
+
+def _tighter_lower(
+    current: Optional[Tuple[float, bool]],
+    candidate: Tuple[float, bool],
+) -> Tuple[float, bool]:
+    """The lower bound that admits FEWER values: the larger, exclusive on a tie."""
+    if current is None:
+        return candidate
+    if candidate[0] > current[0]:
+        return candidate
+    if candidate[0] == current[0] and candidate[1]:
+        return candidate
+    return current
+
+
+def _tighter_upper(
+    current: Optional[Tuple[float, bool]],
+    candidate: Tuple[float, bool],
+) -> Tuple[float, bool]:
+    """The upper bound that admits FEWER values: the smaller, exclusive on a tie."""
+    if current is None:
+        return candidate
+    if candidate[0] < current[0]:
+        return candidate
+    if candidate[0] == current[0] and candidate[1]:
+        return candidate
+    return current
+
+
+def _lower_covers(
+    outer: Optional[Tuple[float, bool]],
+    inner: Optional[Tuple[float, bool]],
+) -> bool:
+    """Whether ``outer``'s lower bound admits everything ``inner``'s does."""
+    if outer is None:
+        return True  # unbounded below admits everything
+    if inner is None:
+        return False  # inner admits arbitrarily small values, outer does not
+    if inner[0] != outer[0]:
+        return inner[0] > outer[0]
+    # Same value: outer must not be the stricter of the two.
+    return not (outer[1] and not inner[1])
+
+
+def _upper_covers(
+    outer: Optional[Tuple[float, bool]],
+    inner: Optional[Tuple[float, bool]],
+) -> bool:
+    """Whether ``outer``'s upper bound admits everything ``inner``'s does."""
+    if outer is None:
+        return True
+    if inner is None:
+        return False
+    if inner[0] != outer[0]:
+        return inner[0] < outer[0]
+    return not (outer[1] and not inner[1])
+
+
+def _include_set(condition: Dict[str, Any]) -> Optional[set]:
+    """The values an eq/in condition ADMITS, or None when undecidable.
+
+    Several include ops on one field are ANDed, so they intersect.
+    """
+    admitted: Optional[set] = None
+    for _op, raw in condition.items():
+        values = _hashable_set(raw)
+        if values is None:
+            return None
+        admitted = values if admitted is None else admitted & values
+    return admitted
+
+
+def _exclude_set(condition: Dict[str, Any]) -> Optional[set]:
+    """The values a ne/nin condition REJECTS, or None when undecidable."""
+    rejected: set = set()
+    for _op, raw in condition.items():
+        values = _hashable_set(raw)
+        if values is None:
+            return None
+        rejected |= values
+    return rejected
+
+
+def _hashable_set(raw: Any) -> Optional[set]:
+    """A set of the operand's values, or None when they cannot form one.
+
+    A bare (non-list) operand is one value: ``in``/``nin`` treat a scalar as an
+    equality test, and this mirrors that so lint reasons about what matching
+    actually does. Unhashable operands (a nested mapping or list) are undecidable
+    rather than an exception.
+    """
+    try:
+        return set(raw) if isinstance(raw, list) else {raw}
+    except TypeError:
+        return None

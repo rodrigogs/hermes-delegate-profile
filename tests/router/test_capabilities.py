@@ -829,6 +829,27 @@ def test_an_unusable_clock_is_treated_as_no_clock():
         assert price_multiplier("deepseek-v4-pro", junk) == 1.0, junk
 
 
+def test_no_clock_is_the_neutral_answer_for_every_registered_model():
+    """``when=None`` is time-agnostic ACROSS THE WHOLE REGISTRY, not per call.
+
+    Swept rather than sampled: a caller that never injects a clock must see the
+    base rate, no window and no scheduled change everywhere, which is what makes
+    "the clock is a parameter" true rather than aspirational.
+    """
+    for model, entry in MODEL_CAPABILITIES.items():
+        assert price_multiplier(model, None) == 1.0, model
+        assert in_expensive_window(model, None) is False, model
+        assert next_window_change(model, None) is None, model
+        base_in = entry.get("price_in")
+        base_out = entry.get("price_out")
+        if base_in is None or base_out is None:
+            assert effective_price(model, None) is None, model
+        else:
+            assert effective_price(model, None) == pytest.approx(
+                (base_in, base_out)
+            ), model
+
+
 def test_a_declared_window_overrides_the_registry():
     # An operator correcting a stale window in YAML, no code change.
     declared = {"price_windows": [{"hours_utc": [12, 13], "multiplier": 3.0}]}
@@ -946,29 +967,90 @@ def test_in_expensive_window_without_a_clock_is_false():
 # next_window_change
 # ---------------------------------------------------------------------------
 
+#: Weekday numbers for the reference week, matching ``datetime.weekday()``.
+MONDAY, WEDNESDAY, THURSDAY = 0, 2, 3
+
+
+def _change(hour: int, weekday: int, hours_ahead: int, multiplier: float) -> dict:
+    """The full shape :func:`next_window_change` returns — day included."""
+    return {
+        "hour": hour,
+        "weekday": weekday,
+        "hours_ahead": hours_ahead,
+        "multiplier": multiplier,
+    }
+
+
 def test_next_window_change_reports_the_end_of_a_peak():
-    assert next_window_change("deepseek-v4-pro", _at(WED, 3)) == 4
-    assert next_window_change("deepseek-v4-pro", _at(WED, 7)) == 10
+    assert next_window_change("deepseek-v4-pro", _at(WED, 3)) == _change(
+        4, WEDNESDAY, 1, 1.0
+    )
+    assert next_window_change("deepseek-v4-pro", _at(WED, 7)) == _change(
+        10, WEDNESDAY, 3, 1.0
+    )
 
 
 def test_next_window_change_reports_the_start_of_the_next_peak():
-    assert next_window_change("deepseek-v4-pro", _at(WED, 5)) == 6
+    assert next_window_change("deepseek-v4-pro", _at(WED, 5)) == _change(
+        6, WEDNESDAY, 1, 2.0
+    )
 
 
 def test_next_window_change_crosses_the_day_boundary():
-    # Off-peak from 10:00; the next change is 01:00 TOMORROW.
-    assert next_window_change("deepseek-v4-pro", _at(WED, 10)) == 1
-    assert next_window_change("deepseek-v4-pro", _at(WED, 23)) == 1
-    # Inside the 16:00-00:00 discount, the change is midnight.
-    assert next_window_change("mimo-v2.5", _at(WED, 20)) == 0
-    assert next_window_change("mimo-v2.5", _at(WED, 23, 59)) == 0
+    """The DAY is part of the answer: 01:00 tomorrow is not 01:00 today."""
+    # Off-peak from 10:00; the next change is 01:00 TOMORROW, 15 hours out.
+    assert next_window_change("deepseek-v4-pro", _at(WED, 10)) == _change(
+        1, THURSDAY, 15, 2.0
+    )
+    assert next_window_change("deepseek-v4-pro", _at(WED, 23)) == _change(
+        1, THURSDAY, 2, 2.0
+    )
+    # Inside the 16:00-00:00 discount, the change is midnight — Thursday's.
+    assert next_window_change("mimo-v2.5", _at(WED, 20)) == _change(
+        0, THURSDAY, 4, 1.0
+    )
+    # Windows begin on the hour, so minutes do not move the count.
+    assert next_window_change("mimo-v2.5", _at(WED, 23, 59)) == _change(
+        0, THURSDAY, 1, 1.0
+    )
 
 
 def test_next_window_change_crosses_the_weekend():
-    """Friday evening: the next change is MONDAY 06:00, three days out."""
-    assert next_window_change("glm-5.3", _at(FRI, 20)) == 6
-    assert next_window_change("glm-5.3", _at(SAT, 7)) == 6
-    assert next_window_change("glm-5.3", _at(SUN, 23)) == 6
+    """The weekday gate makes a bare hour ambiguous by up to two days.
+
+    zai's peak is Mon-Fri only, so from Friday evening the next change is MONDAY
+    06:00. Reported as the hour 6 alone that reads as "10 hours away"; the real
+    answer is 58, and ``hours_ahead`` is what a countdown must use.
+    """
+    assert next_window_change("glm-5.3", _at(FRI, 20)) == _change(
+        6, MONDAY, 58, 2.0
+    )
+    # The defect case: Saturday 07:00 is 47 hours from Monday 06:00, not 23.
+    assert next_window_change("glm-4.7", _at(SAT, 7)) == _change(
+        6, MONDAY, 47, 2.0
+    )
+    assert next_window_change("glm-5.3", _at(SAT, 7)) == _change(
+        6, MONDAY, 47, 2.0
+    )
+    assert next_window_change("glm-5.3", _at(SUN, 23)) == _change(
+        6, MONDAY, 7, 2.0
+    )
+
+
+def test_next_window_change_hours_ahead_lands_on_the_hour_it_names():
+    """hour/weekday and hours_ahead must describe the SAME instant."""
+    for model, when in (
+        ("glm-4.7", _at(SAT, 7)),
+        ("glm-5.3", _at(FRI, 20)),
+        ("deepseek-v4-pro", _at(WED, 10)),
+        ("mimo-v2.5", _at(WED, 20)),
+    ):
+        change = next_window_change(model, when)
+        landed = when + timedelta(hours=change["hours_ahead"])
+        assert (landed.hour, landed.weekday()) == (
+            change["hour"], change["weekday"]
+        ), model
+        assert price_multiplier(model, landed) == change["multiplier"], model
 
 
 def test_next_window_change_of_a_flat_model_is_none():
@@ -994,13 +1076,35 @@ def test_next_window_change_of_an_all_hours_window_is_none():
 
 def _priced_chain():
     return [
-        {"model": "kimi-k3", "provider": "moonshot"},          # out 15.00
-        {"model": "mimo-v2.5", "provider": "xiaomi"},          # out 0.28
-        {"model": "gpt-5.6-luna", "provider": "openai-codex"},  # out 1.20
+        {"model": "kimi-k3", "provider": "moonshot"},           # metered, 15.00
+        {"model": "mimo-v2.5", "provider": "xiaomi"},           # metered, 0.28
+        # SUBSCRIPTION, 1.20 — same dollar bucket as the two metered rails.
+        {"model": "gpt-5.6-luna", "provider": "openai-codex"},
     ]
 
 
-def test_cheapest_now_orders_by_effective_output_price():
+def test_cheapest_now_orders_by_effective_output_price_within_a_bucket():
+    chain = [
+        {"model": "kimi-k3", "provider": "moonshot"},     # metered, out 15.00
+        {"model": "mimo-v2.5", "provider": "xiaomi"},     # metered, out 0.28
+        {"model": "MiniMax-M3", "provider": "minimax"},   # metered, out 1.20
+    ]
+    ordered = order_chain(
+        chain, "cheapest_now", pin_primary=False, when=_at(WED, 12)
+    )
+    assert [hop["model"] for hop in ordered] == [
+        "mimo-v2.5", "MiniMax-M3", "kimi-k3",
+    ]
+
+
+def test_cheapest_now_compares_a_subscription_seat_in_dollars():
+    """A rail is bucketed on the UNIT its price is quoted in, not on the seat.
+
+    gpt-5.6-luna's 1.20 IS the per-token rate that openai-codex bills at, so it
+    stays commensurable with metered mimo-v2.5's 0.28 and loses the comparison.
+    Ranking a seat as already-paid instead is what freezes a chain's order at
+    every hour — see the flip test below.
+    """
     ordered = order_chain(
         _priced_chain(), "cheapest_now", pin_primary=False, when=_at(WED, 12)
     )
@@ -1009,40 +1113,247 @@ def test_cheapest_now_orders_by_effective_output_price():
     ]
 
 
+def test_cheapest_now_subscription_versus_metered_flips_with_the_hour():
+    """The shipped T2 tail — and why a seat is NOT bucketed as already-paid.
+
+    gpt-5.6-luna is a flat 1.20 subscription seat; deepseek-v4-flash is metered
+    0.66 and doubles to 1.32 inside its peak. Off-peak the metered rail is the
+    cheaper token, inside the peak the seat is: one order per side of the window.
+    Put the seat in a bucket ahead of metered and the two elos whose prices move
+    against each other can never be compared at all — the order comes back
+    identical at all 24 hours and the injected clock is decoration.
+    """
+    # Declared exactly as router.yaml declares them, so the override path is
+    # covered too: a declared billing_mode must land in the same bucket.
+    chain = [
+        {"model": "gpt-5.6-luna", "provider": "openai-codex",
+         "billing_mode": "subscription"},
+        {"model": "deepseek-v4-flash", "provider": "deepseek",
+         "billing_mode": "metered"},
+    ]
+    assert effective_price("gpt-5.6-luna", _at(WED, 7))[1] == 1.20
+    assert effective_price("deepseek-v4-flash", _at(WED, 12))[1] == 0.66
+    assert effective_price("deepseek-v4-flash", _at(WED, 7))[1] == 1.32
+
+    assert [hop["model"] for hop in order_chain(
+        chain, "cheapest_now", pin_primary=False, when=_at(WED, 12))] == [
+        "deepseek-v4-flash", "gpt-5.6-luna"]
+    assert [hop["model"] for hop in order_chain(
+        chain, "cheapest_now", pin_primary=False, when=_at(WED, 7))] == [
+        "gpt-5.6-luna", "deepseek-v4-flash"]
+
+
+def test_cheapest_now_ranks_a_plan_elo_ahead_of_a_subscription_seat():
+    """Only the plan rail is spent in credits, so only it leads on billing mode.
+
+    glm-4.7 carries a 2.20 list price and is inside its 2.0x weekday peak here —
+    4.40 against the seat's flat 1.20 — and still leads, because those plan
+    dollars are a metered SKU the operator is not on.
+    """
+    chain = [
+        {"model": "gpt-5.6-luna", "provider": "openai-codex"},  # sub, 1.20
+        {"model": "glm-4.7", "provider": "zai"},                # plan, 4.40 now
+    ]
+    assert effective_price("glm-4.7", _at(MON, 7))[1] == 4.4
+    assert [hop["model"] for hop in order_chain(
+        chain, "cheapest_now", pin_primary=False, when=_at(MON, 7))] == [
+        "glm-4.7", "gpt-5.6-luna"]
+
+
+def test_every_billing_mode_has_an_explicit_cheapest_now_rank():
+    """A mode with no rank would fall into the unknown bucket and sort LAST.
+
+    That is a silent routing change, not a diagnostic, so the map must stay
+    exhaustive over the closed set as new modes are added.
+    """
+    rank = caps_module._BILLING_RANK
+    assert set(rank) == set(BILLING_MODES)
+    assert rank["plan"] < rank["free"] < rank["metered"]
+    assert max(rank.values()) < caps_module._BILLING_RANK_UNKNOWN
+    # subscription and metered share a bucket: both are quoted in dollars, so the
+    # price is the only thing left to separate them.
+    assert rank["subscription"] == rank["metered"]
+
+
 def test_cheapest_now_reorders_when_a_peak_moves_a_price():
     chain = [
         {"model": "deepseek-v4-flash", "provider": "deepseek"},  # 0.66 -> 1.32
-        {"model": "gpt-5.6-luna", "provider": "openai-codex"},   # 1.20 flat
+        {"model": "MiniMax-M3", "provider": "minimax"},          # 1.20 flat
     ]
     off_peak = order_chain(chain, "cheapest_now", pin_primary=False,
                            when=_at(WED, 12))
     assert [hop["model"] for hop in off_peak] == [
-        "deepseek-v4-flash", "gpt-5.6-luna",
+        "deepseek-v4-flash", "MiniMax-M3",
     ]
     peak = order_chain(chain, "cheapest_now", pin_primary=False,
                        when=_at(WED, 7))
     assert [hop["model"] for hop in peak] == [
-        "gpt-5.6-luna", "deepseek-v4-flash",
+        "MiniMax-M3", "deepseek-v4-flash",
     ]
 
 
 def test_cheapest_now_ties_keep_declared_order():
-    # glm-4.7 and glm-4.6 both bill 2.20 out, and neither is in a peak on a
-    # Saturday — so the operator's declared order is what survives.
+    # glm-5.2 and glm-5.1 are both metered at 4.40 out with no windows at all,
+    # so the operator's declared order is the only thing left to sort on.
     when = _at(SAT, 7)
-    first = [{"model": "glm-4.7", "provider": "zai"},
-             {"model": "glm-4.6", "provider": "zai"}]
-    second = [{"model": "glm-4.6", "provider": "zai"},
-              {"model": "glm-4.7", "provider": "zai"}]
-    assert effective_price("glm-4.7", when)[1] == effective_price(
-        "glm-4.6", when
+    first = [{"model": "glm-5.2", "provider": "zai"},
+             {"model": "glm-5.1", "provider": "zai"}]
+    second = [{"model": "glm-5.1", "provider": "zai"},
+              {"model": "glm-5.2", "provider": "zai"}]
+    assert effective_price("glm-5.2", when)[1] == effective_price(
+        "glm-5.1", when
     )[1]
     assert [hop["model"] for hop in order_chain(
         first, "cheapest_now", pin_primary=False, when=when)] == [
-        "glm-4.7", "glm-4.6"]
+        "glm-5.2", "glm-5.1"]
     assert [hop["model"] for hop in order_chain(
         second, "cheapest_now", pin_primary=False, when=when)] == [
-        "glm-4.6", "glm-4.7"]
+        "glm-5.1", "glm-5.2"]
+
+
+def test_cheapest_now_ties_keep_declared_order_inside_the_plan_bucket():
+    """Two plan elos at one price still fall back to the declared order."""
+    when = _at(SAT, 7)
+    declared = {"billing_mode": "plan", "context_window": 200_000,
+                "price_in": 0.60, "price_out": 2.20}
+    first = [dict(declared, model="plan-a", provider="house"),
+             dict(declared, model="plan-b", provider="house")]
+    second = [dict(declared, model="plan-b", provider="house"),
+              dict(declared, model="plan-a", provider="house")]
+    assert [hop["model"] for hop in order_chain(
+        first, "cheapest_now", pin_primary=False, when=when)] == [
+        "plan-a", "plan-b"]
+    assert [hop["model"] for hop in order_chain(
+        second, "cheapest_now", pin_primary=False, when=when)] == [
+        "plan-b", "plan-a"]
+
+
+def test_cheapest_now_prefers_a_plan_rail_over_a_cheaper_metered_one():
+    """The bucket is decided by billing_mode, NOT by the absence of a price.
+
+    glm-4.7 is covered by the z.ai Coding Plan and ALSO carries a 2.20 list
+    price. Compared in dollars it loses to metered mimo-v2.5 at every hour —
+    4.40 against 0.28 inside zai's weekday peak, 2.20 against 0.224 inside
+    xiaomi's night discount — and every one of those dollars is already sunk. An
+    hour already bought is the cheapest marginal token there is.
+    """
+    chain = [
+        {"model": "glm-4.7", "provider": "zai"},       # plan, list 2.20 out
+        {"model": "mimo-v2.5", "provider": "xiaomi"},  # metered, 0.28 out
+    ]
+    # Monday 07:00 UTC: glm-4.7 at 2.0x plan credits, mimo at its base rate.
+    peak = _at(MON, 7)
+    assert price_multiplier("glm-4.7", peak) == 2.0
+    assert effective_price("glm-4.7", peak)[1] == 4.4
+    assert effective_price("mimo-v2.5", peak)[1] == 0.28
+    assert [hop["model"] for hop in order_chain(
+        chain, "cheapest_now", pin_primary=False, when=peak)] == [
+        "glm-4.7", "mimo-v2.5"]
+
+    # Monday 20:00 UTC: glm-4.7 off its peak, mimo inside its 0.8x discount —
+    # the widest the dollar gap ever gets, and still not a reason to move.
+    off_peak = _at(MON, 20)
+    assert price_multiplier("glm-4.7", off_peak) == 1.0
+    assert effective_price("glm-4.7", off_peak)[1] == 2.2
+    assert effective_price("mimo-v2.5", off_peak)[1] == pytest.approx(0.224)
+    assert [hop["model"] for hop in order_chain(
+        chain, "cheapest_now", pin_primary=False, when=off_peak)] == [
+        "glm-4.7", "mimo-v2.5"]
+
+
+def test_cheapest_now_prefers_a_plan_rail_declared_second():
+    """Not an artefact of declared order: the metered rail leads the chain."""
+    chain = [
+        {"model": "mimo-v2.5", "provider": "xiaomi"},
+        {"model": "glm-4.6v", "provider": "zai"},      # plan, list 0.90 out
+        {"model": "glm-5-turbo", "provider": "zai"},   # plan, list 4.00 out
+    ]
+    ordered = order_chain(chain, "cheapest_now", pin_primary=False,
+                          when=_at(MON, 7))
+    # Both plan rails first — cheaper LIST price ordering them inside the
+    # bucket, which is also their plan-credit ordering (2.7 before 21).
+    assert [hop["model"] for hop in ordered] == [
+        "glm-4.6v", "glm-5-turbo", "mimo-v2.5",
+    ]
+
+
+def test_cheapest_now_ranks_free_ahead_of_metered():
+    """A free rail spends nothing; the cheapest metered rail still spends."""
+    chain = [
+        {"model": "inclusionai/ling-3.0-flash", "provider": "nous"},  # 0.0504
+        {"model": "tencent/hy3:free", "provider": "nous"},            # free
+    ]
+    assert effective_price("inclusionai/ling-3.0-flash", _at(WED, 12))[1] > 0
+    assert effective_price("tencent/hy3:free", _at(WED, 12))[1] == 0.0
+    assert [hop["model"] for hop in order_chain(
+        chain, "cheapest_now", pin_primary=False, when=_at(WED, 12))] == [
+        "tencent/hy3:free", "inclusionai/ling-3.0-flash"]
+
+
+def test_cheapest_now_ranks_every_bucket_in_marginal_cost_order():
+    """plan credits, then free, then the dollar rails, then undescribable.
+
+    ``subscription`` and ``metered`` share the dollar bucket, so mimo-v2.5's 0.28
+    leads the seat's 1.20 there; an unpriced dollar rail sorts behind both of them
+    and an elo with no billing mode at all sorts behind everything.
+    """
+    chain = [
+        {"model": "mimo-v2.5", "provider": "xiaomi"},            # metered, 0.28
+        {"model": "glm-4.7-flash", "provider": "zai"},           # free
+        {"model": "glm-4.7", "provider": "zai"},                 # plan, priced
+        {"model": "glm-4.5-flash", "provider": "zai"},           # metered, no price
+        {"model": "gpt-5.6-luna", "provider": "openai-codex"},   # sub, 1.20
+        # Known by capability assertion, but nothing describes how it is billed.
+        {"model": "house-local-7b", "provider": "house",
+         "context_window": 32_768},
+    ]
+    ordered = order_chain(chain, "cheapest_now", pin_primary=False,
+                          when=_at(MON, 7))
+    assert [hop["model"] for hop in ordered] == [
+        "glm-4.7", "glm-4.7-flash", "mimo-v2.5", "gpt-5.6-luna",
+        "glm-4.5-flash", "house-local-7b",
+    ]
+
+
+def test_cheapest_now_never_compares_an_absent_price_numerically():
+    """An unpriced elo is ordered by bucket and declared index, never as 0.0.
+
+    Includes a HALF-priced declaration, which :func:`effective_price` reports as
+    None rather than inventing the missing side — the shape that would raise if a
+    None ever reached the float comparison.
+    """
+    half_priced = {"model": "half-priced", "provider": "house",
+                   "context_window": 200_000, "billing_mode": "metered",
+                   "price_in": 0.10}
+    chain = [
+        dict(half_priced),
+        {"model": "glm-4.5-flash", "provider": "zai"},   # metered, no price
+        {"model": "mimo-v2.5", "provider": "xiaomi"},    # metered, 0.28
+        {"model": "glm-5.3", "provider": "zai"},         # plan, no price
+    ]
+    when = _at(WED, 12)
+    assert effective_price("half-priced", when, half_priced) is None
+    assert effective_price("glm-4.5-flash", when) is None
+    assert effective_price("glm-5.3", when) is None
+    # Priced dollar rail first, then the two unpriced ones in DECLARED order.
+    assert [hop["model"] for hop in order_chain(
+        chain, "cheapest_now", pin_primary=False, when=when)] == [
+        "glm-5.3", "mimo-v2.5", "half-priced", "glm-4.5-flash"]
+
+
+def test_inside_the_plan_bucket_a_priced_elo_leads_an_unpriced_one():
+    """No price is not a cheaper price: it is no information, so it sorts last.
+
+    Within zai's plan bucket that also matches the credit ordering — glm-4.7
+    spends 16 output credits, unpriced glm-5.3 spends 24.
+    """
+    chain = [
+        {"model": "glm-5.3", "provider": "zai"},   # plan, price None
+        {"model": "glm-4.7", "provider": "zai"},   # plan, list 2.20 out
+    ]
+    ordered = order_chain(chain, "cheapest_now", pin_primary=False,
+                          when=_at(MON, 7))
+    assert [hop["model"] for hop in ordered] == ["glm-4.7", "glm-5.3"]
 
 
 def test_cheapest_now_places_an_unpriced_plan_model_by_billing_rank():
@@ -1086,9 +1397,18 @@ def test_cheapest_now_ranks_plan_ahead_of_priced_ahead_of_unpriced_metered():
 
 
 def test_cheapest_now_with_no_clock_degrades_to_sequential():
+    """No clock means the DECLARED order, never a guess at the hour.
+
+    Asserted against the clocked answer as well, so this stays a real degradation
+    rather than a chain that happens to be in price order already.
+    """
     chain = _priced_chain()
     assert order_chain(chain, "cheapest_now", pin_primary=False) == chain
     assert order_chain(chain, "cheapest_now", pin_primary=False, when=None) == chain
+    assert order_chain(chain, "cheapest_now", pin_primary=True, when=None) == chain
+    assert order_chain(
+        chain, "cheapest_now", pin_primary=False, when=_at(WED, 12)
+    ) != chain
 
 
 def test_cheapest_now_with_pin_primary_reorders_the_tail_only():
@@ -1097,6 +1417,9 @@ def test_cheapest_now_with_pin_primary_reorders_the_tail_only():
         chain, "cheapest_now", pin_primary=True, when=_at(WED, 12)
     )
     assert ordered[0] is chain[0]
+    # The pinned primary keeps its slot even though it is the priciest hop, and
+    # the tail behind it is ordered in dollars: mimo-v2.5 0.28 before the
+    # subscription seat's 1.20.
     assert [hop["model"] for hop in ordered] == [
         "kimi-k3", "mimo-v2.5", "gpt-5.6-luna",
     ]

@@ -1,5 +1,14 @@
 .hermes-one-capability-router-nav{color:var(--muted)}
 .hermes-one-capability-router-nav:hover{color:var(--text);background:rgba(255,255,255,.06)}
+/* The hover wash is mixed toward the host's own TEXT colour rather than being a
+   fixed white: white at 6% is invisible on a light skin and reads as a smudge on
+   a parchment one, and the host ships 21 skins x both polarities. Mixing toward
+   --text darkens on parchment and lightens on navy automatically. The flat rgba
+   above stays as the fallback for an engine without color-mix, where a faint
+   white wash is at least the behaviour that shipped before. */
+@supports (color: color-mix(in srgb, red 50%, blue)){
+.hermes-one-capability-router-nav:hover{background:color-mix(in srgb, var(--text) 8%, transparent)}
+}
 .hermes-one-capability-router-nav-label{display:none}
 .sidebar-nav .hermes-one-capability-router-nav-label{display:inline}
 @media(max-width:900px){.sidebar-nav .hermes-one-capability-router-nav-label{display:none}}

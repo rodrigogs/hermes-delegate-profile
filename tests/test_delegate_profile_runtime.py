@@ -660,6 +660,249 @@ def test_route_task_persists_trace_and_survives_durable_log_failure(monkeypatch,
     assert result2 is None or result2.get("profile") == "coder"
 
 
+# ---------------------------------------------------------------------------
+# The executor must attempt the router's PLANNED chain
+# ---------------------------------------------------------------------------
+#
+# The declared order is what the executor used to rebuild, which left the
+# capability filter and `fallback_strategy` with no effect on real traffic: a
+# vision turn was sent to a tier primary that cannot see images while the
+# console showed the filtered chain. These tests pin the plan as the authority.
+
+_BLIND_PRIMARY = {"model": "glm-5.3", "provider": "zai"}
+_DECLARED_FALLBACK = [
+    {"model": "gpt-5.6-luna", "provider": "openai-codex"},
+    {"model": "deepseek-v4-flash", "provider": "deepseek"},
+]
+
+
+def _spawn_recorder(monkeypatch):
+    """Capture every spawned argv, returning the list."""
+    cmds: list = []
+
+    def spawn(cmd, _env):
+        cmds.append(list(cmd))
+        return FakeProcess()
+
+    monkeypatch.setattr(_dp, "_spawn", spawn)
+    return cmds
+
+
+def _models_attempted(cmds):
+    return [cmd[cmd.index("-m") + 1] for cmd in cmds if "-m" in cmd]
+
+
+def _providers_attempted(cmds):
+    return [cmd[cmd.index("--provider") + 1] for cmd in cmds if "--provider" in cmd]
+
+
+def test_executor_attempts_the_planned_chain_not_the_declared_order(monkeypatch):
+    """The plan drops the blind primary; production must not attempt it at all."""
+    handler, _pool = _cross_handler(monkeypatch, ("exited", 0, "done", ""))
+    cmds = _spawn_recorder(monkeypatch)
+    monkeypatch.setattr(_dp, "_route_task", lambda *_args: {
+        "profile": "child", **_BLIND_PRIMARY,
+        "fallback": list(_DECLARED_FALLBACK),
+        "chain": [{"model": "gpt-5.6-luna", "provider": "openai-codex"}],
+    })
+
+    result = json.loads(handler({"goal": "look at this screenshot"}))
+
+    assert result["success"] is True
+    assert result["model"] == "gpt-5.6-luna"
+    assert _models_attempted(cmds) == ["gpt-5.6-luna"]
+    assert _providers_attempted(cmds) == ["openai-codex"]
+
+
+def test_executor_fails_over_along_the_planned_order(monkeypatch):
+    """A retryable failure walks the PLAN's order, not the declared one."""
+    handler, _pool = _cross_handler(monkeypatch)
+    cmds = _spawn_recorder(monkeypatch)
+    outcomes = iter([("exited", -9, "", "boom"), ("exited", 0, "done", "")])
+    monkeypatch.setattr(_dp, "_run_watched",
+                        lambda *_args: next(outcomes, ("exited", 0, "done", "")))
+    monkeypatch.setattr(_dp, "_route_task", lambda *_args: {
+        "profile": "child", **_BLIND_PRIMARY,
+        "fallback": list(_DECLARED_FALLBACK),
+        # A shuffled plan: neither hop is the declared primary, and the order is
+        # the reverse of the declared tail.
+        "chain": [{"model": "deepseek-v4-flash", "provider": "deepseek"},
+                  {"model": "gpt-5.6-luna", "provider": "openai-codex"}],
+    })
+
+    result = json.loads(handler({"goal": "task"}))
+
+    assert result["success"] is True
+    assert _models_attempted(cmds) == ["deepseek-v4-flash", "gpt-5.6-luna"]
+    assert [a["model"] for a in result["attempts"]] == ["deepseek-v4-flash",
+                                                       "gpt-5.6-luna"]
+
+
+def test_executor_uses_the_declared_order_when_there_is_no_plan(monkeypatch):
+    """Back-compat: a decision without a chain still fails over as it always did."""
+    handler, _pool = _cross_handler(monkeypatch)
+    cmds = _spawn_recorder(monkeypatch)
+    outcomes = iter([("exited", -9, "", "boom"), ("exited", 0, "done", "")])
+    monkeypatch.setattr(_dp, "_run_watched",
+                        lambda *_args: next(outcomes, ("exited", 0, "done", "")))
+    monkeypatch.setattr(_dp, "_route_task", lambda *_args: {
+        "profile": "child", **_BLIND_PRIMARY, "fallback": list(_DECLARED_FALLBACK),
+    })
+
+    result = json.loads(handler({"goal": "task"}))
+
+    assert result["success"] is True
+    assert _models_attempted(cmds) == ["glm-5.3", "gpt-5.6-luna"]
+
+
+def test_an_explicitly_requested_model_stays_the_first_attempt(monkeypatch):
+    """An explicit model overrides the routing decision; the plan is its tail."""
+    handler, _pool = _cross_handler(monkeypatch)
+    cmds = _spawn_recorder(monkeypatch)
+    outcomes = iter([("exited", -9, "", "boom"), ("exited", 0, "done", "")])
+    monkeypatch.setattr(_dp, "_run_watched",
+                        lambda *_args: next(outcomes, ("exited", 0, "done", "")))
+    monkeypatch.setattr(_dp, "_route_task", lambda *_args: {
+        "profile": "child", **_BLIND_PRIMARY,
+        "chain": [{"model": "gpt-5.6-luna", "provider": "openai-codex"}],
+    })
+
+    result = json.loads(handler({"goal": "task", "model": "operator-choice"}))
+
+    assert result["success"] is True
+    assert _models_attempted(cmds) == ["operator-choice", "gpt-5.6-luna"]
+
+
+def test_a_target_is_never_attempted_twice(monkeypatch):
+    """A repeat target is a wasted subprocess and a second breaker strike."""
+    handler, _pool = _cross_handler(monkeypatch)
+    cmds = _spawn_recorder(monkeypatch)
+    # Retryable on purpose: without the dedupe the loop WOULD try again.
+    monkeypatch.setattr(_dp, "_run_watched", lambda *_args: ("exited", -9, "", "boom"))
+    monkeypatch.setattr(_dp, "_route_task", lambda *_args: {
+        "profile": "child", "model": "gpt-5.6-luna", "provider": "openai-codex",
+        "chain": [{"model": "gpt-5.6-luna", "provider": "openai-codex"},
+                  {"model": "gpt-5.6-luna", "provider": "openai-codex"}],
+    })
+
+    json.loads(handler({"goal": "task", "model": "gpt-5.6-luna"}))
+
+    assert _models_attempted(cmds) == ["gpt-5.6-luna"]
+
+
+# ---------------------------------------------------------------------------
+# The router sizes the turn from the prompt the child actually receives
+# ---------------------------------------------------------------------------
+
+def test_router_is_given_the_composed_prompt_not_the_goal_alone(monkeypatch):
+    """est_input_tokens has to see the context; the child is sent context+goal."""
+    seen: list = []
+    handler, _pool = _cross_handler(monkeypatch, ("exited", 0, "done", ""))
+    cmds = _spawn_recorder(monkeypatch)
+    monkeypatch.setattr(
+        _dp, "_route_task",
+        lambda *args: seen.append(args) or {"profile": "child"},
+    )
+
+    handler({"goal": "fix the failing test", "context": "log line\n" * 2000})
+
+    assert seen[0][0] == "fix the failing test", "the goal stays the goal"
+    assert seen[0][3] == _dp._compose_prompt("fix the failing test",
+                                             ("log line\n" * 2000).strip())
+    # The routed text is byte-identical to the prompt the child was handed.
+    assert seen[0][3] == cmds[0][cmds[0].index("-q") + 1]
+
+
+def test_a_big_context_reaches_the_context_rule_end_to_end(monkeypatch, tmp_path):
+    """The F6 defect, at the level it was reported: a trivial goal plus a huge
+    context routed as if it were six tokens."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(_dp, "_load_router_config", lambda: {
+        "enabled": True,
+        "fail_safe": {"profile": "child", "model": "small-rail", "provider": "cheap"},
+        "rules": [{"id": "huge-context-read",
+                   "when": {"est_input_tokens": {"gt": 20000}},
+                   "then": {"profile": "child", "model": "T3"}}],
+        "default": {"action": "classify"},
+        "tiers": {"T1": {"model": "tiny", "provider": "cheap"},
+                  "T2": {"model": "small", "provider": "cheap"},
+                  "T3": {"model": "gpt-5.6-terra", "provider": "openai-codex"},
+                  "T4": {"model": "gpt-5.5", "provider": "openai-codex"}},
+    })
+    handler, _pool = _cross_handler(monkeypatch, ("exited", 0, "done", ""))
+    cmds = _spawn_recorder(monkeypatch)
+
+    handler({"goal": "fix the failing test",
+             "context": "WARN retry scheduled for the nightly job\n" * 2000})
+    assert _models_attempted(cmds) == ["gpt-5.6-terra"]
+
+    # Same goal, no context: nothing in Table 1 matches and it falls to
+    # fail_safe — which is exactly what the big-context turn used to do.
+    cmds.clear()
+    handler({"goal": "fix the failing test"})
+    assert _models_attempted(cmds) == ["small-rail"]
+
+
+def test_the_live_hook_persists_the_chain_plan_for_replay(monkeypatch, tmp_path):
+    """routes.jsonl is the console replay panel's only data source.
+
+    Before this, every live entry omitted chain_plan, so the panel showed its
+    empty default forever and no operator could see what the filter dropped.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(_dp, "_load_router_config", lambda: {
+        "enabled": True,
+        "default": {"action": "classify"},
+        "rules": [{"id": "vision-required", "when": {"needs_vision": {"eq": True}},
+                   "then": {"profile": "coder", "model": "T2"}}],
+        "tiers": {
+            "T1": {"model": "glm-4.7", "provider": "zai"},
+            "T2": {"model": "glm-5.3", "provider": "zai",
+                   "fallback": [{"model": "gpt-5.6-luna", "provider": "openai-codex"},
+                                {"model": "deepseek-v4-flash", "provider": "deepseek"}]},
+            "T3": {"model": "gpt-5.6-terra", "provider": "openai-codex"},
+            "T4": {"model": "gpt-5.5", "provider": "openai-codex"},
+        },
+    })
+
+    routed = _dp._route_task("look at this screenshot of the ui", "", None)
+    assert _dp._routed_targets(routed) == [("gpt-5.6-luna", "openai-codex")]
+
+    import router.durable_decision_log as ddl
+    entry = json.loads(
+        [l for l in ddl.routes_path().read_text(encoding="utf-8").splitlines() if l.strip()][-1]
+    )
+    plan = entry["chain_plan"]
+    assert [hop["model"] for hop in plan["chain"]] == ["gpt-5.6-luna"]
+    assert {hop["reject_reason"] for hop in plan["rejected"]} == {"no_vision"}
+    assert isinstance(entry["steps"][1]["in"]["seed"], int), \
+        "the ordering seed must be replayable from the persisted trace"
+
+
+def test_compose_prompt_is_the_single_definition_of_the_child_prompt():
+    """Two copies of this composition is how the context signal went blind."""
+    assert _dp._compose_prompt("goal", "ctx") == "Context: ctx\n\nTask: goal"
+    assert _dp._compose_prompt("goal", "") == "goal"
+
+
+def test_routed_targets_degrades_and_dedupes():
+    """The executor's target derivation, on the shapes it really receives."""
+    planned = {"model": "declared", "provider": "a",
+               "fallback": [{"model": "hop", "provider": "b"}],
+               "chain": [{"model": "planned", "provider": "c"}]}
+    assert _dp._routed_targets(planned) == [("planned", "c")]
+    assert _dp._routed_targets({"model": "declared", "provider": "a",
+                                "fallback": [{"model": "hop", "provider": "b"}]}) == [
+        ("declared", "a"), ("hop", "b")]
+    assert _dp._routed_targets({"profile": "child"}) == []
+    assert _dp._routed_targets({"model": "m", "chain": "not-a-list"}) == [("m", "")]
+    assert _dp._routed_targets({"model": "m", "chain": [{"provider": "no-model"}]}) == [
+        ("m", "")]
+    assert _dp._routed_targets("not a mapping") == []
+    assert _dp._dedupe_targets([("a", "x"), ("a", "x"), ("b", "y")]) == [
+        ("a", "x"), ("b", "y")]
+
+
 def test_record_breaker_outcome_dispatches_success_and_failure(monkeypatch):
     calls = []
 

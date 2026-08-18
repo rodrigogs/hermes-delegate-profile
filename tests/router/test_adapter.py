@@ -1,13 +1,25 @@
 """Unit tests for route adapter (router/adapter.py)."""
 
 import copy
+import random
+from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
+import yaml
 
+from router import adapter
+from router import capabilities as caps
+from router import rules as rules_mod
+from router import signals
 from router.adapter import route
 from router.blocklist import Blocklist
 from router.cache import Cache, SessionPin
 from router.decision_log import DecisionLog
+
+# A clock inside no declared price window (Monday 12:00 UTC), so a test that is
+# not ABOUT time never depends on which window the wall clock happens to be in.
+FIXED_CLOCK = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
 
 
 ROUTER_CONFIG = {
@@ -559,3 +571,552 @@ def test_cache_resolve_output_provider_without_model_uses_setdefault():
         cache=cch,
     )
     assert out.get("provider") is not None
+
+
+# ---------------------------------------------------------------------------
+# The planned chain — production must attempt what the plan says
+# ---------------------------------------------------------------------------
+#
+# ROUTER_CONFIG above names models the capability registry has never heard of,
+# which the filter deliberately passes through (fail OPEN on ignorance). The
+# tests below therefore need their own table of REAL registry ids, or there is
+# nothing for the filter to filter.
+
+VISION_TASK = "look at this screenshot and fix the ui code"
+
+CAPABILITY_CONFIG = {
+    "enabled": True,
+    "classifier": {"model": "glm-4.7", "provider": "zai"},
+    "fail_safe": {"profile": "coder", "model": "gpt-5.6-luna",
+                  "provider": "openai-codex"},
+    "blocklist": {"manual_ban": [], "fallback_chain": [],
+                  "auto_breaker": {"enabled": False}},
+    "rules": [
+        {"id": "vision-required", "when": {"needs_vision": {"eq": True}},
+         "then": {"profile": "coder", "model": "T2"}},
+        {"id": "huge-context-read", "when": {"est_input_tokens": {"gt": 20000}},
+         "then": {"profile": "coder", "model": "T3"}},
+        {"id": "trivial-mechanical-edit",
+         "when": {"verb_class": {"eq": "trivial"}, "has_code": {"eq": True}},
+         "then": {"profile": "coder", "model": "T1"}},
+    ],
+    "default": {"action": "classify"},
+    "tiers": {
+        # T1 keeps sequential order so a ratchet test can tell T1's policy from
+        # T4's by looking at the resulting order alone.
+        "T1": {
+            "model": "glm-4.7", "provider": "zai", "billing_mode": "plan",
+            "fallback": [{"model": "gpt-5.6-luna", "provider": "openai-codex",
+                          "billing_mode": "subscription"}],
+            "fallback_strategy": "sequential",
+        },
+        # T2: the shipped shape — a plan-covered primary that cannot see images,
+        # behind it one elo that can and one that cannot.
+        "T2": {
+            "model": "glm-5.3", "provider": "zai", "billing_mode": "plan",
+            "fallback": [
+                {"model": "gpt-5.6-luna", "provider": "openai-codex",
+                 "billing_mode": "subscription"},
+                {"model": "deepseek-v4-flash", "provider": "deepseek",
+                 "billing_mode": "metered"},
+            ],
+            "fallback_strategy": "sequential",
+        },
+        "T3": {
+            "model": "gpt-5.6-terra", "provider": "openai-codex",
+            "billing_mode": "subscription",
+            "fallback": [{"model": "deepseek-v4-pro", "provider": "deepseek",
+                          "billing_mode": "metered"}],
+            "fallback_strategy": "sequential",
+            "requirements": {"min_context": 200000},
+        },
+        # T4 is the only tier that shuffles, and it shuffles the primary too.
+        "T4": {
+            "model": "gpt-5.5", "provider": "openai-codex",
+            "billing_mode": "subscription",
+            "fallback": [
+                {"model": "mimo-v2.5", "provider": "xiaomi",
+                 "billing_mode": "metered"},
+                {"model": "gpt-5.6-luna", "provider": "openai-codex",
+                 "billing_mode": "subscription"},
+            ],
+            "fallback_strategy": "random",
+            "pin_primary": False,
+        },
+    },
+}
+
+T4_ELOS = {"gpt-5.5", "mimo-v2.5", "gpt-5.6-luna"}
+
+
+def _hops(chain):
+    """(model, provider) of each hop — the only part the executor consumes."""
+    return [(hop.get("model"), hop.get("provider")) for hop in chain or []]
+
+
+def _targets(result):
+    """The attempt order the delegate_profile executor derives from a result.
+
+    Mirrors ``_routed_targets`` in the plugin: the plan when it is attached,
+    the declared primary + fallbacks when it is not.
+    """
+    if result.get("chain"):
+        return _hops(result["chain"])
+    declared = []
+    if result.get("model"):
+        declared.append((result["model"], result.get("provider")))
+    declared.extend(
+        (hop.get("model"), hop.get("provider"))
+        for hop in result.get("fallback") or []
+    )
+    return declared
+
+
+class TestPlannedChain:
+    """route() must return the PLANNED chain, not the declared one."""
+
+    def test_vision_task_drops_the_elos_that_cannot_see(self):
+        """The whole point of the capability filter, on the production path."""
+        dlog = DecisionLog()
+        result = route(VISION_TASK, CAPABILITY_CONFIG, decision_log=dlog,
+                       now=FIXED_CLOCK)
+
+        # The tier decision is unchanged — a rule still only picks a TIER.
+        assert result["model"] == "glm-5.3"
+        # ...but what production attempts excludes both blind elos.
+        assert _targets(result) == [("gpt-5.6-luna", "openai-codex")]
+        assert not any(
+            caps.MODEL_CAPABILITIES.get(model, {}).get("vision") is False
+            for model, _provider in _targets(result)
+        )
+
+        plan = dlog.tail(1)[0]["chain_plan"]
+        assert [hop["model"] for hop in plan["chain"]] == ["gpt-5.6-luna"]
+        assert {(hop["model"], hop["reject_reason"]) for hop in plan["rejected"]} == {
+            ("glm-5.3", "no_vision"), ("deepseek-v4-flash", "no_vision"),
+        }
+        assert plan["bypassed"] is False
+
+    def test_production_chain_matches_explain_for_the_same_task(self):
+        """The console/CLI preview and live routing must not disagree.
+
+        They diverged for the entire capability feature: explain() planned the
+        chain while route() returned the declared order, so the panel showed a
+        filtered chain production never used.
+        """
+        dlog = DecisionLog()
+        result = route(VISION_TASK, CAPABILITY_CONFIG, decision_log=dlog,
+                       rng=random.Random(7), now=FIXED_CLOCK)
+
+        features = signals.extract(VISION_TASK)
+        features.update({"utc_hour": FIXED_CLOCK.hour,
+                         "utc_weekday": FIXED_CLOCK.weekday()})
+        explained = rules_mod.explain(
+            VISION_TASK, features, False, CAPABILITY_CONFIG["rules"],
+            CAPABILITY_CONFIG["default"], CAPABILITY_CONFIG["tiers"],
+            random.Random(7),
+        )
+
+        assert _targets(result) == _hops(explained["chain_plan"]["chain"])
+        assert _hops(dlog.tail(1)[0]["chain_plan"]["chain"]) == _targets(result)
+
+    def test_the_shipped_policy_never_attempts_a_blind_elo_for_a_vision_turn(self):
+        """The claim router.yaml makes about itself, checked against the file.
+
+        Written as a property rather than a literal chain so an operator editing
+        the tier table cannot make it vacuous.
+        """
+        policy = yaml.safe_load(
+            (Path(__file__).resolve().parents[2] / "router.yaml").read_text(encoding="utf-8")
+        )
+        dlog = DecisionLog()
+        result = route(VISION_TASK, policy, decision_log=dlog, now=FIXED_CLOCK)
+
+        plan = dlog.tail(1)[0]["chain_plan"]
+        assert plan["bypassed"] is False, "some shipped elo must be able to see"
+        blind = [
+            model for model, _provider in _targets(result)
+            if caps.MODEL_CAPABILITIES.get(model, {}).get("vision") is False
+        ]
+        assert blind == [], f"a vision turn would be sent to {blind}"
+
+    def test_chain_is_omitted_when_the_plan_is_the_declared_order(self):
+        """Absent chain == "declared order stands", and it really is identical.
+
+        The suppression keeps every historical consumer of this dict byte-exact;
+        the executor's two branches must therefore agree on the targets.
+        """
+        dlog = DecisionLog()
+        result = route("Rename a symbol in this code", CAPABILITY_CONFIG,
+                       decision_log=dlog, now=FIXED_CLOCK)
+
+        assert "chain" not in result
+        assert _targets(result) == [("glm-4.7", "zai"),
+                                   ("gpt-5.6-luna", "openai-codex")]
+        assert _hops(dlog.tail(1)[0]["chain_plan"]["chain"]) == _targets(result), \
+            "the trace still carries the plan even when the result omits it"
+
+    def test_every_terminal_path_records_a_chain_plan(self):
+        """No path may skip the plan: the trace is the operator's only replay."""
+        veto = DecisionLog()
+        route("anything", ROUTER_CONFIG, requested_model="gpt-5.6-sol",
+              requested_provider="openai-codex", decision_log=veto)
+
+        fail_safe = DecisionLog()
+        route("Hello there", CAPABILITY_CONFIG, decision_log=fail_safe)
+
+        classified = DecisionLog()
+        route("Hello there", CAPABILITY_CONFIG, decision_log=classified,
+              classify_fn=lambda _t, _f: {"tier": "T3", "confidence": "high"})
+
+        direct = DecisionLog()
+        route(VISION_TASK, CAPABILITY_CONFIG, decision_log=direct)
+
+        for log in (veto, fail_safe, classified, direct):
+            assert "chain_plan" in log.tail(1)[0]
+
+        # A veto attempts nothing, and says so rather than guessing a chain.
+        assert veto.tail(1)[0]["chain_plan"]["chain"] == []
+        # A classified route plans its TIER's chain, floor included.
+        plan = classified.tail(1)[0]["chain_plan"]
+        assert [hop["model"] for hop in plan["chain"]] == ["gpt-5.6-terra",
+                                                           "deepseek-v4-pro"]
+        assert plan["requirements"]["min_context"] >= 200000, \
+            "the classified tier's own requirements floor must reach the plan"
+
+
+class TestOrderingSeed:
+    """`random` must be real in production and replayable from the trace."""
+
+    def _t4_chain(self, task, **kwargs):
+        pin = SessionPin()
+        pin.set("T4")
+        dlog = DecisionLog()
+        result = route(task, CAPABILITY_CONFIG, session_pin=pin,
+                       decision_log=dlog, now=FIXED_CLOCK, **kwargs)
+        return result, dlog.tail(1)[0]
+
+    def test_the_seed_is_recorded_and_reproduces_the_order(self):
+        result, entry = self._t4_chain("Rename a symbol in this code")
+
+        seed = entry["steps"][1]["in"]["seed"]
+        assert isinstance(seed, int)
+
+        # Same turn, same order — a decision an operator can reason about.
+        again, _entry = self._t4_chain("Rename a symbol in this code")
+        assert _targets(again) == _targets(result)
+
+        # And the recorded seed alone reproduces it, which is what makes the
+        # trace an audit record rather than a story.
+        replayed, _entry = self._t4_chain("Rename a symbol in this code",
+                                          rng=random.Random(seed))
+        assert _targets(replayed) == _targets(result)
+
+    def test_different_turns_really_spread_across_the_tail(self):
+        """A fixed seed would hammer one rail; that is why the seed is per turn."""
+        heads = set()
+        for i in range(24):
+            result, _entry = self._t4_chain(f"Rename symbol_{i} in this code")
+            heads.add(_targets(result)[0][0])
+        assert len(heads) > 1, "every turn drew the same primary — rng is not live"
+        assert heads <= T4_ELOS
+
+    def test_an_injected_rng_is_not_advertised_as_a_seed(self):
+        """The trace must never name a seed that did not produce the order."""
+        _result, entry = self._t4_chain("Rename a symbol in this code",
+                                        rng=random.Random(3))
+        assert entry["steps"][1]["in"]["seed"] is None
+
+
+class TestSessionPinUnderRandom:
+    """The upward-only ratchet must survive the chain plan."""
+
+    def test_the_pin_still_ratchets_when_the_strategy_is_random(self):
+        """The plan runs AFTER the floor, and the floor is what protects the turn.
+
+        _apply_session_floor identifies a tier by looking output['model'] up in
+        the tier table, so a chain shuffled BEFORE it would leave the lookup
+        looking for a model no tier declares and silently unenforce the ratchet.
+        """
+        pin = SessionPin()
+        pin.set("T4")
+        dlog = DecisionLog()
+        result = route("Rename a symbol in this code", CAPABILITY_CONFIG,
+                       session_pin=pin, decision_log=dlog,
+                       rng=random.Random(5), now=FIXED_CLOCK)
+
+        # Ratcheted: T1's rule matched, T4 is what routes.
+        assert result["model"] == "gpt-5.5"
+        assert dlog.tail(1)[0]["cause"] == "session_pin"
+        # And the chain is the PINNED tier's, under the PINNED tier's policy.
+        assert {model for model, _provider in _targets(result)} == T4_ELOS
+        assert dlog.tail(1)[0]["chain_plan"]["strategy"] == "random"
+
+    def test_the_ratchet_holds_for_every_shuffle(self):
+        """Not just for one lucky seed."""
+        for seed in range(40):
+            pin = SessionPin()
+            pin.set("T4")
+            result = route("Rename a symbol in this code", CAPABILITY_CONFIG,
+                           session_pin=pin, rng=random.Random(seed),
+                           now=FIXED_CLOCK)
+            assert result["model"] == "gpt-5.5"
+            assert {model for model, _provider in _targets(result)} == T4_ELOS
+
+    def test_the_promoted_tier_brings_its_own_policy(self):
+        """A floor swaps the whole tier: its chain AND its ordering policy.
+
+        Copying model/provider/fallback alone left the previous tier's strategy
+        and requirements floor governing the promoted chain — invisible while
+        nothing consumed them, wrong the moment the plan did.
+        """
+        heads = set()
+        for seed in range(24):
+            pin = SessionPin()
+            pin.set("T4")
+            result = route("Rename a symbol in this code", CAPABILITY_CONFIG,
+                           session_pin=pin, rng=random.Random(seed),
+                           now=FIXED_CLOCK)
+            heads.add(_targets(result)[0][0])
+        assert len(heads) > 1, \
+            "T1's sequential strategy is still ordering the promoted T4 chain"
+
+    def test_a_promotion_does_not_carry_the_lower_tier_s_cost_controls(self):
+        """The other half of the same invariant: stale policy must be dropped.
+
+        T1 caps its multiplier because a mechanical edit is never worth a peak
+        token. A hard task promoted out of T1 never opted into that cap, and
+        leaving it behind would let a cost control shrink a tier's chain that
+        never declared one.
+        """
+        config = copy.deepcopy(CAPABILITY_CONFIG)
+        config["tiers"]["T1"]["time_cap"] = {"max_multiplier": 1.5}
+        config["tiers"]["T1"]["requirements"] = {"min_context": 100000}
+        pin = SessionPin()
+        pin.set("T4")
+
+        result = route("Rename a symbol in this code", config, session_pin=pin,
+                       rng=random.Random(1), now=FIXED_CLOCK)
+
+        assert result["model"] == "gpt-5.5"
+        assert "time_cap" not in result
+        assert "requirements" not in result
+
+
+class TestContextIsSizedFromTheRealPrompt:
+    """est_input_tokens must measure the text the model actually receives."""
+
+    def _composed(self, goal, context):
+        return f"Context: {context}\n\nTask: {goal}"
+
+    def test_a_large_context_with_a_small_goal_triggers_the_context_rule(self):
+        goal = "fix the failing test"
+        context = "WARN retry scheduled for the nightly job\n" * 2000
+        composed = self._composed(goal, context)
+        assert len(composed) > 80000
+
+        goal_only = DecisionLog()
+        route(goal, CAPABILITY_CONFIG, decision_log=goal_only, now=FIXED_CLOCK)
+        assert goal_only.tail(1)[0]["rule_id"] is None, \
+            "the goal line alone matches nothing — that is the blind spot"
+
+        composed_log = DecisionLog()
+        result = route(goal, CAPABILITY_CONFIG, prompt_text=composed,
+                       decision_log=composed_log, now=FIXED_CLOCK)
+
+        entry = composed_log.tail(1)[0]
+        assert entry["rule_id"] == "huge-context-read"
+        assert entry["steps"][1]["out"]["est_input_tokens"] > 20000
+        assert result["model"] == "gpt-5.6-terra"
+        assert entry["chain_plan"]["requirements"]["min_context"] >= 200000
+
+    def test_the_classifier_still_sees_the_goal_alone(self):
+        """The split is deliberate: a 128-token classification must not carry
+        120k chars of logs into the prompt it is being paid to answer."""
+        goal = "make it work"
+        context = "log line\n" * 2000
+        seen = []
+
+        route(goal, CAPABILITY_CONFIG, prompt_text=self._composed(goal, context),
+              classify_fn=lambda task, features: seen.append((task, features))
+              or {"tier": "T2", "confidence": "high"},
+              now=FIXED_CLOCK)
+
+        assert seen[0][0] == goal
+        assert "log line" not in seen[0][0]
+        # The feature vector, though, describes the real input.
+        assert seen[0][1]["est_input_tokens"] > 4000
+
+    def test_no_prompt_text_routes_exactly_as_before(self):
+        """Defaulting to the goal keeps every existing caller's behaviour."""
+        without = route("Rename a symbol in this code", CAPABILITY_CONFIG,
+                        now=FIXED_CLOCK)
+        explicit = route("Rename a symbol in this code", CAPABILITY_CONFIG,
+                         prompt_text="Rename a symbol in this code",
+                         now=FIXED_CLOCK)
+        assert without == explicit
+
+
+class TestInjectedClock:
+    """The clock is a parameter, and it reaches the feature vector."""
+
+    def test_the_utc_features_are_injected_for_time_keyed_rules(self):
+        config = copy.deepcopy(CAPABILITY_CONFIG)
+        config["rules"].insert(0, {
+            "id": "peak-hours-defer",
+            "when": {"utc_hour": {"gte": 6, "lt": 10}},
+            "then": {"profile": "coder", "model": "T1"},
+        })
+
+        peak = DecisionLog()
+        route("Add a health endpoint", config, decision_log=peak,
+              now=datetime(2026, 8, 17, 7, 30, tzinfo=timezone.utc))
+        entry = peak.tail(1)[0]
+        assert entry["rule_id"] == "peak-hours-defer"
+        assert entry["steps"][1]["out"]["utc_hour"] == 7
+        assert entry["steps"][1]["out"]["utc_weekday"] == 0
+
+        off_peak = DecisionLog()
+        route("Add a health endpoint", config, decision_log=off_peak,
+              now=datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc))
+        assert off_peak.tail(1)[0]["rule_id"] != "peak-hours-defer"
+
+    def test_a_clock_from_another_zone_is_normalised_to_utc(self):
+        """An aware datetime must not shift the window it lands in."""
+        from datetime import timedelta
+
+        minus_three = timezone(timedelta(hours=-3))
+        dlog = DecisionLog()
+        route("Add a health endpoint", CAPABILITY_CONFIG, decision_log=dlog,
+              now=datetime(2026, 8, 17, 4, 30, tzinfo=minus_three))
+        assert dlog.tail(1)[0]["steps"][1]["out"]["utc_hour"] == 7
+
+    def test_production_reads_the_clock_at_the_edge(self):
+        """No `now` means the real UTC clock — the one place it may be read."""
+        dlog = DecisionLog()
+        route("Add a health endpoint", CAPABILITY_CONFIG, decision_log=dlog)
+        features = dlog.tail(1)[0]["steps"][1]["out"]
+        assert features["utc_hour"] in range(24)
+        assert features["utc_weekday"] in range(7)
+
+    def test_the_shipped_policy_really_routes_differently_by_the_hour(self):
+        """End-to-end proof that the injected clock is consequential, not decor.
+
+        Two primary rails price by wall-clock window, so a policy that uses them
+        must produce more than one order across a day. One order for all 24
+        hours means the clock stopped reaching the planner — the failure mode
+        that made the whole time layer a no-op.
+        """
+        policy = yaml.safe_load(
+            (Path(__file__).resolve().parents[2] / "router.yaml").read_text(encoding="utf-8")
+        )
+        orders = {
+            tuple(
+                _targets(route("add a health endpoint to the api code", policy,
+                               rng=random.Random(0),
+                               now=datetime(2026, 8, 17, hour, 0, tzinfo=timezone.utc)))
+            )
+            for hour in range(24)
+        }
+        assert len(orders) > 1
+
+    def test_the_clock_is_handed_to_the_planner(self, monkeypatch):
+        """time_cap / time_policy / cheapest_now are only live if `when` arrives."""
+        seen = {}
+
+        def spy(output, features, **kwargs):
+            seen.update(kwargs)
+            return {"chain": [], "requirements": {}, "rejected": [], "unknown": [],
+                    "bypassed": False, "strategy": "sequential",
+                    "independent_rails": 0}
+
+        monkeypatch.setattr(adapter, "plan_chain", spy)
+        monkeypatch.setattr(adapter, "_PLAN_CHAIN_ACCEPTS_WHEN", True)
+        route(VISION_TASK, CAPABILITY_CONFIG, now=FIXED_CLOCK)
+
+        assert seen["when"] == FIXED_CLOCK
+        assert isinstance(seen["rng"], random.Random)
+
+    def test_a_planner_without_a_clock_parameter_still_routes(self, monkeypatch):
+        """A rules.py that predates the time layer must route, time-agnostic.
+
+        Resolved by signature rather than by catching TypeError, so a genuine
+        TypeError from inside the planner is never masked by a second call.
+        """
+        calls = []
+
+        def spy(output, features, *, rng=None):
+            calls.append(rng)
+            return {"chain": [{"model": "gpt-5.6-luna", "provider": "openai-codex"}],
+                    "requirements": {}, "rejected": [], "unknown": [],
+                    "bypassed": False, "strategy": "sequential",
+                    "independent_rails": 1}
+
+        monkeypatch.setattr(adapter, "plan_chain", spy)
+        monkeypatch.setattr(adapter, "_PLAN_CHAIN_ACCEPTS_WHEN", False)
+        result = route(VISION_TASK, CAPABILITY_CONFIG, now=FIXED_CLOCK)
+
+        assert _targets(result) == [("gpt-5.6-luna", "openai-codex")]
+        assert calls and isinstance(calls[0], random.Random)
+
+
+class TestPlannerFailureIsNotARoutingFailure:
+    """The plan is a cost control and an audit record, never a gate."""
+
+    def test_a_planner_explosion_degrades_to_the_declared_route(self, monkeypatch):
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("stale registry")
+
+        monkeypatch.setattr(adapter, "plan_chain", boom)
+        dlog = DecisionLog()
+        result = route(VISION_TASK, CAPABILITY_CONFIG, decision_log=dlog,
+                       now=FIXED_CLOCK)
+
+        assert result["model"] == "glm-5.3"
+        assert "chain" not in result
+        assert _targets(result) == [
+            ("glm-5.3", "zai"), ("gpt-5.6-luna", "openai-codex"),
+            ("deepseek-v4-flash", "deepseek"),
+        ], "no plan means the declared chain — the pre-capability behaviour"
+        assert "chain_plan" not in dlog.tail(1)[0], \
+            "a trace records no plan rather than an invented one"
+
+    def test_a_non_mapping_plan_is_ignored(self, monkeypatch):
+        monkeypatch.setattr(adapter, "plan_chain", lambda *_a, **_k: "nope")
+        result = route(VISION_TASK, CAPABILITY_CONFIG, now=FIXED_CLOCK)
+        assert result["model"] == "glm-5.3"
+        assert "chain" not in result
+
+
+class TestDefensiveShapes:
+    """Malformed inputs produce a diagnostic-shaped answer, never an exception.
+
+    Each guard below exists because the value comes from OUTSIDE this module —
+    a hand-edited YAML tier, a host that injected a clock of the wrong type —
+    and routing must degrade rather than fail.
+    """
+
+    def test_a_clock_of_the_wrong_type_routes_time_agnostic(self):
+        dlog = DecisionLog()
+        result = route("Rename a symbol in this code", CAPABILITY_CONFIG,
+                       decision_log=dlog, now="half past three")
+        assert result["model"] == "glm-4.7"
+        features = dlog.tail(1)[0]["steps"][1]["out"]
+        assert "utc_hour" not in features and "utc_weekday" not in features
+
+    def test_a_tier_without_a_model_yields_no_model(self):
+        """`resolve_tiers` would otherwise hand back the placeholder alias."""
+        assert adapter._resolve_tier_cfg({"provider": "p"}) == {"provider": "p"}
+        assert adapter._resolve_tier_cfg("not a mapping") == {}
+
+    def test_the_policy_swap_tolerates_a_non_mapping(self):
+        target = {"model": "m", "fallback_strategy": "random"}
+        adapter._adopt_tier_policy(target, "not a mapping")
+        assert target == {"model": "m", "fallback_strategy": "random"}
+
+    def test_the_declared_chain_of_a_model_less_output_is_its_fallbacks(self):
+        """A tier that declares only fallbacks still has an attempt order."""
+        assert adapter._declared_chain(
+            {"fallback": [{"model": "hop", "provider": "p"}, {"provider": "no-model"}]}
+        ) == [{"model": "hop", "provider": "p"}]
+        assert adapter._declared_chain({"fallback": "not a list"}) == []

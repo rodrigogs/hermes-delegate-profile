@@ -657,15 +657,85 @@ def _make_classify_fn(ctx: Any) -> Optional[Callable[[str, Dict[str, Any]], Dict
     return classify_fn
 
 
+def _compose_prompt(goal: str, context: str) -> str:
+    """The exact text the delegated child model receives.
+
+    One definition on purpose: the router sizes the turn from this string, so a
+    second, drifting copy of the composition is what made the context signal
+    blind in the first place — est_input_tokens measured the goal line while the
+    child was sent goal PLUS context, and a 33k-token prompt could be routed as
+    if it were six tokens.
+    """
+    return f"Context: {context}\n\nTask: {goal}" if context else goal
+
+
+def _target_pairs(hops: Any) -> List[Tuple[str, str]]:
+    """(model, provider) pairs from a chain/fallback list; malformed hops skipped."""
+    if not isinstance(hops, list):
+        return []
+    pairs: List[Tuple[str, str]] = []
+    for hop in hops:
+        if isinstance(hop, dict) and hop.get("model"):
+            pairs.append((str(hop["model"]), str(hop.get("provider") or "")))
+    return pairs
+
+
+def _routed_targets(routed: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """Ordered (model, provider) attempts from one router decision.
+
+    ``chain`` is the router's PLANNED order: the elos that can actually serve
+    this turn, in the order the tier's fallback strategy chose. It is
+    authoritative when present — rebuilding [primary] + declared fallbacks here
+    is precisely what kept the capability filter and the fallback strategy inert
+    on live traffic while the console displayed a filtered chain.
+
+    A decision with no usable chain (a router that predates the plan, a test
+    fake, a profile-only answer) degrades to the declared primary + fallback
+    order, which is the historical behaviour.
+    """
+    if not isinstance(routed, dict):
+        return []
+    planned = _target_pairs(routed.get("chain"))
+    if planned:
+        return planned
+    declared: List[Tuple[str, str]] = []
+    if routed.get("model"):
+        declared.append((str(routed["model"]), str(routed.get("provider") or "")))
+    return declared + _target_pairs(routed.get("fallback"))
+
+
+def _dedupe_targets(pairs: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    """Drop repeat targets, first occurrence wins.
+
+    A retry of the target that just failed is a wasted subprocess and a second
+    breaker strike against the same rail.
+    """
+    seen: set = set()
+    ordered: List[Tuple[str, str]] = []
+    for pair in pairs:
+        if pair in seen:
+            continue
+        seen.add(pair)
+        ordered.append(pair)
+    return ordered
+
+
 def _route_task(
     goal: str,
     requested_model: str,
     classify_fn: Optional[Callable],
+    prompt_text: str = "",
 ) -> Optional[Dict[str, Any]]:
     """Run the capability router on a goal string.
 
-    Returns {profile, model?, provider?} or None if routing failed / router
-    unavailable / blocklist veto / recursion guard active.
+    Returns {profile, model?, provider?, chain?} or None if routing failed /
+    router unavailable / blocklist veto / recursion guard active. ``chain`` is
+    the planned attempt order (see router.adapter.route) and is what the
+    executor iterates.
+
+    ``prompt_text`` is the full text the child will receive (context + goal);
+    the router reads its signals from that and classifies on ``goal`` alone.
+    Empty means "same as goal", which is the shape a caller with no context has.
 
     Best-effort: routing failure → caller falls through to normal delegation.
     Never blocks — all errors are caught.
@@ -696,6 +766,10 @@ def _route_task(
         # this best-effort try/except, so trace persistence can never break
         # routing. cache= and session_pin= stay per-call throwaway on the live
         # path (out of scope), so those pipeline nodes read as cold in replay.
+        # rng= and now= are deliberately NOT passed: route() is the edge, so it
+        # derives the per-turn seed from the task and reads the UTC clock itself,
+        # and records both in the trace. Pinning them here would make every live
+        # decision use one fixed order.
         result = route(
             task=goal,
             config=config,
@@ -703,6 +777,7 @@ def _route_task(
             classify_fn=classify_fn,
             blocklist=blocklist,
             decision_log=DurableDecisionLog(),
+            prompt_text=prompt_text,
         )
 
         # Blocklist veto or pending classify action → no concrete target
@@ -860,9 +935,13 @@ def _make_handler(
         if not goal:
             return json.dumps({"error": "goal is required", "failure_kind": "bad_args"})
 
+        # The exact text the child will receive. Composed HERE, before routing,
+        # because the router estimates context size from it.
+        prompt = _compose_prompt(goal, context)
+
         # --- Capability router: pick profile+model when not explicitly given ---
         routed_provider = ""
-        routed_fallbacks: list = []
+        routed_targets: List[Tuple[str, str]] = []
         if not profile or profile == "auto":
             # "auto" is the sentinel asking the router to choose; it is never a
             # real profile name. Clear it before routing, so a router decline
@@ -871,15 +950,22 @@ def _make_handler(
             # `hermes profile create auto` - advice that would create a profile
             # shadowing the sentinel.
             profile = ""
-            routed = _route_task(goal, model, classify_fn)
+            # With no context the composed prompt IS the goal, so the fourth
+            # argument is skipped there: identical routing either way, and the
+            # historical 3-argument shape stays what a host-patched seam sees.
+            routed = (
+                _route_task(goal, model, classify_fn, prompt) if context
+                else _route_task(goal, model, classify_fn)
+            )
             if routed is not None:
                 profile = routed.get("profile", "") or profile
-                if not model and routed.get("model"):
-                    model = routed["model"]
                 routed_provider = routed.get("provider", "") or ""
-                fb = routed.get("fallback")
-                if isinstance(fb, list):
-                    routed_fallbacks = [x for x in fb if isinstance(x, dict) and x.get("model")]
+                routed_targets = _routed_targets(routed)
+                if not model and routed_targets:
+                    # The PLANNED head, not the declared tier primary: a vision
+                    # turn whose primary cannot see images must not be attempted
+                    # first, nor handed to the inline delegate_task path.
+                    model, routed_provider = routed_targets[0]
 
         if not profile:
             return json.dumps({"error": "profile is required", "failure_kind": "bad_args"})
@@ -932,7 +1018,6 @@ def _make_handler(
 
 # Cross-profile: spawn a fully independent hermes process tree.
         hermes_bin = _resolve_hermes_bin()
-        prompt = f"Context: {context}\n\nTask: {goal}" if context else goal
 
         env = os.environ.copy()
         # Resolve HERMES_HOME like we do so the child finds the real ~/.hermes
@@ -1056,13 +1141,16 @@ def _make_handler(
                     "result": stdout[-_MAX_RESULT_CHARS:] if stdout else "(no output)"}
 
         try:
-            # Target chain: primary (routed/explicit) then the router's cross-rail
-            # fallbacks. Retry the NEXT target only on a retryable failure — so a
-            # Mac-only primary (Claude Code) transparently fails over to a non-Mac
-            # rail, honoring 'Claude Code is never the sole option' at EXECUTION time.
-            targets = [(model, routed_provider)] + [
-                (fb.get("model", ""), fb.get("provider", "")) for fb in routed_fallbacks
-            ]
+            # Target chain: the router's PLANNED order — capability-filtered and
+            # ordered by the tier's fallback strategy — behind the primary. When
+            # the caller named a model explicitly that model stays first (it
+            # overrides the routing decision) and the plan supplies the tail;
+            # otherwise the primary IS the plan's head, so the dedupe leaves the
+            # planned order exactly as planned. Retry the NEXT target only on a
+            # retryable failure — so a Mac-only primary (Claude Code)
+            # transparently fails over to a non-Mac rail, honoring 'Claude Code
+            # is never the sole option' at EXECUTION time.
+            targets = _dedupe_targets([(model, routed_provider)] + routed_targets)
             attempts_meta = []
             last = None
             for idx, (tm, tp) in enumerate(targets):

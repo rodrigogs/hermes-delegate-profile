@@ -15,8 +15,11 @@ and time cap are no-ops. Nothing raises and nothing guesses at the hour.
 
 The registry is DATA, verified against first-party pricing pages. Prices are
 USD per 1M tokens and are ``None`` when the vendor publishes no per-token
-price — a ``None`` price is NEVER coerced to 0.0, because a plan model is not
-free and treating it as free would make it win every cost comparison.
+price — a ``None`` price is NEVER coerced to 0.0, because a plan model's cost is
+denominated in credits and a fabricated 0.0 would make it win every cost
+comparison for the wrong reason. (``cheapest_now`` does rank a plan rail ahead of
+a metered one, but on its ``billing_mode`` — a deliberate marginal-cost
+judgement about an hour already bought — never on a price that looked like zero.)
 Operators may override any registry field per elo in router.yaml via `declared`
 keys — `declared` WINS, so a stale registry entry is fixable in YAML without a
 code change. Only genuine CAPABILITY keys (:data:`CAPABILITY_ASSERTION_KEYS`)
@@ -47,7 +50,10 @@ Vendor context that does not fit a registry field, kept here so it is not lost:
     during 16:00-00:00 UTC (the 00:00-08:00 UTC+8 night discount).
   openai-codex — reachable flat-rate through a ChatGPT subscription OR metered
     by API key. Listed prices are the metered short-context rates; input above
-    272K tokens is billed 2x input and 1.5x output.
+    272K tokens is billed 2x input and 1.5x output. Because those prices ARE the
+    rate that rail bills at, a ``subscription`` elo stays quoted in dollars and
+    ``cheapest_now`` compares it like any metered rail instead of ranking it as
+    already-paid — see :data:`_BILLING_RANK`.
   minimax — ``MiniMax-M3`` is case-sensitive, ``tool_choice`` accepts only
     auto|none, and input above 512K doubles the price.
   moonshot — kimi-k3 needs a >=$1 top-up before it unlocks and must not be
@@ -159,24 +165,63 @@ _CHEAPEST_NOW = "cheapest_now"
 #: Closed strategy set, exported so lint can reject a typo at the write gate.
 FALLBACK_STRATEGIES: frozenset = frozenset({_SEQUENTIAL, _RANDOM, _CHEAPEST_NOW})
 
-# `cheapest_now` rank for an elo with NO published dollar price. A plan or
-# subscription hour is already paid for, so its marginal dollar cost is the
-# lowest there is; a free rail costs nothing either but carries the reliability
-# caveats recorded in the design; an unpublished METERED price is the one real
-# cost risk, so it sorts last. Never 0.0 — see :func:`effective_price`.
-_BILLING_RANK: Dict[str, int] = {
-    "plan": 0,
-    "subscription": 0,
-    "free": 1,
-    "metered": 2,
-}
-_BILLING_RANK_UNKNOWN = 3
+# `cheapest_now` buckets, in sort order. The bucket is decided by BILLING MODE
+# and by nothing else — in particular NOT by whether a dollar price happens to be
+# published. An elo billed against the z.ai Coding PLAN is FREE AT THE MARGIN and
+# is not quoted in dollars at all: the plan spends CREDITS off an allowance
+# already bought (glm-5.3 24 output credits, glm-5-turbo 21, glm-4.7 16, glm-4.6v
+# 2.7), so the next token adds nothing to any invoice — however many dollars the
+# registry ALSO records as that model's separately-purchasable metered list price.
+# glm-4.7, glm-5-turbo and glm-4.6v are exactly that case — plan-covered AND
+# carrying a list price — and bucketing them by the ABSENCE of a price would
+# compare them in dollars the operator does not pay, then spend metered tokens to
+# avoid a cost that is already sunk: plan-covered glm-4.7 (2.20 out, 4.40 inside
+# zai's weekday peak) would sort behind metered mimo-v2.5 (0.28, 0.224 inside
+# xiaomi's night discount).
+#
+# `subscription` is deliberately NOT in that bucket, and it is the one line here
+# worth arguing about. A ChatGPT/Codex seat is flat-rate too, but every
+# openai-codex elo in this registry publishes the per-token rate that rail bills
+# at — "Listed prices are the metered short-context rates", see the module
+# docstring — so its cost stays denominated in DOLLARS and stays commensurable
+# with every other dollar-priced rail. Ranking a seat ahead of metered on billing
+# mode alone would take the price comparison off the table for a whole chain: it
+# is precisely what stops the shipped T2 tail [gpt-5.6-luna 1.20 flat,
+# deepseek-v4-flash 0.66 -> 1.32 in its peak] from reordering by the hour, which
+# reduces the injected clock to decoration. A rail is bucketed on the UNIT its
+# price is quoted in, not on who is holding the credential.
+#
+# A free rail spends nothing either, but it carries the reliability caveats
+# recorded in the design, so it follows the plan bucket; the dollar-priced rails
+# come next; an elo whose billing mode nothing can describe sorts last, because
+# claiming it is the cheapest would be inventing the very number this layer
+# refuses to invent.
+_BUCKET_PLAN_CREDITS = 0   # billing_mode plan: credits, off an allowance bought
+_BUCKET_FREE = 1           # billing_mode free
+_BUCKET_DOLLARS = 2        # billing_mode subscription / metered
+_BUCKET_UNKNOWN = 3        # no describable billing mode
 
-# `cheapest_now` buckets. Priced elos are compared in dollars; unpriced elos are
-# placed by billing rank around them (see :func:`order_chain`).
-_BUCKET_ALREADY_PAID = 0   # price None + plan/subscription
-_BUCKET_PRICED = 1         # dollar comparison at `when`
-_BUCKET_UNPRICED = 2       # price None + free/metered/unknown billing mode
+#: Billing mode -> `cheapest_now` bucket; lower is cheaper at the margin. EVERY
+#: member of :data:`BILLING_MODES` must appear: a mode that fell through here
+#: would land in the unknown bucket and sort last on cost, which is a silent
+#: routing change rather than a diagnostic.
+_BILLING_RANK: Dict[str, int] = {
+    "plan": _BUCKET_PLAN_CREDITS,
+    "free": _BUCKET_FREE,
+    "subscription": _BUCKET_DOLLARS,
+    "metered": _BUCKET_DOLLARS,
+}
+_BILLING_RANK_UNKNOWN = _BUCKET_UNKNOWN
+
+# Rank WITHIN a bucket. Elos that publish a dollar price are compared in dollars,
+# ascending effective output price; an elo with no published price cannot be
+# converted into dollars without inventing an exchange rate, so it sorts behind
+# its priced bucket-mates in declared order rather than being treated as 0.0.
+# In the zai plan bucket that ordering also happens to be the credit ordering:
+# glm-4.6v/glm-4.7/glm-5-turbo cost 2.7/16/21 output credits in list-price order,
+# and unpriced glm-5.3 — last here — is the most expensive of the four at 24.
+_PRICED_IN_BUCKET = 0
+_UNPRICED_IN_BUCKET = 1
 
 # Safety headroom applied to est_input_tokens when deriving min_context:
 # the prompt grows with the system preamble, tool schemas and the reply.
@@ -941,18 +986,38 @@ def next_window_change(
     model: str,
     when: Optional[datetime] = None,
     declared: Optional[Dict[str, Any]] = None,
-) -> Optional[int]:
-    """Return the UTC HOUR at which ``model``'s multiplier next changes.
+) -> Optional[Dict[str, Any]]:
+    """Return WHEN ``model``'s multiplier next changes, and to what::
 
-    None when it never changes — a flat-priced model, an unknown model, a
-    registry whose windows cover every hour at one multiplier, or no injected
-    clock. Hours are scanned forward over one full week, which is the whole
-    period of the schedule (``weekdays`` is the only date dependence a window
-    has), so "never changes" is a proof, not a give-up.
+        {"hour": 6, "weekday": 0, "hours_ahead": 47, "multiplier": 2.0}
 
-    Powers the console's "peak ends in 2h" affordance and is the seam a future
-    deferral scheduler would read; deferring work is deliberately out of scope
-    here — this module answers "what does it cost now", never "wait".
+    ``hour`` is the UTC hour the change lands on, ``weekday`` the UTC weekday it
+    lands on (0 = Monday … 6 = Sunday, matching ``datetime.weekday()``),
+    ``hours_ahead`` how many whole hours from ``when`` that is, and
+    ``multiplier`` the rate that takes effect then.
+
+    The DAY and ``hours_ahead`` are load-bearing, not decoration: a
+    weekday-gated window means an hour alone is ambiguous by up to two days.
+    ``next_window_change("glm-4.7", Saturday 07:00Z)`` lands on hour 6, which as
+    a bare hour reads as "23 hours away" when the real answer is Monday 06:00,
+    47 hours away. Any consumer computing a countdown must read
+    ``hours_ahead``; ``hour``/``weekday`` are for labelling the instant. Minutes
+    are deliberately not modelled — windows begin on the hour, so ``hours_ahead``
+    counts whole hour boundaries crossed, and 23:59 is one hour from midnight.
+
+    None when the multiplier never changes — a flat-priced model, an unknown
+    model, a registry whose windows cover every hour at one multiplier, or no
+    injected clock. Hours are scanned forward over one full week, which is the
+    whole period of the schedule (``weekdays`` is the only date dependence a
+    window has), so "never changes" is a proof, not a give-up.
+
+    Pure in the injected clock like everything else here: ``when`` is the only
+    source of "now", so the answer is a function of its arguments alone.
+
+    Powers the console's "peak ends in 2h" affordance — which is why the shape
+    matches the one the console's own JS already computes — and is the seam a
+    future deferral scheduler would read; deferring work is deliberately out of
+    scope here, this module answers "what does it cost now", never "wait".
     """
     parts = _utc_parts(when)
     if parts is None:
@@ -973,7 +1038,12 @@ def next_window_change(
         ahead_weekday = (weekday + elapsed // _HOURS_IN_DAY) % _DAYS_IN_WEEK
         ahead = _multiplier_at(windows, ahead_hour, ahead_weekday)
         if abs(ahead - current) > _MULTIPLIER_EPSILON:
-            return ahead_hour
+            return {
+                "hour": ahead_hour,
+                "weekday": ahead_weekday,
+                "hours_ahead": step,
+                "multiplier": ahead,
+            }
     return None
 
 
@@ -1090,16 +1160,38 @@ def order_chain(
     contract holds. An unrecognized strategy also degrades to sequential — this
     never raises.
 
-    "cheapest_now" compares OUTPUT price because output dominates agent cost,
-    and it compares dollars only among elos that publish dollars. Ties keep
-    declared order, so the ordering is stable and an operator's declared
-    preference still expresses itself. Elos with no published price cannot be
-    converted into dollars without inventing an exchange rate, so they are
-    placed by ``billing_mode`` rank instead — plan/subscription (an hour already
-    paid for is the cheapest marginal token there is) ahead of the priced group,
-    then free and finally metered BEHIND it, because an unpublished metered
-    price is the one genuinely unbounded cost. An unpriced model is never
-    treated as 0.0.
+    "cheapest_now" ranks on MARGINAL price — what the next token actually adds to
+    the bill — in two steps:
+
+    1. ``billing_mode`` decides the bucket: ``plan`` first (the z.ai Coding Plan
+       spends CREDITS off an allowance already bought, so the next token adds
+       nothing to any dollar invoice), then ``free``, then the dollar-priced
+       rails — ``subscription`` and ``metered`` TOGETHER — then an elo whose
+       billing mode nothing can describe. The bucket is NOT decided by whether a
+       price is published: glm-4.7, glm-5-turbo and glm-4.6v are plan-covered AND
+       carry dollar list prices, and comparing those in dollars would sort
+       plan-covered glm-4.7 (2.20 out, 4.40 inside its peak) behind metered
+       mimo-v2.5 (0.28 out) — spending metered tokens to dodge a cost that is
+       already sunk. ``subscription`` shares the metered bucket on purpose: an
+       openai-codex seat publishes the per-token rate that rail bills at, so it
+       stays quoted in dollars and stays comparable. Ranking a seat as
+       already-paid instead leaves a chain's order IDENTICAL at every hour — the
+       injected clock reduced to decoration (see :data:`_BILLING_RANK`).
+    2. Inside a bucket, ascending effective OUTPUT price at ``when``, because
+       output dominates agent cost. Ties keep declared order, so the ordering is
+       stable and an operator's declared preference still expresses itself. An
+       elo with no published price cannot be converted into dollars without
+       inventing an exchange rate, so it sorts behind its priced bucket-mates in
+       declared order — never as 0.0.
+
+    LIMIT, and it is a real one: a ``plan`` or ``subscription`` rail is free at
+    the margin only until its QUOTA is exhausted, and quota state is nowhere in
+    the registry — nothing here can see how many plan credits or seat messages
+    are left. "cheapest_now" therefore optimises marginal PRICE, not remaining
+    entitlement, and relies on the EXISTING BREAKER to route around a rail that
+    has run out: an exhausted plan key fails, the breaker opens it, and the next
+    hop in this order is tried. It is NOT a substitute for quota awareness, which
+    would need a live per-key usage feed this router does not have.
     """
     ordered = list(chain or [])
     if len(ordered) < 2:
@@ -1679,31 +1771,46 @@ def _cheapest_now_key(
     entry: Any,
     when: datetime,
     index: int,
-) -> Tuple[int, float, int]:
-    """Return ``(bucket, value, declared_index)`` for cheapest_now ordering.
+) -> Tuple[int, int, float, int]:
+    """Return ``(bucket, priced, output_price, declared_index)`` for ordering.
 
-    The declared index is part of the key so "ties keep declared order" is a
-    property of the key itself, not of the sort implementation.
+    ``bucket`` is the BILLING-MODE bucket (marginal cost first: plan credits off
+    an allowance already bought, then free, then the dollar-priced rails, then
+    undescribable). ``priced`` and ``output_price`` compare dollars inside that
+    bucket only, so a list price never moves an elo out of the bucket its billing
+    mode puts it in. The declared index is part of the key so "ties keep declared
+    order" is a property of the key itself, not of the sort implementation.
+
+    ``output_price`` is only ever read when ``priced`` says a real pair came back
+    from :func:`effective_price`; the 0.0 in the unpriced branch is INERT padding
+    that keeps the tuple one shape, never a claim that an unpublished price is
+    zero, and no ``None`` is ever compared against a float.
     """
     model = _model_of(entry)
     declared = entry if isinstance(entry, dict) else None
+    bucket = _billing_rank(model, declared)
     priced = effective_price(model, when, declared) if model else None
-    if priced is not None:
-        return _BUCKET_PRICED, priced[1], index
-
-    rank = _billing_rank(model, declared)
-    if rank == 0:  # plan / subscription: already paid for
-        return _BUCKET_ALREADY_PAID, 0.0, index
-    return _BUCKET_UNPRICED, float(rank), index
+    if priced is None:
+        return bucket, _UNPRICED_IN_BUCKET, 0.0, index
+    return bucket, _PRICED_IN_BUCKET, priced[1], index
 
 
 def _billing_rank(model: str, declared: Optional[Dict[str, Any]]) -> int:
-    """Rank an elo's billing mode for cost comparison; lower is cheaper.
+    """Rank an elo's billing mode by MARGINAL cost; lower is cheaper.
 
-    plan/subscription 0, free 1, metered 2, anything unknown 3. Used ONLY when
-    no dollar price exists, because plan credits and dollars are not
-    commensurable without an exchange rate — which is the operator's policy call,
-    not the router's.
+    plan 0, free 1, subscription/metered 2, anything undescribable 3. This is the
+    outer key of :func:`_cheapest_now_key` for EVERY elo, priced or not: a
+    plan-covered hour is bought already and is spent in CREDITS, so its list
+    price — if the registry even records one — is not what the next token costs,
+    and credits and dollars are not commensurable without an exchange rate, which
+    is the operator's policy call and not the router's.
+
+    A ``subscription`` seat shares the METERED rank rather than leading it,
+    because the rate the registry records for it IS the per-token rate that rail
+    bills at (see the openai-codex note in the module docstring): same unit, so
+    the dollar comparison is well-formed, and making it is what keeps a
+    `cheapest_now` order hour-relative at all. :data:`_BILLING_RANK` carries the
+    full argument.
 
     An elo :func:`capabilities_for` cannot describe at all ranks unknown, so it
     sorts LAST on a cost strategy: claiming an undescribed elo is the cheapest

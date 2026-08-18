@@ -41,14 +41,25 @@ _CONSOLE_PATH = (
     / "console.html"
 )
 
-# Routes grouped by the single HTTP method each accepts. A known route hit with
-# the wrong method is a 405 (before auth, matching the historical POST/health
-# contract); a route in neither set is a 404 (after auth).
+# Routes grouped by the HTTP methods each accepts. A known route hit with a
+# method it does not accept is a 405 (before auth, matching the historical
+# POST/health contract); a route in neither set is a 404 (after auth).
+#
+# ``/explain`` is the one route in BOTH sets, and only because of size. It sizes a
+# turn from the composed prompt (context + goal), and a context worth previewing
+# is routinely larger than an HTTP request LINE may be: http.server refuses a
+# request line over 65536 bytes with a 414, so the 120k-char context that made
+# this parameter necessary cannot travel in a query string at all. GET is kept
+# byte-for-byte compatible — a link-shaped probe with a small context still
+# works — and POST is what makes the parameter usable for the case it exists for.
+# Every other route stays single-method, so every historical 405 is unchanged.
 _GET_ROUTES = frozenset(
     {"/health", "/status", "/policy", "/blocklist", "/liveness",
      "/compaction", "/lint", "/explain", "/routes"}
 )
-_POST_ROUTES = frozenset({"/plan", "/apply", "/apply/confirm", "/apply/revert"})
+_POST_ROUTES = frozenset(
+    {"/explain", "/plan", "/apply", "/apply/confirm", "/apply/revert"}
+)
 
 # Context windows used by the existing dynamic-threshold policy. The sidecar
 # only reports the derived values; it does not write these into Hermes config.
@@ -156,6 +167,17 @@ def _error(status: int, message: str) -> Tuple[int, Dict[str, Any]]:
     return status, {"error": message}
 
 
+def _omitted_as_text(value: Any) -> Any:
+    """Read an absent or null JSON field as the empty string, nothing else.
+
+    A missing key and an explicit ``null`` both mean "not supplied", which is what
+    the query-string form expresses as an empty value. Every other type is returned
+    UNCHANGED so the caller's type check can refuse it — coercing here would turn a
+    caller's mistake into a different question silently answered.
+    """
+    return "" if value is None else value
+
+
 def parse_json_body(
     content_length: Optional[str], reader: Callable[[int], bytes]
 ) -> Tuple[Optional[Dict[str, Any]], bool]:
@@ -256,11 +278,16 @@ class SidecarApp:
         # Method-per-route check runs before auth so a wrong-method hit on a
         # known route is a 405 whether or not a token was supplied (preserves
         # the historical POST /health -> 405 and POST /status -> 405 contract).
-        known = path in _GET_ROUTES or path in _POST_ROUTES
-        if known:
-            allowed = "GET" if path in _GET_ROUTES else "POST"
-            if method != allowed:
-                return _error(405, "method not allowed")
+        # Membership decides the allowed SET, not a single value: /explain is in
+        # both sets, and asking "GET or POST?" would have silently 405'd whichever
+        # one lost the tie.
+        allowed = set()
+        if path in _GET_ROUTES:
+            allowed.add("GET")
+        if path in _POST_ROUTES:
+            allowed.add("POST")
+        if allowed and method not in allowed:
+            return _error(405, "method not allowed")
 
         # /health is the only auth-exempt data route.
         if path == "/health":
@@ -328,18 +355,74 @@ class SidecarApp:
         if path == "/lint":
             return 200, self._service.lint()
         if path == "/explain":
-            task = ((query.get("task") or [""])[0]).strip()
-            try:
-                return 200, self._service.explain(task)
-            except ValueError as exc:
-                return _error(400, str(exc))
+            return self._explain(
+                task=(query.get("task") or [""])[0],
+                at=(query.get("at") or [""])[0],
+                prompt_text=(query.get("prompt_text") or [""])[0],
+            )
         return _error(404, "unknown route")
+
+    def _explain(
+        self, task: Any, at: Any, prompt_text: Any
+    ) -> Tuple[int, Dict[str, Any]]:
+        """Shared /explain body for GET and POST.
+
+        Three parameters, all named exactly as ``RouterService.explain`` names them,
+        because the whole point of the shared vocabulary is that a console does not
+        need a per-surface translation table.
+
+          ``task``         the goal. Required.
+          ``at``           the evaluation clock, as an ISO-8601 timestamp
+                           (``2026-08-17T07:00:00Z`` / ``+00:00`` / naive-UTC).
+                           Empty means "now", which is the historical behaviour.
+          ``prompt_text``  the composed prompt (context + goal) the turn would
+                           really send, so ``est_input_tokens`` and the capability
+                           filter reproduce the production decision instead of
+                           measuring the goal line. Empty means "same as task".
+
+        ``at`` is passed STRAIGHT THROUGH to the service rather than parsed here:
+        ``RouterService._resolve_at`` is the one validator both surfaces share, and
+        a second parser is how two surfaces end up disagreeing about what ``07:00``
+        meant. It fails CLOSED exactly as the CLI does — an unusable value is a 400
+        naming the accepted form, never a silent fall back to "now", because an
+        audit surface that answers a different question than the one asked is worse
+        than one that refuses. The CLI's bare-hour and ``HH:MM`` sugar deliberately
+        stays in the CLI: choosing which DATE a bare hour belongs to is an
+        interface decision, and the weekday it picks decides whether the
+        weekday-gated zai peak applies.
+
+        Non-string values (a JSON number or list in a POST body) are refused rather
+        than coerced: ``at=7`` would be a bare hour this surface does not define,
+        and guessing is the failure mode above.
+        """
+        for name, value in (("task", task), ("at", at), ("prompt_text", prompt_text)):
+            if not isinstance(value, str):
+                return _error(400, f"{name} must be a string")
+        try:
+            return 200, self._service.explain(
+                task.strip(), at=at.strip() or None, prompt_text=prompt_text
+            )
+        except ValueError as exc:
+            return _error(400, str(exc))
 
     def _dispatch_post(
         self, path: str, body: Optional[Dict[str, Any]]
     ) -> Tuple[int, Dict[str, Any]]:
         if not isinstance(body, dict):
             return _error(400, "request body must be a JSON object")
+
+        if path == "/explain":
+            # Same handler, same parameter names, same validation as the GET form
+            # — the body is only a wider pipe for prompt_text (see _POST_ROUTES).
+            # An explicit JSON null reads as "not supplied" (the query-string form
+            # cannot express null at all); anything else non-string is refused by
+            # _explain rather than coerced, including the 0 that `or ""` would have
+            # quietly turned into "now".
+            return self._explain(
+                task=_omitted_as_text(body.get("task")),
+                at=_omitted_as_text(body.get("at")),
+                prompt_text=_omitted_as_text(body.get("prompt_text")),
+            )
 
         if path == "/plan":
             policy = body.get("policy", body.get("changes"))

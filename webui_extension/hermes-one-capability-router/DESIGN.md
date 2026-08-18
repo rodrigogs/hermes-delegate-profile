@@ -112,6 +112,157 @@ in one viewport, which is what the host's guide forbids.
   boxes to highlight three of them makes the reader hunt for the answer.
 - **Compare down a column.** Destination and hit count are fixed columns, so the
   eye can scan them without re-finding them on each line.
+- **A sequence that has no order gets no ordinals and no spine.** A tier whose
+  `fallback_strategy` is `sequential` IS a list with a first and a next, so it is
+  numbered down the spine like everything else here. A `random` chain is a SET:
+  it loses the ordinals and the spine and wraps across the line instead of
+  stacking down it, because a numbered random chain is a lie about which elo runs
+  first. `pin_primary` is the honest middle — hop 1 is genuinely first, so it is
+  drawn ordered, and the tail is drawn as the set it is. A strategy word the
+  router does not know degrades to sequential (as `capabilities.order_chain`
+  does) and SAYS SO; silently drawing a typo as a random set describes routing
+  that never happens.
+- **`pin_primary` is THREE-valued, and unknown never reads as pinned.** `true`
+  and `false` are what a tier declares; absent from a CHAIN PLAN means nobody
+  reported it, and then no hop is drawn as first and the panel says the ordering
+  is unreported. Absent from the POLICY is different and is read as the router's
+  documented default (`rules._pin_primary_of` → True), because that file is the
+  one the router itself reads. The console once read absence as `true`
+  everywhere, so a tier configured `random` + `pin_primary: false` printed "the
+  primary stays first" and drew hop 1 as ordinal 1 over a chain whose index 0 had
+  been shuffled — the console stating the opposite of what ran.
+- **`cheapest_now` is ordered, and its order carries the hour it is true of.**
+  Ascending effective price IS a sequence, so it keeps its ordinals; but the
+  order differs from the declared YAML, and an order that differs for an unstated
+  reason is indistinguishable from a bug. So it is labelled TIME-RELATIVE with
+  the hour it was computed at. With no clock it degrades to sequential and says
+  that instead — an order labelled "cheapest" that is really declared order is
+  the most expensive kind of wrong this console can be.
+
+## 3a. The three families of predicate
+
+A rule's `when` block now mixes predicates about three different things, and
+reading one as another is how a rule gets "fixed" by changing a number that was
+never about what the operator thought:
+
+  SHAPE       what the task looks like — `verb_class`, `has_code`, `size_lines`,
+              `num_files`, `num_requirements`, `char_len`, `lang`, `keywords`
+  CONTEXT     how much it needs held — `est_input_tokens`
+  CAPABILITY  what the model must be able to do — `needs_vision`, `needs_tools`,
+              `needs_structured_output`, `attachment_kinds`
+
+Each clause renders as one chip in a real `<ul>`, so two conditions are never
+announced as one string. **The family is never a hue.** The four semantic colours
+report CONDITION and the accent reports SELECTION; a fifth colour meaning
+"family" would break both. So a family is marked the way this console makes its
+third text step — in TYPE and PLANE, plus its own word inside the chip:
+
+  shape       no label, transparent plane, `--muted`      "verb is hard"
+  context     CONTEXT label, `--surface-raised`, `--text` "over 400,000 tokens"
+  capability  NEEDS label, `--line-strong` hairline       "vision"
+
+The label is a word, not a border, so the family survives being read aloud. A
+field this console has not learned is SHAPE — what every signal was before
+context and capability arrived — never an invented fourth family.
+
+## 3b. What an elo has to say for itself
+
+An elo is a tier member: the primary or a fallback hop. Four facts, and each is
+one an operator acts on:
+
+- **model** and **rail**, in mono, because they are copied into a shell.
+- **billing mode**, in router.yaml's own words (plan / subscription / metered /
+  free) — a badge, not a state, so it takes the 11px metadata treatment and no
+  hue. A MISSING mode does take `--warn-text`: a request whose rail is
+  undeclared cannot be costed. A mode this console has not learned renders as
+  written rather than being swallowed.
+- **context window**, written to be compared and not counted — `1M`, `200K`.
+  Unknown is never rendered as zero, which would claim the elo can hold nothing.
+- **unverified**, when nothing published this elo's capabilities. It routes
+  UNCHECKED: the filter can neither clear it nor reject it, and that is the
+  operator's to know, not a blank cell.
+- **what it costs at this hour** — the multiplier applied and the two effective
+  prices the comparison ran on (`2× peak · $1.32 in / $3.96 out per 1M`), read
+  from the BASE rate the registry stores times the window's multiplier. Rendered
+  where it is news: inside a window, or wherever the ORDER is price-relative and
+  an operator has to be able to check it. A model with no published per-token
+  price is NEVER rendered as `$0` — it is billed in plan or subscription credits,
+  and a zero would both say the opposite of the truth and make it look like the
+  cheapest thing on screen. A genuine `0.00` (a free rail) is a price and stays.
+- **why the time policy moved it**, when it did: `capped`, `demoted` and
+  `promoted` in words that name the consequence ("moved to the end — deepseek is
+  in an expensive window, so it is tried only if everything ahead of it fails").
+  A flag alone describes a position, not a reason.
+
+**Redundancy is counted in upstreams, not in vendor names.** Nous Portal resells
+OpenRouter, so a chain hopping from one to the other survives nothing. The tier
+head reports independent rails against hops, and a chain whose FIRST TWO hops
+share an upstream is called out by name with the reorder to make — that is the
+pair redundancy actually uses.
+
+**Conditions an operator must never discover by accident**, all surfaced before
+anything else in a chain plan, each naming what the router will do AND what the
+operator can do:
+
+- `bypassed` — the filter disqualified every elo and overrode itself to keep
+  routing alive, so the task runs on a model that cannot meet its own stated
+  requirements. When the bypass reports no per-elo reasons, that is said too: an
+  absent Dropped section beside "bypassed" otherwise reads as "nothing was
+  dropped", the opposite of what happened.
+- `time_cap_bypassed` — a COST control was dropped, deliberately, because
+  enforcing it would have left the task with no rail. Same volume as the filter
+  bypass, because it is the same class of event: the request pays peak price, and
+  an operator who learns that from an invoice has been failed by this console.
+- `strategy_degraded` — the declared strategy did not run (no clock, or no random
+  source). The plan reports the declared word either way, so the console must say
+  which one happened.
+- `independent_rails` of 1 on a POST-FILTER chain — this task has no fallback at
+  all, however wide the declared chain is. It is invisible in router.yaml because
+  it is a property of the task, and it looks exactly like a healthy tier unless
+  said out loud.
+- `capability_unknown` — eligible by assumption.
+
+**A rejection is words, never an enum.** `context_too_small` reads "its context
+window is smaller than this task needs", and where the numbers exist they follow
+it — "holds 200K, needs 500K" — because "too small" alone is not fixable. The
+reasons themselves stay `--muted`: the DROPPED heading already says these were
+refused, and painting every one of them put three reds beside the one real
+refusal in the same viewport.
+
+## 3c. The clock is one line, and it is injected
+
+Three rails price by wall-clock window and the swing is 2x, which is large enough
+to decide where a task goes. So the console carries exactly ONE persistent
+affordance for it — a line above the warnings, on every screen, because the hour
+is not any one screen's subject: it changes what all three of them mean.
+
+- **Both clocks, each labelled.** The windows are published in UTC; the operator
+  lives in UTC−03. A bare "07:14" is therefore wrong by exactly the difference
+  between "the peak is on now" and "the peak is three hours away", so the line
+  reads `07:14 UTC` beside `04:14 local (UTC−03:00)` and never one alone.
+- **Per rail: what it costs now, and until when.** `deepseek 2× peak until 10:00
+  UTC`. The multiplier is in the words, so colour is not the only channel; only
+  the EXPENSIVE state takes a hue (`--warn-text`, the colour that means "this
+  needs your attention", because paying double is exactly that). A cheap window
+  stays muted: a discount needs no alarm, and green here would collide with
+  alive. A flat rail is not listed — nothing to report is not a row.
+- **The clock is INJECTED, never read**, in every function but one. `nowUtc()` is
+  the only place a wall clock is touched; everything else takes `{hour, weekday}`
+  as a parameter, with weekday 0 = Monday (the router's convention, not JS's) and
+  `null` meaning time-agnostic — multiplier 1.0, no window reported, no guessing.
+  This is `rules.py`'s own contract and it is here for the same reason: a
+  formatter that read the clock itself would make every rendering test pass at
+  05:00 UTC and fail at 07:00.
+- **The declared windows live here, not behind a fetch.** `GET /capabilities` is
+  an optional read (§7), and a blank clock line is indistinguishable on screen
+  from "off-peak right now" — which is the confusion the line exists to remove.
+  So the three rails' windows are a table in the file, mirroring the registry, and
+  a registry entry that DOES publish `price_windows` wins over it, exactly as
+  `declared` wins over the registry elsewhere.
+- **A plan's own hour outranks the console's.** When a chain plan reports the hour
+  it was planned against, every price under it is read at that hour and the panel
+  says `planned at 03:00 UTC`. When it reports none, the console's hour is used —
+  which is the hour this line already names, so there is still one authority.
 
 ## 4. Writing is a mode, and it is off by default
 
@@ -186,7 +337,11 @@ and in any light skin this console was a black rectangle inside a parchment shel
           `--faint` = `--host-muted` (the SAME value — see below)
   ACCENT  `--accent` <- `--host-accent` · `--accent-text` <- `--host-accent-text` ·
           `--accent-bg`/`-strong` <- the host's own washes ·
-          `--accent-fg` <- `--host-accent-fg`
+          `--accent-fg` <- `--host-accent-fg`, falling back to NEAR-BLACK. The
+          host declares its accent foreground only under `:root.dark`, so in a
+          light skin the fallback is what lands on the one filled button; against
+          this file's own paper-white fail-safe accent a `#fff` fallback measured
+          1.1:1, i.e. an invisible label on the only committing control there is.
   STATE   `--ok`/`--warn`/`--bad`/`--info` <- `--host-success`/`-warning`/`-error`/
           `-info`, plus the four `-text` forms and four `-bg` washes derived in an
           `@supports (color: color-mix(...))` block
@@ -219,7 +374,18 @@ up. A cause label ("fail safe strong") is a phrase, so it is sans, not mono.
 - Nav items keep `class="tab"` + `role="tab"` + `data-tab` + `aria-controls`,
   and panels keep `id="panel-<tab>"`; one delegate drives selection.
 - These ids are load-bearing for tests: `sheet`, `probeTask`, `ladder`,
-  `routesTable`, `replayPath`.
+  `routesTable`, `replayPath`, `chainPlan`, `clockbar`.
+- `nowUtc()` is the ONLY reader of a wall clock, and `state.clock` overrides it.
+  Every time-dependent function takes `{hour, weekday}` as a parameter, so the
+  console's own tests pin an hour instead of inheriting the one they run at.
+- The capability registry is an OPTIONAL read (`GET /capabilities`). A sidecar
+  without it is not an error and never produces a note about the endpoint: the
+  chain view reports those elos as unverified, which is the truth either way.
+  Per-elo `declared` keys in router.yaml WIN over the registry, exactly as
+  `capabilities.capabilities_for` resolves them, so an operator who corrects a
+  stale window sees their own number.
+- The chain plan is task-scoped: it is dropped the moment a new probe starts, and
+  kept in state so a Refresh re-renders it instead of silently losing it.
 - No `<svg>`: both sequences are lists, and the static test enforces it.
 - Writes send `X-Hermes-CSRF-Token` when the host provides one.
 - Under `(hover:none) and (pointer:coarse)`: 44px minimum targets, and inputs at
