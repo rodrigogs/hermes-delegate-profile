@@ -1678,3 +1678,331 @@ def test_the_installed_planner_is_wired_into_production():
         "the installed planner takes no `when`, so time_cap/time_policy/"
         "cheapest_now are inert in production while /explain can still show them"
     )
+
+
+# ---------------------------------------------------------------------------
+# The veto still binds when the policy is half-edited
+# ---------------------------------------------------------------------------
+#
+# ``blocklist.fallback_chain`` is a flat list of model ids, so every substitution
+# has to recover its rail from the tier table — and router.yaml is the operator's
+# hand-edited file. The rail is half of the ``model@provider`` key the breaker is
+# written under and the routing path reads back, so a scan that gives up early or
+# hands back a stale rail is the same disagreement the whole veto exists to close.
+# Each config below is one shape of "mid-edit" reached through route(), not
+# through the helper, because the substitution's provider only matters once it has
+# travelled onto the decision AND onto the chain head.
+
+# T1's primary is banned. The fallback_chain's next link, mimo-v2.5, is declared
+# NOWHERE as a primary and appears only in T4's fallback list — and the scan has
+# to walk past T2, whose `fallback:` an operator left as a scalar, to find it.
+_MID_EDIT_TIERS_CONFIG = {
+    "enabled": True,
+    "blocklist": {
+        "manual_ban": [{"model": "glm-4.7", "provider": "", "reason": "test-ban"}],
+        "fallback_chain": ["glm-4.7", "mimo-v2.5"],
+        "auto_breaker": {"enabled": False},
+    },
+    "rules": [{"id": "trivial-mechanical-edit",
+               "when": {"verb_class": {"eq": "trivial"}},
+               "then": {"profile": "coder", "model": "T1"}}],
+    "default": {"action": "classify"},
+    "tiers": {
+        "T1": {"model": "glm-4.7", "provider": "zai", "billing_mode": "plan",
+               "fallback": [{"model": "gpt-5.6-luna", "provider": "openai-codex",
+                             "billing_mode": "subscription"}],
+               "fallback_strategy": "sequential"},
+        # Mid-edit: `fallback:` is still the scalar it was being converted from.
+        "T2": {"model": "glm-5.3", "provider": "zai",
+               "fallback": "deepseek-v4-flash"},
+        # Well-formed, and simply does not declare the elo being resolved.
+        "T3": {"model": "gpt-5.6-terra", "provider": "openai-codex",
+               "fallback": [{"model": "deepseek-v4-pro", "provider": "deepseek"}]},
+        # The one row that names mimo-v2.5's rail, and only as a fallback hop.
+        "T4": {"model": "gpt-5.5", "provider": "openai-codex",
+               "fallback": [{"model": "mimo-v2.5", "provider": "xiaomi"}]},
+    },
+    "fail_safe": {"profile": "coder", "model": "gpt-5.6-luna",
+                  "provider": "openai-codex"},
+}
+
+# No `tiers:` at all — a policy trimmed down to a concrete `default:`. There is
+# nothing to recover a rail FROM, so the substitution legitimately names none.
+_NO_TIER_TABLE_CONFIG = {
+    "enabled": True,
+    "blocklist": {
+        "manual_ban": [{"model": "glm-5.3", "provider": "", "reason": "test-ban"}],
+        "fallback_chain": ["glm-5.3", "undeclared-elo"],
+        "auto_breaker": {"enabled": False},
+    },
+    "rules": [],
+    "default": {"profile": "coder", "model": "glm-5.3", "provider": "zai"},
+    "fail_safe": {"profile": "coder", "model": "gpt-5.6-luna",
+                  "provider": "openai-codex"},
+}
+
+
+class TestTheVetoUnderAHalfEditedPolicy:
+    """A substitution's rail is resolved from a policy that may be mid-edit."""
+
+    def test_a_substitution_declared_only_as_a_fallback_hop_keeps_that_rail(
+        self, tmp_path, monkeypatch,
+    ):
+        """The rail travels with the model, past the rows that cannot answer.
+
+        A primaries-only scan (or one that stopped at T2's scalar `fallback:`)
+        would hand this substitution back with no rail. That is not a cosmetic
+        loss: `is_blocked(model, "")` cannot see a cooldown keyed
+        ``model@provider``, so the next turn would re-offer the same elo.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg = copy.deepcopy(_MID_EDIT_TIERS_CONFIG)
+        bl = Blocklist(cfg)
+        dlog = DecisionLog()
+        result = route("Rename getCwd in src/utils.py", cfg, blocklist=bl,
+                       decision_log=dlog, now=FIXED_CLOCK)
+
+        assert result["cause"] == "blocklist_substituted"
+        assert result["blocked_model"] == "glm-4.7"
+        # The rail is read off the OPERATOR'S table, not resolved with the code
+        # under test — otherwise this checks the scan against itself.
+        assert (result["model"], result["provider"]) == (
+            "mimo-v2.5", cfg["tiers"]["T4"]["fallback"][0]["provider"],
+        )
+        # The decision and the head of what RUNS name the same (model, rail) —
+        # a substitution that moved only one of the two is the defect.
+        plan = dlog.tail(1)[0]["chain_plan"]
+        assert _targets(result)[0] == (result["model"], result["provider"])
+        assert _hops(plan["chain"])[0] == (result["model"], result["provider"])
+        refused = {hop["model"] for hop in plan["blocked"]}
+        assert refused == {"glm-4.7"}
+        assert refused.isdisjoint(model for model, _p in _targets(result))
+        assert plan["blocklist_bypassed"] is False
+
+    def test_a_policy_with_no_tier_table_substitutes_onto_no_rail_at_all(
+        self, tmp_path, monkeypatch,
+    ):
+        """"" is an honest answer, and the rejected model's rail is not kept.
+
+        Pairing the replacement with the rail that belonged to the model just
+        rejected would name a target that exists nowhere and fail opaquely at
+        spawn. So the key is dropped — and the "" the walk vetted the replacement
+        on is then the same "" the dispatch carries, which is what makes the
+        lookup that cleared it the honest one.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg = copy.deepcopy(_NO_TIER_TABLE_CONFIG)
+        bl = Blocklist(cfg)
+        dlog = DecisionLog()
+        result = route("Rename getCwd in src/utils.py", cfg, blocklist=bl,
+                       decision_log=dlog, now=FIXED_CLOCK)
+
+        assert result["model"] == "undeclared-elo"
+        assert "provider" not in result, (
+            f"the rejected glm-5.3's rail outlived it: {result}"
+        )
+        # Decision and chain head agree that there is no rail, rather than one of
+        # the two quietly carrying `zai`.
+        plan = dlog.tail(1)[0]["chain_plan"]
+        assert _hops(plan["chain"])[0] == ("undeclared-elo", None)
+        assert _targets(result) == [("undeclared-elo", None)]
+        assert bl.is_blocked("undeclared-elo", "") is False, (
+            "the replacement must be clean on the very rail it will dispatch on"
+        )
+        refused = {hop["model"] for hop in plan["blocked"]}
+        assert refused == {"glm-5.3"}
+        assert refused.isdisjoint(hop.get("model") for hop in plan["chain"])
+
+
+# A tier that declares no model of its own, only fallback hops — the shape
+# ``_resolve_tier_cfg`` and ``_declared_chain`` both already contemplate — with
+# EVERY one of those hops banned. It is the one route() reaches the veto with no
+# primary to vet at all, so step 1 cannot establish the "there is always an
+# unblocked head" premise the widening relies on.
+_ALL_HOPS_BANNED_CONFIG = {
+    "enabled": True,
+    "blocklist": {
+        "manual_ban": [{"model": model, "provider": "", "reason": "test-ban"}
+                       for model in ("gpt-5.6-luna", "deepseek-v4-flash")],
+        "fallback_chain": [],
+        "auto_breaker": {"enabled": False},
+    },
+    "rules": [],
+    "default": {"action": "classify"},
+    "tiers": {
+        "T3": {"fallback_strategy": "sequential", "fallback": [
+            {"model": "gpt-5.6-luna", "provider": "openai-codex",
+             "billing_mode": "subscription"},
+            {"model": "deepseek-v4-flash", "provider": "deepseek",
+             "billing_mode": "metered"},
+        ]},
+    },
+    "fail_safe": {"profile": "coder", "model": "gpt-5.6-luna",
+                  "provider": "openai-codex"},
+}
+
+
+def test_a_chain_of_nothing_but_banned_hops_bypasses_itself_loudly(
+    tmp_path, monkeypatch,
+):
+    """The last resort: keep the chain, flag it, never hand back an outage.
+
+    This is the branch ``_vet_plan_chain`` calls defence in depth. It is NOT
+    unreachable: a tier declaring only fallback hops resolves to an output with no
+    ``model``, so ``_veto_blocked``'s step 1 has no primary to vet and never
+    establishes the unblocked head that makes the widening non-empty. With every
+    declared hop banned there is then nothing left to widen TO.
+
+    The choice made here is the capability filter's own ("routing beats
+    correctness"): an empty chain is an outage, which is worse than a hop the ban
+    list refused, so the hops stay and ``blocklist_bypassed`` says so. The
+    agreement asserted is therefore between the OVERLAP and the FLAG — this is the
+    only shape where an elo may be both refused and attempted, and it may only be
+    so while the plan admits it.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cfg = copy.deepcopy(_ALL_HOPS_BANNED_CONFIG)
+    bl = Blocklist(cfg)
+    dlog = DecisionLog()
+    result = route("some ambiguous task", cfg, blocklist=bl, decision_log=dlog,
+                   now=FIXED_CLOCK,
+                   classify_fn=lambda _t, _f: {"tier": "T3", "confidence": "high"})
+
+    assert result.get("deny") is not True, "the bypass routes, it does not refuse"
+    running = _targets(result)
+    assert running, "an empty chain is an outage, which is the worse failure"
+    plan = dlog.tail(1)[0]["chain_plan"]
+    assert plan["chain"], "the recorded plan must not be empty either"
+
+    refused = {hop["model"] for hop in plan["blocked"]}
+    assert refused == {"gpt-5.6-luna", "deepseek-v4-flash"}
+    assert not refused.isdisjoint(model for model, _p in running), (
+        "this config no longer strands the veto, so it asserts nothing about the "
+        "bypass"
+    )
+    assert plan["blocklist_bypassed"] is True, (
+        "banned hops are still being attempted and the plan does not say so — "
+        "the flag is the only thing separating this from a silent safety hole"
+    )
+    assert plan["blocklist_widened"] is False, "there was nothing to widen to"
+
+
+class TestAnOutOfStepPlanner:
+    """The veto survives plan shapes the INSTALLED planner cannot produce.
+
+    This plugin is deployed by file copy, which is why ``adapter.plan_chain`` is
+    resolved behind ``try/except ImportError``: router/rules.py can land a version
+    behind or ahead of router/adapter.py. ``rules._build_chain`` currently drops
+    every hop that names no model and always returns a ``chain`` key, so these two
+    shapes come only from a planner deployed out of step — which is exactly the
+    case the defensive resolution exists for, and the stand-in planner below is
+    how that mismatch is reproduced without a second checkout.
+    """
+
+    def test_a_planner_with_no_planner_at_all_still_denies_a_banned_chain(
+        self, tmp_path, monkeypatch,
+    ):
+        """A rules.py behind this file routes pre-capability — it does not un-veto.
+
+        With no planner there is no chain to vet, so the veto has only the
+        DECLARED primary to work with; when the whole fallback_chain is banned too
+        the turn must still be refused rather than dispatched to a target known to
+        be down. And the denial must reach the trace, which records no plan rather
+        than inventing an empty one.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(adapter, "plan_chain", None)
+        cfg = copy.deepcopy(_MID_EDIT_TIERS_CONFIG)
+        cfg["blocklist"]["manual_ban"].append(
+            {"model": "mimo-v2.5", "provider": "", "reason": "test-ban"})
+        bl = Blocklist(cfg)
+        dlog = DecisionLog()
+        result = route("Rename getCwd in src/utils.py", cfg, blocklist=bl,
+                       decision_log=dlog, now=FIXED_CLOCK)
+
+        assert result == {
+            "deny": True,
+            "blocked_model": "glm-4.7",
+            "cause": "blocklist_veto",
+            "reason": ("routed model 'glm-4.7' is blocked and the fallback chain "
+                       "offers no reachable replacement"),
+        }
+        entry = dlog.tail(1)[0]
+        assert entry["output"]["deny"] is True
+        assert "chain_plan" not in entry, \
+            "a trace records no plan rather than an invented one"
+        # Both surfaces agree the turn attempts nothing: the accessor a console
+        # reads, and the target list the executor would derive.
+        assert attempted_head_of(entry) == ("", "")
+        assert _targets(result) == []
+
+    def test_a_plan_with_no_chain_list_still_gets_a_vetted_primary(
+        self, tmp_path, monkeypatch,
+    ):
+        """Nothing to vet in the plan is not nothing to vet.
+
+        A plan carrying diagnostics but no ``chain`` list is passed through
+        untouched — there are no hops in it to remove — while the DECLARED primary
+        is substituted as usual, because that is what the executor attempts when
+        the plan gives it no order to follow.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            adapter, "plan_chain",
+            lambda *_a, **_k: {"strategy": "sequential", "rejected": []},
+        )
+        cfg = copy.deepcopy(_MID_EDIT_TIERS_CONFIG)
+        bl = Blocklist(cfg)
+        dlog = DecisionLog()
+        result = route("Rename getCwd in src/utils.py", cfg, blocklist=bl,
+                       decision_log=dlog, now=FIXED_CLOCK)
+
+        assert (result["model"], result["provider"]) == ("mimo-v2.5", "xiaomi")
+        assert result["blocked_model"] == "glm-4.7"
+        assert "chain" not in result, "a chain-less plan leaves the declared order"
+        assert not any(bl.is_blocked(model, provider or "")
+                       for model, provider in _targets(result))
+        # The plan is passed through as-is: no invented chain, no veto keys.
+        # (``rejected_truncated`` is the decision log's own bookkeeping, added on
+        # every plan it records.)
+        plan = dlog.tail(1)[0]["chain_plan"]
+        assert "chain" not in plan
+        for key in ("blocked", "blocklist_widened", "blocklist_bypassed"):
+            assert key not in plan, f"{key} was invented for a chain-less plan"
+
+    def test_an_unattributable_hop_has_nothing_to_vet_and_nobody_to_blame(
+        self, tmp_path, monkeypatch,
+    ):
+        """A hop naming no model survives the veto but is not a route either.
+
+        Same reading ``capabilities.apply_time_cap`` uses: the ban list keys on a
+        model, so a hop that names none cannot be refused — but it also cannot
+        count as the named survivor that keeps the chain non-empty, which is what
+        ``_has_named_hop`` is for. Here one named hop is clean, so the chain
+        stands; the unattributable hop rides along in the recorded plan and is
+        absent from what the executor derives, which drops it for the same reason.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(adapter, "plan_chain", lambda *_a, **_k: {"chain": [
+            {"provider": "openai-codex"},
+            {"model": "gpt-5.6-luna", "provider": "openai-codex"},
+            {"model": "mimo-v2.5", "provider": "xiaomi"},
+        ]})
+        cfg = copy.deepcopy(_MID_EDIT_TIERS_CONFIG)
+        cfg["blocklist"]["manual_ban"] = [
+            {"model": "gpt-5.6-luna", "provider": "", "reason": "test-ban"}]
+        bl = Blocklist(cfg)
+        dlog = DecisionLog()
+        result = route("Rename getCwd in src/utils.py", cfg, blocklist=bl,
+                       decision_log=dlog, now=FIXED_CLOCK)
+
+        plan = dlog.tail(1)[0]["chain_plan"]
+        assert _hops(plan["chain"]) == [
+            (None, "openai-codex"), ("mimo-v2.5", "xiaomi"),
+        ], "the banned hop went, the blameless one stayed"
+        assert [hop["model"] for hop in plan["blocked"]] == ["gpt-5.6-luna"]
+        assert plan["blocklist_widened"] is False, "a named hop survived"
+        assert plan["blocklist_bypassed"] is False
+        # What RUNS is the named survivor alone, and it agrees with the plan on
+        # which elo that is.
+        assert _targets(result) == [("mimo-v2.5", "xiaomi")]

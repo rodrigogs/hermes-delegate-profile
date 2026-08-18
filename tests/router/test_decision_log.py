@@ -4,7 +4,10 @@ guarantees, and the attempted head that makes a trace name the elo that RAN."""
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
+import router.decision_log as decision_log_mod
+import router.rules as rules_mod
 from router.decision_log import (
     CHAIN_PLAN_KEYS,
     DecisionLog,
@@ -264,3 +267,317 @@ def test_the_vetos_keys_stay_ABSENT_when_the_veto_did_nothing():
     corrupt = chain_plan_of({"chain_plan": {"blocked": "nope",
                                             "blocklist_widened": "yes"}})
     assert "blocked" not in corrupt and "blocklist_widened" not in corrupt
+
+
+# ---------------------------------------------------------------------------
+# A corrupt FIELD costs that field, never the decision
+# ---------------------------------------------------------------------------
+#
+# Both functions below are on the write path of a trace entry, which is never
+# worth raising over: a plan is produced by another module and reaches here
+# whatever shape that module was in, so each field is bounded and type-checked on
+# its own. The property that matters is that one bad field does not take the
+# entry — an entry silently reduced to nothing is worse than a missing field,
+# because a reader cannot tell it from a decision that had nothing to say.
+
+
+def test_a_corrupt_rejected_list_costs_that_field_and_not_the_rest_of_the_plan():
+    """``rejected`` of the wrong type degrades to empty; the head still lands.
+
+    ``bound_chain_plan`` truncates ``rejected`` because routes.jsonl is
+    size-bounded, so it has to have an answer for a value that is not a list at
+    all. Dropping the plan there would lose the chain — and with it the
+    ``attempted_model`` this whole module exists to record.
+    """
+    log = DecisionLog()
+    log.record(
+        "keyword_match",
+        {"profile": "coder", "model": "glm-5.3", "provider": "zai"},
+        chain_plan={"chain": [{"model": "gpt-5.6-luna", "provider": "openai-codex"}],
+                    "rejected": "not-a-list", "strategy": "cheapest_now"},
+    )
+    entry = _persisted(log.entries()[0])
+
+    assert entry["chain_plan"]["rejected"] == []
+    # 0, not absent: consumers never branch on the key's presence.
+    assert entry["chain_plan"]["rejected_truncated"] == 0
+    # The rest of the plan survived, including the field the executor is judged on.
+    assert entry["chain_plan"]["strategy"] == "cheapest_now"
+    assert attempted_head_of(entry) == ("gpt-5.6-luna", "openai-codex")
+    assert chain_plan_of(entry)["rejected"] == []
+
+
+def test_a_corrupt_chain_is_not_a_head_on_either_side_of_the_pair():
+    """A chain that is not a list yields no head — to the writer AND the reader.
+
+    ``plan_head_of`` answers None rather than ``("", "")`` precisely so the writer
+    can tell "no head to record" from "a head with a blank provider", and the
+    reader then falls back to the declared tier primary. Asserting the two
+    together is the point: a writer that recorded ``attempted_model: ""`` here
+    would make the reader answer "" for a decision that really did attempt the
+    declared model.
+    """
+    for broken in ({"chain": "gpt-5.6-luna"}, {"chain": 3}, {"chain": None},
+                   {"rejected": []}, "not a mapping", None):
+        assert plan_head_of(broken) is None, broken
+
+        log = DecisionLog()
+        log.record("hard_rule", {"model": "gpt-5.5", "provider": "openai-codex"},
+                   chain_plan=broken)
+        entry = _persisted(log.entries()[0])
+        assert "attempted_model" not in entry["output"], broken
+        assert attempted_head_of(entry) == ("gpt-5.5", "openai-codex"), broken
+
+
+def test_the_logs_chain_plan_method_and_the_module_accessor_never_disagree():
+    """``DecisionLog.chain_plan`` is the same answer as ``chain_plan_of``.
+
+    The method exists so a consumer holding the log object does not have to reach
+    for the module function — which means the two must not be able to differ. A
+    second reading of "what plan does this entry carry" is the defect this file's
+    other half is entirely about, and it would be no better here.
+    """
+    log = DecisionLog()
+    log.record("keyword_match", {"model": "glm-5.3"},
+               chain_plan=_plan([{"model": "gpt-5.6-luna", "provider": "openai-codex"}],
+                                strategy="random", independent_rails=2))
+    log.record("hard_rule", {"model": "gpt-5.5"})  # no plan at all — an old entry
+
+    for entry in log.entries():
+        assert log.chain_plan(entry) == chain_plan_of(entry)
+    # Non-vacuity: the first entry's plan is real, the second's is the default.
+    planned, planless = (log.chain_plan(e) for e in log.entries())
+    assert planned["chain"][0]["model"] == "gpt-5.6-luna"
+    assert (planned["strategy"], planned["independent_rails"]) == ("random", 2)
+    assert planless == empty_chain_plan()
+    # And every shape a corrupt trace file can hand either of them is the default,
+    # from both, without raising.
+    for junk in (None, "", [], 7, {"chain_plan": "nope"}, {"chain_plan": [1]},
+                 {"chain_plan": None}):
+        assert log.chain_plan(junk) == chain_plan_of(junk) == empty_chain_plan(), junk
+
+
+# ---------------------------------------------------------------------------
+# The PLANNER and this module's read-back are a pair
+# ---------------------------------------------------------------------------
+#
+# ``bound_chain_plan`` persists whatever ``rules.plan_chain`` produced, and
+# ``chain_plan_of`` type-checks it back one field at a time. So a key the planner
+# emits that the read-back table does not list is an error NOWHERE: it is silently
+# dropped, and the console renders a phase-1 plan for a phase-2 decision — which
+# is worse than a missing key because it looks like data. That is the defect the
+# read-back table exists to prevent, and the only way to assert it is prevented is
+# to compare the two SIDES: a plan the shipped planner really produced, at a real
+# peak hour, read back through a real persist/read round trip. A literal plan
+# written out here would be a third copy of the shape that drifts with neither
+# side, and it is exactly what a passing test looked like while the phase-2 keys
+# were being dropped.
+
+#: 2026-08-17 is a Monday and 07:00 UTC is peak on zai (weekdays) and deepseek
+#: (every day) at once, so a plan taken at this hour carries real multipliers, a
+#: real cap verdict and both clock keys instead of the time-agnostic defaults.
+_PEAK_MONDAY = datetime(2026, 8, 17, 7, 0, tzinfo=timezone.utc)
+
+#: Tiers declaring the phase-2 knobs over elos the shipped capability registry
+#: really prices, in the shapes ``lint`` accepts (asserted below — a fixture the
+#: write gate would refuse is a plan production could never be holding):
+#:   * T3 — a cap plus an avoid_peak policy. glm-5.3 bills in PLAN credits, so the
+#:     1.5x DOLLAR ceiling cannot speak to it even at 2.0x; deepseek-v4-pro is
+#:     metered and 2.0x at this hour, so the same cap does catch it; mimo-v2.5-pro
+#:     is metered and flat, so something survives and no stage empties the chain.
+#:   * T2 — ``random`` with no rng injected, which is the strategy degrade: the one
+#:     plan shape that carries a NON-EMPTY ``strategy_degraded_reason``.
+_PHASE_TWO_TIERS = {
+    "T1": {"model": "glm-5.2-fast", "provider": "zai"},
+    "T2": {
+        "model": "glm-4.7",
+        "provider": "zai",
+        "fallback_strategy": "random",
+        "pin_primary": False,
+        "fallback": [
+            {"model": "deepseek-v4-pro", "provider": "deepseek"},
+            {"model": "mimo-v2.5-pro", "provider": "xiaomi"},
+        ],
+    },
+    "T3": {
+        "model": "glm-5.3",
+        "provider": "zai",
+        "fallback_strategy": "cheapest_now",
+        "time_cap": {"max_multiplier": 1.5},
+        "time_policy": {"avoid_peak": ["zai"]},
+        "requirements": {"min_context": 128000},
+        "fallback": [
+            {"model": "deepseek-v4-pro", "provider": "deepseek"},
+            {"model": "mimo-v2.5-pro", "provider": "xiaomi"},
+        ],
+    },
+    "T4": {"model": "claude-opus", "provider": "anthropic"},
+}
+
+#: The module's own read-back tables, by group. A field only proves it survives if
+#: the value that arrived is NOT the value a dropped field reads back as, so
+#: non-vacuity below is asserted per GROUP rather than per key.
+_READ_BACK_GROUPS = {
+    "list": decision_log_mod._PLAN_LIST_KEYS,
+    "dict": decision_log_mod._PLAN_DICT_KEYS,
+    "bool": decision_log_mod._PLAN_BOOL_KEYS,
+    "name": decision_log_mod._PLAN_NAME_KEYS,
+    "text": decision_log_mod._PLAN_TEXT_KEYS,
+    "count": decision_log_mod._PLAN_COUNT_KEYS,
+    "clock": tuple(decision_log_mod._PLAN_CLOCK_RANGES),
+}
+
+
+def _real_phase_two_plans():
+    """``[(tier, resolved, plan), ...]`` from the shipped planner, not from literals.
+
+    TWO plans, because no single one carries a non-default value for every read-back
+    group: a plan whose cap fired has an empty degrade reason, and a plan that
+    degraded its strategy has no cap verdict. That is the whole difficulty of
+    testing this seam — a dropped field reads back AS ITS DEFAULT, so a comparison
+    of defaults against defaults passes while the field is being lost. Measured
+    while writing this: with the cap plan alone, deleting
+    ``strategy_degraded_reason`` from the read-back table changed nothing and the
+    round trip still passed, because both sides were "".
+    """
+    features = {"char_len": 100, "has_code": False, "size_lines": 0, "num_files": 0,
+                "has_stacktrace": False, "num_requirements": 0,
+                "verb_class": "unknown", "lang": "", "keywords": [],
+                "est_input_tokens": 500}
+    plans = []
+    for tier in ("T3", "T2"):
+        resolved = rules_mod.resolve_tiers({"model": tier}, _PHASE_TWO_TIERS)
+        # rng is deliberately NOT injected: T2 declares ``random``, and the absent
+        # rng is what makes the planner report the degrade.
+        plans.append((tier, resolved,
+                      rules_mod.plan_chain(resolved, features, when=_PEAK_MONDAY)))
+    return plans
+
+
+def test_every_field_the_planner_emits_survives_the_round_trip_to_the_reader():
+    """Writer → routes.jsonl → reader, field for field, on real phase-2 plans.
+
+    Not "the keys I remembered to check": every key the planner produced, so a key
+    the planner GAINS is caught here instead of going invisible on replay.
+    """
+    default = empty_chain_plan()
+    non_default = set()
+
+    for tier, resolved, plan in _real_phase_two_plans():
+        log = DecisionLog()
+        log.record("hard_rule", dict(resolved), chain_plan=plan)
+        back = chain_plan_of(_persisted(log.entries()[0]))
+
+        assert set(plan) <= set(CHAIN_PLAN_KEYS), (tier, "emitted, not whitelisted")
+        assert set(plan) - set(back) == set(), (tier, "whitelisted, dropped on read")
+        for key, value in plan.items():
+            assert back[key] == value, (tier, key)
+            if key not in default or default[key] != value:
+                non_default.add(key)
+
+    # Non-vacuity, per read-back group: each group carried at least one field whose
+    # value differs from the empty default, so no group passed by having nothing to
+    # lose in the first place.
+    for group, keys in _READ_BACK_GROUPS.items():
+        assert non_default & set(keys), (group, sorted(non_default))
+
+
+def test_the_plans_the_round_trip_uses_say_what_the_policy_declared():
+    """Anchors for the pair above: the facts those two plans are supposed to carry.
+
+    Without them the round trip could agree perfectly about a plan that means
+    nothing. Each assertion is also the behaviour the fixture was chosen for —
+    including the UNIT rule, which is the one an operator is most likely to
+    disbelieve: glm-5.3 is at 2.0x here and is NOT capped, because a DOLLAR ceiling
+    cannot speak to credits spent off an allowance already bought, while metered
+    deepseek-v4-pro at the same 2.0x is refused by that very cap.
+    """
+    plans = {tier: plan for tier, _resolved, plan in _real_phase_two_plans()}
+
+    capped = plans["T3"]
+    assert capped["multipliers"]["glm-5.3"] == 2.0
+    assert [row["model"] for row in capped["capped"]] == ["deepseek-v4-pro"]
+    assert capped["peak_priced"] == ["glm-5.3"] and capped["demoted"] == ["glm-5.3"]
+    assert capped["chain"], "no filter, cap or policy may empty the chain"
+    assert capped["time_cap"] == {"max_multiplier": 1.5}
+    assert capped["requirements"] == {"min_context": 128000}
+    assert (capped["utc_hour"], capped["utc_weekday"]) == (7, 0)
+    assert capped["time_agnostic"] is False
+
+    degraded = plans["T2"]
+    assert degraded["strategy_declared"] == "random"
+    assert degraded["strategy"] == "sequential"
+    assert degraded["strategy_degraded"] is True
+    assert degraded["strategy_degraded_reason"], "the free-text field, non-empty"
+    assert degraded["pin_primary"] is False
+    assert degraded["independent_rails"] == 3
+
+    # And both tiers' knobs are shapes the write gate accepts, so these are plans
+    # production could really be holding rather than shapes lint would refuse.
+    for tier in ("T2", "T3"):
+        assert rules_mod._lint_time_knobs(tier, _PHASE_TWO_TIERS[tier]) == []
+
+
+def test_the_read_back_table_covers_exactly_the_keys_that_get_persisted():
+    """One table, one pass per key: nothing left out, nothing checked twice.
+
+    ``CHAIN_PLAN_KEYS`` is what this module says it persists; the field groups are
+    what it can actually read back. A name in the first and not the second is a
+    key that is written and then silently dropped — the phase-2 defect — and a
+    name in the second and not the first is a claim no writer honours. Sorted-list
+    equality asserts both directions AND that no key sits in two groups, where a
+    later group would quietly overrule an earlier one's type check.
+    """
+    groups = (
+        decision_log_mod._PLAN_LIST_KEYS
+        + decision_log_mod._PLAN_DICT_KEYS
+        + decision_log_mod._PLAN_BOOL_KEYS
+        + decision_log_mod._PLAN_NAME_KEYS
+        + decision_log_mod._PLAN_TEXT_KEYS
+        + decision_log_mod._PLAN_COUNT_KEYS
+        + tuple(decision_log_mod._PLAN_CLOCK_RANGES)
+    )
+    assert sorted(groups) == sorted(CHAIN_PLAN_KEYS)
+    # The empty default is the whitelist minus exactly the keys documented as
+    # staying absent — the clock/cap trio and the veto trio — so "absent" is a
+    # decision this module records once, not per reader.
+    assert set(empty_chain_plan()) == (
+        set(CHAIN_PLAN_KEYS) - decision_log_mod._OPTIONAL_CHAIN_PLAN_KEYS
+    )
+
+
+def test_the_empty_default_is_the_planners_own_degraded_plan_plus_the_counter():
+    """One empty-plan shape across three modules, asserted where it can drift.
+
+    ``rules._empty_chain_plan`` is the original; ``service._empty_chain_plan``
+    mirrors it (asserted in test_service.py) and this module mirrors it plus its
+    own ``rejected_truncated``. A console branches on these keys and cannot see
+    which module handed it the plan, so a key added on one side only is how a
+    phase-2 decision comes to render as a phase-1 plan.
+    """
+    assert empty_chain_plan() == {
+        **rules_mod._empty_chain_plan(), "rejected_truncated": 0,
+    }
+
+
+def test_an_out_of_range_clock_reads_as_no_clock_not_as_a_plausible_hour():
+    """A wrong-looking hour is worse than no hour: a consumer PRICES a plan by it.
+
+    Absent is unambiguous next to ``time_agnostic``; 0 is midnight and 24 is
+    nothing. The two ranges differ, so ``7`` is a valid hour and an invalid
+    weekday — the same value has to be accepted by one and refused by the other.
+    """
+    for bad in (-1, 24, 25, True, False, "7", None, 7.5, [7]):
+        assert "utc_hour" not in chain_plan_of({"chain_plan": {"utc_hour": bad}}), bad
+    for bad in (-1, 7, 24, True, "3", None, 2.5):
+        assert "utc_weekday" not in chain_plan_of(
+            {"chain_plan": {"utc_weekday": bad}}
+        ), bad
+    # Both inclusive bounds are inside, including the two that are falsy.
+    for hour, weekday in ((0, 0), (23, 6)):
+        plan = chain_plan_of({"chain_plan": {"utc_hour": hour, "utc_weekday": weekday}})
+        assert (plan["utc_hour"], plan["utc_weekday"]) == (hour, weekday)
+    # And a cap that is not a mapping is not a cap: lint refuses ``time_cap: 1.5``
+    # in the policy, so a scalar reaching here is corrupt rather than a ceiling.
+    for bad in (1.5, "1.5", [1.5], None, True):
+        assert "time_cap" not in chain_plan_of({"chain_plan": {"time_cap": bad}}), bad

@@ -600,18 +600,18 @@ def _veto_blocked(
          verified unblocked, so it is always available as a head.
       * THE CHAIN IS NEVER EMPTY. If dropping the blocked hops would empty the
          planned chain, the veto falls back to the DECLARED chain's unblocked
-         hops and flags ``blocklist_widened``. That set is provably non-empty
-         here, precisely because step 1 already established the primary is
-         unblocked and the primary is a member of the declared chain. The plan
-         gives way, never the ban: this lands in exactly the state the capability
-         filter reaches on its own bypass ("routing beats correctness"), with the
-         trace naming every hop the ban list removed.
+         hops and flags ``blocklist_widened``. That set is non-empty WHENEVER
+         THERE IS A PRIMARY, because step 1 then established it is unblocked and
+         it is a member of the declared chain. The plan gives way, never the ban:
+         this lands in exactly the state the capability filter reaches on its own
+         bypass ("routing beats correctness"), with the trace naming every hop the
+         ban list removed.
 
     Both facts are reported in the plan rather than left to be reconstructed:
     ``blocked`` lists the removed hops, ``blocklist_widened`` says the planner's
     order gave way, and ``blocklist_bypassed`` says a blocked hop is STILL in the
-    chain — the defensive last resort, unreachable while step 1 holds, kept
-    because "unreachable" is how safety holes are built.
+    chain — the last resort, which is what an output with NO primary at all falls
+    to (see :func:`_vet_plan_chain`).
     """
     if not isinstance(output, dict) or output.get("deny"):
         # A Stage-0 veto (or any denial) attempts nothing. Nothing to vet.
@@ -857,8 +857,12 @@ def _vet_plan_chain(
 
     # Last resort: every hop anyone declared is blocked. Keep the planned chain
     # rather than return an empty one — an empty chain is an outage — and say so
-    # loudly. Reaching here means the primary was blocked too, which
-    # _veto_blocked handles before calling this, so it is defence in depth.
+    # loudly, since this is the one shape where an elo may be both refused and
+    # attempted. NOT defence in depth, as this comment used to claim: _veto_blocked
+    # step 1 vets `output["model"]`, so it establishes nothing for an output that
+    # HAS no model, and a tier declaring only fallback hops resolves to exactly
+    # that. Ban every one of those hops and there is no primary to widen to either.
+    # Covered by test_a_chain_of_nothing_but_banned_hops_bypasses_itself_loudly.
     vetted["chain"] = [dict(hop) for hop in planned if isinstance(hop, dict)]
     vetted["blocklist_widened"] = False
     vetted["blocklist_bypassed"] = True

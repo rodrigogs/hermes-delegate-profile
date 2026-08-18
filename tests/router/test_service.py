@@ -2561,3 +2561,772 @@ def test_capabilities_never_raises_and_degrades_out_loud(tmp_path, monkeypatch):
     assert exploding["models"] == {}
     assert exploding["unknown_models"] == ["boom"]
     assert exploding["warnings"]
+
+
+def test_capabilities_flags_every_named_elo_when_there_is_no_registry_at_all(
+    capability_config_path, monkeypatch,
+):
+    """No registry -> nothing is vouched for, and every elo is named as unchecked.
+
+    The previous test's no-registry case runs against a policy that names no
+    model, so it can only show the empty answer. With a real policy the branch
+    that matters is reachable: ``_merged_capabilities`` has to answer None for
+    every elo, which the caller must report as ``unknown_models`` + a warning
+    rather than as an entry. A console reads the PRESENCE of an entry as "this
+    elo's capabilities are verified", so a hollow entry would silence the
+    unknown-model flag on exactly the elos routing unchecked.
+    """
+    import router.service as service_mod
+
+    named = sorted(RouterService._policy_provider_index(
+        yaml.safe_load(capability_config_path.read_text(encoding="utf-8"))
+    ))
+    assert named, "a policy naming no elo could not show this"
+
+    monkeypatch.setattr(service_mod, "_caps", None)
+    catalogue = RouterService(capability_config_path).capabilities()
+
+    assert catalogue["registry_available"] is False
+    assert catalogue["models"] == {}, "an unverifiable elo is never served as a fact"
+    assert catalogue["unknown_models"] == named
+    assert len(catalogue["warnings"]) == len(named)
+    assert all("routes UNCHECKED" in warning for warning in catalogue["warnings"])
+
+    # The other surface answers the OPPOSITE, and deliberately: liveness's
+    # ``capabilities_known`` fails OPEN, because with no registry importable
+    # nothing is provably unknown and painting every rail unverified would nag
+    # about a condition ``registry_available: False`` already states once. The two
+    # are pinned together here so the difference stays a decision rather than
+    # becoming a surprise: the catalogue refuses to VOUCH for an elo it cannot
+    # describe, liveness refuses to ACCUSE one.
+    assert all(RouterService._capabilities_known(model, None) is True
+               for model in named)
+    assert all(entry["capabilities_known"] is True
+               for entry in RouterService(capability_config_path).liveness()["models"])
+
+
+def test_capabilities_reports_a_registry_it_cannot_even_enumerate(tmp_path, monkeypatch):
+    """A registry keyed by something unsortable is an error, not a traceback.
+
+    Provoked with a real corrupt registry rather than a patched raise: this file
+    is deployed by copy, so it can land beside a capabilities.py whose dict picked
+    up a non-string model id, and then ``sorted(candidates)`` — the call that makes
+    two polls of this endpoint byte-identical — is what fails.
+    """
+    import router.service as service_mod
+
+    path = tmp_path / "router.yaml"
+    path.write_text("enabled: true\n", encoding="utf-8")
+
+    class Unsortable:
+        MODEL_CAPABILITIES = {2.5: {"context_window": 1}, "glm-4.7": {"vision": True}}
+
+        @staticmethod
+        def capabilities_for(model, declared=None):  # pragma: no cover - never reached
+            return {"context_window": 1}
+
+    monkeypatch.setattr(service_mod, "_caps", Unsortable)
+    catalogue = RouterService(path).capabilities()
+
+    assert "could not compose capabilities" in catalogue["error"]
+    # The documented shape survives the failure, so a console renders "unverified"
+    # instead of branching on keys that are suddenly absent.
+    assert catalogue["models"] == {}
+    assert catalogue["unknown_models"] == []
+    assert catalogue["registry_available"] is True  # importable, just unreadable
+    assert catalogue["time_agnostic"] is True
+
+
+def test_a_malformed_tier_degrades_the_read_paths_and_is_refused_by_the_gate(
+    capability_config_path,
+):
+    """``fallback: 5`` — a scalar where a list belongs — must not 500 anything.
+
+    router.yaml is hot and hand-editable, so this typo reaches the read paths
+    before any gate sees it. The three answers are deliberately different and all
+    three are asserted: the catalogue degrades PARTIALLY (it loses the providers
+    policy declares and keeps every registry fact), liveness degrades WHOLESALE
+    because the malformed walk is the source of its model list, and ``lint`` — the
+    fail-closed write gate — refuses the file outright.
+    """
+    config = yaml.safe_load(capability_config_path.read_text(encoding="utf-8"))
+    config["tiers"]["T4"]["fallback"] = 5
+    capability_config_path.write_text(yaml.safe_dump(config, sort_keys=False),
+                                      encoding="utf-8")
+    service = RouterService(capability_config_path)
+
+    # The provider index is the guarded half: it degrades to empty rather than
+    # letting the malformed walk out of a read path.
+    assert RouterService._policy_provider_index(config) == {}
+    with pytest.raises(TypeError):
+        RouterService._policy_references(config, [])
+
+    catalogue = service.capabilities()
+    assert "error" not in catalogue
+    assert catalogue["models"]["glm-5.3"]["context_window"] == 1_000_000
+
+    liveness = service.liveness()
+    assert liveness["models"] == []
+    assert "could not compose liveness" in liveness["error"]
+
+    assert any("fallback" in error for error in service.lint()["errors"])
+
+
+def test_the_local_price_test_agrees_with_the_registry_it_stands_in_for(
+    capability_config_path, monkeypatch,
+):
+    """The fallback price test must not be able to answer differently.
+
+    ``_price_published`` asks ``capabilities.effective_price`` — the function
+    ``cheapest_now`` ranks on — and only falls back to a local ``price_in``/
+    ``price_out`` test when the installed registry cannot be asked (this file is
+    deployed by copy, so it can land beside a capabilities.py that predates
+    ``effective_price``). A fallback that graded prices differently would make the
+    audit panel disagree with the ordering it exists to audit, on exactly the
+    installs nobody is watching.
+
+    Both ways of losing the registry are exercised, because they take different
+    branches: absent entirely, and present but too old to answer.
+    """
+    import router.service as service_mod
+    from router import capabilities as caps
+
+    service = RouterService(capability_config_path)
+    declared = RouterService._declared_capability_index(
+        yaml.safe_load(capability_config_path.read_text(encoding="utf-8"))
+    )
+    # The reference answers, taken from the running cost path while it is live.
+    catalogue = service.capabilities()["models"]
+    expected = {
+        model: entry["price_published"] for model, entry in catalogue.items()
+    }
+    assert set(expected.values()) == {True, False}, (
+        "both verdicts must be represented or the agreement proves nothing"
+    )
+
+    class TooOldToAnswer:
+        """A registry that can describe an elo but cannot price one."""
+
+        MODEL_CAPABILITIES = caps.MODEL_CAPABILITIES
+        capabilities_for = staticmethod(caps.capabilities_for)
+        # No effective_price at all -> AttributeError, the real shape of "older".
+
+    for stand_in in (None, TooOldToAnswer):
+        monkeypatch.setattr(service_mod, "_caps", stand_in)
+        for model, published in expected.items():
+            merged = caps.capabilities_for(model, declared.get(model) or None)
+            assert RouterService._price_published(
+                model, declared.get(model), merged
+            ) is published, (model, stand_in)
+
+    # And the local test grades a BOOL as unpriced: True is an int in Python, so
+    # a price of True would otherwise read as a published rate of 1.0.
+    monkeypatch.setattr(service_mod, "_caps", None)
+    assert RouterService._price_published(
+        "glm-4.7", None, {"price_in": True, "price_out": True}
+    ) is False
+    assert RouterService._price_published(
+        "glm-4.7", None, {"price_in": 0.0, "price_out": 0.0}
+    ) is True, "a genuinely free rail publishes 0.0, which IS a price"
+
+
+def test_an_older_registrys_bare_hour_keeps_the_hour_and_invents_no_weekday(
+    capability_config_path, monkeypatch,
+):
+    """``next_window_change`` as a bare int is the pre-weekday spelling.
+
+    A weekday-gated window makes a bare hour ambiguous by up to two days, so the
+    countdown fields report None rather than being guessed as "today" — guessing
+    is the 45-hours-wrong error the richer shape was introduced to remove. The
+    hour is still carried, because an older registry can genuinely answer that
+    much and dropping it would lose a fact nobody disputes.
+    """
+    import router.service as service_mod
+    from router import capabilities as caps
+
+    when = _PEAK_0700
+
+    class PreWeekday:
+        MODEL_CAPABILITIES = caps.MODEL_CAPABILITIES
+        capabilities_for = staticmethod(caps.capabilities_for)
+        price_multiplier = staticmethod(caps.price_multiplier)
+        in_expensive_window = staticmethod(caps.in_expensive_window)
+
+        @staticmethod
+        def next_window_change(model, at, declared=None):
+            richer = caps.next_window_change(model, at, declared)
+            return None if richer is None else richer["hour"]
+
+    monkeypatch.setattr(service_mod, "_caps", PreWeekday)
+    state = RouterService._time_state("deepseek-v4-pro", None, when)
+
+    assert state["next_window_change"] == {
+        "hour": caps.next_window_change("deepseek-v4-pro", when)["hour"],
+        "weekday": None,
+        "hours_ahead": None,
+        "multiplier": None,
+    }
+    # The multiplier and the window flag are unaffected — one key, one shape.
+    assert state["price_multiplier"] == caps.price_multiplier("deepseek-v4-pro", when)
+    assert state["in_expensive_window"] is True
+
+    # The richer registry's answer is carried through whole, and as a COPY, so a
+    # caller editing the liveness payload cannot edit the registry's answer.
+    monkeypatch.setattr(service_mod, "_caps", caps)
+    live = RouterService._time_state("deepseek-v4-pro", None, when)
+    registry_answer = caps.next_window_change("deepseek-v4-pro", when)
+    assert live["next_window_change"] == registry_answer
+    live["next_window_change"]["hour"] = 99
+    assert caps.next_window_change("deepseek-v4-pro", when) == registry_answer
+
+
+def test_a_top_level_block_is_removable_by_null_and_still_lint_gated(config_path):
+    """``{'blocklist': None}`` drops the whole block — same rule, one level up.
+
+    A deep merge can only add or overwrite, so removal is spelled as an explicit
+    null at EVERY level; the top level is where a whole subsystem is lifted (the
+    blocklist is the manual bans plus the auto-breaker), which is the kind of thing
+    an operator does in a hurry. The gate is unchanged: dropping ``tiers`` is a
+    misroute and lint refuses it before anything is written.
+    """
+    service = RouterService(config_path)
+    assert "blocklist" in yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    planned = service.plan({"blocklist": None})
+    assert planned["valid"] is True
+    assert planned["no_op"] is False
+    assert "blocklist" not in planned["policy"]
+
+    assert service.apply(planned["base_hash"], {"blocklist": None})["ok"] is True
+    on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert "blocklist" not in on_disk, "the block is GONE, not present-and-null"
+    assert on_disk["tiers"]["T4"]["model"] == "strong", "siblings untouched"
+    # Idempotent: removing what is already absent changes nothing and says so.
+    assert service.plan({"blocklist": None})["no_op"] is True
+
+    # And the fail-closed gate still owns which removals may happen.
+    before = config_path.read_bytes()
+    refused = service.plan({"tiers": None})
+    assert refused["valid"] is False
+    assert any("tiers" in error for error in refused["errors"])
+    assert service.apply(refused["base_hash"], {"tiers": None})["ok"] is False
+    assert config_path.read_bytes() == before
+
+
+def test_the_attempted_head_degrade_matches_the_accessor_it_stands_in_for(
+    tmp_path, monkeypatch, config_path,
+):
+    """An older decision_log has no accessor, and the degrade must not lie.
+
+    ``_attempted_head`` is a pass-through to ``decision_log.attempted_head_of``
+    because there must be exactly one definition of "the head". The local branch
+    exists only for a decision_log that predates the accessor — and every entry
+    such a build wrote has no ``attempted_model``, so for those entries the two
+    answers have to be identical. Asserting the pair is the whole point: a degrade
+    that answered differently would put a second definition back.
+    """
+    import router.service as service_mod
+    from router.decision_log import attempted_head_of
+
+    pre_feature = [
+        {"ts": 1.0, "cause": "hard_rule", "task": "a",
+         "output": {"model": "glm-5.3", "provider": "zai"}},
+        {"ts": 2.0, "cause": "blocklist_veto", "task": "b", "output": {}},
+        {"ts": 3.0, "cause": "classifier", "task": "c",
+         "output": {"model": "gpt-5.5"}},
+    ]
+    assert service_mod._attempted_head_of is not None, "the accessor must be live"
+    for entry in pre_feature:
+        assert RouterService._attempted_head(entry) == attempted_head_of(entry)
+
+    _seed_traces(tmp_path, monkeypatch, pre_feature)
+    service = RouterService(config_path)
+    with_accessor = service.routes()
+
+    monkeypatch.setattr(service_mod, "_attempted_head_of", None)
+    for entry in pre_feature:
+        assert RouterService._attempted_head(entry) == attempted_head_of(entry), entry
+    assert service.routes() == with_accessor, (
+        "the Decisions list must read the same on a build without the accessor"
+    )
+    # Malformed entries answer ("", "") on the degraded branch too, rather than
+    # raising out of the reader that serves the tab.
+    for junk in (None, "", [], {}, {"output": None}, {"output": "x"}):
+        assert RouterService._attempted_head(junk) == ("", "")
+
+    # The one case the degrade CANNOT reproduce, asserted so it is deliberate: an
+    # entry written by the CURRENT writer names the head it attempted, and a build
+    # with no accessor can only report the declared tier primary.
+    filtered = {"ts": 4.0, "cause": "keyword_match", "task": "d", "output": {
+        "model": "glm-5.3", "provider": "zai",
+        "attempted_model": "gpt-5.6-luna", "attempted_provider": "openai-codex",
+    }}
+    assert RouterService._attempted_head(filtered) == ("glm-5.3", "zai")
+    monkeypatch.setattr(service_mod, "_attempted_head_of", attempted_head_of)
+    assert RouterService._attempted_head(filtered) == ("gpt-5.6-luna", "openai-codex")
+
+
+# ---------------------------------------------------------------------------
+# Loading shape: the DECISIONS surface must be live under the PACKAGE name
+# ---------------------------------------------------------------------------
+#
+# Every other test in this file imports ``router.service`` — the FLAT shape, where
+# ``router`` is a top-level package on sys.path. Production is not that shape:
+# Hermes loads this plugin as ``hermes_plugins.<slug>.router.service``, where
+# ``router`` is not a top-level package at all. ``_trace_files`` and ``routes``
+# resolved ``durable_decision_log`` by the ABSOLUTE name only, from inside their
+# function bodies, so under the production shape BOTH raised
+# ``ModuleNotFoundError: No module named 'router'``: /routes and /routes?id= 500'd
+# on every call and the Decisions tab was dead in production while this file was
+# green, because this file only ever loaded the other shape. (The module-scope
+# imports in service.py were swept; these two were missed for being indented.)
+#
+# The probe runs in a CHILD interpreter whose sys.path cannot reach this repo, so
+# the absolute name is genuinely unresolvable — the production condition itself
+# rather than a simulation. In-process it would prove NOTHING: ``router.*`` is
+# already in this interpreter's sys.modules from the import at the top of this
+# file, so the absolute fallback would find the cached top-level copies and every
+# assertion would pass with the defect fully restored. The child asserts that
+# unreachability itself, and the parent asserts it was asserted.
+#
+# What it checks is the AGREEMENT: the rows the package shape serves must EQUAL the
+# rows this file's flat-shape service serves for the SAME trace file. Asserting
+# only that the child returned something would pass on an empty list, and asserting
+# only the flat shape is exactly the mistake that hid this.
+
+_PLUGIN_SLUG = "delegate_profile"
+
+#: The seeded trace, defined once as bytes because the corruption is byte-level.
+#: It carries, deliberately: an entry from BEFORE ``attempted_model`` existed; an
+#: entry whose attempted head DIFFERS from the declared tier primary (so a
+#: projection that dropped the distinction cannot pass); a corrupt line; a line
+#: with a torn multi-byte sequence; and one older entry in the rotated backup, so
+#: the cascade ``_trace_files`` walks — the function whose import was broken — is
+#: exercised rather than just the current file.
+_SHAPE_TRACE = b"\n".join([
+    json.dumps({"ts": 2.0, "cause": "hard_rule", "task": "pre-feature",
+                "output": {"model": "gpt-5.5", "provider": "openai-codex"}}).encode(),
+    b"{ this is not json",
+    b'{"ts": 2.5, "cause": "classifier", "task": "\xff\xfe torn"}',
+    json.dumps({"ts": 3.0, "cause": "keyword_match", "task": "filtered",
+                "output": {"model": "glm-5.3", "provider": "zai",
+                           "attempted_model": "gpt-5.6-luna",
+                           "attempted_provider": "openai-codex"},
+                "steps": [{"stage": "rules"}]}).encode(),
+]) + b"\n"
+
+_SHAPE_TRACE_BACKUP = json.dumps(
+    {"ts": 1.0, "cause": "size_rule", "task": "rotated-out",
+     "output": {"model": "glm-4.7", "provider": "zai"}}
+).encode() + b"\n"
+
+_SHAPE_TOKEN = "decisions-shape-probe-token"
+
+#: Runs in the child. Reads the trace through the SERVICE and through the real
+#: sidecar dispatcher, because the dispatcher is what production calls and the
+#: dispatcher is where the ModuleNotFoundError surfaced as a dropped connection.
+_SHAPE_PROBE = '''
+import json
+import pathlib
+import sys
+
+out = {}
+
+# Non-vacuity, checked from inside: if the top-level name were reachable here the
+# absolute import could satisfy every assertion in the parent with the defect
+# restored, and this probe would be testing nothing.
+try:
+    import router  # noqa: F401
+except ImportError:
+    out["absolute_name_reachable"] = False
+else:
+    out["absolute_name_reachable"] = True
+
+from hermes_plugins.__SLUG__.router.service import RouterService
+from hermes_plugins.__SLUG__.router.one_sidecar import SidecarApp
+
+out["module"] = RouterService.__module__
+token = pathlib.Path("token")
+token.write_text("__TOKEN__")
+service = RouterService("router.yaml")
+app = SidecarApp(service, token_path=lambda: token)
+auth = {"X-Hermes-Sidecar-Token": "__TOKEN__"}
+
+out["trace_files"] = [str(path) for path in service._trace_files()]
+out["routes"] = service.routes()
+rid = out["routes"]["routes"][0]["id"]
+out["route"] = service.route(rid)
+out["dispatch"] = app.dispatch("GET", "/routes", auth)
+out["dispatch_one"] = app.dispatch("GET", "/routes", auth, {"id": [rid]})
+
+json.dump(out, sys.stdout)
+'''
+
+
+def _build_plugin_package(root):
+    """Lay out ``hermes_plugins.<slug>.router`` under ``root``.
+
+    COPIED, never symlinked: the child must not be able to reach this repo by any
+    path other than the one under test.
+    """
+    import shutil
+
+    import router.service as service_mod
+
+    pkg = root / "hermes_plugins" / _PLUGIN_SLUG
+    pkg.mkdir(parents=True)
+    shutil.copytree(
+        Path(service_mod.__file__).resolve().parent,
+        pkg / "router",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    (root / "hermes_plugins" / "__init__.py").write_text("")
+    (pkg / "__init__.py").write_text("")
+    return pkg
+
+
+def _probe_decisions_under_package_shape(root, trace):
+    """Read the trace in a child interpreter that can only see the package shape."""
+    import os
+    import subprocess
+    import sys
+
+    _build_plugin_package(root)
+    # routes() never reads the policy, but RouterService is constructed with one
+    # and the child must not have to reach outside its own root for anything.
+    (root / "router.yaml").write_text("enabled: true\n", encoding="utf-8")
+    script = root / "decisions_probe.py"
+    script.write_text(
+        _SHAPE_PROBE.replace("__SLUG__", _PLUGIN_SLUG).replace("__TOKEN__", _SHAPE_TOKEN)
+    )
+
+    # cwd AND PYTHONPATH are the package root and nothing else. Python prepends
+    # cwd to sys.path, so leaving it at the repo root would put `router` back
+    # within reach and hand the absolute import a way to succeed.
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        cwd=str(root),
+        env={**os.environ,
+             "PYTHONPATH": str(root),
+             "HERMES_ROUTE_TRACE_FILE": str(trace)},
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+class TestTheDecisionsSurfaceIsLiveUnderHermesPluginPackageShape:
+    """The shape production loads must serve the traces the flat shape serves."""
+
+    @pytest.fixture(scope="class")
+    def probe(self, tmp_path_factory):
+        """One child interpreter, plus the flat-shape answer for the same file."""
+        root = tmp_path_factory.mktemp("decisions_shape")
+        trace = root / "state" / "routes.jsonl"
+        trace.parent.mkdir(parents=True, exist_ok=True)
+        trace.write_bytes(_SHAPE_TRACE)
+        trace.with_suffix(trace.suffix + ".1").write_bytes(_SHAPE_TRACE_BACKUP)
+
+        # The flat-shape reading of the SAME file, taken through this file's
+        # ordinary import. pytest.MonkeyPatch rather than the fixture because this
+        # fixture is class-scoped: one child launch answers every case below.
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setenv("HERMES_ROUTE_TRACE_FILE", str(trace))
+            service = RouterService(root / "router.yaml")
+            flat = service.routes()
+            flat_one = service.route(flat["routes"][0]["id"])
+            flat_files = [str(path) for path in service._trace_files()]
+
+        child = _probe_decisions_under_package_shape(root, trace)
+        return {"child": child, "flat": flat, "flat_one": flat_one,
+                "flat_files": flat_files, "trace": trace}
+
+    def test_the_child_really_could_not_reach_the_absolute_name(self, probe):
+        """Without this the whole probe is vacuous — see the section comment."""
+        assert probe["child"]["absolute_name_reachable"] is False
+        assert probe["child"]["module"] == (
+            f"hermes_plugins.{_PLUGIN_SLUG}.router.service"
+        )
+
+    def test_routes_answers_at_all_under_the_package_shape(self, probe):
+        """The regression itself: this call raised ModuleNotFoundError.
+
+        Both function-scope imports are on this path — ``routes`` resolves
+        ``routes_path`` for ``trace_path`` and ``_trace_files`` resolves it plus
+        ``_TRACE_BACKUPS`` for the cascade — so a payload with a resolved path and
+        a back-filled row is what proves both.
+        """
+        child = probe["child"]
+        assert child["routes"]["trace_path"] == str(probe["trace"])
+        assert child["trace_files"] == probe["flat_files"]
+        assert len(child["trace_files"]) == 4  # current + .1 .. .3
+        assert [row["task"] for row in child["routes"]["routes"]] == [
+            "filtered", "pre-feature", "rotated-out",
+        ]
+
+    def test_the_two_shapes_serve_the_same_rows(self, probe):
+        """The agreement, on every field of every row."""
+        assert probe["child"]["routes"] == probe["flat"]
+        assert probe["child"]["route"] == probe["flat_one"]
+
+    def test_the_package_shape_projection_actually_did_the_work(self, probe):
+        """Agreement would also hold if BOTH shapes served nothing.
+
+        So this pins the side that has to be non-trivial: the corrupt and torn
+        lines are skipped, the rotated backup is back-filled, and the row whose
+        chain was filtered names the elo that RAN with the tier kept beside it.
+        """
+        routes = probe["child"]["routes"]
+        assert routes["count"] == 3, "two junk lines skipped, one backup back-filled"
+
+        filtered = routes["routes"][0]
+        assert (filtered["model"], filtered["provider"]) == (
+            "gpt-5.6-luna", "openai-codex"
+        )
+        assert filtered["declared_model"] == "glm-5.3"
+        # A pre-feature entry has no attempted head, so the declared pair IS the
+        # honest answer — both fields say so rather than one going blank.
+        pre_feature = routes["routes"][1]
+        assert (pre_feature["model"], pre_feature["declared_model"]) == (
+            "gpt-5.5", "gpt-5.5"
+        )
+
+    def test_the_sidecar_dispatcher_serves_both_routes_under_the_package_shape(
+        self, probe,
+    ):
+        """The surface production actually calls, not just the method behind it.
+
+        The sidecar answers an exception with a dropped connection, so this is the
+        form the operator met: a Decisions tab that stays empty with nothing in the
+        UI to say why.
+        """
+        child = probe["child"]
+        status, body = child["dispatch"]
+        assert status == 200
+        assert body == probe["flat"]
+
+        status_one, entry = child["dispatch_one"]
+        assert status_one == 200
+        assert entry == probe["flat_one"]
+        assert entry["steps"] == [{"stage": "rules"}], "the full trace, not the row"
+
+
+# ---------------------------------------------------------------------------
+# The preview's size bound vs the size production actually routes on
+# ---------------------------------------------------------------------------
+#
+# ``_DEFAULT_MAX_PROMPT_CHARS`` (1 MiB) is ~291k estimated tokens, and the shipped
+# ``huge-context-read`` rule fires above 400k — so the one rule whose entire
+# subject is a giant read cannot be previewed at the default bound: explain()
+# answers the operator asking "why did this turn go to T3?" with a ValueError, for
+# the very input that triggered it. The bound STAYS (it is the only thing between
+# one HTTP request and unbounded CPU on a linear scan), so the two tests below pin
+# the two halves of that decision: the refusal has to NAME the limitation and the
+# escape hatches, and lifting the bound has to make the preview agree with the
+# path that ran — otherwise the escape hatch leads somewhere else.
+
+
+def _chars_per_token():
+    """The router's chars-per-token ratio, MEASURED rather than copied.
+
+    ``signals`` owns the constant. A literal 3.6 here would be a second copy that
+    drifts, and this test would then compute a threshold the router does not use —
+    which is the same class of defect it is about.
+    """
+    from router.signals import extract
+
+    probe = 36_000
+    return probe / extract("x" * probe)["est_input_tokens"]
+
+
+def _huge_context_rule():
+    """The shipped rule, read off the live policy rather than restated."""
+    config = yaml.safe_load(LIVE_POLICY.read_text(encoding="utf-8"))
+    rule = next(r for r in config["rules"] if r.get("id") == "huge-context-read")
+    return config, rule
+
+
+def _prompt_that_fires_the_rule():
+    """The smallest composed prompt whose SIZE ALONE clears the rule's threshold.
+
+    Size alone, deliberately: ``est_input_tokens`` also charges for referenced
+    files and whole-repo reads, so a prompt mentioning 28 files could clear 400k
+    inside the bound. The turn this rule exists for is a big READ, and that is the
+    case the bound cannot reach.
+    """
+    import math
+
+    _config, rule = _huge_context_rule()
+    threshold = rule["when"]["est_input_tokens"]["gt"]
+    needed = math.ceil(threshold * _chars_per_token()) + 1
+    filler = "WARN retry scheduled for the nightly job\n"
+    return ("Context: " + filler * (needed // len(filler) + 1))[:needed], threshold
+
+
+def test_the_default_preview_bound_cannot_reach_the_shipped_huge_context_rule(
+    config_path,
+):
+    """The limitation, pinned as a fact, and stated where the operator meets it.
+
+    Asserted rather than fixed by raising the bound: the scans ``signals.extract``
+    runs are linear (~0.35 ms per 1000 chars), this is an HTTP read path, and the
+    sidecar puts no limit on a request body — so an unbounded preview is a request
+    that can cost arbitrary CPU. What was wrong was not the number but the silence:
+    a bare "exceeds N characters" reads as "the router cannot route a turn this
+    big", which is false.
+    """
+    import router.service as service_mod
+
+    prompt, threshold = _prompt_that_fires_the_rule()
+    service = RouterService(config_path)
+
+    # The finding itself: the rule's own threshold is out of reach of the default.
+    assert len(prompt) > service_mod._DEFAULT_MAX_PROMPT_CHARS
+    assert service._max_prompt_chars == service_mod._DEFAULT_MAX_PROMPT_CHARS
+    with pytest.raises(ValueError) as raised:
+        service.explain("summarise this log", prompt_text=prompt)
+    message = str(raised.value)
+
+    # The refusal names the bound, that it is THIS surface's and not the router's,
+    # and both ways past it — because the error is the operator's only encounter
+    # with the limitation.
+    assert str(service._max_prompt_chars) in message
+    assert "not a routing limit" in message
+    assert "max_prompt_chars" in message
+    assert "--prompt-text" in message
+
+    # And the escape hatch the message names is real, on both surfaces it names.
+    import argparse
+
+    from router import cli
+
+    assert cli.resolve_prompt(argparse.Namespace(
+        task="summarise this log", prompt_text=prompt,
+    )) == (prompt, "prompt_text")
+    lifted = RouterService(config_path, max_prompt_chars=len(prompt))
+    assert lifted._resolve_prompt("summarise this log", prompt) == (
+        prompt, "prompt_text"
+    )
+    # Nothing about the refusal depends on the rule's exact threshold, but a
+    # policy that lowered it under the bound would make this test vacuous.
+    assert threshold > 0
+
+
+def test_the_refusal_reaches_the_operator_on_the_surface_that_displays_it(
+    config_path, tmp_path,
+):
+    """A limitation stated only in an exception is stated nowhere.
+
+    The bound is argued in this module's comments and named in the ValueError, but
+    an operator meets it in the CONSOLE — so the thing that has to carry the
+    sentence is the HTTP surface, and that is asserted here through the real
+    dispatcher instead of assumed from the raise site. A 400 whose body read "bad
+    request" would leave precisely the impression the message exists to prevent:
+    that the ROUTER cannot route a turn this big. Same reason the escape hatch is
+    exercised on the same surface — advice an operator cannot follow where they
+    are standing is worse than the refusal alone.
+    """
+    from router.one_sidecar import SidecarApp
+
+    token = tmp_path / "sidecar-token"
+    token.write_text("shape-token", encoding="utf-8")
+    auth = {"X-Hermes-Sidecar-Token": "shape-token"}
+    prompt, _threshold = _prompt_that_fires_the_rule()
+    body = {"task": "summarise this log", "prompt_text": prompt}
+
+    status, payload = SidecarApp(
+        RouterService(config_path), token_path=lambda: token
+    ).dispatch("POST", "/explain", auth, None, body)
+
+    assert status == 400
+    message = payload["error"]
+    assert str(RouterService(config_path)._max_prompt_chars) in message
+    assert "not a routing limit" in message
+    assert "max_prompt_chars" in message
+    assert "--prompt-text" in message
+
+    # The hatch the message names, on the surface that named it: the SAME request
+    # against a service whose bound was lifted answers the question rather than a
+    # different one, and says which text it measured.
+    lifted_status, lifted = SidecarApp(
+        RouterService(config_path, max_prompt_chars=len(prompt)),
+        token_path=lambda: token,
+    ).dispatch("POST", "/explain", auth, None, body)
+
+    assert lifted_status == 200
+    assert lifted["preview"]["sized_from"] == "prompt_text"
+    assert lifted["preview"]["prompt_chars"] == len(prompt)
+    assert lifted["features"]["est_input_tokens"] > 400_000
+
+
+def test_a_lifted_bound_previews_the_decision_the_running_path_really_made(tmp_path):
+    """Past the bound, the preview must reproduce production — not merely answer.
+
+    The turn is routed for real through ``adapter.route`` (the path that RUNS) and
+    previewed through ``RouterService.explain`` (the surface that DISPLAYS), at one
+    injected clock, off the shipped policy, with the same composed prompt. The
+    assertion is that the two agree: rule, cause, tier and the elo the executor
+    would dispatch first. An operator who follows the refusal's advice has to land
+    on the decision that happened, or the advice is worse than the refusal.
+    """
+    from router.decision_log import DecisionLog
+    from router.adapter import route as adapter_route
+
+    prompt, _threshold = _prompt_that_fires_the_rule()
+    goal = "summarise this log"
+    config, _rule = _huge_context_rule()
+
+    log = DecisionLog()
+    ran = adapter_route(goal, config, decision_log=log, prompt_text=prompt,
+                        now=_OFFPEAK_1500)
+    entry = log.tail(1)[0]
+
+    shown = RouterService(
+        LIVE_POLICY, max_prompt_chars=len(prompt)
+    ).explain(goal, at=_OFFPEAK_1500, prompt_text=prompt)
+    decision = shown["decision"]
+
+    # Non-vacuity: this is the rule the bound cannot reach, and the goal line on
+    # its own does not come near it.
+    assert entry["rule_id"] == "huge-context-read"
+    assert shown["features"]["est_input_tokens"] > 400_000
+    goal_only = RouterService(LIVE_POLICY).explain(goal, at=_OFFPEAK_1500)
+    assert goal_only["decision"]["matched_rule_id"] != "huge-context-read"
+
+    # The agreement, on the fields a decision IS.
+    assert decision["matched_rule_id"] == entry["rule_id"]
+    assert decision["cause"] == entry["cause"]
+    assert decision["output"]["model"] == ran["model"]
+    assert decision["output"]["provider"] == ran["provider"]
+    assert decision["output"]["profile"] == ran["profile"]
+    # ...and on the elo the executor would actually dispatch first, which is the
+    # head of the planned chain rather than the declared tier primary.
+    assert _executor_targets(ran)[0] == (
+        shown["chain_plan"]["chain"][0]["model"],
+        shown["chain_plan"]["chain"][0]["provider"],
+    )
+    # The preview says which text it measured, so this answer cannot be mistaken
+    # for the goal-sized one above.
+    assert shown["preview"]["sized_from"] == "prompt_text"
+    assert shown["preview"]["prompt_chars"] == len(prompt)
+
+
+def test_explain_refuses_a_prompt_text_that_is_not_a_string(config_path):
+    """A non-string is the CALLER's bug: a clear 400, not an AttributeError.
+
+    ``_resolve_prompt`` runs before anything is measured, so a JSON number or list
+    arriving from a POST body must be refused there rather than reaching
+    ``signals.extract`` and failing somewhere an operator cannot read.
+    """
+    service = RouterService(config_path)
+    for junk in (17, 3.5, [], {}, None, object()):
+        with pytest.raises(ValueError, match="prompt_text must be a string"):
+            service.explain(_TRIVIAL_TASK, prompt_text=junk)
+    # ``None`` is refused here too, and that is not a gap: turning an OMITTED JSON
+    # field into "" is the HTTP edge's job (``one_sidecar._omitted_as_text``), so
+    # a None arriving this far is a caller that meant something by it. The empty
+    # string is the spelling that means "measure the task".
+    assert service.explain(_TRIVIAL_TASK, prompt_text="")["preview"]["sized_from"] == (
+        "task"
+    )

@@ -1854,6 +1854,218 @@ test('a fresh probe clears the previous task\'s chain plan before asking', async
     'and it is kept in state, so a refresh re-renders it instead of dropping it');
 });
 
+// ── THE SIZE A PREVIEW IS MEASURED FROM ───────────────────────────────────
+// Production routes on the text the child really receives (context + goal) and
+// this console asked /explain about the goal line alone, so the Explain panel
+// showed a plan production never attempts: measured on the shipped policy, a
+// 615,059-char composed prompt is 170,850 estimated tokens with a 213,563-token
+// min_context floor, while the same goal by itself measures 17 and derives none.
+//
+// /explain has accepted `prompt_text` all along and reports `preview.sized_from`
+// for exactly this case. So the two things these tests pin are the two halves that
+// have to agree: the console SENDS the parameter the sidecar READS, and it
+// DESCRIBES the answer with the value the service SENT — never with a guess made
+// from whether it happened to supply a context.
+const SIDECAR_PATH = 'router/one_sidecar.py';
+const SERVICE_PATH = 'router/service.py';
+// The parameters /explain accepts, read off the loop that validates them, so a
+// rename on the server breaks this instead of the operator's probe.
+function explainParameters() {
+  const source = fs.readFileSync(SIDECAR_PATH, 'utf8');
+  const loop = source.match(/for name, value in \(([\s\S]*?)\):/);
+  assert.ok(loop, `${SIDECAR_PATH} must still validate /explain's parameters by name`);
+  const names = [...loop[1].matchAll(/\("([a-z_]+)", /g)].map((hit) => hit[1]);
+  assert.ok(names.includes('task') && names.includes('prompt_text'),
+    `/explain must still take a goal and a composed prompt, got ${names.join(', ')}`);
+  return names;
+}
+// The two values `preview.sized_from` can hold, read from the constants the
+// service reports them from. There is no third, which is what lets the console
+// read the field by NAME rather than inferring the case.
+function sizedFromValues() {
+  const source = fs.readFileSync(SERVICE_PATH, 'utf8');
+  const task = source.match(/_SIZED_FROM_TASK = "([a-z_]+)"/);
+  const prompt = source.match(/_SIZED_FROM_PROMPT = "([a-z_]+)"/);
+  assert.ok(task && prompt, `${SERVICE_PATH} must still name which text a preview was sized from`);
+  return { task: task[1], prompt: prompt[1] };
+}
+
+test('a probe sends the composed context, under the name the sidecar reads it by', async () => {
+  const names = explainParameters();
+  const calls = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'host-token',
+    fetch: (url, init) => {
+      calls.push({ url, init });
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
+    },
+  });
+  api.state.loading = false;
+
+  // A goal alone stays the historical GET, byte for byte: a link-shaped probe must
+  // keep working, and one_sidecar keeps /explain in _GET_ROUTES for that reason.
+  await api.probe('Debug a race condition in the cache');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/explain\?task=Debug%20a%20race%20condition%20in%20the%20cache$/);
+  assert.ok(!calls[0].init.method || calls[0].init.method === 'GET', 'a goal needs no body');
+
+  // A context supplied travels in a POST BODY. It has to: http.server refuses a
+  // request line over 65536 bytes, and the contexts this exists for run to 600k
+  // chars, so a query string cannot carry one at all.
+  const context = `Debug a race condition in the cache\n${'x'.repeat(615_000)}`;
+  dom.get('probeContext').value = context;
+  await api.probe('Debug a race condition in the cache');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].url.replace(/^.*\/sidecar/, ''), '/explain', 'no query string carries a context');
+  assert.equal(calls[1].init.method, 'POST');
+  const body = JSON.parse(calls[1].init.body);
+  // EVERY key the console sends is one the sidecar validates by that name, and the
+  // context arrives at full length — a truncated prompt would produce a smaller
+  // est_input_tokens and therefore a confidently wrong plan.
+  for (const key of Object.keys(body)) {
+    assert.ok(names.includes(key), `${key} is not a parameter /explain accepts (${names.join(', ')})`);
+  }
+  assert.equal(body.task, 'Debug a race condition in the cache');
+  assert.equal(body.prompt_text, context, 'the whole composed text, untrimmed');
+});
+
+test('the request shape is chosen by whether there is a context, not by taste', () => {
+  const { api } = loadConsole();
+  // service._resolve_prompt tests `prompt_text or task`, so an EMPTY box means
+  // "size it from the goal" on both sides — and the console must not send an empty
+  // prompt_text, which would be the same request in a shape a GET-only proxy
+  // cannot answer.
+  for (const empty of ['', null, undefined]) {
+    const req = api.explainRequest('rename a variable', empty);
+    assert.match(req.path, /^\/explain\?task=rename%20a%20variable$/);
+    assert.deepEqual(plain(req.options), {});
+  }
+  // Whitespace is NOT empty and is NOT trimmed: the router measures whatever the
+  // turn really carries, and stripping here would report fewer characters than
+  // production sends.
+  const spaces = api.explainRequest('rename a variable', '   \n  ');
+  assert.equal(spaces.options.method, 'POST');
+  assert.equal(spaces.options.body.prompt_text, '   \n  ');
+});
+
+test('a probe says which text the plan was sized from, in the service\'s own words', async () => {
+  const sized = sizedFromValues();
+  // The numbers service.explain really returns for "Debug a race condition in the
+  // cache" carrying a 615,059-char composed prompt, against the shipped router.yaml
+  // — trimmed to the fields this panel reads. The same goal on its own measures 35
+  // chars and 10 tokens, which is the test below.
+  const explain = {
+    mode: 'deterministic_dry_run', requires_classifier: false,
+    decision: {
+      matched_rule_id: 'hard-verbs',
+      output: { model: 'gpt-5.6-terra', provider: 'openai-codex' },
+    },
+    features: { est_input_tokens: 170850, char_len: 615059 },
+    preview: { sized_from: sized.prompt, prompt_chars: 615059 },
+  };
+  const { api, dom } = loadConsole({
+    csrfToken: 'host-token',
+    fetch: () => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(explain)) }),
+  });
+  api.state.loading = false;
+  api.state.policy = { rules: [{ id: 'hard-verbs', then: { model: 'T4' } }], tiers: { T4: {} } };
+  dom.get('probeContext').value = 'x'.repeat(615_059);
+  await api.probe('Debug a race condition in the cache');
+
+  const text = flat(dom.get('probeResult'));
+  assert.match(text, /sized from the context you supplied/);
+  // Both numbers, each from the surface that owns it: the length of the text
+  // measured, and the token count the rules were evaluated against.
+  assert.match(text, /615,059 characters/);
+  assert.match(text, /170,850 estimated tokens/);
+  assert.doesNotMatch(text, /goal line alone/, 'it was not sized from the goal');
+});
+
+test('a preview sized from the goal line says so, because it reads as production\'s plan', async () => {
+  const sized = sizedFromValues();
+  // The SAME goal with no context: 10 estimated tokens instead of 170,850, and a
+  // min_context floor that came from the TIER rather than from the turn. This is the
+  // case the line exists for — on screen it is indistinguishable from the plan the
+  // real turn gets, and it is the one an operator reads as production's.
+  const explain = {
+    mode: 'deterministic_dry_run', requires_classifier: false,
+    decision: { matched_rule_id: 'hard-verbs', output: { model: 'gpt-5.6-terra', provider: 'openai-codex' } },
+    features: { est_input_tokens: 10, char_len: 35 },
+    preview: { sized_from: sized.task, prompt_chars: 35 },
+  };
+  const { api, dom } = loadConsole({
+    fetch: () => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(explain)) }),
+  });
+  api.state.loading = false;
+  api.state.policy = { rules: [{ id: 'hard-verbs', then: { model: 'T4' } }], tiers: { T4: {} } };
+  await api.probe('Debug a race condition in the cache');
+
+  const text = flat(dom.get('probeResult'));
+  assert.match(text, /sized from the goal line alone — 35 characters, 10 estimated tokens\./);
+  assert.match(text, /paste it in above/, 'and it names what to do about it');
+
+  // A sidecar that reports no preview at all is not described: "sized from the
+  // goal line" would be a claim about a field nobody sent.
+  assert.equal(api.sizedFromWords(undefined, { est_input_tokens: 17 }), null);
+  assert.equal(api.sizedFromWords({ sized_from: 'something_new' }, {}), null,
+    'and a value the service does not define is not guessed at either');
+  // A preview that named the text but no size still says which text it was.
+  const partial = api.sizedFromWords({ sized_from: sized.prompt }, {});
+  assert.equal(partial.said, 'the context you supplied.', 'no invented characters, no invented tokens');
+  // And a null size is not zero: `Number(null)` is 0, so a coerced one would read
+  // as a measured "0 characters" — a number nobody sent.
+  assert.equal(api.sizedFromWords({ sized_from: sized.prompt, prompt_chars: null },
+                                  { est_input_tokens: null }).said,
+               'the context you supplied.');
+});
+
+test('a context that cannot be POSTed is refused before it becomes an HTTP status', async () => {
+  // A POST through the host's proxy carries the CSRF token only the Hermes One
+  // shell hands out (the same obstacle writable() names for a write). Learning that
+  // as "the dry run is unavailable on this sidecar" would send the operator to look
+  // at the sidecar, which is not where the problem is.
+  const calls = [];
+  const { api, dom } = loadConsole({
+    fetch: (url) => {
+      calls.push(url);
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
+    },
+  });
+  api.state.loading = false;
+  dom.get('probeContext').value = 'a composed context, and no token to POST it with';
+  await api.probe('Add a retry to the cache client');
+  assert.equal(calls.length, 0, 'nothing is sent that cannot be answered');
+  const text = flat(dom.get('probeResult'));
+  assert.match(text, /Open the Router panel inside Hermes One/);
+  assert.match(text, /clear the context/, 'and the other way out is named too');
+});
+
+test('an input the server refuses is quoted, not restated as a number', async () => {
+  // service._resolve_prompt is the only authority for the prompt ceiling
+  // (_DEFAULT_MAX_PROMPT_CHARS). A console that pre-checked it with its own copy of
+  // 1048576 would be a second bound that can drift from the one being enforced, so
+  // the server's own sentence is what the operator reads.
+  const source = fs.readFileSync(SERVICE_PATH, 'utf8');
+  assert.match(source, /_DEFAULT_MAX_PROMPT_CHARS = 1_048_576/,
+    'the ceiling lives in the service, and this test knows only that it lives there');
+  const html = fs.readFileSync(sourcePath, 'utf8');
+  assert.doesNotMatch(html, /1048576|1_048_576|1048_576/, 'the console must not carry a copy of it');
+
+  const { api, dom } = loadConsole({
+    csrfToken: 'host-token',
+    fetch: () => Promise.resolve({
+      ok: false, status: 400,
+      text: () => Promise.resolve(JSON.stringify({ error: 'prompt_text exceeds 1048576 characters' })),
+    }),
+  });
+  api.state.loading = false;
+  dom.get('probeContext').value = 'x'.repeat(64);
+  await api.probe('Add a retry to the cache client');
+  const text = flat(dom.get('probeResult'));
+  assert.match(text, /prompt_text exceeds 1048576 characters/, 'the server said what it refused');
+  assert.doesNotMatch(text, /unavailable on this sidecar/, 'the sidecar answered — it refused the input');
+});
+
 // ── the time layer ────────────────────────────────────────────────────────
 // Three of the rails this router uses price by wall-clock window and the swing
 // is 2x, which is large enough to decide where a task goes. Everything below is
@@ -2020,6 +2232,155 @@ test('a declared window is read from either spelling, and junk is read as flat',
                       { price_windows: [{ hours_utc: [1, 4] }] }, { peak_windows_utc: [[1, 4]] }]) {
     assert.deepEqual(plain(api.entryWindows(junk)), [], `${JSON.stringify(junk)} is not a window`);
   }
+});
+
+// ── A MALFORMED WINDOW, PRICED BY BOTH SIDES ──────────────────────────────
+// The console's window validation was the LAXER of the two, so JS and Python
+// priced the same malformed declaration differently — a display contradicting the
+// run on precisely the inputs an operator is trying to diagnose. Measured before
+// the fix: `{hours_utc: [16.5, 24]}` at hour 17 gave the router 1.0 and this
+// console 0.8; `[-1, 5]` at hour 0 gave the router 1.0 and this console 3.0; an
+// unparseable `weekdays` became null here and null means EVERY DAY, while
+// _multiplier_at skipped the window outright.
+//
+// So each shape below is priced ONCE BY THE ROUTER and once by the console, and
+// the two answers are compared. capabilities.py imports only
+// {__future__, datetime, random, typing} — no yaml, no IO — which is what makes it
+// callable straight from here; asserting the console's own answer alone is exactly
+// how the divergence survived a green suite.
+function pythonBin() {
+  const { execFileSync } = require('node:child_process');
+  for (const bin of ['python3.11', 'python3']) {
+    try {
+      execFileSync(bin, ['-c', 'pass'], { stdio: 'ignore' });
+      return bin;
+    } catch (_) { /* try the next candidate */ }
+  }
+  return assert.fail('no python3 on PATH: this test prices each window with capabilities.py itself');
+}
+// One process for the whole table. `declared` overrides the registry's windows,
+// exactly as the console's eloWindows reads them, and glm-4.6 is the elo that
+// declares none of its own — so the window under test is the only one in play.
+// 2026-08-17 is a Monday, so `17 + weekday` lands on the weekday asked for.
+function routerMultipliers(cases) {
+  const { execFileSync } = require('node:child_process');
+  const script = [
+    'import json, sys',
+    'from datetime import datetime',
+    'from router import capabilities',
+    'out = []',
+    'for window, hour, weekday in json.loads(sys.argv[1]):',
+    '    when = datetime(2026, 8, 17 + weekday, hour)',
+    '    out.append(capabilities.price_multiplier(',
+    '        "glm-4.6", when, declared={"price_windows": [window]}))',
+    'print(json.dumps(out))',
+  ].join('\n');
+  const payload = JSON.stringify(cases.map((c) => [c.window, c.at.hour, c.at.weekday]));
+  return JSON.parse(execFileSync(pythonBin(), ['-c', script, payload], { encoding: 'utf8' }));
+}
+
+test('a window the router refuses is priced flat here too, never reinterpreted', () => {
+  const { api } = loadConsole();
+  const cases = [
+    // The well-formed control: xiaomi's own cheap window, and the answer both
+    // sides must give for it.
+    { why: 'a whole-hour window prices its own hours', window: { hours_utc: [16, 24], multiplier: 0.8 }, at: { hour: 17, weekday: 0 } },
+    { why: 'and hour 24 is a legal end, so a full day is one entry', window: { hours_utc: [0, 24], multiplier: 2 }, at: { hour: 0, weekday: 0 } },
+    // A FRACTIONAL hour is a typo, not a boundary: truncating [16.5, 24) to
+    // [16, 24) would start the window half an hour before the one written.
+    { why: 'a fractional start is refused, not truncated', window: { hours_utc: [16.5, 24], multiplier: 0.8 }, at: { hour: 17, weekday: 0 } },
+    { why: 'and a string that is not a whole hour is refused with it', window: { hours_utc: ['16.0', 24], multiplier: 0.8 }, at: { hour: 17, weekday: 0 } },
+    // Out of range, both ends. 0 <= start < end <= 24, and nothing else.
+    { why: 'a negative hour is not an hour', window: { hours_utc: [-1, 5], multiplier: 3 }, at: { hour: 0, weekday: 0 } },
+    { why: 'and neither is 25', window: { hours_utc: [6, 25], multiplier: 2 }, at: { hour: 20, weekday: 0 } },
+    { why: 'start > end is refused rather than read as wrapping midnight', window: { hours_utc: [10, 4], multiplier: 2 }, at: { hour: 2, weekday: 0 } },
+    // A weekday gate that is PRESENT and unusable must not become every day.
+    { why: 'an unparseable weekday drops the window, it does not open it', window: { hours_utc: [6, 10], weekdays: ['Mon'], multiplier: 2 }, at: { hour: 7, weekday: 0 } },
+    { why: 'a fractional weekday is a typo too', window: { hours_utc: [6, 10], weekdays: [0, 1.5], multiplier: 2 }, at: { hour: 7, weekday: 0 } },
+    { why: 'an empty gate is malformed, not "every day"', window: { hours_utc: [6, 10], weekdays: [], multiplier: 2 }, at: { hour: 7, weekday: 5 } },
+    { why: 'and a gate that is not a list at all is malformed', window: { hours_utc: [6, 10], weekdays: 7, multiplier: 2 }, at: { hour: 7, weekday: 0 } },
+    { why: 'a weekday out of 0..6 is refused', window: { hours_utc: [6, 10], weekdays: [7], multiplier: 2 }, at: { hour: 7, weekday: 0 } },
+    // What a usable gate does: Monday-only inside, weekend outside.
+    { why: 'a real gate matches the day it names', window: { hours_utc: [6, 10], weekdays: [0, 0, 1], multiplier: 2 }, at: { hour: 7, weekday: 0 } },
+    { why: 'and only the day it names', window: { hours_utc: [6, 10], weekdays: [0, 1], multiplier: 2 }, at: { hour: 7, weekday: 5 } },
+    // The multiplier, by the same rules _as_float applies.
+    { why: 'a numeric string is a multiplier', window: { hours_utc: ['6', '10'], multiplier: '2' }, at: { hour: 7, weekday: 0 } },
+    { why: 'nan is not — it would compare false against every threshold', window: { hours_utc: [6, 10], multiplier: 'nan' }, at: { hour: 7, weekday: 0 } },
+    { why: 'and neither is zero or less', window: { hours_utc: [6, 10], multiplier: 0 }, at: { hour: 7, weekday: 0 } },
+  ];
+  const router = routerMultipliers(cases);
+  cases.forEach((c, i) => {
+    const mine = api.priceMultiplier(api.entryWindows({ price_windows: [c.window] }), c.at);
+    assert.equal(mine, router[i],
+      `${c.why}: capabilities.price_multiplier says ${router[i]} for `
+      + `${JSON.stringify(c.window)} at hour ${c.at.hour} weekday ${c.at.weekday}, the console says ${mine}`);
+  });
+  // The two the finding measured, spelled out — so a regression names the number
+  // rather than only the disagreement.
+  assert.equal(router[2], 1, '[16.5, 24] is priced flat by the router');
+  assert.equal(router[4], 1, 'and so is [-1, 5]');
+  assert.equal(router[0], 0.8, 'while the well-formed window still prices 0.8×');
+});
+
+test('a refused window is DROPPED, so a rail with only one reads as untimed', () => {
+  const { api } = loadConsole();
+  // Dropping rather than keeping-and-ignoring is what makes the other three
+  // readers agree with the router: windowWords, nextWindowChange and the clock
+  // line's rows all answer from this list, and a window kept with a neutral
+  // multiplier would produce "base rate until 06:00, then 1×" for a window the
+  // router cannot see at all.
+  for (const window of [
+    { hours_utc: [16.5, 24], multiplier: 0.8 },
+    { hours_utc: [-1, 5], multiplier: 3 },
+    { hours_utc: [6, 10], weekdays: ['Mon'], multiplier: 2 },
+    { hours_utc: [6, 10], weekdays: [], multiplier: 2 },
+    // `Number(true)` is 1, so this used to become a real window with a neutral
+    // multiplier: invisible to priceMultiplier and visible to everything else.
+    { hours_utc: [6, 10], multiplier: true },
+    { hours_utc: [6, 10], multiplier: 'soon' },
+    { hours_utc: [6, 10, 14], multiplier: 2 },
+    { hours_utc: '6-10', multiplier: 2 },
+  ]) {
+    assert.deepEqual(plain(api.entryWindows({ price_windows: [window] })), [],
+      `${JSON.stringify(window)} is not a window the router would honour`);
+    assert.equal(api.windowWords(api.entryWindows({ price_windows: [window] }), { hour: 7, weekday: 0 }),
+      'no time-varying price', 'and the words say so, exactly as they do for a flat rail');
+  }
+  // A window BESIDE a malformed one still prices: the bad entry is skipped, not
+  // the declaration — _multiplier_at walks past it to the next candidate.
+  assert.equal(api.priceMultiplier(api.entryWindows({
+    price_windows: [{ hours_utc: [16.5, 24], multiplier: 3 }, { hours_utc: [16, 24], multiplier: 0.8 }],
+  }), { hour: 17, weekday: 0 }), 0.8);
+});
+
+test('the hour and weekday bounds are the router\'s own, read from its module', () => {
+  const { api } = loadConsole();
+  const source = fs.readFileSync(REGISTRY_PATH, 'utf8');
+  // Restating 24 and 7 here would be a third copy of the two numbers; they are
+  // read from the module whose validators these transcribe.
+  const hours = Number((source.match(/_HOURS_IN_DAY = (\d+)/) || [])[1]);
+  const days = Number((source.match(/_DAYS_IN_WEEK = (\d+)/) || [])[1]);
+  assert.ok(hours > 0 && days > 0, `${REGISTRY_PATH} must still declare both bounds`);
+
+  assert.deepEqual(plain(api.hourBounds([0, hours])), [0, hours], 'the whole day is in range');
+  assert.equal(api.hourBounds([0, hours + 1]), null, 'and one hour past it is not');
+  assert.equal(api.hourBounds([hours, hours]), null, 'a zero-width window is not a window');
+  assert.equal(api.hourBounds([6]), null, 'a window has two bounds');
+  assert.equal(api.hourBounds([6, 10, 14]), null, 'and only two');
+  // 16.0 names hour 16 exactly — YAML's number parsing decided it was a float, not
+  // the operator — which is the one float _as_whole_number accepts.
+  assert.deepEqual(plain(api.hourBounds([16.0, 24])), [16, 24]);
+  assert.deepEqual(plain(api.hourBounds(['16', '24'])), [16, 24]);
+  assert.equal(api.hourBounds([true, 24]), null, 'true is not an hour');
+
+  // THREE outcomes, because "absent" and "malformed" are different claims: absent
+  // is every day, malformed is a window nobody can honour.
+  assert.equal(api.weekdaySet(undefined), null, 'absent means every day');
+  assert.equal(api.weekdaySet(null), null);
+  assert.deepEqual(plain(api.weekdaySet([days - 1])), [days - 1], 'the last day is in range');
+  assert.equal(api.weekdaySet([days]), false, 'and one past it is not');
+  assert.equal(api.weekdaySet([]), false, 'an empty gate is malformed, like _weekday_set says');
+  assert.deepEqual(plain(api.weekdaySet([1, 1, 0])), [1, 0], 'and a repeated day is one day');
 });
 
 test('an elo with no window of its own is priced flat, never at its rail\'s peak', () => {

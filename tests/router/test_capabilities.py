@@ -3,7 +3,9 @@
 import ast
 import inspect
 import random
+import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -265,6 +267,26 @@ def test_a_declared_input_bound_cannot_widen_the_unsatisfiable_ceiling():
     assert result["eligible"] == [hop]
 
 
+@pytest.mark.parametrize("floor", (0, -1, None, "", "lots", [200_000], True))
+def test_a_floor_that_is_not_a_positive_size_does_not_constrain(floor):
+    """A `min_context` that names no size is NOT a floor of zero and not a
+    rejection either — it is a requirement the operator failed to state.
+
+    `min_context: 0` is what a tier gets from an operator who typed the key and
+    left it empty. Both readings of that value are asserted together, because the
+    pair is where this drifts: `satisfies` must let every hop through AND
+    `filter_chain` must not report the request unsatisfiable, or the plan would
+    name a condition no hop was ever measured against.
+    """
+    assert satisfies("glm-4.5v", {"min_context": floor}) == (True, ""), floor
+
+    result = filter_chain([{"model": "glm-4.5v", "provider": "zai"}],
+                          {"min_context": floor})
+    assert result["unsatisfiable"] == []
+    assert result["rejected"] == []
+    assert result["bypassed"] is False
+
+
 # ---------------------------------------------------------------------------
 # satisfies — unknown capabilities never reject
 # ---------------------------------------------------------------------------
@@ -353,6 +375,42 @@ def test_filter_chain_lists_unknown_models_but_keeps_them_eligible():
         "mystery-elo",
     ]
     assert result["bypassed"] is False
+
+
+def test_an_unknown_model_named_twice_is_flagged_once():
+    """``unknown`` names MODELS, not hops.
+
+    An operator who lists the same unregistered id on two rails has one thing to
+    fix, and the flag is what the console renders as "capabilities unknown for
+    ..." — repeating the id there would read as two different unverified models.
+    Every hop still stays eligible: fail-open is per hop, whatever the list says.
+    """
+    chain = [
+        {"model": "mystery-elo", "provider": "somewhere"},
+        {"model": "glm-4.6v", "provider": "zai"},
+        {"model": "mystery-elo", "provider": "elsewhere"},
+    ]
+    result = filter_chain(chain, {"vision": True})
+    assert result["unknown"] == ["mystery-elo"]
+    assert result["eligible"] == chain
+
+
+def test_requirements_that_are_not_a_mapping_constrain_nothing():
+    """No requirements at all is not an impossible request.
+
+    ``filter_chain`` reads ``requirements`` twice — once per hop through
+    ``satisfies`` and once for the unsatisfiable report — and the two must agree
+    that a non-mapping asks for nothing. Reporting ``min_context`` unsatisfiable
+    here would name a condition the operator never wrote, which is exactly the
+    lie the report exists to prevent.
+    """
+    chain = _chain()
+    for requirements in (None, "min_context", 200_000, [("min_context", 1)]):
+        result = filter_chain(chain, requirements)
+        assert result["eligible"] == chain, requirements
+        assert result["rejected"] == [], requirements
+        assert result["unsatisfiable"] == [], requirements
+        assert result["bypassed"] is False, requirements
 
 
 def test_filter_chain_bypasses_when_no_elo_can_meet_the_requirement():
@@ -617,6 +675,118 @@ def test_independent_rails_of_an_empty_chain_is_zero():
 
 def test_independent_rails_ignores_hops_without_a_provider():
     chain = [{"model": "glm-4.7", "provider": "zai"}, {"model": "mystery-elo"}]
+    assert independent_rails(chain) == 1
+
+
+# ---------------------------------------------------------------------------
+# the rail count Python computes IS the rail count the console displays
+#
+# `independent_rails` exists to tell an operator whether a chain has a second
+# upstream, and the console is where they read it. So the console's convention is
+# not a second opinion to be compared politely: it is the definition, and it is
+# parsed out of the shipped source here rather than retyped, so this asserts the
+# PAIR agrees instead of asserting either side alone.
+# ---------------------------------------------------------------------------
+
+_CONSOLE_HTML = (
+    Path(__file__).resolve().parents[2]
+    / "webui_extension" / "hermes-one-capability-router" / "console.html"
+)
+
+
+def _console_upstream_group():
+    """Return the console's ``upstreamGroup``, driven by console.html's table."""
+    source = _CONSOLE_HTML.read_text(encoding="utf-8")
+    body = re.search(r"const UPSTREAM = \{(.*?)\};", source, re.S)
+    assert body, "console.html must declare its UPSTREAM table"
+    table = dict(re.findall(r"([\w.-]+):\s*'([^']*)'", body.group(1)))
+    assert table, "console.html's UPSTREAM table must have entries"
+    # These two lines ARE the convention: NORMALIZE first, then fall back to the
+    # normalized name when the table has no entry. Asserted so this helper cannot
+    # keep agreeing with a console that has changed its mind underneath it.
+    assert "String(provider == null ? '' : provider).trim().toLowerCase()" in source
+    assert "return UPSTREAM[name] || name;" in source
+
+    def group(provider):
+        name = "" if provider is None else str(provider).strip().lower()
+        return table.get(name, name)
+
+    return group
+
+
+def _console_rails(chain):
+    """The console's ``independentRails`` over its own ``upstreamGroup``."""
+    group_of = _console_upstream_group()
+    groups = []
+    for hop in chain:
+        # `hop && hop.provider` in the console: anything that is not a mapping
+        # yields no provider, and an unattributable hop is not a rail.
+        group = group_of(hop.get("provider") if isinstance(hop, dict) else None)
+        if group and group not in groups:
+            groups.append(group)
+    return len(groups)
+
+
+def test_upstream_group_agrees_with_the_console_on_every_spelling():
+    """A group is a COMPARISON KEY, so it is normalized whether it is mapped or
+    not — `ZAI` used to come back raw and count as a rail of its own."""
+    console = _console_upstream_group()
+    for spelling in ("zai", "ZAI", "  ZAI  ", "Zai", "nous", "Nous", "NOUS",
+                     "openrouter", "OpenRouter", " openrouter ", "deepseek",
+                     "openai-codex", "  ", "", None):
+        assert upstream_group(spelling) == console(spelling), spelling
+
+
+def test_two_spellings_of_one_provider_are_one_rail():
+    """The dangerous direction is OVER-counting: `independent_rails: 2` tells an
+    operator they have a second upstream to fail over to when they have one.
+
+    `T1 = {model: glm-4.7, provider: zai, fallback: [{model: glm-4.6, provider:
+    ZAI}]}` is lint-clean — provider spelling is not something the write gate
+    corrects — so nothing else in the stack was going to catch this.
+    """
+    chain = [
+        {"model": "glm-4.7", "provider": "zai"},
+        {"model": "glm-4.6", "provider": "ZAI"},
+    ]
+    assert independent_rails(chain) == 1
+    assert independent_rails(chain) == _console_rails(chain)
+
+
+def test_the_rail_count_agrees_with_the_console_on_every_chain_shape():
+    for chain in (
+        [{"provider": "zai"}, {"provider": "ZAI"}],
+        [{"provider": "  zai  "}, {"provider": "zai"}],
+        [{"provider": "nous"}, {"provider": "OpenRouter"}],
+        [{"provider": "NOUS"}, {"provider": "openrouter"}, {"provider": "ZAI"}],
+        [{"provider": "zai"}, {"provider": "deepseek"}],
+        [{"provider": "zai"}, {}],
+        # A provider of nothing but whitespace names no upstream: it used to come
+        # back as "   " and count as a rail.
+        [{"provider": "   "}, {"provider": "zai"}],
+        # Junk in the chain — a decoded trace, a YAML list of bare model ids —
+        # contributes no rail and no exception on either side.
+        [{"provider": "zai"}, "glm-4.6"],
+        ["glm-4.7", None],
+        [],
+    ):
+        assert independent_rails(chain) == _console_rails(chain), chain
+
+
+def test_a_provider_that_is_not_a_name_is_not_a_rail():
+    """`provider: 123` names no rail here, and the console's `String(provider)`
+    would make it one — the one shape the two still read differently.
+
+    NOT asserted as agreement, because agreeing would mean adopting the answer
+    that overstates redundancy. This side is deliberately the conservative one:
+    a value that is not a name cannot be dialled, so it is not evidence of a
+    second upstream. It is `lint()` that should be refusing it (it currently does
+    not: a non-string provider passes the write gate), and the console that should
+    stop coercing it.
+    """
+    assert upstream_group(123) == ""
+    chain = [{"model": "glm-4.7", "provider": "zai"},
+             {"model": "glm-4.6", "provider": 123}]
     assert independent_rails(chain) == 1
 
 
@@ -959,6 +1129,74 @@ def test_a_naive_clock_is_assumed_to_be_utc():
 def test_an_unusable_clock_is_treated_as_no_clock():
     for junk in ("07:00", 7, [], {}, object()):
         assert price_multiplier("deepseek-v4-pro", junk) == 1.0, junk
+
+
+def test_a_clock_that_cannot_be_moved_to_utc_is_no_clock():
+    """Converting to UTC can RAISE, and a price is not worth a traceback.
+
+    ``datetime.min`` in a positive UTC offset is five hours before the earliest
+    instant Python can represent, so ``astimezone`` overflows on it — provoked
+    here rather than patched, because the point is that the real conversion is
+    what fails. Every time-dependent answer degrades to the time-agnostic one,
+    which is the same reading ``when=None`` gets.
+    """
+    edge = datetime.min.replace(tzinfo=timezone(timedelta(hours=5)))
+    with pytest.raises(OverflowError):
+        edge.astimezone(timezone.utc)
+
+    assert price_multiplier("glm-5.3", edge) == 1.0
+    assert in_expensive_window("glm-5.3", edge) is False
+    assert next_window_change("glm-5.3", edge) is None
+    assert effective_price("deepseek-v4-pro", edge) == effective_price(
+        "deepseek-v4-pro", None
+    )
+
+
+class _ClockShaped:
+    """Clock-SHAPED, not a clock: what a decoded trace or a stub hands over."""
+
+    tzinfo = None
+
+    def __init__(self, hour, weekday):
+        self.hour = hour
+        self._weekday = weekday
+
+    def weekday(self):
+        return self._weekday
+
+
+def test_a_clock_shaped_object_answering_in_range_is_read_as_a_clock():
+    """The control for the test below: this object IS usable, so the 1.0s there
+    come from the value being out of range and not from the shape being rejected.
+    """
+    # Monday 07:00 UTC — inside zai's weekday plan-credit peak.
+    assert price_multiplier("glm-5.3", _ClockShaped(7, 0)) == 2.0
+    # Saturday, same hour: the whole weekend bills off-peak.
+    assert price_multiplier("glm-5.3", _ClockShaped(7, 5)) == 1.0
+
+
+@pytest.mark.parametrize(
+    "hour,weekday",
+    (
+        (7, "Monday"),   # a weekday that is not a number at all
+        (7, 7),          # 0..6, and 7 is not a day
+        (7, -1),
+        (24, 0),         # 0..23, and 24 is tomorrow's midnight, not an hour
+        (99, 0),
+        (-1, 0),
+    ),
+)
+def test_an_hour_or_weekday_outside_the_dial_is_no_clock(hour, weekday):
+    """An impossible hour is not clamped to a possible one.
+
+    Guessing would price the request at some OTHER hour's rate and report that as
+    the answer; refusing the clock prices it at the base rate and says so through
+    every time-dependent surface at once.
+    """
+    when = _ClockShaped(hour, weekday)
+    assert price_multiplier("glm-5.3", when) == 1.0
+    assert in_expensive_window("glm-5.3", when) is False
+    assert next_window_change("glm-5.3", when) is None
 
 
 def test_no_clock_is_the_neutral_answer_for_every_registered_model():
@@ -1668,6 +1906,32 @@ def test_avoid_peak_ignores_a_provider_that_is_not_in_the_chain():
     assert result["demoted"] == []
 
 
+@pytest.mark.parametrize("provider", (None, 123, ["zai"]))
+def test_avoid_peak_cannot_match_a_hop_that_names_no_provider(provider):
+    """``avoid_peak`` matches by PROVIDER NAME, so a hop carrying no usable name
+    is left alone — the same rule ``independent_rails`` follows when it refuses to
+    count an unattributable hop as a rail.
+
+    Reachable without a malformed registry: ``rules`` builds the primary hop as
+    ``{"model": ..., "provider": output.get("provider")}``, which is None for a
+    rule that names a model without one. Nothing is silently swallowed — the peak
+    is still in the PRICE, which is where ``plan_chain``'s ``multipliers`` reads
+    it — but a provider-keyed policy has nothing to key on, so it says nothing
+    rather than guessing which rail serves the hop.
+    """
+    chain = [
+        {"model": "glm-5.3", "provider": provider},
+        {"model": "kimi-k3", "provider": "moonshot"},
+    ]
+    result = apply_time_policy(chain, {"avoid_peak": ["zai"]}, _at(MON, 7))
+    assert [hop["model"] for hop in result["chain"]] == ["glm-5.3", "kimi-k3"]
+    assert result["demoted"] == []
+    assert result["peak_priced"] == []
+    # The hour really is glm-5.3's peak: the policy declined to act, it was not
+    # handed a cheap hour.
+    assert price_multiplier("glm-5.3", _at(MON, 7)) == 2.0
+
+
 def test_prefer_promotes_a_model_that_is_not_in_an_expensive_window():
     result = apply_time_policy(
         _mixed_chain(), {"prefer": ["mimo-v2.5"]}, _at(WED, 7)
@@ -1924,6 +2188,74 @@ def test_registry_diagnostics_reports_a_bad_window_without_raising(monkeypatch):
     assert any("'hours_utc'" in problem for problem in problems)
 
 
+def test_an_entry_that_is_not_a_mapping_is_one_diagnostic_not_a_crash(monkeypatch):
+    """A registry entry hand-edited down to a bare value gets ONE message.
+
+    "Diagnostics, never exceptions" is the contract, and reading fields off a
+    string is how that gets broken: ``entry.get`` raises on it, and treating
+    ``set("metered")`` as a field list would bury the real defect under one
+    "unrecognized field" per letter. So the entry is reported and skipped.
+    """
+    monkeypatch.setitem(caps_module.MODEL_CAPABILITIES, "typo-elo", "metered")
+    problems = registry_diagnostics()
+    assert [
+        problem for problem in problems if "'typo-elo'" in problem
+    ] == ["model 'typo-elo': entry is not a mapping"]
+
+
+def test_an_unknown_billing_mode_names_the_mode_it_found(monkeypatch):
+    """``billing_mode`` is the UNIT every price comparison keys on.
+
+    A mode outside :data:`BILLING_MODES` reaches ``cheapest_now`` as the
+    undescribable bucket and steps the time cap aside — quietly, and correctly,
+    because there is nothing else it could do with a unit it cannot read. Lint is
+    where that gets caught, so the message has to name the value to fix.
+    """
+    monkeypatch.setitem(
+        caps_module.MODEL_CAPABILITIES,
+        "yearly-elo",
+        {
+            "provider": "nowhere", "context_window": 1000,
+            "billing_mode": "yearly", "vision": False,
+            "tool_calling": True, "structured_output": True,
+        },
+    )
+    assert "yearly" not in BILLING_MODES
+    assert [
+        problem for problem in registry_diagnostics() if "'yearly-elo'" in problem
+    ] == ["model 'yearly-elo': unknown billing_mode 'yearly'"]
+
+
+def test_an_unrecognized_field_is_a_diagnostic_because_nothing_reads_it(
+    monkeypatch,
+):
+    """A misspelt field is a value no consumer will ever read, and lint is the
+    only place that difference is visible.
+
+    Asserted through the price rather than on the message alone: ``price_input``
+    makes an entry LOOK priced in the file while ``effective_price`` still reports
+    None, and a rail whose cost cannot be read is a rail ``cheapest_now`` sorts
+    last. The name of the field is the whole fix, so the message carries it.
+    """
+    monkeypatch.setitem(
+        caps_module.MODEL_CAPABILITIES,
+        "misspelt-elo",
+        {
+            "provider": "nowhere", "context_window": 1000,
+            "billing_mode": "metered", "vision": False,
+            "tool_calling": True, "structured_output": True,
+            "price_input": 1.0, "price_output": 2.0,
+        },
+    )
+    assert [
+        problem for problem in registry_diagnostics() if "'misspelt-elo'" in problem
+    ] == [
+        "model 'misspelt-elo': unrecognized field 'price_input'",
+        "model 'misspelt-elo': unrecognized field 'price_output'",
+    ]
+    assert effective_price("misspelt-elo", _at(WED, 7)) is None
+
+
 def test_price_window_diagnostics_accepts_absent_windows():
     assert price_window_diagnostics("kimi-k3", None) == []
 
@@ -1954,6 +2286,31 @@ def test_price_window_diagnostics_rejects_out_of_range_hours():
     assert price_window_diagnostics(
         "x", [{"hours_utc": [16, 24], "multiplier": 0.8}]
     ) == []
+
+
+@pytest.mark.parametrize(
+    "hours",
+    ([-1, 6], [6, 25], [22, 3], [0, 0], [16.5, 24], [6, 9.5], "6-10", [6], None),
+)
+def test_a_malformed_window_reports_the_value_that_actually_offended(hours):
+    """The message names what the operator WROTE, never an example of it.
+
+    One message has to serve a negative start, an end past midnight, a reversed
+    pair and a fractional hour, so it states the rule for all of them — but it
+    used to illustrate the rule with a hardcoded "16.5 is not an hour boundary",
+    which sent the operator who typed `[-1, 6]` hunting for a fractional hour
+    that appeared nowhere in their config. A diagnostic naming a value nobody
+    wrote costs more than it saves.
+    """
+    window = {"hours_utc": hours, "multiplier": 2.0}
+    problems = price_window_diagnostics("kimi-k3", [window])
+    assert len(problems) == 1
+    assert repr(hours) in problems[0], problems[0]
+    # The rule the value broke is still spelled out...
+    assert f"0 <= start < end <= {caps_module._HOURS_IN_DAY}" in problems[0]
+    # ...and no value the operator did not write is.
+    if "16.5" not in repr(hours):
+        assert "16.5" not in problems[0]
 
 
 def test_price_window_diagnostics_reports_overlapping_windows():

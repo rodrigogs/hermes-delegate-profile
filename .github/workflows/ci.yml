@@ -60,11 +60,44 @@ jobs:
         with:
           node-version: "22"
 
+      # The console suite prices a malformed price window with
+      # router/capabilities.py ITSELF and compares the two answers, so this job
+      # needs an interpreter as well as a runtime. It is declared rather than
+      # inherited from the image, which is also what the syntax check below has
+      # been relying on.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # DISCOVERED BY GLOB, RUN ONE FILE AT A TIME — the same way
+      # tests/test_js_suites_run.py invokes them, from the same plugin root, so the
+      # two cannot drift.
+      #
+      # This step used to name three paths, and two of them
+      # (test_router_nav_cooldowns.js, test_router_nav_writespine.js) had not
+      # existed since that behaviour moved into console.html — while
+      # test_router_nav_mount.js, which does exist, was named nowhere. `node --test
+      # <missing path>` prints "Could not find" and EXITS 0, so this job was green
+      # while running 135 of the branch's 139 tests: a gate that passes when its
+      # inputs vanish is not a gate.
+      #
+      # So the list is not a list any more. A new suite is picked up without an
+      # edit here, an empty glob is a failure rather than a pass, and each suite is
+      # invoked separately so the output names which one failed.
       - name: Run WebUI extension + console tests
         run: |
-          node --test tests/test_router_nav_cooldowns.js \
-                      tests/test_router_nav_writespine.js \
-                      tests/test_console_logic.js
+          set -euo pipefail
+          shopt -s nullglob
+          suites=(tests/test_*.js)
+          if [ ${#suites[@]} -eq 0 ]; then
+            echo "::error::no JavaScript suites matched tests/test_*.js — they are the only thing this job runs"
+            exit 1
+          fi
+          for suite in "${suites[@]}"; do
+            echo "── $suite"
+            node --test "$suite"
+          done
 
       - name: Syntax-check shipped browser assets
         run: |

@@ -147,12 +147,27 @@ _DEFAULT_MAX_TASK_CHARS = 8_192
 # Bound on the composed prompt (``prompt_text``) a preview may be sized from.
 # Deliberately far larger than the task bound and NOT the same knob: the task is
 # a goal line, the prompt is goal + context and is exactly the thing that has to
-# be big for this parameter to be worth having. 1 MiB is ~291k tokens at the
-# module's 3.6-chars-per-token ratio, so it covers every delegated turn a
-# real context window can hold while still bounding the substring scans
-# ``signals.extract`` runs over it — an unbounded preview is a read path that can
-# be made to cost arbitrary CPU. Constructor-overridable for the same reason
-# ``max_task_chars`` is.
+# be big for this parameter to be worth having.
+#
+# WHAT THE BOUND PROTECTS: the substring and regex scans ``signals.extract`` runs
+# over the text, which are linear and measured at ~0.35 ms per 1000 chars. 1 MiB
+# is therefore ~0.4 s of CPU for one request, on a path a caller reaches over
+# HTTP and whose body size the sidecar does not itself limit — so this is the only
+# thing between one request and arbitrary CPU, and an unbounded preview is not an
+# option.
+#
+# WHAT IT THEREFORE DOES NOT REACH, stated because the previous version of this
+# comment claimed the opposite. 1 MiB is ~291k tokens at the module's
+# 3.6-chars-per-token ratio, while the shipped ``huge-context-read`` rule fires
+# above 400k ``est_input_tokens`` (~1.44M composed chars) and the capability
+# registry holds context windows up to 1,050,000 tokens (~3.8M chars). A turn big
+# enough to trigger that rule routes fine in production and is refused HERE. That
+# is a real limitation of this surface rather than of the router, so it is named
+# in the refusal itself (:meth:`_resolve_prompt`) instead of being left for an
+# operator to infer from a bare number — and it is liftable per instance through
+# ``max_prompt_chars``, which is also why the knob exists. ``router chain
+# --prompt-text``, whose caller is the operator's own shell rather than an HTTP
+# client, deliberately has no bound at all and can reproduce such a turn today.
 _DEFAULT_MAX_PROMPT_CHARS = 1_048_576
 
 # How the text the preview was sized from was obtained. Reported so an operator
@@ -1320,6 +1335,16 @@ class RouterService:
         rather than silently truncated, because a truncated prompt would produce a
         smaller ``est_input_tokens`` and therefore a confidently wrong plan — the
         precise failure this parameter exists to fix.
+
+        THE REFUSAL NAMES THE LIMITATION, because this is where an operator meets
+        it. The default bound is ~291k estimated tokens and the shipped
+        ``huge-context-read`` rule fires above 400k, so the one rule whose whole
+        subject is a giant read cannot be previewed at the default (see
+        :data:`_DEFAULT_MAX_PROMPT_CHARS` for why the bound stays). A bare
+        "exceeds N characters" reads as "the router cannot route a turn this big",
+        which is false and is the same defect as any other surface that answers a
+        different question than the path it displays: so the message says the bound
+        is this preview's CPU budget and names both ways past it.
         """
         if not isinstance(prompt_text, str):
             raise ValueError("prompt_text must be a string")
@@ -1327,7 +1352,10 @@ class RouterService:
             return task, _SIZED_FROM_TASK
         if len(prompt_text) > self._max_prompt_chars:
             raise ValueError(
-                f"prompt_text exceeds {self._max_prompt_chars} characters"
+                f"prompt_text exceeds {self._max_prompt_chars} characters: this "
+                "preview's CPU bound, not a routing limit — production routes "
+                "turns larger than this. Raise max_prompt_chars on the service, "
+                "or use `router chain --prompt-text`, which has no bound"
             )
         return prompt_text, _SIZED_FROM_PROMPT
 
@@ -1738,8 +1766,22 @@ class RouterService:
 
         Back-filling from routes.jsonl.1 keeps the recent-routes list non-empty
         immediately after a rotation (when the current file is fresh).
+
+        RELATIVE FIRST, ABSOLUTE SECOND — the module-scope idiom of this file,
+        applied at function scope for exactly the same reason. Hermes loads the
+        plugin as ``hermes_plugins.<slug>.router.service``, where ``router`` is
+        NOT a top-level package, so the absolute name alone raised
+        ``ModuleNotFoundError`` out of every :meth:`routes` and :meth:`route`
+        call on the shape production runs: the Decisions surface dead in
+        production with the whole suite green, because every test imports the
+        flat shape. Both bounds come from the durable log rather than from a
+        second copy here, so this file set and ``durable_decision_log``'s can
+        never name different files.
         """
-        from router.durable_decision_log import routes_path, _TRACE_BACKUPS
+        try:
+            from .durable_decision_log import routes_path, _TRACE_BACKUPS
+        except ImportError:  # pragma: no cover - flat layout used by the test harness
+            from router.durable_decision_log import routes_path, _TRACE_BACKUPS
 
         base = routes_path()
         files = [base]
@@ -1816,8 +1858,15 @@ class RouterService:
         ``rule_id`` alone does not name the tier. When nothing was filtered the
         two are equal, which is the honest report of that case rather than a
         missing key.
+
+        The import is relative-first for the reason :meth:`_trace_files`
+        documents: under Hermes's ``hermes_plugins.<slug>`` shape the absolute
+        name does not resolve, and this method is the Decisions surface.
         """
-        from router.durable_decision_log import routes_path
+        try:
+            from .durable_decision_log import routes_path
+        except ImportError:  # pragma: no cover - flat layout used by the test harness
+            from router.durable_decision_log import routes_path
 
         try:
             safe_limit = max(1, min(int(limit), 500))

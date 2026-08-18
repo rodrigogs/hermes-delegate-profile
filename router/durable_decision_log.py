@@ -16,12 +16,21 @@ Safety properties (every one load-bearing):
     (4096B), so O_APPEND atomicity is not enough; the lock serializes the
     append + size-check + rotation critical section.
   * Bounded on disk — at most ``(_TRACE_BACKUPS + 1) * _TRACE_MAX_BYTES``: on
-    rotation the backups cascade (.1→.2…) and the oldest is unlinked.
+    rotation the backups cascade (.1→.2…) and the oldest is unlinked. The line
+    about to be written is part of the size test, so a file rotates BEFORE it
+    crosses the cap rather than after it already has (see
+    :meth:`DurableDecisionLog._persist`). Rotating afterwards let every file
+    overshoot by one whole entry, and this bullet was wrong by that much: measured
+    1252 bytes on disk against the 600 it promised, on a 200-byte cap. The single
+    exception is an entry LARGER than the whole cap: a JSON line cannot be split
+    without corrupting it, so such an entry lands whole in a file of its own.
   * Bounded per entry — the chain plan's ``rejected`` list is truncated by
     :func:`decision_log.bound_chain_plan` before it ever reaches the disk.
-  * Forward/backward readable — :func:`read_entries` skips corrupt lines and
-    :func:`decision_log.chain_plan_of` gives OLD entries (written before the
-    chain-plan feature) an empty default instead of a KeyError.
+  * Forward/backward readable — :func:`read_entries` skips corrupt lines (decoded
+    per line, so a torn multi-byte write from the other process costs that line
+    and not the whole file) and :func:`decision_log.chain_plan_of` gives OLD
+    entries (written before the chain-plan feature) an empty default instead of a
+    KeyError.
 """
 
 from __future__ import annotations
@@ -38,7 +47,9 @@ from .decision_log import DecisionLog, chain_plan_of
 logger = logging.getLogger(__name__)
 
 # Bound: keep the current file plus this many rotated backups. Total disk is
-# provably capped at (_TRACE_BACKUPS + 1) * _TRACE_MAX_BYTES.
+# capped at (_TRACE_BACKUPS + 1) * _TRACE_MAX_BYTES, because the size test counts
+# the line about to be written; an entry bigger than the cap on its own is the one
+# documented exception (see the module docstring).
 _TRACE_MAX_BYTES = 5 * 1024 * 1024   # 5 MiB per file
 _TRACE_BACKUPS = 3                   # routes.jsonl.1 .. .3  → ~20 MiB ceiling
 
@@ -96,21 +107,41 @@ def read_entries(limit: Optional[int] = None) -> List[Dict[str, Any]]:
     file another process is appending to:
       * missing/unreadable file -> that file contributes nothing;
       * truncated or corrupt JSON line -> that line is skipped;
+      * a line whose BYTES are not valid UTF-8 -> that line is skipped;
       * a line that is valid JSON but not a mapping -> skipped;
       * entries WITHOUT ``chain_plan`` (everything written before that feature)
         are returned untouched — use :func:`decision_log.chain_plan_of` for the
         empty default rather than indexing the key.
     Never raises.
+
+    DECODED PER LINE, for the reason ``service._read_trace_entries`` documents at
+    length: the writer appends from another process, so a torn multi-byte write is
+    a thing that happens, and a whole-file ``read_text`` raises
+    ``UnicodeDecodeError`` for the entire file over one bad byte. Caught here that
+    did not raise — it silently made the file contribute NOTHING, so a single torn
+    byte discarded up to 5 MiB of traces including every entry written after the
+    damage, while the service's reader (same file, same purpose) served them all.
+    Two readers of one file disagreeing about what is readable is the defect this
+    module works hardest to avoid; the per-line decode is what makes them agree.
+
+    A ``limit`` that cannot mean "the last N" — 0, negative, or unparseable — is
+    the unlimited read rather than an error. The ``n > 0`` guard is load-bearing:
+    ``collected[-0:]`` is the whole list (so the guard is not what makes 0 work)
+    and ``collected[-(-2):]`` would silently drop the two OLDEST entries, which is
+    a wrong answer where returning everything is a defensible one.
     """
     collected: List[Dict[str, Any]] = []
     for path in trace_files():
         try:
-            raw = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            raw = path.read_bytes()
+        except OSError:
             continue
         file_entries: List[Dict[str, Any]] = []
-        for line in raw.splitlines():
-            line = line.strip()
+        for raw_line in raw.splitlines():
+            try:
+                line = raw_line.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                continue  # torn/foreign bytes — this line only
             if not line:
                 continue
             try:
@@ -172,10 +203,11 @@ class DurableDecisionLog(DecisionLog):
 
     @staticmethod
     def _persist(entry: Dict[str, Any]) -> None:
-        """Append one JSON line, rotating first if the file is at the cap.
+        """Append one JSON line, rotating first if it would cross the cap.
 
-        Fully guarded: any OSError (full disk, permissions, races) is logged and
-        swallowed so routing is never affected.
+        Fully guarded: any OSError (full disk, permissions, a directory where the
+        file should be, races) is logged and swallowed so routing is never
+        affected.
         """
         path = routes_path()
         try:
@@ -183,10 +215,30 @@ class DurableDecisionLog(DecisionLog):
         except (TypeError, ValueError) as exc:  # non-serializable payload
             logger.warning("route trace not serializable, skipped: %s", exc)
             return
+        pending = len(line.encode("utf-8"))  # bytes, like st_size
         with _WRITE_LOCK:
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                if path.exists() and path.stat().st_size >= _TRACE_MAX_BYTES:
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    size = 0  # absent, or unstattable: there is nothing to rotate
+                # THE INCOMING LINE COUNTS, which is the ``st_size >= cap`` test
+                # this used to run and the reason the advertised ceiling was wrong.
+                # Rotating only once the file was ALREADY at the cap let every one
+                # of the (_TRACE_BACKUPS + 1) files overshoot by a whole entry:
+                # measured 1252 bytes on disk against the 600 the module
+                # advertises, on a 200-byte cap. Asking "would this record cross
+                # the cap?" is both what "size-bounded" means and what
+                # ``logging.handlers.RotatingFileHandler`` asks.
+                #
+                # ``size and`` is load-bearing: an EMPTY or absent file must never
+                # rotate. ``_rotate`` ends in ``os.replace(path, .1)``, which is an
+                # OSError for a path that does not exist yet — swallowed by the
+                # guard below, taking the entry with it — so a first entry larger
+                # than the whole cap would be dropped on a fresh install instead of
+                # landing whole in a file of its own.
+                if size and size + pending > _TRACE_MAX_BYTES:
                     DurableDecisionLog._rotate(path)
                 with open(path, "a", encoding="utf-8") as handle:
                     handle.write(line)

@@ -83,9 +83,14 @@ _ROUTING_KEYS = frozenset(
 #: ``peak_priced`` sits next to ``demoted`` on purpose — they are the PRICE and
 #: the POSITION reading of the same ``avoid_peak`` match, and an operator can
 #: only tell them apart if they are printed side by side.
+#: ``time_cap`` leads because it is the CEILING the other two cost readings are
+#: about: ``plan_chain`` sets it only when the tier declares one (never as a
+#: null, which a consumer would read as a ceiling of 0x), and printing which
+#: rails a cap refused while withholding the number it refused them against left
+#: this surface saying less than the console, which shows the cap beside them.
 _TIME_FLAG_KEYS: Tuple[str, ...] = (
-    "capped", "demoted", "peak_priced", "promoted", "time_cap_bypassed",
-    "strategy_degraded",
+    "time_cap", "capped", "demoted", "peak_priced", "promoted",
+    "time_cap_bypassed", "strategy_degraded",
 )
 
 # Price lookup outcomes. "unpriced" and "unavailable" are deliberately
@@ -341,8 +346,9 @@ def cmd_chain(args: argparse.Namespace) -> None:
     Shows the injected clock, the derived requirements, the eligible order
     actually tried, the per-elo price multiplier and effective price at that
     clock, the rejected elos with their reason, the fallback strategy, the
-    time-layer flags that fired (``capped``, ``demoted``, ``peak_priced``,
-    ``promoted``, ``time_cap_bypassed``, ``strategy_degraded``) and the number of
+    time-layer flags that fired (the declared ``time_cap`` and the ``capped``
+    rails it refused, ``demoted``, ``peak_priced``, ``promoted``,
+    ``time_cap_bypassed``, ``strategy_degraded``) and the number of
     independent upstream rails. A requirement nothing could ever meet is
     headlined from ``unsatisfiable`` rather than left to be inferred from a
     bypass plus a run of identical rejections. ``--json`` prints the same payload
@@ -742,10 +748,14 @@ def _pricing_rows(
     """
     rows: List[Dict[str, Any]] = []
     chain = plan.get("chain")
-    if not isinstance(chain, list):
+    # Both shapes are GUARANTEED by _normalize_plan (chain_plan_of defaults a
+    # corrupt chain to [] and corrupt multipliers to {}), so neither guard can be
+    # provoked through this command; they stay as the contract for a future
+    # caller that hands over a raw plan.
+    if not isinstance(chain, list):  # pragma: no cover - normalized upstream
         return rows
     declared_multipliers = plan.get("multipliers")
-    if not isinstance(declared_multipliers, dict):
+    if not isinstance(declared_multipliers, dict):  # pragma: no cover - as above
         declared_multipliers = {}
 
     for target in chain:
@@ -1030,6 +1040,9 @@ def _time_flag_lines(plan: Dict[str, Any]) -> List[str]:
     cost cap was dropped to keep the chain non-empty (a cost control must not be
     able to cause an outage), so it is annotated rather than printed bare.
 
+    ``strategy_degraded`` reads the reason the PLANNER computed
+    (:func:`_strategy_degrade_note`) rather than asserting one of its own.
+
     ``demoted`` and ``peak_priced`` are annotated for a different reason: they
     are two readings of one ``avoid_peak`` match and printing both bare would
     leave the operator to guess which is which. ``demoted`` is a POSITION fact —
@@ -1051,7 +1064,10 @@ def _time_flag_lines(plan: Dict[str, Any]) -> List[str]:
         if key == "time_cap_bypassed":
             rendered += " (time_cap would have emptied the chain — cap dropped)"
         elif key == "strategy_degraded":
-            rendered += " (declared strategy needed a clock/rng it did not get)"
+            rendered += _strategy_degrade_note(plan)
+        elif key == "time_cap":
+            rendered += (" (PRICE CEILING: a rail dearer than this at this hour "
+                         "is refused — see capped)")
         elif key == "demoted":
             rendered += " (POSITION: time_policy moved these later in the chain)"
         elif key == "peak_priced":
@@ -1064,6 +1080,32 @@ def _time_flag_lines(plan: Dict[str, Any]) -> List[str]:
                          "so the order above is unchanged and correct — they cost "
                          "more at this hour and this chain cannot step around them")
     return lines
+
+
+def _strategy_degrade_note(plan: Dict[str, Any]) -> str:
+    """Why the declared strategy did not run — the PLANNER's sentence, not a guess.
+
+    ``rules._effective_strategy`` already decides this and ``plan_chain`` carries
+    it in ``strategy_degraded_reason`` ("'cheapest' is not a known fallback
+    strategy", "no rng was injected, so the tail was not shuffled", "the
+    capability registry is unavailable, so nothing was reordered"). This line used
+    to annotate every degrade with one invented cause — "needed a clock/rng it did
+    not get" — which is simply false for a misspelled strategy name or an absent
+    registry, and sends the operator off to add ``--at``/``--seed`` for a typo.
+    The console fixed the same defect by reading this field; the shell reads the
+    same field, so the two surfaces cannot disagree about the cause.
+
+    The DECLARED strategy is named because ``strategy:`` above prints the one that
+    actually RAN: without it the block reports a degrade without ever saying which
+    order was asked for.
+    """
+    declared = plan.get("strategy_declared") or "strategy"
+    reason = plan.get("strategy_degraded_reason")
+    if not isinstance(reason, str) or not reason:
+        # A planner that reports the degrade without its cause: say that much and
+        # stop. Filling the gap in is what made the old annotation wrong.
+        return f" (declared {declared} did not run; this plan reports no reason)"
+    return f" (declared {declared} did not run: {reason})"
 
 
 def _flag_value(value: Any) -> str:

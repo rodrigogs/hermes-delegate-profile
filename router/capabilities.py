@@ -1777,10 +1777,23 @@ def upstream_group(provider: str) -> str:
     368 catalog entries carry pricing.original at ratio 0.80 and its stream
     emits the literal ": OPENROUTER PROCESSING" keep-alive). Every other
     provider returns itself, so it counts as its own rail.
+
+    The returned group is NORMALIZED — trimmed and lower-cased — for the mapped
+    and unmapped cases alike, because it is a comparison key and
+    :func:`independent_rails` counts distinct keys. Returning the operator's raw
+    spelling for an unmapped provider made ``zai`` and ``ZAI`` two rails on a
+    lint-clean config, which OVERSTATES redundancy: the count exists to tell an
+    operator whether a chain has a second upstream, and two spellings of one
+    vendor are one upstream. The console's ``upstreamGroup`` normalizes the same
+    way, so the number Python reports and the number an operator reads off the
+    console are the same number.
     """
-    if not isinstance(provider, str) or not provider:
+    if not isinstance(provider, str):
         return ""
-    return _UPSTREAM_GROUPS.get(provider.strip().lower(), provider)
+    name = provider.strip().lower()
+    if not name:
+        return ""
+    return _UPSTREAM_GROUPS.get(name, name)
 
 
 def independent_rails(chain: List[Dict[str, Any]]) -> int:
@@ -1878,13 +1891,19 @@ def price_window_diagnostics(model: str, windows: Any) -> List[str]:
             problems.append(f"{label} is not a mapping")
             continue
 
-        bounds = _hour_bounds(window.get("hours_utc"))
+        hours = window.get("hours_utc")
+        bounds = _hour_bounds(hours)
         if bounds is None:
+            # The offending value, never an EXAMPLE of one: this message used to
+            # end "16.5 is not an hour boundary" whatever was written, so an
+            # operator who typed [-1, 6] went hunting for a fractional hour that
+            # was not in their file. A diagnostic that names a value nobody wrote
+            # is a diagnostic that costs more than it saves.
             problems.append(
                 f"{label} 'hours_utc' must be a [start, end) pair of WHOLE "
                 f"hours with 0 <= start < end <= {_HOURS_IN_DAY} "
-                f"(cross midnight with two entries, never start > end; "
-                f"16.5 is not an hour boundary)"
+                f"(cross midnight with two entries, never start > end; a "
+                f"fractional hour is not an hour boundary); got {hours!r}"
             )
 
         weekdays = window.get("weekdays")
@@ -1954,7 +1973,14 @@ def _input_ceiling(caps: Any) -> Optional[int]:
     nothing, and "unpublished" has to stay distinguishable from "tiny" for
     :func:`satisfies` to fail OPEN on it.
     """
-    if not isinstance(caps, dict):
+    # Belt and braces, and unreachable from either caller: `satisfies` passes a
+    # `capabilities_for` merge (always a mapping once it is not None), and
+    # `_unsatisfiable_requirements` only ever sees the entries `filter_chain` has
+    # already filtered to mappings. Kept because `caps: Any` is the honest
+    # annotation for a helper two callers read, and left uncovered on purpose:
+    # reaching it needs a call no router path makes, so a test for it would assert
+    # that the guard exists rather than any behaviour it protects.
+    if not isinstance(caps, dict):  # pragma: no cover - both callers pass a mapping
         return None
     bounds = [
         size

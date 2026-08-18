@@ -1,5 +1,6 @@
 """Unit tests for rule matching engine (router/rules.py)."""
 
+import inspect
 import json
 import random
 from datetime import datetime, timedelta, timezone
@@ -461,6 +462,50 @@ def _vision_features(**overrides):
     return fv
 
 
+class _RegistryWithout:
+    """The live registry with one or more names HIDDEN — a stale sibling install.
+
+    This plugin is deployed by copy, so "the registry is a version behind" is a
+    real state: the functions that exist behave exactly as they ship (they are
+    forwarded, not stubbed), and only the named attributes are missing. A stub
+    registry would prove that a stub was called; this one exercises the same
+    degrade decision rules.py has to make against a genuinely partial module.
+    """
+
+    def __init__(self, module, *hidden):
+        self._module = module
+        self._hidden = frozenset(hidden)
+
+    def __getattr__(self, name):
+        if name in self._hidden:
+            raise AttributeError(name)
+        return getattr(self._module, name)
+
+
+class _RegistryWith:
+    """The live registry with one or more names REPLACED — a version-SKEWED sibling.
+
+    Same premise as :class:`_RegistryWithout` — the plugin is deployed by copy, so
+    "capabilities.py is a version behind rules.py" is a real state — for the skew
+    absence cannot express: a function that still EXISTS and no longer takes the
+    arguments rules.py passes it, or no longer returns the shape rules.py reads.
+
+    Replacing the name on this PROXY rather than on the module is the point. The
+    registry's own internals keep calling their own functions, exactly as a
+    genuinely older module would, so a test can say "rules.py lost THIS call" and
+    mean only that call.
+    """
+
+    def __init__(self, module, **replacements):
+        self._module = module
+        self._replacements = replacements
+
+    def __getattr__(self, name):
+        if name in self._replacements:
+            return self._replacements[name]
+        return getattr(self._module, name)
+
+
 # ---------------------------------------------------------------------------
 # _resolve_tiers: new tier knobs
 # ---------------------------------------------------------------------------
@@ -542,6 +587,40 @@ class TestPlanChain:
         assert plan["bypassed"] is False
         assert plan["rejected"] == []
         assert plan["independent_rails"] == 3
+
+    def test_only_entries_that_name_an_elo_become_hops(self):
+        """A hand-edited `fallback:` contributes hops, not everything in the list.
+
+        An entry with no model names nothing to attempt: keeping it would put a hop
+        in the chain that the runner can only fail on, and count it as a rail in
+        `independent_rails`. The gate refuses both entries below — asserted, because
+        silently dropping them is only acceptable while something still says so.
+
+        The two chain builders are asserted to AGREE. `_tier_chain` is what the
+        advisories are computed over and `_build_chain` is what the request is
+        routed on, so an entry only one of them counts is either a finding about a
+        rail that is not there or a rail nobody checked.
+        """
+        tier = {
+            "model": "gpt-5.6-terra", "provider": "openai-codex",
+            "fallback": [
+                {"model": "glm-5.3", "provider": "zai"},
+                {"provider": "zai"},        # no elo to attempt
+                "glm-4.7",                   # a name where a mapping belongs
+            ],
+        }
+        plan = plan_chain(resolve_tiers({"model": "T1"}, {"T1": tier}), _mkf())
+        assert [hop["model"] for hop in plan["chain"]] == [
+            "gpt-5.6-terra", "glm-5.3",
+        ]
+        assert [hop["model"] for hop in rules_mod._tier_chain(tier)] == [
+            hop["model"] for hop in plan["chain"]
+        ]
+        assert len([
+            e for e in lint(_cfg({"T1": tier})) if "must be a mapping with" in e
+        ]) == 2
+        # Two hops, two upstreams: the entry that named no elo is not a rail.
+        assert plan["independent_rails"] == 2
 
     def test_returns_the_full_contract_keys(self):
         plan = plan_chain(resolve_tiers({"model": "T1"}, CAPS_TIERS), _mkf())
@@ -733,6 +812,65 @@ class TestPlanChain:
         assert [h["model"] for h in plan["chain"]] == ["glm-5.2-fast"]
         assert plan["requirements"] == {}
         assert plan["bypassed"] is False
+
+    def test_a_registry_missing_a_late_stage_still_yields_a_usable_plan(
+        self, monkeypatch
+    ):
+        """A partial registry costs the STAGES, never the route.
+
+        ``independent_rails`` is the last thing plan_chain asks the registry for,
+        so hiding it degrades a run in which the filter, the cap and the policy all
+        already succeeded — the worst case for the defensive ``except``, because
+        the wholesale degrade throws their results away. What must survive is a
+        usable plan: every declared hop still attemptable, in declared order.
+        """
+        monkeypatch.setattr(
+            rules_mod, "_caps", _RegistryWithout(rules_mod._caps, "independent_rails")
+        )
+        resolved = resolve_tiers({"model": "T1"}, TIME_TIERS)
+        plan = plan_chain(resolved, _mkf(), when=PEAK_MONDAY)
+        assert _models(plan) == ["gpt-5.6-terra", "deepseek-v4-pro", "glm-5.3"]
+        # Honest flags, not merely present ones: no stage ran, so nothing may be
+        # reported as filtered, capped, demoted or repriced.
+        assert plan["capped"] == [] and plan["demoted"] == []
+        assert plan["multipliers"] == {} and plan["rejected"] == []
+        assert plan["time_cap_bypassed"] is False and plan["bypassed"] is False
+        # ... and the hour it was planned at is still the hour it was planned at.
+        assert (plan["utc_hour"], plan["time_agnostic"]) == (7, False)
+        assert plan["time_cap"] == {"max_multiplier": 1.5}
+
+    def test_a_filter_returning_the_wrong_type_degrades_rather_than_raising(
+        self, monkeypatch
+    ):
+        """`.get` on a list is an AttributeError, and this is the request path."""
+        monkeypatch.setattr(
+            rules_mod._caps, "filter_chain", lambda chain, requirements: list(chain),
+        )
+        plan = plan_chain(resolve_tiers({"model": "T4"}, CAPS_TIERS),
+                          _vision_features())
+        assert [h["model"] for h in plan["chain"]] == [
+            "text-only-elo", "vision-elo", "another-text-elo",
+        ]
+        assert plan["requirements"] == {} and plan["rejected"] == []
+
+    def test_the_degraded_plan_has_the_same_shape_as_a_healthy_one(
+        self, monkeypatch
+    ):
+        """One shape, whatever happened: a consumer must not test for a key.
+
+        The console, the CLI and routes.jsonl all read the same dict. A degraded
+        plan that dropped a key would make every reader of that key branch on
+        whether the registry happened to be healthy — which is how a diagnostic
+        ends up rendered as `undefined` on the one run an operator is debugging.
+        """
+        resolved = resolve_tiers({"model": "T1"}, TIME_TIERS)
+        healthy = set(plan_chain(resolved, _mkf(), when=PEAK_MONDAY))
+        monkeypatch.setattr(
+            rules_mod, "_caps", _RegistryWithout(rules_mod._caps, "independent_rails")
+        )
+        assert set(plan_chain(resolved, _mkf(), when=PEAK_MONDAY)) == healthy
+        monkeypatch.setattr(rules_mod, "_caps", None)
+        assert set(plan_chain(resolved, _mkf(), when=PEAK_MONDAY)) == healthy
 
 
 # ---------------------------------------------------------------------------
@@ -1069,6 +1207,69 @@ class TestLintTierKnobs:
         assert len([e for e in errors if "must be a mapping with" in e]) == 3
         assert not any("billing_mode" in e for e in errors)
 
+    @pytest.mark.parametrize("key", ["model", "provider"])
+    @pytest.mark.parametrize(
+        "value",
+        ["glm-5.3", "", "   ", 4.7, 7, True, None, ["glm-5.3"], {"glm-5.3": True}],
+    )
+    def test_a_hops_identity_is_held_to_the_tiers_standard(self, key, value):
+        """Symmetry, asserted AS symmetry: same value, same verdict, either elo.
+
+        A hop's model/provider were checked for TRUTHINESS only while a tier's own
+        must be a non-empty string, so ``model: 4.7`` — YAML's reading of an
+        unquoted glm-4.7 — was refused on a tier and waved through on a hop. A hop
+        is not the lesser declaration: the request is routed on it. What happens to
+        it downstream is asserted in
+        test_an_unusable_hop_identity_is_invisible_after_the_gate.
+
+        Stated as an equality rather than "a hop rejects 4.7" for the reason the
+        billing_mode symmetry above is: the verdict-by-verdict claim passes again
+        the moment the two checks drift a second time.
+        """
+        tier = {"model": "m2", "provider": "p2", key: value}
+        on_tier = [e for e in lint(_cfg({"T2": tier})) if "T2" in e]
+        on_hop = [
+            e for e in lint(_cfg({"T2": {
+                "model": "m2", "provider": "p2",
+                "fallback": [{"model": "f1", "provider": "q1", key: value}],
+            }})) if "T2" in e
+        ]
+        assert bool(on_tier) == bool(on_hop), (
+            f"{key}={value!r}: tier={on_tier} hop={on_hop}"
+        )
+
+    def test_an_unusable_hop_identity_names_the_key_and_only_it(self):
+        """One defect, one diagnostic — and it says which key and what is wrong.
+
+        The shape message ("must be a mapping with 'model' and 'provider'") is
+        about a hop that does not DECLARE them; this hop declares both, and one is
+        not a name. Emitting both would send the operator looking for a missing key
+        they can see in the file.
+        """
+        errors = lint(_cfg({"T2": {"model": "m2", "provider": "p2", "fallback": [
+            {"model": 4.7, "provider": "zai"},
+        ]}}))
+        assert "tier 'T2': fallback[0]: 'model' must be a non-empty string" in errors
+        assert not any("must be a mapping with" in e for e in errors)
+
+    def test_an_unusable_hop_identity_is_invisible_after_the_gate(self):
+        """Why it has to be caught HERE: nothing downstream can say it.
+
+        The plan keeps the hop — the capability filter reads its id as "" and lets
+        it through on the fail-open unknown path, which is right, because a filter
+        that removed it could empty a chain. But `unknown` is the flag that makes
+        that fail-open loud, and it collects model IDS: it names the string model it
+        has never heard of and cannot name this one at all. So the router would
+        attempt a rail called 4.7 with every plan field reading clean.
+        """
+        tier = {"model": "m2", "provider": "p2",
+                "fallback": [{"model": 4.7, "provider": "zai"}]}
+        plan = plan_chain(resolve_tiers({"model": "T2"}, {"T2": tier}),
+                          _vision_features())
+        assert [hop["model"] for hop in plan["chain"]] == ["m2", 4.7]
+        assert plan["unknown"] == ["m2"]
+        assert plan["rejected"] == [] and plan["bypassed"] is False
+
     def test_requirement_key_outside_closed_set(self):
         errors = lint(_cfg({"T4": {"model": "m4", "provider": "p4",
                                    "requirements": {"gpu": True}}}))
@@ -1112,6 +1313,34 @@ class TestLintTierKnobs:
         }})
         assert lint(config) == []
         assert lint_warnings(config)
+
+    def test_a_tier_that_is_not_a_mapping_is_reported_once(self):
+        """`T2: glm-5.3` — the mapping an operator forgot to nest under the alias.
+
+        Every later check indexes the tier (`tier['model']`, `'pin_primary' in
+        tier`), and `"glm-5.3"['model']` is a TypeError, so the write gate would
+        raise through the operator's apply without the early `continue`. Exactly
+        one diagnostic, because the shape IS the defect: four more errors derived
+        from it (missing model, missing provider, ...) would bury the one that
+        tells them what to type.
+        """
+        errors = lint(_cfg({"T2": "glm-5.3"}))
+        assert [e for e in errors if "T2" in e] == ["tier 'T2' must be a mapping"]
+
+    def test_requirements_that_are_not_a_mapping_are_reported(self):
+        """`requirements: [min_context]` — a list where the floor belongs.
+
+        Reported rather than iterated: `["min_context"].items()` raises, and lint()
+        is the write gate. The second assertion is why it must be a HARD error and
+        not silence — the planner discards a floor of this shape without a word
+        (_tier_floor_of reads None), so the operator would keep a floor they
+        believe they set and never had, and the failure direction of a discarded
+        floor is routing to a model that cannot serve the request.
+        """
+        errors = lint(_cfg({"T4": {"model": "m4", "provider": "p4",
+                                   "requirements": ["min_context"]}}))
+        assert "tier 'T4': 'requirements' must be a mapping" in errors
+        assert rules_mod._tier_floor_of({"requirements": ["min_context"]}) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1172,6 +1401,62 @@ class TestLintWarnings:
         assert lint_warnings({}) == []
         assert lint_warnings({"tiers": "nope"}) == []
         assert lint_warnings({"tiers": {"T1": "nope"}}) == []
+
+    def test_a_model_named_by_three_hops_is_reported_once(self):
+        """One finding per model, not one per hop.
+
+        A tier that falls back to the same elo behind two providers names it three
+        times; three copies of the same sentence is how an operator learns to skim
+        the advisory channel, and the next finding in it is the one they miss.
+        """
+        if rules_mod._caps is None:
+            pytest.skip("registry required to know a model is unknown")
+        config = _cfg({"T2": {
+            "model": "totally-made-up-elo-xyz", "provider": "p2",
+            "fallback": [{"model": "totally-made-up-elo-xyz", "provider": "q2"},
+                         {"model": "totally-made-up-elo-xyz", "provider": "r2"}],
+        }})
+        assert [w for w in lint_warnings(config) if "T2" in w] == [
+            "tier 'T2': model 'totally-made-up-elo-xyz' is unknown to the "
+            "capability registry and declares no capabilities"
+        ]
+
+    def test_a_hop_whose_model_is_not_a_string_earns_no_finding(self):
+        """`model: 7` is not an unknown model — it is not a model at all.
+
+        The registry keys on strings, so a numeric id cannot be looked up and
+        cannot be reported as unverifiable either. Silence here is the conservative
+        direction for an ADVISORY: the finding it could invent ("unknown to the
+        registry") would point the operator at the registry, when the defect is in
+        their file. NOTE: lint() does not refuse it either — a hop's model is
+        checked only for truthiness, while a tier's own must be a non-empty string.
+        """
+        if rules_mod._caps is None:
+            pytest.skip("registry required to know a model is unknown")
+        config = _cfg({"T2": {"model": "glm-5.3", "provider": "zai",
+                              "fallback": [{"model": 7, "provider": "deepseek"}]}})
+        assert not any("model '7'" in w for w in lint_warnings(config))
+
+    def test_a_registry_that_raises_on_capabilities_for_is_silent(self, monkeypatch):
+        """An unverifiable model is unverifiable — not reported as unknown.
+
+        `capabilities_for` raising is a broken registry, and a warning blaming the
+        operator's model list for it would send them editing the wrong file. The
+        rest of the report still arrives, which is the point of degrading per hop.
+        """
+        if rules_mod._caps is None:
+            pytest.skip("registry required to know a model is unknown")
+        def boom(model, declared=None):
+            raise TypeError("stale registry")
+
+        monkeypatch.setattr(rules_mod._caps, "capabilities_for", boom)
+        config = _cfg({"T2": {
+            "model": "totally-made-up-elo-xyz", "provider": "zai",
+            "fallback": [{"model": "f1", "provider": "zai"}],
+        }})
+        warnings = lint_warnings(config)
+        assert not any("unknown to the capability registry" in w for w in warnings)
+        assert "tier 'T2': first two hops share upstream 'zai' — no independent fallback" in warnings
 
 
 # ---------------------------------------------------------------------------
@@ -1307,6 +1592,133 @@ class TestRegistryDiagnosticsAreFoldedIn:
 
 
 # ---------------------------------------------------------------------------
+# The closed sets when the registry cannot supply them
+#
+# lint() validates four vocabularies it does not own: the strategy set, the
+# billing modes, the requirement keys and the `when` field names. Each is READ
+# from the sibling module that owns it so the two cannot drift — and each has a
+# local fallback for the state where the sibling is absent or is exporting
+# something unusable. This plugin is deployed by COPY, so a router next to a
+# registry a version behind (or missing) is a real deployment, not a hypothetical.
+#
+# What these cases assert is that the fallback keeps lint FAIL-CLOSED. A gate
+# that silently stops refusing typos is worse than one that refuses too much: the
+# typo reads in the file as a working cost control and does nothing at all.
+# ---------------------------------------------------------------------------
+
+class TestClosedSetsWithoutTheRegistry:
+    def test_the_local_mirrors_match_the_registry_they_stand_in_for(self):
+        """A mirror drifts; these two must not, so the equality is asserted."""
+        if rules_mod._caps is None:  # pragma: no cover - registry always ships
+            pytest.skip("the closed sets live in the capability registry")
+        assert rules_mod._FALLBACK_STRATEGIES == rules_mod._caps.FALLBACK_STRATEGIES
+        assert rules_mod._FALLBACK_BILLING_MODES == rules_mod._caps.BILLING_MODES
+        assert rules_mod._FALLBACK_REQUIREMENT_KEYS == rules_mod._caps.REQUIREMENT_KEYS
+
+    @pytest.mark.parametrize(
+        "tier,fragment",
+        [
+            ({"fallback_strategy": "round_robin"}, "'fallback_strategy' must be one of"),
+            ({"billing_mode": "gift-card"}, "'billing_mode' must be one of"),
+            ({"requirements": {"gpu": True}}, "'requirements.gpu' not in closed"),
+        ],
+    )
+    def test_the_gate_reaches_the_same_verdict_without_the_registry(
+        self, tier, fragment, monkeypatch
+    ):
+        """Same config, same verdict, registry or no registry.
+
+        Asserted as an agreement between the two states rather than against the
+        error strings alone: what matters is that an operator cannot get a bad
+        value past the gate by deploying next to a registry that failed to import.
+        """
+        config = _cfg({"T2": dict({"model": "m2", "provider": "p2"}, **tier)})
+        with_registry = [e for e in lint(config) if fragment in e]
+        monkeypatch.setattr(rules_mod, "_caps", None)
+        assert [e for e in lint(config) if fragment in e] == with_registry
+        assert len(with_registry) == 1
+
+    @pytest.mark.parametrize(
+        "attr,tier,accepted",
+        [
+            ("FALLBACK_STRATEGIES", {"fallback_strategy": "cheapest"}, "cheapest_now"),
+            ("BILLING_MODES", {"billing_mode": "meter"}, "metered"),
+            ("REQUIREMENT_KEYS", {"requirements": {"min": 5}}, "min_context"),
+        ],
+    )
+    def test_a_registry_exporting_a_string_cannot_open_the_gate(
+        self, attr, tier, accepted, monkeypatch
+    ):
+        """The type check is the load-bearing half of "read it from the registry".
+
+        A closed set is consulted with ``in``, and ``in`` on a STRING is a
+        substring test: were the export trusted whatever its type, a registry
+        exporting ``"cheapest_now"`` instead of a one-element set would make
+        ``fallback_strategy: cheapest`` — and ``chea``, and ``now`` — lint clean and
+        then degrade to sequential at run time. Hence: unusable export, local
+        mirror, gate still closed.
+        """
+        if rules_mod._caps is None:  # pragma: no cover - registry always ships
+            pytest.skip("the closed sets live in the capability registry")
+        assert accepted.startswith(tier.get("fallback_strategy")
+                                   or tier.get("billing_mode")
+                                   or "min")  # the typo really is a substring
+        monkeypatch.setattr(rules_mod._caps, attr, accepted, raising=False)
+        config = _cfg({"T2": dict({"model": "m2", "provider": "p2"}, **tier)})
+        assert lint(config) != []
+
+    def test_a_signal_vocabulary_that_is_not_a_set_skips_the_field_check(
+        self, monkeypatch
+    ):
+        """No canonical list means no guess — and no legitimate field refused.
+
+        The failure mode this direction avoids is the expensive one: a vocabulary
+        lint cannot read is not evidence that ``needs_vision`` is a typo, and
+        refusing it at the write gate strands the operator outside the guarded
+        path over a field that works.
+        """
+        if signals_mod is None:  # pragma: no cover - signals always ships
+            pytest.skip("signals module required")
+        config = _rules_cfg({"id": "vision", "when": {"needs_vision": {"eq": True}},
+                             "then": {"model": "T2"}})
+        for broken in (["needs_vision"], frozenset(), None):
+            monkeypatch.setattr(signals_mod, "KNOWN_FEATURE_NAMES", broken,
+                                raising=False)
+            assert rules_mod._known_when_fields() is None
+            assert lint(config) == []
+
+    def test_upstream_grouping_degrades_to_provider_identity(self, monkeypatch):
+        """Without the alias table the literal pair is still caught, the alias is not.
+
+        Both halves are asserted, because the honest degrade is "less redundancy
+        analysis", never "a rail pair invented from a table nobody has".
+        """
+        if rules_mod._caps is None:  # pragma: no cover - registry always ships
+            pytest.skip("upstream aliasing lives in the capability registry")
+        literal = _cfg({"T4": {"model": "m4", "provider": "zai",
+                               "fallback": [{"model": "f1", "provider": "zai"}]}})
+        reseller = _cfg({"T4": {"model": "m4", "provider": "nous",
+                                "fallback": [{"model": "f1",
+                                              "provider": "openrouter"}]}})
+        assert any("share upstream" in w for w in lint_warnings(reseller))
+        monkeypatch.setattr(rules_mod, "_caps", None)
+        assert any("share upstream 'zai'" in w for w in lint_warnings(literal))
+        assert not any("share upstream" in w for w in lint_warnings(reseller))
+
+    def test_a_registry_that_raises_on_upstream_group_still_catches_the_pair(
+        self, monkeypatch
+    ):
+        """The same degrade, reached by a stale table rather than a missing one."""
+        def boom(provider):
+            raise ValueError("stale registry")
+
+        monkeypatch.setattr(rules_mod._caps, "upstream_group", boom)
+        config = _cfg({"T4": {"model": "m4", "provider": "zai",
+                              "fallback": [{"model": "f1", "provider": "zai"}]}})
+        assert any("share upstream 'zai'" in w for w in lint_warnings(config))
+
+
+# ---------------------------------------------------------------------------
 # Backward compatibility
 # ---------------------------------------------------------------------------
 
@@ -1367,6 +1779,18 @@ def _rules_cfg(*rules):
 
 def _shadow_errors(config):
     return [e for e in lint(config) if "shadowed" in e]
+
+
+def _first_match(rows, **features):
+    """The rule id first-match ACTUALLY lands on for this feature vector.
+
+    Every shadow verdict is a claim about this function: "shadowed" means no vector
+    can reach the later row, and silence means one can. Asserting the claim against
+    the engine is the only way the two cannot drift — a lint that reports a shadow
+    the matcher does not produce blocks a legitimate config at the write gate.
+    """
+    return match(_mkf(**features), False, rows, {"action": "classify"},
+                 ROUTER_CONFIG["tiers"])[1]
 
 
 class TestShadowDetection:
@@ -1560,6 +1984,261 @@ class TestShadowDetection:
         assert _shadow_errors(ROUTER_CONFIG) == []
 
 
+class TestShadowContainmentEdges:
+    """The containment cases at the edges of each operator family.
+
+    Every case asserts BOTH halves of the same claim: what lint() reports, and what
+    the engine does with a feature vector chosen to test it. A reported shadow is
+    witnessed by the later row losing on its own best input; a silent pair is
+    witnessed by a vector that reaches the later row, which is why refusing it
+    would have been wrong.
+    """
+
+    def test_a_condition_that_only_requires_presence_shadows_the_field(self):
+        """`est_input_tokens: {}` constrains nothing beyond the field being there.
+
+        Presence is the one thing the later row also requires, so every vector the
+        later row admits the earlier row admits too. The witness is the later row's
+        own best case: 900k satisfies `gt: 800000` and still routes to T2.
+        """
+        rows = [
+            {"id": "any-context", "when": {"est_input_tokens": {}},
+             "then": {"model": "T2"}},
+            {"id": "gigantic", "when": {"est_input_tokens": {"gt": 800000}},
+             "then": {"model": "T4"}},
+        ]
+        assert (
+            "rule 'gigantic' is shadowed by earlier rule 'any-context'"
+            in lint(_rules_cfg(*rows))
+        )
+        assert _first_match(rows, est_input_tokens=900000) == "any-context"
+
+    def test_a_bounded_row_never_shadows_the_presence_only_row_after_it(self):
+        """The other direction: the empty condition admits what no bound does."""
+        rows = [
+            {"id": "gigantic", "when": {"est_input_tokens": {"gt": 800000}},
+             "then": {"model": "T4"}},
+            {"id": "any-context", "when": {"est_input_tokens": {}},
+             "then": {"model": "T2"}},
+        ]
+        assert _shadow_errors(_rules_cfg(*rows)) == []
+        assert _first_match(rows, est_input_tokens=10) == "any-context"
+
+    def test_excluding_less_shadows_excluding_more(self):
+        """Excluding fewer values ADMITS more: `ne: hard` covers `nin: [hard, trivial]`."""
+        rows = [
+            {"id": "not-hard", "when": {"verb_class": {"ne": "hard"}},
+             "then": {"model": "T2"}},
+            {"id": "neither", "when": {"verb_class": {"nin": ["hard", "trivial"]}},
+             "then": {"model": "T3"}},
+        ]
+        assert (
+            "rule 'neither' is shadowed by earlier rule 'not-hard'"
+            in lint(_rules_cfg(*rows))
+        )
+        assert _first_match(rows, verb_class="moderate") == "not-hard"
+
+    def test_excluding_more_does_not_shadow_excluding_less(self):
+        """Reversed, the later row owns the values the earlier one excludes."""
+        rows = [
+            {"id": "neither", "when": {"verb_class": {"nin": ["hard", "trivial"]}},
+             "then": {"model": "T3"}},
+            {"id": "not-hard", "when": {"verb_class": {"ne": "hard"}},
+             "then": {"model": "T2"}},
+        ]
+        assert _shadow_errors(_rules_cfg(*rows)) == []
+        assert _first_match(rows, verb_class="trivial") == "not-hard"
+
+    @pytest.mark.parametrize(
+        "later_bounds",
+        [
+            {"gt": 200000, "gte": 500000},   # the tighter floor written second
+            {"gte": 500000, "gt": 200000},   # ... and first
+            {"gte": 500000, "gt": 500000},   # same number: the exclusive one wins
+        ],
+    )
+    def test_two_lower_bounds_reduce_to_the_tighter_one(self, later_bounds):
+        """A row that kept its old floor beside a new one means the tighter one.
+
+        `gt` and `gte` on one field are ANDed at match time, so the row admits the
+        SMALLER set — whichever order they appear in the file. Reading it any other
+        way would let a row whose real floor is at or above an earlier row's look
+        reachable, and the operator would never see it never firing.
+        """
+        rows = [
+            {"id": "over-500k", "when": {"est_input_tokens": {"gte": 500000}},
+             "then": {"model": "T3"}},
+            {"id": "two-floors", "when": {"est_input_tokens": later_bounds},
+             "then": {"model": "T4"}},
+        ]
+        assert (
+            "rule 'two-floors' is shadowed by earlier rule 'over-500k'"
+            in lint(_rules_cfg(*rows))
+        )
+        assert _first_match(rows, est_input_tokens=900000) == "over-500k"
+
+    def test_two_lower_bounds_below_the_earlier_floor_still_fire(self):
+        """The tighter of the two is 400k, and 400k..500k is the later row's own."""
+        rows = [
+            {"id": "over-500k", "when": {"est_input_tokens": {"gte": 500000}},
+             "then": {"model": "T3"}},
+            {"id": "two-floors",
+             "when": {"est_input_tokens": {"gt": 200000, "gte": 400000}},
+             "then": {"model": "T4"}},
+        ]
+        assert _shadow_errors(_rules_cfg(*rows)) == []
+        assert _first_match(rows, est_input_tokens=450000) == "two-floors"
+
+    @pytest.mark.parametrize(
+        "later_bounds",
+        [
+            {"lt": 900000, "lte": 500000},   # the tighter ceiling written second
+            {"lte": 500000, "lt": 900000},   # ... and first
+            {"lte": 500000, "lt": 500000},   # same number: the exclusive one wins
+        ],
+    )
+    def test_two_upper_bounds_reduce_to_the_tighter_one(self, later_bounds):
+        """The ceiling mirror of the floor case, and ANDed the same way."""
+        rows = [
+            {"id": "under-500k", "when": {"est_input_tokens": {"lte": 500000}},
+             "then": {"model": "T1"}},
+            {"id": "two-ceilings", "when": {"est_input_tokens": later_bounds},
+             "then": {"model": "T2"}},
+        ]
+        assert (
+            "rule 'two-ceilings' is shadowed by earlier rule 'under-500k'"
+            in lint(_rules_cfg(*rows))
+        )
+        assert _first_match(rows, est_input_tokens=1000) == "under-500k"
+
+    def test_two_upper_bounds_above_the_earlier_ceiling_still_fire(self):
+        rows = [
+            {"id": "under-500k", "when": {"est_input_tokens": {"lte": 500000}},
+             "then": {"model": "T1"}},
+            {"id": "two-ceilings",
+             "when": {"est_input_tokens": {"lte": 900000, "lt": 800000}},
+             "then": {"model": "T2"}},
+        ]
+        assert _shadow_errors(_rules_cfg(*rows)) == []
+        assert _first_match(rows, est_input_tokens=600000) == "two-ceilings"
+
+    def test_a_window_inside_a_ceiling_only_row_is_reported(self):
+        """Unbounded BELOW admits everything, so only the ceilings need comparing."""
+        rows = [
+            {"id": "under-900k", "when": {"est_input_tokens": {"lt": 900000}},
+             "then": {"model": "T2"}},
+            {"id": "500k-to-800k",
+             "when": {"est_input_tokens": {"gt": 500000, "lt": 800000}},
+             "then": {"model": "T3"}},
+        ]
+        assert (
+            "rule '500k-to-800k' is shadowed by earlier rule 'under-900k'"
+            in lint(_rules_cfg(*rows))
+        )
+        assert _first_match(rows, est_input_tokens=600000) == "under-900k"
+
+    def test_a_ceiling_never_shadows_a_row_with_no_ceiling(self):
+        """`gt: 500000` admits arbitrarily large values; `lt: 900000` does not."""
+        rows = [
+            {"id": "under-900k", "when": {"est_input_tokens": {"lt": 900000}},
+             "then": {"model": "T2"}},
+            {"id": "over-500k", "when": {"est_input_tokens": {"gt": 500000}},
+             "then": {"model": "T3"}},
+        ]
+        assert _shadow_errors(_rules_cfg(*rows)) == []
+        assert _first_match(rows, est_input_tokens=950000) == "over-500k"
+
+    def test_a_strict_ceiling_does_not_shadow_the_inclusive_one(self):
+        """`lte: 500000` admits exactly 500000; `lt: 500000` does not.
+
+        The upper-bound mirror of the `gt`/`gte` boundary case, and the witness is
+        the single value the two disagree about.
+        """
+        rows = [
+            {"id": "strict", "when": {"est_input_tokens": {"lt": 500000}},
+             "then": {"model": "T1"}},
+            {"id": "inclusive", "when": {"est_input_tokens": {"lte": 500000}},
+             "then": {"model": "T2"}},
+        ]
+        assert _shadow_errors(_rules_cfg(*rows)) == []
+        assert _first_match(rows, est_input_tokens=500000) == "inclusive"
+
+    def test_an_inclusive_ceiling_shadows_the_strict_one(self):
+        rows = [
+            {"id": "inclusive", "when": {"est_input_tokens": {"lte": 500000}},
+             "then": {"model": "T2"}},
+            {"id": "strict", "when": {"est_input_tokens": {"lt": 500000}},
+             "then": {"model": "T1"}},
+        ]
+        assert (
+            "rule 'strict' is shadowed by earlier rule 'inclusive'"
+            in lint(_rules_cfg(*rows))
+        )
+        assert _first_match(rows, est_input_tokens=400000) == "inclusive"
+
+    @pytest.mark.parametrize(
+        "nested", [[["hard", "trivial"]], {"hard": True}],
+    )
+    def test_a_membership_operand_that_cannot_form_a_set_is_not_shadowed(
+        self, nested
+    ):
+        """One indentation level too many, and containment stops being decidable.
+
+        `in: [[hard, trivial]]` is what an extra `- ` in YAML produces, and a set
+        cannot be formed from it. The answer is silence, never a shadow: lint() is
+        the write gate, so a false shadow refuses a legitimate config and strands
+        the operator outside the guarded path, while a missed one leaves a row that
+        is visible in the file and visible in the decision log as a rule id with
+        zero hits.
+
+        The un-nested pair below is the control: the two configs differ only by that
+        one level, and the decidable one IS reported. So silence here is the
+        conservative direction, not an accident of the shape.
+        """
+        rows = [
+            {"id": "either", "when": {"verb_class": {"in": ["hard", "trivial"]}},
+             "then": {"model": "T3"}},
+            {"id": "nested", "when": {"verb_class": {"in": nested}},
+             "then": {"model": "T1"}},
+        ]
+        assert _shadow_errors(_rules_cfg(*rows)) == []
+
+        decidable = [
+            rows[0],
+            {"id": "nested", "when": {"verb_class": {"in": ["hard"]}},
+             "then": {"model": "T1"}},
+        ]
+        assert (
+            "rule 'nested' is shadowed by earlier rule 'either'"
+            in lint(_rules_cfg(*decidable))
+        )
+
+    def test_an_exclusion_operand_that_cannot_form_a_set_is_not_shadowed(self):
+        """The same undecidable operand on the exclusion side, same direction.
+
+        `nin: [[hard]]` excludes a set this module cannot build, so it cannot know
+        the earlier row excludes no more than the later one — and it says nothing.
+        The control differs only in the nesting and IS reported.
+        """
+        rows = [
+            {"id": "neither", "when": {"verb_class": {"nin": [["hard"]]}},
+             "then": {"model": "T3"}},
+            {"id": "not-hard", "when": {"verb_class": {"ne": "hard"}},
+             "then": {"model": "T2"}},
+        ]
+        assert _shadow_errors(_rules_cfg(*rows)) == []
+
+        decidable = [
+            {"id": "neither", "when": {"verb_class": {"nin": ["hard"]}},
+             "then": {"model": "T3"}},
+            rows[1],
+        ]
+        assert (
+            "rule 'not-hard' is shadowed by earlier rule 'neither'"
+            in lint(_rules_cfg(*decidable))
+        )
+
+
 # ---------------------------------------------------------------------------
 # A tier must declare its own model + provider (F3)
 # ---------------------------------------------------------------------------
@@ -1691,6 +2370,20 @@ class TestLintClockBounds:
                              "when": {"utc_hour": {"gte": 16, "lt": 24}},
                              "then": {"model": "T1"}})
         assert lint(config) == []
+
+    def test_an_operator_outside_the_closed_set_is_reported_once(self):
+        """One typo, one diagnostic: the bounds check skips an op lint refused.
+
+        The value is out of range on purpose. `between` names no bound this module
+        knows how to read, so a bounds error here would be lint inventing a second
+        defect out of the first — and pointing the operator at the hours when what
+        is wrong is the operator name.
+        """
+        config = _rules_cfg({"id": "peak", "when": {"utc_hour": {"between": [0, 99]}},
+                            "then": {"model": "T1"}})
+        assert lint(config) == [
+            "rule 'peak': 'when.utc_hour' uses unknown operator 'between'"
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -2366,6 +3059,113 @@ class TestClockTolerance(_NeedsRegistry):
             rules_mod._caps.price_multiplier("deepseek-v4-pro", PEAK_MONDAY)
         )
 
+    def test_a_datetime_with_no_utc_reading_at_all_is_no_clock(self):
+        """`datetime.min` in a positive offset cannot be converted to UTC.
+
+        utctimetuple() subtracts the offset, walks off the bottom of the calendar
+        and raises OverflowError — from an ordinary datetime, no stub involved
+        (asserted, so this stays a real provocation). The planner's answer is the
+        no-clock case, and the hour keys are ABSENT rather than null: `Number(null)`
+        is 0 in a JSON consumer, so a null hour renders as midnight and this plan
+        would claim an hour it could not read.
+        """
+        sentinel = datetime.min.replace(tzinfo=timezone(timedelta(hours=1)))
+        with pytest.raises(OverflowError):
+            sentinel.utctimetuple()
+
+        plan = plan_chain(resolve_tiers({"model": "T1"}, TIME_TIERS), _mkf(),
+                          when=sentinel)
+        assert plan["time_agnostic"] is True
+        assert "utc_hour" not in plan and "utc_weekday" not in plan
+        assert plan["capped"] == [] and plan["multipliers"] == {}
+        assert _models(plan) == ["gpt-5.6-terra", "deepseek-v4-pro", "glm-5.3"]
+
+
+class _DuckClock:
+    """The least a caller can hand `when` — because `when` is duck-typed.
+
+    rules.py answers "which hour is this?" WITHOUT importing datetime (that is
+    what makes "this module cannot read a clock" a property of the file rather
+    than a promise in its docstring), so what it accepts is anything that answers
+    `utctimetuple()` and `weekday()`. A trace decoder or a sibling deployment's
+    shim is such an object, and unlike a datetime it can answer nonsense.
+    """
+
+    class _Parts:
+        def __init__(self, tm_hour, tm_wday):
+            self.tm_hour = tm_hour
+            self.tm_wday = tm_wday
+
+    def __init__(self, hour, tm_hour=None, tm_wday=0):
+        self.hour = hour
+        self._tm_hour = hour if tm_hour is None else tm_hour
+        self._tm_wday = tm_wday
+
+    def weekday(self):
+        return self._tm_wday
+
+    def utctimetuple(self):
+        return self._Parts(self._tm_hour, self._tm_wday)
+
+
+class TestADuckTypedClockIsCheckedNotTrusted(_NeedsRegistry):
+    """Every case here asserts the two readings AGREE about what this clock is.
+
+    rules._clock_parts mirrors capabilities._utc_parts on purpose: the hour the
+    plan REPORTS and the hour the multipliers were taken AT must be the same
+    reading, or the trace explains an order that was decided at another hour. For
+    a datetime the two cannot diverge; for a duck-typed clock they can, so the
+    agreement is asserted rather than assumed.
+    """
+
+    def test_a_usable_shim_is_used_exactly_like_the_datetime(self):
+        duck = _DuckClock(hour=7, tm_wday=0)
+        assert rules_mod._clock_parts(duck) == rules_mod._caps._utc_parts(duck)
+        plan = plan_chain(resolve_tiers({"model": "T1"}, TIME_TIERS), _mkf(),
+                          when=duck)
+        real = plan_chain(resolve_tiers({"model": "T1"}, TIME_TIERS), _mkf(),
+                          when=PEAK_MONDAY)
+        assert (plan["utc_hour"], plan["utc_weekday"]) == (7, 0)
+        assert _models(plan) == _models(real)
+        assert plan["capped"] == real["capped"]
+        assert plan["multipliers"] == real["multipliers"]
+
+    def test_a_clock_that_cannot_name_an_hour_is_no_clock(self):
+        """No hour, no plan hour — never hour 0.
+
+        A stdlib `date` never reaches this guard (it has no `utctimetuple` at all),
+        so what it holds off is a shim that answers both calls and still has no
+        hour to give. Defaulting it to 0 would price every such plan at midnight.
+        """
+        duck = _DuckClock(hour=None, tm_hour=7)
+        assert rules_mod._clock_parts(duck) is None
+        assert rules_mod._caps._utc_parts(duck) is None
+        plan = plan_chain(resolve_tiers({"model": "T1"}, TIME_TIERS), _mkf(),
+                          when=duck)
+        assert plan["time_agnostic"] is True
+        assert "utc_hour" not in plan
+        assert plan["capped"] == [] and plan["multipliers"] == {}
+
+    @pytest.mark.parametrize(
+        "tm_hour,tm_wday", [(24, 0), (-1, 0), (7, 7), (7, -1)],
+    )
+    def test_a_reading_outside_the_real_bounds_is_refused(self, tm_hour, tm_wday):
+        """An hour of 24 is not an hour, and the console would render it as one.
+
+        The bounds are not defensive decoration: utc_hour/utc_weekday leave this
+        module as plan fields that a dashboard prints and a price window is matched
+        against, and a window is [0, 24) on days 0..6. A reading outside that is
+        rejected as "no clock" rather than passed on as a number.
+        """
+        duck = _DuckClock(hour=tm_hour, tm_hour=tm_hour, tm_wday=tm_wday)
+        assert rules_mod._clock_parts(duck) is None
+        assert rules_mod._caps._utc_parts(duck) is None
+        plan = plan_chain(resolve_tiers({"model": "T1"}, TIME_TIERS), _mkf(),
+                          when=duck)
+        assert plan["time_agnostic"] is True
+        assert "utc_hour" not in plan and "utc_weekday" not in plan
+        assert plan["multipliers"] == {}
+
 
 class TestTimeStagesDegradeAlone(_NeedsRegistry):
     def test_a_broken_cap_stage_costs_only_the_cap(self, monkeypatch):
@@ -2401,6 +3201,282 @@ class TestTimeStagesDegradeAlone(_NeedsRegistry):
         plan = plan_chain(resolve_tiers({"model": "T1"}, TIME_TIERS), _mkf(),
                           when=PEAK_MONDAY)
         assert _models(plan) == ["gpt-5.6-terra", "deepseek-v4-pro", "glm-5.3"]
+
+    def test_a_cap_stage_that_returns_the_pre_diagnostics_shape_is_discarded(
+        self, monkeypatch
+    ):
+        """A stage that answers with a bare chain is not a stage this reads.
+
+        The older shape returned the surviving chain and nothing else. Trusting it
+        would mean reading `.get` off a list — a TypeError in the request path over
+        a cost control — so the result is discarded whole: no cap ran, and the plan
+        says so. The prices are still reported, which is what lets an operator see
+        the 2.0x they wanted capped.
+        """
+        monkeypatch.setattr(
+            rules_mod._caps, "apply_time_cap",
+            lambda chain, cap, when=None: list(chain),
+        )
+        plan = plan_chain(resolve_tiers({"model": "T1"}, TIME_TIERS), _mkf(),
+                          when=PEAK_MONDAY)
+        assert _models(plan) == ["gpt-5.6-terra", "deepseek-v4-pro", "glm-5.3"]
+        assert plan["capped"] == [] and plan["time_cap_bypassed"] is False
+        assert plan["multipliers"]["deepseek-v4-pro"] == 2.0
+
+    def test_a_broken_policy_stage_costs_only_the_policy(self, monkeypatch):
+        """Measured against what the live stage does at this hour, not a constant.
+
+        T2 declares `avoid_peak: [deepseek, zai]` and both are peaking at 07:00Z,
+        so the live stage moves something here — asserted first, so the degraded
+        half cannot pass by describing an hour where nothing would have moved
+        anyway.
+        """
+        live = plan_chain(resolve_tiers({"model": "T2"}, TIME_TIERS), _mkf(),
+                          when=PEAK_MONDAY)
+        assert live["demoted"] == ["deepseek-v4-pro"]
+
+        def boom(*_args, **_kwargs):
+            raise KeyError("stale registry")
+
+        monkeypatch.setattr(rules_mod._caps, "apply_time_policy", boom)
+        plan = plan_chain(resolve_tiers({"model": "T2"}, TIME_TIERS), _mkf(),
+                          when=PEAK_MONDAY)
+        assert _models(plan) == ["gpt-5.6-terra", "deepseek-v4-pro", "mimo-v2.5"]
+        assert plan["demoted"] == [] and plan["promoted"] == []
+        assert plan["peak_priced"] == []
+        # Position was lost; membership and price were not.
+        assert plan["multipliers"]["deepseek-v4-pro"] == 2.0
+
+    def test_a_policy_stage_that_returns_the_pre_diagnostics_shape_is_discarded(
+        self, monkeypatch
+    ):
+        """The older shape returned the reordered chain alone: not this contract.
+
+        A bare list carries no demoted/promoted/peak_priced, and inventing empty
+        ones beside a chain that DID move would report an order nobody can explain.
+        Discarded in favour of the input, so the reported order and the reported
+        movements describe the same call.
+        """
+        monkeypatch.setattr(
+            rules_mod._caps, "apply_time_policy",
+            lambda chain, policy, when=None: list(reversed(chain)),
+        )
+        plan = plan_chain(resolve_tiers({"model": "T2"}, TIME_TIERS), _mkf(),
+                          when=PEAK_MONDAY)
+        assert _models(plan) == ["gpt-5.6-terra", "deepseek-v4-pro", "mimo-v2.5"]
+        assert plan["demoted"] == [] and plan["peak_priced"] == []
+
+
+# ---------------------------------------------------------------------------
+# capabilities.py a version BEHIND rules.py — the state a copy deploy makes
+# ---------------------------------------------------------------------------
+
+# cheapest_now over a plan rail and a subscription rail, with a dollar cap that
+# drops the metered one at 07:00Z. The ORDER of the two survivors is the part that
+# needs the clock: glm-5.3 leads only when prices are compared AT the hour.
+STALE_ORDER_TIER = {"T1": {
+    "model": "gpt-5.6-terra", "provider": "openai-codex",
+    "billing_mode": "subscription",
+    "fallback_strategy": "cheapest_now", "pin_primary": False,
+    "time_cap": {"max_multiplier": 1.5},
+    "fallback": [
+        {"model": "deepseek-v4-pro", "provider": "deepseek",
+         "billing_mode": "metered"},
+        {"model": "glm-5.3", "provider": "zai", "billing_mode": "plan"},
+    ],
+}}
+
+
+class TestAVersionSkewedRegistryCostsOneStage(_NeedsRegistry):
+    """A registry that still has the name and no longer has the signature.
+
+    This plugin is deployed by copy, so "capabilities.py is a version behind
+    rules.py" is a real state — and every case here must cost the plan ONE thing.
+    The alternative is plan_chain's defensive `except`, which degrades every stage
+    at once, capability filtering included, and a filter that stops running routes
+    a request to a model that cannot serve it.
+    """
+
+    def test_the_import_time_clock_probe_agrees_with_the_installed_registry(self):
+        """One question, one answer: does THIS order_chain take a clock?
+
+        The probe runs once, at import, and the call site branches on it. If the
+        two ever disagreed the mismatch would surface as a TypeError inside
+        plan_chain — i.e. as the whole-plan degrade this flag exists to avoid — so
+        the flag is asserted against the installed signature rather than against
+        True.
+        """
+        assert rules_mod._ORDER_CHAIN_ACCEPTS_WHEN is (
+            "when" in inspect.signature(rules_mod._caps.order_chain).parameters
+        )
+
+    def test_an_orderer_that_predates_the_clock_loses_only_the_order(
+        self, monkeypatch
+    ):
+        """The stale-registry case the import-time probe exists for.
+
+        The legacy orderer IS the shipped one minus the clock, which is what a
+        version-behind module actually is. So cheapest_now still runs and still
+        ranks — on base rates instead of this hour's — and everything that is not
+        ordering (the cap, the clock reading, the price report) is unchanged.
+        """
+        live = plan_chain(resolve_tiers({"model": "T1"}, STALE_ORDER_TIER), _mkf(),
+                          when=PEAK_MONDAY)
+        assert _models(live) == ["glm-5.3", "gpt-5.6-terra"]
+
+        real_order_chain = rules_mod._caps.order_chain
+        seen = []
+
+        def legacy_order_chain(chain, strategy="sequential", pin_primary=True,
+                               rng=None):
+            seen.append(strategy)
+            return real_order_chain(chain, strategy=strategy,
+                                    pin_primary=pin_primary, rng=rng)
+
+        accepts_when = "when" in inspect.signature(legacy_order_chain).parameters
+        assert accepts_when is False
+        monkeypatch.setattr(rules_mod._caps, "order_chain", legacy_order_chain)
+        monkeypatch.setattr(rules_mod, "_ORDER_CHAIN_ACCEPTS_WHEN", accepts_when)
+
+        plan = plan_chain(resolve_tiers({"model": "T1"}, STALE_ORDER_TIER), _mkf(),
+                          when=PEAK_MONDAY)
+        # The strategy still reaches the orderer; only the hour does not.
+        assert seen == ["cheapest_now"]
+        assert _models(plan) == ["gpt-5.6-terra", "glm-5.3"]
+        assert plan["capped"] == [{"model": "deepseek-v4-pro", "multiplier": 2.0}]
+        assert plan["utc_hour"] == 7 and plan["time_agnostic"] is False
+        assert plan["multipliers"]["glm-5.3"] == 2.0
+
+    def test_a_registry_without_price_multiplier_reports_no_prices(
+        self, monkeypatch
+    ):
+        """No price function, no price claims — and the cap still runs.
+
+        Hidden on the PROXY, not on the module: the registry's own cap stage calls
+        its own price_multiplier, exactly as an older module would, so this is the
+        one call rules.py makes going missing rather than the registry losing the
+        ability to price. 1.0 for everything would be a claim about prices nobody
+        checked; {} says "no reading", and `capped` still explains the 2.0x drop.
+        """
+        monkeypatch.setattr(
+            rules_mod, "_caps",
+            _RegistryWithout(rules_mod._caps, "price_multiplier"),
+        )
+        plan = plan_chain(resolve_tiers({"model": "T1"}, TIME_TIERS), _mkf(),
+                          when=PEAK_MONDAY)
+        assert plan["multipliers"] == {}
+        assert plan["capped"] == [{"model": "deepseek-v4-pro", "multiplier": 2.0}]
+        assert _models(plan) == ["gpt-5.6-terra", "glm-5.3"]
+
+    def test_a_price_lookup_that_predates_declared_overrides_reports_no_prices(
+        self, monkeypatch
+    ):
+        """rules.py passes the hop's declarations; the older signature has no slot.
+
+        The skew is a TypeError on every call, so the multiplier REPORT is what is
+        lost — never the cap that already ran, and never the plan.
+        """
+        real = rules_mod._caps.price_multiplier
+
+        def legacy_price_multiplier(model, when=None):
+            return real(model, when)
+
+        monkeypatch.setattr(
+            rules_mod, "_caps",
+            _RegistryWith(rules_mod._caps,
+                          price_multiplier=legacy_price_multiplier),
+        )
+        plan = plan_chain(resolve_tiers({"model": "T1"}, TIME_TIERS), _mkf(),
+                          when=PEAK_MONDAY)
+        assert plan["multipliers"] == {"deepseek-v4-pro": 2.0}
+        assert plan["capped"] == [{"model": "deepseek-v4-pro", "multiplier": 2.0}]
+        assert _models(plan) == ["gpt-5.6-terra", "glm-5.3"]
+
+    def test_an_unpriceable_model_is_omitted_never_reported_as_null(
+        self, monkeypatch
+    ):
+        """A None multiplier is a missing key, because null renders as 0.
+
+        The older shape answered Optional[float] — None for "no window
+        information" — where today's answers the flat 1.0. Carrying that None into
+        the plan would put `Number(null) === 0` in front of the console: a rail
+        described as costing nothing, which is the same class of silent wrongness
+        `time_agnostic` exists to prevent. The other rails still report, so the
+        omission is per elo rather than a blanket {}.
+        """
+        real = rules_mod._caps.price_multiplier
+
+        def older_price_multiplier(model, when=None, declared=None):
+            if model == "gpt-5.6-terra":
+                return None
+            return real(model, when, declared)
+
+        monkeypatch.setattr(
+            rules_mod, "_caps",
+            _RegistryWith(rules_mod._caps,
+                          price_multiplier=older_price_multiplier),
+        )
+        plan = plan_chain(resolve_tiers({"model": "T1"}, TIME_TIERS), _mkf(),
+                          when=PEAK_MONDAY)
+        assert "gpt-5.6-terra" in _models(plan)
+        assert "gpt-5.6-terra" not in plan["multipliers"]
+        assert plan["multipliers"] == {"deepseek-v4-pro": 2.0, "glm-5.3": 2.0}
+
+    @pytest.mark.parametrize(
+        "capped_entry",
+        [
+            {"model": "deepseek-v4-pro"},                       # names no number
+            {"model": "deepseek-v4-pro", "multiplier": "2.0x"},  # formatted, not a number
+            {"multiplier": 2.0},                                # names no elo
+        ],
+    )
+    def test_a_capped_entry_without_a_usable_number_adds_none(
+        self, monkeypatch, capped_entry
+    ):
+        """The cap's own number wins — and there is no second-best guess.
+
+        `multipliers` exists to say what the plan was made on. An entry that does
+        not name both an elo and a number says nothing, so it contributes nothing:
+        no invented 1.0, and no string where every consumer reads a float.
+        """
+        real = rules_mod._caps.apply_time_cap
+
+        def older_cap(chain, cap, when=None):
+            result = dict(real(chain, cap, when=when))
+            result["capped"] = [dict(capped_entry)]
+            return result
+
+        monkeypatch.setattr(rules_mod._caps, "apply_time_cap", older_cap)
+        plan = plan_chain(resolve_tiers({"model": "T1"}, TIME_TIERS), _mkf(),
+                          when=PEAK_MONDAY)
+        assert plan["capped"] == [capped_entry]
+        assert "deepseek-v4-pro" not in plan["multipliers"]
+        assert plan["multipliers"] == {"glm-5.3": 2.0, "gpt-5.6-terra": 1.0}
+        assert all(isinstance(v, float) for v in plan["multipliers"].values())
+
+    def test_an_orderer_that_returns_names_instead_of_hops_still_prices(
+        self, monkeypatch
+    ):
+        """A chain entry that is not a mapping is skipped, not indexed.
+
+        Older rails were lists of model NAMES (the blocklist's fallback_chain still
+        is). An orderer that answers in that shape must not turn the price report
+        into an AttributeError, because that exception is caught one level up as
+        "the registry is broken" and costs every stage, capability filter included.
+        A non-empty `capped` is the proof it was not: the whole-plan degrade reports
+        `capped: []` by construction, so the cap can only be named here if the
+        stages really ran.
+        """
+        monkeypatch.setattr(
+            rules_mod._caps, "order_chain",
+            lambda chain, **_kwargs: [hop.get("model") for hop in chain],
+        )
+        plan = plan_chain(resolve_tiers({"model": "T1"}, TIME_TIERS), _mkf(),
+                          when=PEAK_MONDAY)
+        assert plan["chain"] == ["gpt-5.6-terra", "glm-5.3"]
+        assert plan["capped"] == [{"model": "deepseek-v4-pro", "multiplier": 2.0}]
+        # Only the elo the cap named could be read; the bare names carry no hop.
+        assert plan["multipliers"] == {"deepseek-v4-pro": 2.0}
 
 
 # ---------------------------------------------------------------------------
@@ -2679,6 +3755,181 @@ class TestTimeWarnings(_NeedsRegistry):
         assert lint(config) == []
         assert len(lint_warnings(config)) >= 2
 
+    def test_a_hop_that_is_not_an_elo_is_not_counted_as_expensive(self):
+        """"Every elo peaks at some hour" must not be said about a non-elo.
+
+        `model: 4.7` is what YAML makes of an unquoted glm-4.7. The advisory claims
+        something about EVERY elo in the tier, so one it cannot read is one it
+        cannot claim — silence, and the operator is pointed at the real defect by
+        the gate instead. Both halves are asserted: the write is blocked, and the
+        advisory does not invent a second finding on top.
+        """
+        config = _cfg({"T3": {
+            "model": "deepseek-v4-pro", "provider": "deepseek",
+            "time_cap": {"max_multiplier": 1.5},
+            "fallback": [{"model": 4.7, "provider": "zai"}],
+        }})
+        assert (
+            "tier 'T3': fallback[0]: 'model' must be a non-empty string" in lint(config)
+        )
+        assert not any("time_cap will bypass" in w for w in lint_warnings(config))
+
+    def test_a_model_the_registry_never_heard_of_is_not_counted_as_expensive(self):
+        """An unknown elo has no windows to read, so it is not "in" one.
+
+        Two advisories, one config, and each says only what it knows: the unknown
+        model IS reported as unverifiable, and the cap is NOT reported as doomed —
+        the elo might well be flat-priced, and a bypass warning would send the
+        operator hunting for a window that does not exist.
+        """
+        config = _cfg({"T3": {
+            "model": "totally-made-up-elo-xyz", "provider": "zai",
+            "time_cap": {"max_multiplier": 1.5},
+        }})
+        warnings = lint_warnings(config)
+        assert any("unknown to the capability registry" in w for w in warnings)
+        assert not any("time_cap will bypass" in w for w in warnings)
+
+    def test_a_malformed_window_entry_does_not_hide_a_real_one(self):
+        """One bad entry in a declared list is skipped, not fatal to the scan.
+
+        The list is the operator's own override, so it can be half-typed. The
+        advisory reads past the entry it cannot use and still finds the 2.0x window
+        the cap of 1.5 can never admit — while the gate names the malformed entry,
+        so neither finding depends on the other.
+        """
+        config = _cfg({"T3": {
+            "model": "gpt-5.6-terra", "provider": "openai-codex",
+            "time_cap": {"max_multiplier": 1.5},
+            "price_windows": ["nope", {"hours_utc": [6, 10], "multiplier": 2.0}],
+        }})
+        assert (
+            "model 'gpt-5.6-terra': price_windows entry 0 is not a mapping"
+            in lint(config)
+        )
+        assert any("time_cap will bypass" in w for w in lint_warnings(config))
+
+    def test_a_hop_that_is_not_an_elo_does_not_count_as_priced(self):
+        """"No priced elo" is about elos, and 4.7 is not one.
+
+        glm-5.3 bills in plan credits and publishes no dollar price, so the
+        advisory is correct here — and a hop whose id is a float must not be what
+        silences it, because nothing about it can be compared in dollars either.
+        """
+        config = _cfg({"T2": {
+            "model": "glm-5.3", "provider": "zai",
+            "fallback_strategy": "cheapest_now",
+            "fallback": [{"model": 4.7, "provider": "deepseek"}],
+        }})
+        assert (
+            "tier 'T2': fallback[0]: 'model' must be a non-empty string" in lint(config)
+        )
+        assert (
+            "tier 'T2': 'cheapest_now' with no priced elo degrades to "
+            "billing_mode rank only"
+        ) in lint_warnings(config)
+
+
+class TestTimeWarningsUnderAVersionSkewedRegistry(_NeedsRegistry):
+    """An advisory must never raise out of the lint path, whatever it asked.
+
+    Both findings below are computed by calling the registry with the arguments
+    THIS rules.py passes. A registry a version behind still has the name and no
+    longer has the parameter, so the call is a TypeError — and the report the
+    operator asked for has to arrive anyway.
+    """
+
+    #: Two deepseek rails, both 2.0x at 06:00-10:00: the live registry has
+    #: something to say about the cap AND about the shared upstream.
+    CAP_CONFIG = _cfg({"T3": {
+        "model": "deepseek-v4-pro", "provider": "deepseek",
+        "time_cap": {"max_multiplier": 1.5},
+        "fallback": [{"model": "deepseek-v4-flash", "provider": "deepseek"}],
+    }})
+
+    def test_a_capability_lookup_that_predates_declared_overrides_is_silent(
+        self, monkeypatch
+    ):
+        """The cap finding is lost; the findings that did not need prices are not.
+
+        Asserted against the live report first, so "no bypass warning" means the
+        skew silenced a finding that was really there rather than describing a
+        config that never had one.
+        """
+        assert any(
+            "time_cap will bypass" in w for w in lint_warnings(self.CAP_CONFIG)
+        )
+        real = rules_mod._caps.capabilities_for
+        monkeypatch.setattr(
+            rules_mod, "_caps",
+            _RegistryWith(rules_mod._caps,
+                          capabilities_for=lambda model: real(model)),
+        )
+        warnings = lint_warnings(self.CAP_CONFIG)
+        assert not any("time_cap will bypass" in w for w in warnings)
+        assert (
+            "tier 'T3': first two hops share upstream 'deepseek' "
+            "— no independent fallback"
+        ) in warnings
+
+    def test_a_price_lookup_that_predates_declared_overrides_cannot_block(
+        self, monkeypatch
+    ):
+        """An unreadable price makes this advisory over-fire, and that is survivable.
+
+        "Priced" is asked through effective_price so it means exactly what
+        cheapest_now means by it. When the call itself is impossible the answer is
+        "not priced", which over-reports — acceptable only because this channel
+        cannot block a write, and asserted as such: lint() stays clean while the
+        advisory appears.
+        """
+        config = _cfg({"T2": {
+            "model": "deepseek-v4-pro", "provider": "deepseek",
+            "fallback_strategy": "cheapest_now",
+            "fallback": [{"model": "deepseek-v4-flash", "provider": "deepseek"}],
+        }})
+        assert not any("billing_mode rank only" in w for w in lint_warnings(config))
+        real = rules_mod._caps.effective_price
+        monkeypatch.setattr(
+            rules_mod, "_caps",
+            _RegistryWith(rules_mod._caps,
+                          effective_price=lambda model, when=None: real(model, when)),
+        )
+        assert lint(config) == []
+        assert any("billing_mode rank only" in w for w in lint_warnings(config))
+
+    def test_a_window_check_that_predates_the_model_argument_is_skipped(
+        self, monkeypatch
+    ):
+        """The gate loses the window check and nothing else — never the report.
+
+        `price_window_diagnostics` is delegated to precisely so the gate and the
+        registry self-check cannot disagree about a window; a signature the caller
+        cannot satisfy is that delegation failing. Degrading to "unchecked" is the
+        same direction the absent-function branch already takes, and lint() must
+        still return every other diagnostic it had.
+        """
+        config = _cfg({"T2": {
+            "model": "glm-5.3", "provider": "zai", "billing_mode": "meterd",
+            "price_windows": [
+                {"hours_utc": [6, 10], "multiplier": 2.0},
+                {"hours_utc": [8, 12], "multiplier": 1.5},
+            ],
+        }})
+        errors = lint(config)
+        assert "model 'glm-5.3': price_windows entries overlap" in errors
+        assert any("billing_mode" in e for e in errors)
+
+        real = rules_mod._caps.price_window_diagnostics
+        monkeypatch.setattr(
+            rules_mod, "_caps",
+            _RegistryWith(rules_mod._caps,
+                          price_window_diagnostics=lambda windows: real("", windows)),
+        )
+        skewed = lint(config)
+        assert not any("price_windows" in e for e in skewed)
+        assert any("billing_mode" in e for e in skewed)
+
 
 # ---------------------------------------------------------------------------
 # explain() threads the clock; dead constants are gone
@@ -2761,7 +4012,14 @@ def test_blocked_model_honours_the_authors_operator(condition, blocked, expected
 
 
 @pytest.mark.parametrize(
-    "condition", [{"eq": True}, {"eq": False}, {"ne": True}, {"ne": False}, {"nin": [True]}]
+    "condition",
+    [
+        {"eq": True}, {"eq": False}, {"ne": True}, {"ne": False}, {"nin": [True]},
+        # Not op maps at all: lint refuses these ("must be an op map"), and the
+        # engine and the chips have to agree about them too — see
+        # TestAClauseLintRefusesIsDeadNotFatal.
+        True, "yes", 5, ["eq"],
+    ],
 )
 @pytest.mark.parametrize("blocked", [True, False])
 def test_the_matcher_and_the_chips_never_disagree(condition, blocked):
@@ -2773,6 +4031,57 @@ def test_the_matcher_and_the_chips_never_disagree(condition, blocked):
     matched = _all_clauses_match(when, feats, blocked)
     chips = bool(_matching_clauses(when, feats, blocked))
     assert chips == matched, f"{condition} at blocked={blocked}: engine={matched} chips={chips}"
+
+
+class TestAClauseLintRefusesIsDeadNotFatal:
+    """`when: {has_code: true}` — the op map an operator forgot to nest.
+
+    lint() calls it invalid: "'when.has_code' must be an op map". The engine used
+    to call it an AttributeError — `condition.items()` on a bool, raised straight
+    out of match() into the request path — so the gate and the runner disagreed
+    about a config the gate had already rejected, and the disagreement surfaced as
+    a traceback on a hand-edited router.yaml rather than as a routing decision.
+
+    They agree now, on the only reading that costs nothing: a condition that names
+    no operator holds for nothing, so the row is dead — which is exactly what lint
+    reports it as. Reading the bare value as an implied `eq` is the one answer
+    worse than both, because it would route real traffic on a row the write gate
+    refuses to accept.
+    """
+
+    @pytest.mark.parametrize("condition", [True, False, "yes", 5, ["eq"], None])
+    def test_the_row_is_skipped_and_the_next_one_decides(self, condition):
+        rows = [
+            {"id": "bare-value", "when": {"has_code": condition},
+             "then": {"model": "T4"}},
+            {"id": "proper-op-map", "when": {"has_code": {"eq": True}},
+             "then": {"model": "T1"}},
+        ]
+        assert (
+            "rule 'bare-value': 'when.has_code' must be an op map"
+            in lint(_rules_cfg(*rows))
+        )
+        output, rule_id = match(_mkf(has_code=True), False, rows,
+                                {"action": "classify"}, ROUTER_CONFIG["tiers"])
+        assert rule_id == "proper-op-map"
+        assert output["model"] == "glm-5.2-fast"
+
+    @pytest.mark.parametrize("condition", [True, "yes", 5, ["eq"]])
+    def test_no_chip_is_offered_for_a_clause_that_decided_nothing(self, condition):
+        """The unreadable clause explains nothing; the readable one still does.
+
+        _matching_clauses reports per clause, so it drops only the clause the
+        engine could not evaluate — and the engine rejects the whole row, so
+        /explain never renders these chips for a match. What must never happen is
+        the reverse of the pair: a chip that says a clause held when the engine
+        found it unreadable.
+        """
+        when = {"has_code": condition, "verb_class": {"eq": "trivial"}}
+        feats = _mkf(has_code=True, verb_class="trivial")
+        assert rules_mod._all_clauses_match(when, feats, False) is False
+        assert rules_mod._matching_clauses(when, feats, False) == {
+            "verb_class": {"eq": "trivial"}
+        }
 
 
 # ---------------------------------------------------------------------------

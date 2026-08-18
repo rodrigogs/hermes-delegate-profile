@@ -949,8 +949,17 @@
        two differ. Secondary by construction: it borrows the "because" row's shape
        and label, and the ids stay muted mono so the running route above keeps the
        only `--text` weight in the block. No hue: this is not a condition. */
-    .verdict-declared { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-top: 6px; }
+    /* WHICH TEXT THE PLAN WAS MEASURED FROM — the same shape and the same label
+       treatment as the declared route above, because it answers the same kind of
+       secondary question about the verdict ("and what was it sized from?"). It is
+       one line whether the answer is the goal line or a 600k-char context: the
+       size is the fact, and a goal-only preview has to say so on the surface where
+       an operator would otherwise read it as production's plan. No hue — this is a
+       measurement, not a condition. */
+    .verdict-declared,
+    .verdict-sized { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-top: 6px; }
     .verdict-route { color: var(--muted); font: var(--t-small) var(--mono); overflow-wrap: anywhere; }
+    .verdict-sized-said { color: var(--muted); font-size: var(--t-small); }
 </style>
 </head>
 <body>
@@ -1061,8 +1070,9 @@
       <section class="screen" id="panel-pipeline" role="tabpanel" aria-labelledby="tab-pipeline">
         <!-- The probe is the first thing in the first viewport, because "where
              would MY task land?" is the question this screen exists for and the
-             sheet below is the answer's audit trail. Backed by GET /explain
-             (Stage 0, deterministic). -->
+             sheet below is the answer's audit trail. Backed by /explain (Stage 0,
+             deterministic): GET for a goal, POST once a context is supplied,
+             because that is the only pipe wide enough for one. -->
         <div class="lede">
           <p class="lede-answer is-quiet" id="pipelineNote">Read top to bottom — the first rule that matches wins.</p>
         </div>
@@ -1072,6 +1082,34 @@
                  placeholder="Try a task — “Debug a race condition in the cache”" aria-label="Task to route">
           <button class="btn" type="submit">Route it</button>
         </form>
+        <!-- THE OTHER HALF OF THE QUESTION: HOW BIG IS THE TURN. Production sizes a
+             turn from the text the child really receives — context PLUS goal — and
+             routes on the est_input_tokens that text produces. This console sent the
+             goal line alone, so the panel below showed the plan for one line of prose
+             while the real turn routed on six figures of context. Measured on the
+             shipped policy, "Debug a race condition in the cache" carrying a
+             615,059-char composed prompt is 170,850 estimated tokens and a
+             213,563-token min_context floor DERIVED FROM THE TURN; the same goal by
+             itself is 10 tokens, and the only floor left is the tier's declared
+             200,000 — a filter answering a question about the config instead of
+             about the request.
+             /explain has accepted `prompt_text` all along (router/service.py) and
+             reports which text it measured; this box is what makes those fields mean
+             something. Collapsed, because most probes ARE a goal line and a textarea
+             open in the first viewport would make the exception the default
+             (DESIGN.md §2.1). -->
+        <details id="probeContextBox">
+          <summary>Add the context this task would carry</summary>
+          <!-- A .field label is TRACKED UPPERCASE, which is a treatment for a label
+               and not for a sentence: 58 characters of it is a passage in caps, which
+               is read by shape and has none. So the label stays a label and the
+               sentence goes where sentence case survives — the placeholder. -->
+          <div class="field">
+            <label for="probeContext">Composed prompt</label>
+            <textarea id="probeContext" class="editor" spellcheck="false"
+                      placeholder="Paste the goal plus its context, exactly as the child receives it — the plan is then sized from this text, the way a real turn is. Left empty, it is sized from the goal line above."></textarea>
+          </div>
+        </details>
         <div id="probeResult"></div>
         <!-- The chain the probed task would actually walk: the requirements the
              signals derived, the elos still eligible in the order they will be
@@ -1571,6 +1609,86 @@
         xiaomi: [{ hours: [16, 24], multiplier: 0.8 }],
       };
 
+      // ── the window shape, validated the way the ROUTER validates it ──
+      // These three are transcriptions of capabilities._as_whole_number,
+      // capabilities._as_float and capabilities._hour_bounds/_weekday_set, and they
+      // are transcriptions on purpose: this console prices a window the operator can
+      // ALSO see priced by the router, and the client used to be the laxer of the
+      // two. Measured, before: `{hours_utc: [16.5, 24]}` at hour 17 gave Python 1.0
+      // (the whole window refused, priced flat) and this console 0.8; `[-1, 5]` at
+      // hour 0 gave Python 1.0 and this console 3.0; an unparseable `weekdays`
+      // became null here, which priceMultiplier then read as EVERY DAY while
+      // _multiplier_at skipped the window outright.
+      //
+      // The alternative was to stop validating here and render only numbers the
+      // server computed. It is not available: GET /capabilities is an OPTIONAL read
+      // (DESIGN.md §7) and the clock line has to answer "which rail is expensive
+      // now" without it, so the console owns this arithmetic — which leaves it
+      // owing the server's exact answer, including on malformed input. A window the
+      // router refuses is DROPPED here rather than reinterpreted, so a rail whose
+      // only window is malformed reads "no time-varying price" on both sides, which
+      // is what price_window_diagnostics reports it as.
+      //
+      // A WHOLE hour or weekday: an int, a float that is exactly one (YAML decided
+      // 16.0, not the operator) and a decimal string naming one. A fractional value
+      // is refused rather than truncated — truncating [16.5, 24) to [16, 24) starts
+      // the window half an hour before the one that was written.
+      const wholeNumber = (value) => {
+        if (typeof value === 'boolean' || value === null || value === undefined) return null;
+        if (typeof value === 'number') return Number.isInteger(value) ? value : null;
+        if (typeof value === 'string') {
+          const text = value.trim();
+          return /^[+-]?\d+$/.test(text) ? Number(text) : null;
+        }
+        return null;
+      };
+      // A multiplier: any finite number, or a string naming one. Bools are not
+      // multipliers, and neither are inf/nan — `nan > 1` and `nan > cap` are both
+      // false, so a nan multiplier would render as a rail that is silently never at
+      // peak, which is the reason _as_float refuses it too.
+      const finiteNumber = (value) => {
+        if (typeof value === 'boolean' || value === null || value === undefined) return null;
+        if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+        if (typeof value === 'string') {
+          const text = value.trim();
+          if (!text) return null;
+          const number = Number(text);
+          return Number.isFinite(number) ? number : null;
+        }
+        return null;
+      };
+      // The bounds of [start, end), or null for a window the router would not
+      // honour. 0 <= start < end <= 24, whole hours, strictly increasing:
+      // start > end is refused rather than read as wrapping midnight, which is what
+      // keeps wrap-around arithmetic out of priceMultiplier and nextWindowChange.
+      const HOURS_IN_DAY = 24;
+      const DAYS_IN_WEEK = 7;
+      function hourBounds(hours) {
+        if (!Array.isArray(hours) || hours.length !== 2) return null;
+        const start = wholeNumber(hours[0]);
+        const end = wholeNumber(hours[1]);
+        if (start === null || end === null) return null;
+        if (!(start >= 0 && start < end && end <= HOURS_IN_DAY)) return null;
+        return [start, end];
+      }
+      // The weekday gate as a list, or null. THREE outcomes, not two, and the third
+      // is the one that was missing: `undefined` means absent — every day — while a
+      // gate that is PRESENT and unusable (a non-list, a fractional day, a day out
+      // of 0..6, or an empty list, which _weekday_set answers None for) means the
+      // window itself is malformed. `false` distinguishes that from "absent", so the
+      // caller can drop the window instead of promoting a typo to every day.
+      function weekdaySet(weekdays) {
+        if (weekdays === null || weekdays === undefined) return null;
+        if (!Array.isArray(weekdays) || !weekdays.length) return false;
+        const days = [];
+        for (let i = 0; i < weekdays.length; i += 1) {
+          const day = wholeNumber(weekdays[i]);
+          if (day === null || day < 0 || day >= DAYS_IN_WEEK) return false;
+          if (days.indexOf(day) < 0) days.push(day);
+        }
+        return days;
+      }
+
       // A registry entry's windows, read defensively: the payload is a sidecar's,
       // so a shape nobody agreed on must leave the console reporting flat pricing
       // rather than throwing on the first elo. Two spellings are accepted because
@@ -1581,15 +1699,13 @@
         const e = entry && typeof entry === 'object' ? entry : {};
         const out = [];
         const push = (hours, multiplier, weekdays) => {
-          const pair = Array.isArray(hours) ? hours : [];
-          const start = Number(pair[0]);
-          const end = Number(pair[1]);
-          const m = Number(multiplier);
-          if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
-          if (!Number.isFinite(m) || m <= 0) return;
-          const days = (Array.isArray(weekdays) ? weekdays.map(Number) : [])
-            .filter((d) => Number.isFinite(d));
-          out.push({ hours: [start, end], multiplier: m, weekdays: days.length ? days : null });
+          const bounds = hourBounds(hours);
+          if (bounds === null) return;
+          const m = finiteNumber(multiplier);
+          if (m === null || m <= 0) return;
+          const days = weekdaySet(weekdays);
+          if (days === false) return;
+          out.push({ hours: bounds, multiplier: m, weekdays: days });
         };
         if (Array.isArray(e.price_windows)) {
           e.price_windows.forEach((w) => {
@@ -3569,6 +3685,85 @@
         };
       }
 
+      // ── what a probe ASKS, and what it was measured from ─────────────
+      // The request that carries one probe. Two shapes, and the size of the
+      // context is what chooses between them — the same reason one_sidecar.py puts
+      // /explain in BOTH _GET_ROUTES and _POST_ROUTES:
+      //
+      //   goal only        GET /explain?task=… — unchanged, byte for byte, so a
+      //                    link-shaped probe still works and a sidecar behind a
+      //                    GET-only proxy still answers.
+      //   context supplied POST /explain with a JSON body. http.server refuses a
+      //                    request LINE over 65536 bytes with a 414, and the
+      //                    composed prompts this exists for run to 600k chars, so
+      //                    a query string cannot carry one at all.
+      //
+      // The parameter names are the SERVER'S (`task`, `prompt_text`, and the same
+      // pair on both verbs): a per-surface translation table is exactly how a
+      // console comes to send one thing and read another.
+      //
+      // The context is NOT trimmed. service._resolve_prompt tests `prompt_text or
+      // task` — an empty box means "size it from the goal", and whitespace is
+      // measured as whitespace — so trimming here would make the preview report
+      // fewer characters than production sends, in the one direction that matters.
+      function explainRequest(task, promptText) {
+        const goal = task === undefined || task === null ? '' : String(task);
+        const prompt = promptText === undefined || promptText === null ? '' : String(promptText);
+        if (!prompt) return { path: `/explain?task=${encodeURIComponent(goal)}`, options: {} };
+        return {
+          path: '/explain',
+          options: { method: 'POST', body: { task: goal, prompt_text: prompt } },
+        };
+      }
+
+      // WHICH TEXT THE PLAN WAS SIZED FROM, in the server's own words. A preview
+      // sized from the goal line and a preview sized from the real turn are the
+      // same response shape and wildly different answers, so `preview.sized_from`
+      // is read by NAME — 'task' or 'prompt_text', the only two values
+      // service._SIZED_FROM_* defines — rather than inferred from whether this
+      // console happened to send a context.
+      //
+      // null when the sidecar reports no preview at all: an older one says nothing
+      // here, and "sized from the goal line" would then be a claim about a field
+      // nobody sent. The two numbers come from the two places that own them —
+      // `preview.prompt_chars` is the text's length and `features.est_input_tokens`
+      // is what the rules were evaluated against — and each is omitted rather than
+      // guessed when it is missing.
+      function sizedFromWords(preview, features) {
+        const p = preview && typeof preview === 'object' ? preview : null;
+        const sized = p ? String(p.sized_from == null ? '' : p.sized_from) : '';
+        if (sized !== 'task' && sized !== 'prompt_text') return null;
+        const f = features && typeof features === 'object' ? features : {};
+        // null and undefined are NOT zero. `Number(null)` is 0, and "0 characters"
+        // would be this console inventing a measurement out of a field the sidecar
+        // did not send — the same coercion that once turned a missing multiplier
+        // into a free peak hour (see reportedMultiplier).
+        const count = (value) => {
+          if (value === null || value === undefined) return null;
+          const number = Number(value);
+          return Number.isFinite(number) ? number : null;
+        };
+        const chars = count(p.prompt_chars);
+        const tokens = count(f.est_input_tokens);
+        const measured = [
+          chars === null ? '' : `${fmt(chars)} characters`,
+          tokens === null ? '' : `${fmt(tokens)} estimated tokens`,
+        ].filter(Boolean).join(', ');
+        const goalOnly = sized === 'task';
+        const what = goalOnly ? 'the goal line alone' : 'the context you supplied';
+        return {
+          goalOnly,
+          label: 'sized from ',
+          // The advice is on the goal-only branch only, and it is the whole point
+          // of the line: a context-heavy turn routes on the context's size, so a
+          // plan measured without it may not be the plan production attempts.
+          said: `${what}${measured ? ` — ${measured}` : ''}.`
+            + (goalOnly
+              ? ' A turn that carries context routes on the whole composed text, so paste it in above to preview the plan that turn really gets.'
+              : ''),
+        };
+      }
+
       async function probe(task) {
         const box = $('probeResult');
         clear(box);
@@ -3577,16 +3772,36 @@
         state.chainPlan = null;
         renderChainPlan(null);
         if (!task) return;
+        const contextBox = $('probeContext');
+        const req = explainRequest(task, contextBox ? contextBox.value : '');
+        // A context has to be POSTed (see explainRequest), and a POST through the
+        // host's proxy needs the CSRF token only the Hermes One shell can hand out.
+        // Said BEFORE asking, because the alternative is a bare HTTP status on the
+        // one probe an operator opened this box to run.
+        if (req.options.method === 'POST' && !csrf()) {
+          box.append(el('p', 'nothing',
+            'A context is too large for a query string, so it has to be POSTed — which a standalone '
+            + 'console cannot do. Open the Router panel inside Hermes One, or clear the context to '
+            + 'route the goal line alone.'));
+          return;
+        }
         box.append(el('div', 'verdict', 'Routing…'));
-        const res = await call(`/explain?task=${encodeURIComponent(task)}`);
+        const res = await call(req.path, req.options);
         clear(box);
         if (res.missing || res.error) {
-          // Two different obstacles, two different next actions: a policy that
-          // fails lint is the operator's to fix, an absent endpoint is not.
+          // Three different obstacles, three different next actions: a policy that
+          // fails lint is the operator's to fix, a REFUSED INPUT is the operator's
+          // to correct and the server already named it, an absent endpoint is
+          // neither. The server's own sentence is quoted rather than restated —
+          // it is the only authority for the prompt_text ceiling
+          // (service._DEFAULT_MAX_PROMPT_CHARS), and a number copied over here is
+          // a second bound that can disagree with the one being enforced.
           const why = (res.data && (res.data.error || res.data.message)) || '';
           box.append(el('p', 'nothing', /invalid/i.test(why)
             ? 'The router policy is invalid, so a dry run is refused. Fix the errors named above, then try again.'
-            : 'The dry run is unavailable on this sidecar.'));
+            : (res.status === 400 && why)
+              ? `The dry run was refused: ${why}`
+              : 'The dry run is unavailable on this sidecar.'));
           return;
         }
         const d = res.data || {};
@@ -3697,6 +3912,20 @@
             why.append(el('span', 'clause', phraseCondition(field, test) || field));
           });
           box.append(why);
+        }
+        // WHAT THE PLAN WAS MEASURED FROM. Under the verdict, because it qualifies
+        // the verdict: every number below — est_input_tokens, the min_context floor,
+        // which elos the filter dropped — is derived from ONE text, and until this
+        // line existed the console showed the plan for a goal line while production
+        // routed the composed turn. Unconditional (where the sidecar reports a
+        // preview at all), because "sized from the goal line" is the case that reads
+        // as production's plan and is not; nothing else on screen can say it.
+        const sizing = sizedFromWords(d.preview, d.features);
+        if (sizing) {
+          const line = el('div', 'verdict-sized');
+          line.append(el('span', 'verdict-why-label', sizing.label));
+          line.append(el('span', 'verdict-sized-said', sizing.said));
+          box.append(line);
         }
         // The DECLARED route, secondary and labelled as such — the tier as router.yaml
         // writes it, beside the chain that will actually be walked. It earns a line
@@ -4401,6 +4630,11 @@
         renderWarnings,
         drawPath, pickRoute, stepNode, stepOutcome, causeColor, worstOf, modelState,
         phraseCondition, phraseWhen, renderSheet, renderLadder, ruleHits, probe,
+        // What a probe asks and what the answer was measured from. Both pure, and
+        // both pinned against the server's own parameter names and `sized_from`
+        // values — a console that sends one spelling and reads another is how the
+        // Explain panel came to show the plan for a two-line goal.
+        explainRequest, sizedFromWords,
         // Context, capability and fallback-strategy reading: every one of these is
         // pure, so the words an operator acts on are pinned by tests rather than
         // eyeballed on a screenshot.
@@ -4413,6 +4647,10 @@
         // UTC and failing at 07:00 — the failure mode the injected clock exists to
         // prevent in the router itself.
         whenOf, timeFace, hourLabel, entryWindows, eloWindows, priceMultiplier,
+        // The window SHAPE, transcribed from capabilities._hour_bounds /
+        // _weekday_set so the client cannot be the laxer of the two: a window the
+        // router refuses must be a window this console prices flat.
+        hourBounds, weekdaySet,
         nextWindowChange, windowWords, railWindowRows, effectivePrices, money,
         priceWords, pricePublished, declaredPin, timePolicyMove, timeFlagIndex,
         timeKnobWords, planWhen, timeCapOf, cappedEntries, renderClock, nowUtc,

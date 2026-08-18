@@ -1,5 +1,7 @@
 """Unit tests for CLI governance (router/cli.py)."""
 
+import importlib
+import importlib.util
 import io
 import json
 import random
@@ -12,6 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+import router
 import router.cli as cli
 import router.rules as rules_mod
 from router.cli import (
@@ -402,6 +405,27 @@ class TestCLILintWarnings:
         cmd_lint(_ns("lint", {"config": config_file}))
         assert "router: config valid" in capsys.readouterr().out
 
+    def test_a_non_list_from_lint_warnings_prints_no_warning_block(
+        self, config_file, monkeypatch, capsys
+    ):
+        """A helper that answers with one bare string is not N warnings.
+
+        The advisory block reports ``len(warnings)`` and then iterates it, so a
+        string would be counted by CHARACTERS and printed one letter per line —
+        a mid-write ``rules.lint_warnings`` returning its single note unwrapped
+        would bury the lint result under 44 lines of ``! t``. It is dropped
+        instead: an advisory that cannot be read as a list of notes has nothing
+        sayable in it, and it still may not touch the exit code.
+        """
+        monkeypatch.setattr(rules_mod, "lint_warnings",
+                            lambda _c: "tier T4: first two hops share upstream",
+                            raising=False)
+        cli.main(["--config", config_file, "lint"])  # must NOT SystemExit
+        out = capsys.readouterr().out
+        assert "router: config valid" in out
+        assert "warning" not in out
+        assert "share upstream" not in out
+
     def test_lint_warnings_that_raises_degrades_to_a_note(
         self, config_file, monkeypatch, capsys
     ):
@@ -466,16 +490,33 @@ def time_config_file(tmp_path):
 _FROZEN_NOW = datetime(2026, 8, 19, 13, 47, 31, tzinfo=timezone.utc)
 
 
-@pytest.fixture
-def frozen_now(monkeypatch):
-    """Freeze the CLI's ONE clock read, and return the instant it now yields.
+@pytest.fixture(autouse=True)
+def _frozen_clock(monkeypatch):
+    """Pin the CLI's ONE clock read for EVERY test in this file.
 
     The addendum's testing notes are explicit that no test reads a clock — a test
     that did would be the exact bug the injected-clock design exists to prevent.
-    So the default-clock tests below pin ``cli._utc_now`` and compare against
-    this value instead of calling ``datetime.now()`` a second time.
+    Left to per-test discipline that held for the ``--at`` tests and quietly
+    lapsed everywhere else: every case that reached ``resolve_when`` without
+    ``--at``/``--time-agnostic`` (the whole of ``TestCLIExplain``, most of
+    ``TestCLIChain``) took the default branch and read the wall clock, so its plan
+    was the one for whichever hour CI ran at — a time_policy demotion or a
+    ``cheapest_now`` order that only appears between 06:00 and 10:00 UTC would be
+    asserted or not depending on the clock. Autouse makes the rule structural
+    instead: a test that forgets to pin still cannot see the real hour.
+
+    ``_utc_now`` itself is verified directly (see
+    :meth:`TestCLIClockRead.test_the_single_clock_read_is_aware_and_utc`), which
+    is where the real ``datetime.now`` belongs — in an assertion about the CLOCK,
+    never in one about a route.
     """
     monkeypatch.setattr(cli, "_utc_now", lambda: _FROZEN_NOW)
+    return _FROZEN_NOW
+
+
+@pytest.fixture
+def frozen_now(_frozen_clock):
+    """The instant ``_utc_now()`` yields, for the tests that assert on it."""
     return _FROZEN_NOW
 
 
@@ -1534,6 +1575,792 @@ class TestCLIParser:
         assert args.json is True
         assert args.seed == 7
         assert args.model == "glm-5.2"
+
+
+# ---------------------------------------------------------------------------
+# The one wall-clock read, and the ways --at can fail to name an hour
+# ---------------------------------------------------------------------------
+
+
+class TestCLIClockRead:
+    def test_the_single_clock_read_is_aware_and_utc(self, monkeypatch):
+        """``_utc_now`` is the ONE clock read in the router, and it reads UTC.
+
+        The only test in this file that touches the real clock, and it asserts
+        nothing about the VALUE — a naive or local-zone instant is the failure
+        being excluded, because every downstream reader (``_utc_parts``,
+        ``capabilities.price_multiplier``) would then normalise a different hour
+        than the operator's box is in and price the wrong window.
+        """
+        monkeypatch.undo()  # this one function is the clock; do not pin it
+        now = cli._utc_now()
+        assert now.tzinfo is not None
+        assert now.utcoffset() == timedelta(0)
+
+
+class TestCLIAtParsing:
+    """``--at`` is fail-closed: a value that names no hour is refused, not guessed."""
+
+    def test_a_whitespace_only_at_is_refused_rather_than_read_as_now(
+        self, time_config_file, capsys
+    ):
+        """An OMITTED flag means now; a value that means nothing means nothing.
+
+        ``--at ''``/``--at '   '`` is a mistyped question, and "now" is the one
+        answer guaranteed to be wrong — the flag exists because the operator is
+        asking about a different hour than the one they are standing in.
+        """
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["--config", time_config_file, "chain", _HARD_TASK,
+                      "--at", "   "])
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "--at" in err
+        assert "empty value" in err
+
+    def test_at_now_is_the_same_instant_as_the_default_and_still_says_it_was_asked(
+        self, time_config_file, shuffling_planner, frozen_now, capsys
+    ):
+        """Two spellings of one clock read: the instants agree, the SOURCE differs.
+
+        ``--at now`` and no flag at all must not be two different hours — both are
+        ``_utc_now()``, read once — while ``at_source`` records which of them the
+        operator actually asked for, because a trace that says ``explicit`` when
+        the flag was omitted cannot be replayed.
+        """
+        asked = _chain_json(capsys, time_config_file, "--at", "now")
+        defaulted = _chain_json(capsys, time_config_file)
+        assert asked["at"] == defaulted["at"] == frozen_now.isoformat()
+        assert asked["utc_hour"] == defaulted["utc_hour"] == frozen_now.hour
+        assert asked["at_source"] == "explicit"
+        assert defaulted["at_source"] == "now"
+
+
+# ---------------------------------------------------------------------------
+# The guards that decide whether the clock can be handed downwards at all
+# ---------------------------------------------------------------------------
+
+
+class _OpaquePlanner:
+    """A planner that PLANS but whose signature cannot be read.
+
+    ``__signature__`` holding something that is not a ``Signature`` makes
+    ``inspect.signature`` raise TypeError, which is the same dead end a
+    C-accelerated or wrapped planner reaches by raising ValueError. Only the
+    question "does it take a clock?" is unanswerable — the call itself works.
+    """
+
+    __signature__ = "not a signature"
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, output, features, *, rng=None, when=None):
+        self.calls.append({"rng": rng, "when": when})
+        return dict(_STUB_PLAN)
+
+
+class TestCLIAcceptsGuard:
+    def test_a_signature_that_cannot_be_read_answers_no_rather_than_raising(self):
+        """All three ways of not knowing must answer the same way: no.
+
+        Asked by signature and not by catching TypeError, so the three dead ends
+        are: not callable at all, a C builtin with no introspectable signature,
+        and an opaque ``__signature__``. Guessing "yes" would raise an unexpected
+        keyword into the operator's only shell-side tool.
+        """
+        assert cli._accepts(None, "when") is False          # not callable
+        assert cli._accepts(min, "when") is False           # ValueError
+        assert cli._accepts(_OpaquePlanner(), "when") is False   # TypeError
+        # ... and a real signature still answers yes, so the guard is not simply
+        # refusing everything (which would make every plan time-blind).
+        assert cli._accepts(rules_mod.plan_chain, "when") is True
+
+    def test_the_time_blind_label_and_the_planner_agree_about_the_clock(
+        self, time_config_file, monkeypatch, capsys
+    ):
+        """The label and the argument are one fact, so they are asserted together.
+
+        A planner that cannot be asked whether it takes a clock is called WITHOUT
+        one, so its order is not the order for the requested hour — while the
+        prices printed under it ARE. Asserting only the label would leave it free
+        to be printed over a planner that did get the clock, and asserting only
+        the argument would leave the operator reading a time-blind order as the
+        4am one.
+        """
+        planner = _OpaquePlanner()
+        monkeypatch.setattr(rules_mod, "plan_chain", planner, raising=False)
+        payload = _chain_json(capsys, time_config_file, "--seed", "1",
+                              "--at", _MON_PEAK)
+        assert planner.calls[-1]["when"] is None      # it could not be asked
+        assert payload["plan_time_aware"] is False    # ... and the plan says so
+        text = _chain_text(capsys, time_config_file, "--seed", "1", "--at", _MON_PEAK)
+        assert "plan_time_aware: false" in text
+        assert "the planner has no clock parameter in this build" in text
+
+
+class TestCLIPlannerCallShapes:
+    """``rules.plan_chain`` is called tolerantly — an older shape still plans."""
+
+    def test_a_planner_that_takes_no_rng_is_retried_positionally(
+        self, time_config_file, monkeypatch, capsys
+    ):
+        """Pre-rng ``plan_chain(output, features)``: retried, planned, labelled.
+
+        The keyword call raises TypeError, and reporting "no plan" there would
+        blind the operator to a chain the planner can perfectly well compute. What
+        that shape CANNOT be given is the clock, so the plan it returns is
+        labelled time-blind rather than presented as the requested hour's order.
+        """
+        seen = []
+
+        def legacy_plan_chain(output, features):
+            seen.append(features)
+            return dict(_STUB_PLAN)
+
+        monkeypatch.setattr(rules_mod, "plan_chain", legacy_plan_chain, raising=False)
+        payload = _chain_json(capsys, time_config_file, "--seed", "1",
+                              "--at", _MON_PEAK)
+        assert len(seen) == 1                      # the retry, not the first call
+        assert payload["plan_source"] == "rules.plan_chain(seed=1)"
+        assert [t["model"] for t in payload["chain_plan"]["chain"]] == \
+            [t["model"] for t in _STUB_PLAN["chain"]]
+        assert payload["plan_time_aware"] is False
+
+    def test_a_planner_no_call_shape_fits_reports_no_plan_instead_of_raising(
+        self, time_config_file, monkeypatch, capsys
+    ):
+        """Neither call shape binds: print "no plan", never a traceback.
+
+        A planner whose arity matches nothing this CLI knows how to call is a
+        mid-write ``rules.py``. The command still answers — source
+        ``unavailable``, empty plan — because the operator reaches for it exactly
+        when the install is in a state like this.
+        """
+        monkeypatch.setattr(rules_mod, "plan_chain",
+                            lambda output, features, extra: dict(_STUB_PLAN),
+                            raising=False)
+        monkeypatch.setattr(cli, "_caps", None)
+        payload = _chain_json(capsys, time_config_file, "--seed", "1",
+                              "--at", _MON_PEAK)
+        assert payload["plan_source"] == "unavailable"
+        assert payload["chain_plan"]["chain"] == []
+        assert payload["pricing"] == []
+
+    def test_an_explain_that_returns_no_mapping_still_prints_a_block(
+        self, time_config_file, monkeypatch, capsys
+    ):
+        """A ``rules.explain`` that answers with a non-mapping decides nothing.
+
+        Read as "nothing decided" — no rule, no cause, no output — rather than
+        indexed into. It also reflects no clock, so its (absent) preview is not
+        printed as the plan for the requested hour.
+        """
+        monkeypatch.setattr(cli, "rules_explain", lambda *_a, **_k: None)
+        monkeypatch.setattr(cli, "_caps", None)
+        monkeypatch.delattr(rules_mod, "plan_chain", raising=False)
+        payload = _chain_json(capsys, time_config_file, "--at", _MON_PEAK)
+        assert payload["matched_rule_id"] is None
+        assert payload["cause"] is None
+        assert payload["output"] == {}
+        assert payload["plan_source"] == "unavailable"
+        assert payload["chain_plan"]["chain"] == []
+
+
+# ---------------------------------------------------------------------------
+# The compose fallback — what plans when rules.py has no plan_chain yet
+# ---------------------------------------------------------------------------
+
+
+class _HalfWrittenCaps:
+    """A registry that can filter but cannot yet order — ``order_chain`` absent.
+
+    The mid-write module the compose path is guarded for, and the base of the two
+    complete stand-ins below: every one of them is deliberately transparent (it
+    filters nothing and reorders nothing), because what is under test is which
+    chain the CLI HANDS the registry. The compose path is what plans on an older
+    ``rules.py``, so a hop it drops or invents is a hop the operator's shell-side
+    answer is wrong about.
+    """
+
+    def derive_requirements(self, features, tier_requirements=None):
+        return dict(tier_requirements or {})
+
+    def filter_chain(self, chain, requirements):
+        return {"eligible": list(chain), "rejected": [], "unknown": [],
+                "bypassed": False}
+
+    def independent_rails(self, chain):
+        return len({hop.get("provider") for hop in chain})
+
+
+class _ComposeCaps(_HalfWrittenCaps):
+    """The shipped shape: an ``order_chain`` that takes the injected clock."""
+
+    def order_chain(self, chain, strategy, *, pin_primary=True, rng=None,
+                    when=None):
+        return list(chain)
+
+
+class _UnclockedComposeCaps(_HalfWrittenCaps):
+    """The same registry from before ``order_chain`` took a clock."""
+
+    def order_chain(self, chain, strategy, *, pin_primary=True, rng=None):
+        return list(chain)
+
+
+def _compose_only(monkeypatch, output, caps=None):
+    """Force the compose path: no ``rules.plan_chain``, no preview from explain."""
+    monkeypatch.delattr(rules_mod, "plan_chain", raising=False)
+    monkeypatch.setattr(cli, "_caps", caps if caps is not None else _ComposeCaps())
+    monkeypatch.setattr(
+        cli, "rules_explain",
+        lambda *_a, **_k: {"matched_rule_id": "hard-verbs", "cause": "hard_rule",
+                           "output": output, "matched_clauses": {}},
+    )
+
+
+class TestCLIComposedPlan:
+    def test_a_decision_with_no_primary_model_composes_from_its_fallback_hops(
+        self, time_config_file, monkeypatch, capsys
+    ):
+        """No model on the output => no head, not a head named "None".
+
+        Composing a ``{"model": None}`` head would print it as eligible hop 1 and
+        ask the registry to price it, so the operator's first attempt would be an
+        elo that does not exist — ahead of the hops that do.
+        """
+        _compose_only(monkeypatch, {"profile": "coder", "fallback": [
+            {"model": "glm-5.3", "provider": "zai"},
+            {"model": "kimi-k3", "provider": "moonshot"},
+        ]})
+        payload = _chain_json(capsys, time_config_file, "--at", _MON_PEAK)
+        assert _order(payload) == ["glm-5.3", "kimi-k3"]
+        assert payload["plan_source"].startswith("capabilities")
+        text = _chain_text(capsys, time_config_file, "--at", _MON_PEAK)
+        assert "1. glm-5.3 (zai)" in text
+        assert "None" not in text
+
+    def test_a_hop_with_no_provider_is_labelled_by_its_model_alone(
+        self, time_config_file, monkeypatch, capsys
+    ):
+        """A tier that declares only a model must not grow an empty provider.
+
+        ``model (None)`` in the eligible list reads as a provider called None; the
+        provider key is omitted instead, which is also what the pricing row and
+        the JSON then report.
+        """
+        _compose_only(monkeypatch, {"model": "glm-5.3"})
+        text = _chain_text(capsys, time_config_file, "--at", _MON_PEAK)
+        assert "1. glm-5.3\n" in text
+        assert "(None)" not in text
+        payload = _chain_json(capsys, time_config_file, "--at", _MON_PEAK)
+        assert payload["chain_plan"]["chain"] == [{"model": "glm-5.3"}]
+        assert payload["pricing"][0]["provider"] is None
+
+    @pytest.mark.parametrize("fallback", ["glm-4.7", 2, {"model": "glm-4.7"}])
+    def test_a_fallback_that_is_not_a_list_costs_the_primary_nothing(
+        self, fallback, time_config_file, monkeypatch, capsys
+    ):
+        """A hand-edited ``fallback:`` that is not a list of hops adds no hops.
+
+        Three ways to get it wrong in YAML — a bare model name, a number, a single
+        mapping written without the dash — and none of them may cost the operator
+        the plan for the hop that IS declared: iterating the number raises, and
+        iterating the mapping would compose a hop out of its KEY. The primary is
+        planned, the corrupt value contributes nothing, and the command still
+        names the path that produced the order.
+        """
+        _compose_only(monkeypatch, {"model": "glm-5.3", "provider": "zai",
+                                    "fallback": fallback})
+        payload = _chain_json(capsys, time_config_file, "--at", _MON_PEAK)
+        assert _order(payload) == ["glm-5.3"]
+        assert payload["plan_source"].startswith("capabilities")
+
+    def test_a_decision_with_nothing_to_compose_reports_no_plan(
+        self, time_config_file, monkeypatch, capsys
+    ):
+        """An empty output composes no chain at all, and says so.
+
+        ``unavailable`` is the honest answer: there is no chain to show. An empty
+        plan reported as ``capabilities(...)`` would claim the registry looked and
+        found nothing, which is a different fact and points at a different fix.
+        """
+        _compose_only(monkeypatch, {})
+        payload = _chain_json(capsys, time_config_file, "--at", _MON_PEAK)
+        assert payload["plan_source"] == "unavailable"
+        assert payload["chain_plan"]["chain"] == []
+
+    def test_an_order_primitive_with_no_clock_parameter_is_labelled_time_blind(
+        self, time_config_file, monkeypatch, capsys
+    ):
+        """The registry half can be older than the clock, and must say so.
+
+        ``order_chain`` without a ``when`` parameter cannot have ordered for
+        07:00, so the ORDER is time-blind while the prices beside it are not —
+        exactly the mismatch the label exists to disclose.
+        """
+        _compose_only(monkeypatch, {"model": "glm-5.3", "provider": "zai",
+                                    "fallback": [{"model": "kimi-k3",
+                                                  "provider": "moonshot"}]},
+                      caps=_UnclockedComposeCaps())
+        payload = _chain_json(capsys, time_config_file, "--at", _MON_PEAK)
+        assert payload["plan_source"].startswith("capabilities")
+        assert payload["plan_time_aware"] is False
+        assert _order(payload) == ["glm-5.3", "kimi-k3"]
+        text = _chain_text(capsys, time_config_file, "--at", _MON_PEAK)
+        assert "plan_time_aware: false" in text
+
+    def test_a_registry_missing_a_primitive_reports_no_plan_rather_than_raising(
+        self, time_config_file, monkeypatch, capsys
+    ):
+        """Half a registry is the case this whole path is guarded for.
+
+        A ``capabilities.py`` mid-write can expose ``filter_chain`` and not yet
+        ``order_chain``. The compose attempt fails on the missing name and the
+        command still prints a block — ``unavailable``, empty — because a
+        traceback here takes away the only view of the router the operator has.
+        """
+        _compose_only(monkeypatch, {"model": "glm-5.3", "provider": "zai"},
+                      caps=_HalfWrittenCaps())
+        payload = _chain_json(capsys, time_config_file, "--at", _MON_PEAK)
+        assert payload["plan_source"] == "unavailable"
+        assert payload["chain_plan"]["chain"] == []
+
+
+# ---------------------------------------------------------------------------
+# Rendering a plan that is not the shape this build writes
+# ---------------------------------------------------------------------------
+
+
+class TestCLIForeignPlanShapes:
+    def _plan_with(self, monkeypatch, **fields):
+        plan = dict(_STUB_PLAN)
+        plan.update(fields)
+        monkeypatch.setattr(rules_mod, "plan_chain", lambda *_a, **_k: dict(plan),
+                            raising=False)
+
+    def test_a_field_this_build_does_not_know_survives_into_the_json(
+        self, time_config_file, monkeypatch, capsys
+    ):
+        """``--json`` is the plan, not a whitelist of the parts the CLI renders.
+
+        A planner that grows a field (another cost reading, another degrade note)
+        must not have it dropped by the surface operators script against: the
+        normalizer guarantees the keys the block prints and keeps everything else
+        as it found it.
+        """
+        self._plan_with(monkeypatch, cheapest_now_ranking=["glm-5.3", "kimi-k3"])
+        payload = _chain_json(capsys, time_config_file, "--seed", "1",
+                              "--at", _MON_PEAK)
+        assert payload["chain_plan"]["cheapest_now_ranking"] == ["glm-5.3", "kimi-k3"]
+
+    def test_hops_recorded_as_bare_model_names_are_shown_but_not_priced(
+        self, time_config_file, fake_caps, monkeypatch, capsys
+    ):
+        """A replayed or older plan names hops as strings, not mappings.
+
+        The eligible list renders the name (a name is more than nothing) and the
+        rejected list labels a missing reason rather than calling ``.get`` on a
+        string. The pricing block SKIPS it: a bare name carries no provider and no
+        declared override, so any row for it would be a made-up number in the one
+        place the operator checks the bill.
+        """
+        self._plan_with(
+            monkeypatch,
+            chain=["deepseek-v4-pro", {"model": "kimi-k3", "provider": "moonshot"}],
+            rejected=["tiny-elo", {"model": "glm-5.3", "reject_reason": "no_vision"}],
+        )
+        payload = _chain_json(capsys, time_config_file, "--seed", "1",
+                              "--at", _MON_PEAK)
+        assert [row["model"] for row in payload["pricing"]] == ["kimi-k3"]
+        text = _chain_text(capsys, time_config_file, "--seed", "1", "--at", _MON_PEAK)
+        assert "1. deepseek-v4-pro\n" in text          # named in the order ...
+        assert "2. kimi-k3 (moonshot)" in text
+        assert "1. kimi-k3 (moonshot)" in text         # ... and priced alone
+        assert "- tiny-elo reject_reason=unknown" in text
+        assert "- glm-5.3 reject_reason=no_vision" in text
+
+
+# ---------------------------------------------------------------------------
+# Pricing against a registry that is older, half-written, or wrong-shaped
+# ---------------------------------------------------------------------------
+
+
+class _PreDeclaredCaps:
+    """A registry from before per-elo ``declared`` overrides existed.
+
+    ``price_multiplier(model, when)`` is the older two-argument shape, so the
+    keyword call raises TypeError and the CLI has to retry positionally — the
+    alternative is reporting a whole roster as unpriceable because one keyword
+    was added later. ``kimi-k3`` raises from BOTH shapes, standing in for a
+    registry that only half knows the roster.
+    """
+
+    def price_multiplier(self, model, when=None):
+        if model == "kimi-k3":
+            raise KeyError(model)
+        return 2.0 if when is not None and when.hour == 7 else 1.0
+
+    def effective_price(self, model, when=None):
+        if model == "kimi-k3":
+            raise KeyError(model)
+        multiplier = self.price_multiplier(model, when)
+        return (0.66 * multiplier, 1.98 * multiplier)
+
+
+class _MalformedPriceCaps:
+    """A mid-write registry whose price is not an (in, out) pair."""
+
+    def __init__(self, price):
+        self.price = price
+
+    def price_multiplier(self, model, when=None, declared=None):
+        return 1.0
+
+    def effective_price(self, model, when=None, declared=None):
+        return self.price
+
+
+class TestCLIPricingAgainstAnOlderRegistry:
+    def test_the_pre_declared_two_argument_price_api_is_retried_positionally(
+        self, time_config_file, shuffling_planner, monkeypatch, capsys
+    ):
+        """An older signature still prices; a model it cannot answer for is n/a.
+
+        Both readings come from the same registry in one run, so the test pins
+        that the retry is per CALL and not per registry: deepseek is priced at the
+        07:00 multiplier the older API returns, and kimi-k3 — which that API
+        raises on — is reported as unpriceable instead of taking the rest of the
+        block down with it.
+        """
+        monkeypatch.setattr(cli, "_caps", _PreDeclaredCaps())
+        payload = _chain_json(capsys, time_config_file, "--at", _MON_PEAK)
+        rows = _rows(payload)
+        assert rows["deepseek-v4-pro"]["multiplier"] == 2.0
+        assert rows["deepseek-v4-pro"]["price_in"] == pytest.approx(1.32)
+        assert rows["deepseek-v4-pro"]["pricing"] == "priced"
+        assert rows["kimi-k3"]["multiplier"] is None
+        assert rows["kimi-k3"]["price_in"] is None
+        assert rows["kimi-k3"]["pricing"] == "unavailable"
+        text = _chain_text(capsys, time_config_file, "--at", _MON_PEAK)
+        assert "kimi-k3 (moonshot) x? price=n/a" in text
+
+    @pytest.mark.parametrize("price", [0.66, (0.66, 1.98, 2.64), ("a", "b")])
+    def test_a_price_that_is_not_an_in_out_pair_is_reported_as_unanswerable(
+        self, price, time_config_file, shuffling_planner, monkeypatch, capsys
+    ):
+        """A single rate, a three-part rate and a non-numeric pair are all n/a.
+
+        Guessing which half of a malformed answer is the input rate would put a
+        number the registry never published on the line an operator reads the bill
+        off. ``unpriced`` is not used either — that word means "the vendor
+        publishes no dollar rate", which is a fact about the model, not about this
+        build of the registry.
+        """
+        monkeypatch.setattr(cli, "_caps", _MalformedPriceCaps(price))
+        payload = _chain_json(capsys, time_config_file, "--at", _MON_PEAK)
+        row = _rows(payload)["deepseek-v4-pro"]
+        assert row["pricing"] == "unavailable"
+        assert row["unpriced"] is False
+        assert row["price_in"] is None and row["price_out"] is None
+        text = _chain_text(capsys, time_config_file, "--at", _MON_PEAK)
+        assert "price=n/a" in text
+        assert "0.66" not in text
+
+
+# ---------------------------------------------------------------------------
+# time_cap — the ceiling `capped` and `time_cap_bypassed` are both ABOUT
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def cap_config_file(tmp_path):
+    """A tier with a 1.5x price ceiling over a rail that doubles at 07:00 UTC.
+
+    The shipped shape of the pathological-cost case: at 07:00 Monday
+    ``deepseek-v4-pro`` is in its 2.0x window, so the cap refuses it and the
+    chain keeps the two rails that are still under the ceiling — a plan with
+    ``capped`` non-empty and ``time_cap`` set, which is what the CLI has to
+    render.
+    """
+    config = {
+        "enabled": True,
+        "blocklist": {"manual_ban": [], "fallback_chain": [],
+                      "auto_breaker": {"enabled": False}},
+        "rules": [
+            {"id": "hard-verbs", "status": "stable",
+             "when": {"verb_class": {"eq": "hard"}},
+             "then": {"profile": "coder", "model": "T2"}},
+        ],
+        "default": {"action": "classify"},
+        "tiers": {
+            "T2": {
+                "model": "gpt-5.6-terra", "provider": "openai-codex",
+                "time_cap": {"max_multiplier": 1.5},
+                "fallback": [
+                    {"model": "deepseek-v4-pro", "provider": "deepseek"},
+                    {"model": "glm-5.3", "provider": "zai"},
+                ],
+            },
+        },
+    }
+    path = tmp_path / "router.yaml"
+    with open(path, "w") as f:
+        yaml.dump(config, f)
+    return str(path)
+
+
+class TestCLIChainTimeCap:
+    """A refusal is only checkable next to the number it was made against."""
+
+    def _plan_with(self, monkeypatch, **fields):
+        plan = dict(_STUB_PLAN)
+        plan.update(fields)
+        monkeypatch.setattr(rules_mod, "plan_chain", lambda *_a, **_k: dict(plan),
+                            raising=False)
+
+    def test_the_ceiling_is_printed_beside_the_rails_it_refused(
+        self, cap_config_file, capsys
+    ):
+        """The real pipeline: ``capped`` names WHO, ``time_cap`` names AGAINST WHAT.
+
+        Two plan fields, one fact. Printing the refusal alone leaves "why was
+        deepseek-v4-pro dropped at 04:00" answerable only by opening router.yaml,
+        and leaves the operator no number to raise; the console has shown the cap
+        beside the refusal all along, so this is also the two surfaces agreeing.
+        The ceiling asserted is the PLAN's, never a literal.
+        """
+        payload = json.loads(_chain_text(capsys, cap_config_file, "--json",
+                                         "--at", _MON_PEAK))
+        plan = payload["chain_plan"]
+        if not plan.get("capped"):  # pragma: no cover - registry mid-write
+            pytest.skip("this build does not apply time_cap yet")
+        ceiling = plan["time_cap"]["max_multiplier"]
+        refused = [_flat_model(entry) for entry in plan["capped"]]
+        assert refused == ["deepseek-v4-pro"]
+
+        text = _chain_text(capsys, cap_config_file, "--at", _MON_PEAK)
+        cap_line = _line_starting(text, "time_cap:")
+        assert f"max_multiplier={ceiling}" in cap_line
+        assert "PRICE CEILING" in cap_line
+        assert "deepseek-v4-pro" in _line_starting(text, "capped:")
+        # The refused rail is gone from the order, and the cap did not empty it,
+        # so nothing bypassed itself either.
+        assert "deepseek-v4-pro" not in _order(payload)
+        assert "time_cap_bypassed:" not in text
+
+    def test_a_tier_with_no_cap_prints_no_ceiling_at_all(
+        self, time_config_file, shuffling_planner, capsys
+    ):
+        """An absent field renders as nothing — not as an empty heading.
+
+        ``plan_chain`` OMITS ``time_cap`` when the tier declares none (a null
+        would be read downstream as a ceiling of 0x, refusing everything), so
+        there is nothing to say. A bare ``time_cap:`` line would assert a cap
+        exists on a tier that has none.
+        """
+        text = _chain_text(capsys, time_config_file, "--at", _MON_PEAK)
+        assert [line for line in text.splitlines()
+                if line.startswith("time_cap:")] == []
+        assert "PRICE CEILING" not in text
+
+    def test_a_ceiling_recorded_as_a_bare_number_still_reaches_the_operator(
+        self, time_config_file, fake_caps, monkeypatch, capsys
+    ):
+        """A cap that renders as nothing is indistinguishable from no cap at all.
+
+        A replayed or hand-edited plan can carry the ceiling as the number itself
+        rather than as ``{max_multiplier: N}``. That shape is not the one this
+        build writes, so it is not interpreted — it is stringified, which keeps
+        the number in front of the operator instead of silently turning a capped
+        tier into an uncapped-looking one.
+        """
+        self._plan_with(monkeypatch, time_cap=1.5,
+                        capped=[{"model": "deepseek-v4-pro", "multiplier": 2.0}])
+        text = _chain_text(capsys, time_config_file, "--seed", "1", "--at", _MON_PEAK)
+        assert _line_starting(text, "time_cap:").startswith("time_cap: 1.5 ")
+        assert "deepseek-v4-pro" in _line_starting(text, "capped:")
+
+
+def _flat_model(entry):
+    """The model name of a chain/capped entry, which may be a bare string."""
+    return entry["model"] if isinstance(entry, dict) else entry
+
+
+# ---------------------------------------------------------------------------
+# strategy_degraded — the reason is the ROUTER's, never one the CLI invented
+# ---------------------------------------------------------------------------
+
+
+def _degrading_config(tmp_path, strategy):
+    """A tier whose declared ``fallback_strategy`` is ``strategy``."""
+    config = {
+        "enabled": True,
+        "blocklist": {"manual_ban": [], "fallback_chain": [],
+                      "auto_breaker": {"enabled": False}},
+        "rules": [
+            {"id": "hard-verbs", "status": "stable",
+             "when": {"verb_class": {"eq": "hard"}},
+             "then": {"profile": "coder", "model": "T2"}},
+        ],
+        "default": {"action": "classify"},
+        "tiers": {
+            "T2": {"model": "deepseek-v4-pro", "provider": "deepseek",
+                   "fallback_strategy": strategy,
+                   "fallback": [{"model": "glm-5.3", "provider": "zai"}]},
+        },
+    }
+    path = tmp_path / f"router-{strategy}.yaml"
+    with open(path, "w") as f:
+        yaml.dump(config, f)
+    return str(path)
+
+
+class TestCLIChainStrategyDegraded:
+    """Two degrades that need different fixes must not read the same."""
+
+    def _plan_with(self, monkeypatch, **fields):
+        plan = dict(_STUB_PLAN)
+        plan.update(fields)
+        monkeypatch.setattr(rules_mod, "plan_chain", lambda *_a, **_k: dict(plan),
+                            raising=False)
+
+    def test_a_misspelled_strategy_is_reported_as_a_misspelling(
+        self, tmp_path, capsys
+    ):
+        """The defect: one invented cause was printed for every degrade.
+
+        A tier declaring ``cheapest`` degrades because the WORD is not a strategy
+        — nothing to do with a clock or an rng — and this line used to tell the
+        operator the strategy "needed a clock/rng it did not get", sending them to
+        add ``--at``/``--seed`` for a typo in router.yaml. The sentence printed is
+        now the one ``rules._effective_strategy`` computed, asserted against the
+        plan's own field so the block and the planner cannot drift apart.
+        """
+        config = _degrading_config(tmp_path, "cheapest")
+        payload = json.loads(_chain_text(capsys, config, "--json", "--at", _MON_PEAK))
+        plan = payload["chain_plan"]
+        assert plan["strategy_degraded"] is True
+        reason = plan["strategy_degraded_reason"]
+        assert "not a known fallback strategy" in reason   # the ROUTER's words
+
+        text = _chain_text(capsys, config, "--at", _MON_PEAK)
+        line = _line_starting(text, "strategy_degraded:")
+        assert reason in line
+        assert "cheapest" in line          # ... and the word that did not run
+        assert "needed a clock/rng it did not get" not in text
+        # `strategy:` above is what RAN, so the two lines are different facts and
+        # the block never claims the tier declared sequential.
+        assert _line_starting(text, "strategy:") == "strategy: sequential"
+
+    def test_a_clockless_cheapest_now_is_reported_as_the_missing_clock(
+        self, tmp_path, capsys
+    ):
+        """The same field, a different cause, and a different sentence.
+
+        ``--time-agnostic`` really is the clock, and this is the one case the old
+        canned annotation described correctly — which is exactly why it survived:
+        pinning both cases together is what stops one wording being reused for
+        both.
+        """
+        config = _degrading_config(tmp_path, "cheapest_now")
+        payload = json.loads(_chain_text(capsys, config, "--json",
+                                         "--time-agnostic"))
+        reason = payload["chain_plan"]["strategy_degraded_reason"]
+        assert "no clock was injected" in reason
+
+        text = _chain_text(capsys, config, "--time-agnostic")
+        line = _line_starting(text, "strategy_degraded:")
+        assert reason in line
+        assert "cheapest_now" in line
+        # ... and it is not the sentence the misspelled tier gets.
+        assert "not a known fallback strategy" not in line
+
+    def test_a_plan_that_reports_no_reason_does_not_have_one_invented(
+        self, time_config_file, fake_caps, monkeypatch, capsys
+    ):
+        """An older planner reports the degrade without its cause.
+
+        Then the block says the degrade and stops. Filling the gap in with a
+        plausible cause is what made the old annotation wrong, so the absence is
+        stated instead.
+        """
+        self._plan_with(monkeypatch, strategy_degraded=True,
+                        strategy_declared="random")
+        text = _chain_text(capsys, time_config_file, "--seed", "1", "--at", _MON_PEAK)
+        line = _line_starting(text, "strategy_degraded:")
+        assert "declared random did not run" in line
+        assert "this plan reports no reason" in line
+
+
+# ---------------------------------------------------------------------------
+# The registry import guard — the CLI must still START without capabilities.py
+# ---------------------------------------------------------------------------
+
+
+class _NoCapabilities:
+    """A finder that makes ``router.capabilities`` unimportable."""
+
+    def find_spec(self, name, path=None, target=None):
+        if name == "router.capabilities":
+            raise ImportError("capabilities.py is absent from this install")
+        return None
+
+
+def _load_cli_without_capabilities():
+    """Execute router/cli.py's body with the capability registry unimportable.
+
+    A SECOND module object off the same file, not a reload: reloading
+    ``router.cli`` in place would hand every other test in the session a module
+    whose globals had been rebuilt behind it.
+    """
+    blocker = _NoCapabilities()
+    saved = sys.modules.pop("router.capabilities", None)
+    had_attr = hasattr(router, "capabilities")
+    if had_attr:
+        delattr(router, "capabilities")
+    sys.meta_path.insert(0, blocker)
+    try:
+        spec = importlib.util.spec_from_file_location("router._cli_no_caps",
+                                                     cli.__file__)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.meta_path.remove(blocker)
+        if saved is not None:
+            sys.modules["router.capabilities"] = saved
+            if had_attr:
+                setattr(router, "capabilities", saved)
+
+
+class TestCLIWithoutCapabilities:
+    def test_the_cli_still_starts_lints_and_declines_to_price(
+        self, config_file, capsys
+    ):
+        """The docstring's promise: the tool of last resort must not need the registry.
+
+        Provoked by really executing this module with ``router.capabilities``
+        unimportable — the other tests here assign ``_caps = None`` and so verify
+        the degraded RENDERING, which is a different failure: if the import guard
+        were wrong the CLI would not start at all, and ``lint`` — the fail-closed
+        write gate — could not run to fail closed.
+        """
+        before = cli._caps
+        module = _load_cli_without_capabilities()
+        assert module._caps is None
+        # No registry => no ceiling to name, and no price at any hour ...
+        assert module._context_ceiling() is None
+        assert module._price_multiplier("glm-5.3", {}, _FROZEN_NOW) is None
+        assert module._effective_price("glm-5.3", {}, _FROZEN_NOW) == \
+            ("unavailable", None)
+        # ... and the write gate still runs.
+        module.cmd_lint(_ns("lint", {"config": config_file}))
+        assert "router: config valid" in capsys.readouterr().out
+        # The probe left the real module and the real registry alone.
+        assert cli._caps is before
+        assert importlib.import_module("router.capabilities") is not None
 
 
 def _ns(command, overrides):

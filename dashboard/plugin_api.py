@@ -84,13 +84,21 @@ from fastapi import APIRouter, Body, HTTPException, Query
 # SECOND, independent copy of the router package under the top-level name, so this
 # read path saw different module-level state (its own ``rules._caps``,
 # ``_signals``, caches) than the write path did. No None fallback: hard requirements.
-try:
+#
+# EXACTLY ONE ARM IS REACHABLE PER LAYOUT, which is why the whole statement is
+# excluded rather than one half of it: measured in this repo ``dashboard`` is
+# top-level, so the relative form cannot resolve and only the fallback runs, while
+# under ``hermes_plugins.<slug>`` only the relative form does. The arm coverage
+# cannot see here is asserted as BEHAVIOUR instead — see
+# ``test_plugin_binds_the_sibling_router_under_a_package_layout``, which imports
+# this file under a package and pins that it binds the SIBLING router package.
+try:  # pragma: no cover - one arm per layout; see above
     from ..router import service as _service_mod
     from ..router.decision_log import DecisionLog, empty_chain_plan
     from ..router.rules import explain as rules_explain
     from ..router.service import RouterService
     from ..router.signals import extract
-except ImportError:  # pragma: no cover - flat layout, `router` top-level on sys.path
+except ImportError:
     from router import service as _service_mod
     from router.decision_log import DecisionLog, empty_chain_plan
     from router.rules import explain as rules_explain
@@ -655,7 +663,16 @@ async def api_blocklist():
 
 
 @router.get("/log")
-async def api_log(tail: int = Query(50, ge=1, le=500)):
+async def api_log(
+    # Annotated, with a real Python default, for exactly the reason spelled out on
+    # ``api_explain``'s ``at``: written as ``tail: int = Query(50, ...)`` the
+    # default an in-process caller receives is fastapi's ``Query`` sentinel rather
+    # than 50, and ``DecisionLog.tail`` then died on ``-Query(...)`` — a TypeError
+    # out of a read path, on the surface whose whole contract is that it never
+    # raises over the router's state. The bound stays declared for the HTTP layer.
+    tail: Annotated[int, Query(ge=1, le=500)] = 50,
+):
+    """The recorded decisions this plugin's own /explain appended, newest last."""
     return {"entries": _log.tail(tail)}
 
 

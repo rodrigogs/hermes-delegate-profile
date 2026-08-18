@@ -12,11 +12,14 @@ tests therefore live next to the extension contract they hold up.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import inspect
 import json
+import os
 import shutil
 import subprocess
-from datetime import datetime, timezone
+import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -198,10 +201,10 @@ def test_extension_css_only_dresses_the_nav_button():
 
 pytest.importorskip("fastapi")
 
-from fastapi import HTTPException  # noqa: E402
+from fastapi import FastAPI, HTTPException  # noqa: E402
 
 from dashboard import plugin_api  # noqa: E402
-from router.decision_log import empty_chain_plan  # noqa: E402
+from router.decision_log import DecisionLog, empty_chain_plan  # noqa: E402
 from router.service import RouterService  # noqa: E402
 
 
@@ -763,8 +766,666 @@ def test_plugin_explain_post_is_the_same_answer_through_a_wider_pipe(plugin_conf
         ({"task": _TRIVIAL_GOAL, "prompt_text": 17}, "prompt_text must be a string"),
         ({"at": _OFF_PEAK}, "task is required"),
         ("not an object", "must be a JSON object"),
+        # No body at all is "no task", not a TypeError: the parameter defaults to
+        # None and an absent task is the caller's error, refused like any other.
+        (None, "task is required"),
     ):
         with pytest.raises(HTTPException) as raised:
             asyncio.run(plugin_api.api_explain_post(body))
         assert raised.value.status_code == 400
         assert fragment in str(raised.value.detail)
+
+
+def test_plugin_explain_reads_a_datetime_at_exactly_as_its_iso_spelling(plugin_config):
+    """``at`` may arrive as a datetime, and must mean the same instant.
+
+    The HTTP layer only ever produces text, but this module's helpers are called
+    in process too (the sidecar and the CLI pass datetimes to the service), and a
+    surface where ``07:30Z`` and ``datetime(7, 30, tzinfo=utc)`` answer differently
+    is the same drift in miniature. A naive value is taken to already BE UTC —
+    the reading ``rules`` and ``capabilities`` use — rather than localised, because
+    localising it would silently move the hour every price window is keyed on.
+    """
+    plugin_config(_TIME_KEYED)
+
+    spelled = asyncio.run(plugin_api.api_explain(task=_TRIVIAL_TASK, at=_PEAK))
+    aware = asyncio.run(plugin_api.api_explain(
+        task=_TRIVIAL_TASK, at=datetime(2026, 8, 17, 7, 30, tzinfo=timezone.utc),
+    ))
+    naive = asyncio.run(plugin_api.api_explain(
+        task=_TRIVIAL_TASK, at=datetime(2026, 8, 17, 7, 30),
+    ))
+    assert aware == spelled and naive == spelled
+    # Another zone, the same instant: converted, not re-read as a local hour.
+    shifted = asyncio.run(plugin_api.api_explain(
+        task=_TRIVIAL_TASK,
+        at=datetime(2026, 8, 17, 9, 30, tzinfo=timezone(timedelta(hours=2))),
+    ))
+    assert shifted == spelled
+    assert spelled["evaluated_at"]["utc_hour"] == 7
+
+
+# ── Every read path, over the install an operator actually has ────────
+#
+# "No route may raise over the ROUTER's state" is this module's own contract, and
+# it is not a nicety: an operator opens this panel BECAUSE the config is broken,
+# and a panel that 500s tells them nothing about why. So every route is asserted
+# over the states a router.yaml is really found in, and the degraded shapes are
+# pinned — a console that receives {} where it expected a list renders "undefined"
+# and reads as a feature that is missing rather than a file that is wrong.
+
+_BROKEN_CONFIGS = {
+    "unparseable": "enabled: [unclosed\n",
+    "scalar_root": "just a string\n",
+    "sequence_root": "- glm-4.7\n- mimo-v2.5\n",
+    "empty": "",
+}
+
+# Every field name that would be a credential if this surface ever grew one.
+# "token" is deliberately absent: est_input_tokens and max_input_tokens are
+# routing material, and a substring rule that flagged them would have to be
+# weakened until it caught nothing.
+_CREDENTIAL_SHAPED = (
+    "api_key", "apikey", "secret", "password", "passwd", "credential",
+    "authorization", "bearer", "private_key", "access_token", "auth_token",
+)
+
+# A policy carrying real bans, so the two ban surfaces have something to agree on.
+_BANNED = {
+    **_TIME_KEYED,
+    "blocklist": {
+        "manual_ban": [
+            {"model": "glm-5.3", "provider": "zai", "reason": "quota exhausted"},
+            {"model": "gpt-5.5", "provider": "openai-codex", "reason": "billing"},
+        ],
+        "fallback_chain": ["glm-4.7", "mimo-v2.5"],
+        # Enabled so /blocklist really reaches for persisted breaker state, which
+        # is what gives "a read path never writes it" something to prove.
+        "auto_breaker": {"enabled": True, "threshold": 3, "cooldown_seconds": 900},
+    },
+}
+
+
+@pytest.fixture
+def hermetic_state(tmp_path, monkeypatch):
+    """Point breaker state at a throwaway HERMES_HOME and return its path.
+
+    /blocklist reads the REAL persisted breaker state, so without this the suite
+    reads (and a regression could write) the operator's own state file. The
+    returned path is also the assertion: a read path must never create it.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    return tmp_path / "hermes" / "delegate-profile" / "state" / "breaker-state.json"
+
+
+def _reads():
+    """Every route on this surface except /explain, which needs a task."""
+    return {
+        "status": plugin_api.api_status,
+        "rules": plugin_api.api_rules,
+        "blocklist": plugin_api.api_blocklist,
+        "log": plugin_api.api_log,
+        "lint": plugin_api.api_lint,
+    }
+
+
+@pytest.mark.parametrize("flavour", [*sorted(_BROKEN_CONFIGS), "missing"])
+def test_plugin_read_paths_answer_over_a_broken_install(
+    plugin_config, hermetic_state, monkeypatch, flavour
+):
+    """No route raises over the router's state, whatever state that is.
+
+    Four real ones plus an absent file: a half-typed flow sequence (the shape a
+    hand edit leaves behind), a scalar and a sequence root (both load fine and are
+    both the wrong shape, so a type guard rather than the parser has to catch
+    them), and an empty file — which is what a truncated atomic write leaves.
+    """
+    monkeypatch.setattr(plugin_api, "_log", plugin_api.DecisionLog())
+    path = plugin_config(_TIME_KEYED)
+    if flavour == "missing":
+        path.unlink()
+    else:
+        path.write_text(_BROKEN_CONFIGS[flavour], encoding="utf-8")
+
+    served = {name: asyncio.run(read()) for name, read in _reads().items()}
+
+    status, lint = served["status"], served["lint"]
+    assert status["valid"] is False
+    assert status["validation_errors"], "the operator must be told what is wrong"
+    # The panel's light and the write gate refuse for the SAME reason. They read
+    # one loader, so a divergence here would mean an operator staring at a green
+    # panel while every apply is refused.
+    assert lint["errors"] == status["validation_errors"]
+    assert lint["valid"] == status["valid"]
+    assert status["warnings"] == [], "a load failure is an error, never an advisory"
+    assert status["tiers"] == [] and status["banned_models"] == []
+    assert status["classifier_model"] == ""
+    assert served["rules"] == {
+        "rules": [], "default": {}, "tiers": {}, "fail_safe": {},
+    }
+    assert served["blocklist"] == RouterService(plugin_api._CONFIG_PATH).blocklist()
+    assert served["blocklist"]["manual_bans"] == []
+    assert served["log"] == {"entries": []}
+
+    # /explain deliberately still answers, and its plan keeps the shape the
+    # console branches on — including time_agnostic, which is what stops the
+    # browser pricing a clockless plan against its own hour.
+    explained = asyncio.run(plugin_api.api_explain(task=_TRIVIAL_TASK))
+    assert explained["output"] == {} and explained["matched_rule_id"] is None
+    plan = explained["chain_plan"]
+    for key in ("chain", "requirements", "rejected", "strategy", "time_agnostic"):
+        assert key in plan, f"the degraded plan must still carry {key}"
+    assert plan["chain"] == [], "no policy, nothing to attempt"
+    # The decision was still recorded, so replay does not go blind on a bad file.
+    assert asyncio.run(plugin_api.api_log(tail=1))["entries"][0]["task"] == (
+        _TRIVIAL_TASK
+    )
+    assert not hermetic_state.exists(), "a read path must not create breaker state"
+    # ...and a PREVIEW is not a route: the operator's replay trace must not fill
+    # up with dashboard polls. This plugin records to its own in-memory log only.
+    assert not Path(os.environ["HERMES_ROUTE_TRACE_FILE"]).exists()
+
+
+def _key_names_and_strings(payload):
+    """Every key name and every string value anywhere in a served payload."""
+    keys, values, stack = [], [], [payload]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            for key, value in item.items():
+                keys.append(str(key))
+                stack.append(value)
+        elif isinstance(item, list):
+            stack.extend(item)
+        elif isinstance(item, str):
+            values.append(item)
+    return keys, values
+
+
+def test_plugin_serves_no_credential(plugin_config, hermetic_state, monkeypatch):
+    """Only non-secret operational state, asserted rather than assumed.
+
+    This panel is reachable from a browser and its answers get pasted into
+    issues, so a token echoed once is leaked for good. Two halves: no field this
+    surface serves is credential-shaped, and nothing it serves came from the
+    process environment, which is where the provider keys actually live — the
+    router config holds none, and a read path that started resolving them would
+    be a leak no shape assertion would catch.
+    """
+    plugin_config(_BANNED)
+    monkeypatch.setenv("ZAI_API_KEY", "sk-canary-must-not-be-served")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-canary-must-not-be-served")
+
+    served = {name: asyncio.run(read()) for name, read in _reads().items()}
+    served["explain"] = asyncio.run(plugin_api.api_explain(
+        task=_TRIVIAL_TASK, at=_PEAK, prompt_text=_COMPOSED,
+    ))
+    # A traversal that reached nothing would pass every assertion below, so pin
+    # that it descends into the nested material first.
+    policy_keys, policy_values = _key_names_and_strings(served["rules"])
+    assert "time_cap" in policy_keys and "glm-4.7" in policy_values
+
+    for name, payload in served.items():
+        keys, values = _key_names_and_strings(payload)
+        assert keys, f"/{name} served nothing to check"
+        for key in keys:
+            assert not any(shape in key.lower() for shape in _CREDENTIAL_SHAPED), (
+                f"/{name} serves a credential-shaped field: {key}"
+            )
+        for value in values:
+            assert "sk-canary" not in value, f"/{name} echoed an environment secret"
+
+    # /status invents exactly the two legacy keys the bundled UI reads on top of
+    # the service's snapshot — nothing else, secret or otherwise, is added here.
+    service_status = RouterService(plugin_api._CONFIG_PATH).status()
+    assert set(served["status"]) - set(service_status) == {
+        "banned_models", "classifier_model",
+    }
+
+
+def test_plugin_blocklist_and_status_name_the_same_bans(plugin_config, hermetic_state):
+    """The chip list and the blocklist endpoint are one fact served twice.
+
+    ``banned_models`` is projected BY HAND in this module while ``manual_bans``
+    comes from ``Blocklist``; the bundled dashboard UI reads the first and the
+    console reads the second. Asserting either alone would let them drift into
+    disagreeing about which rails are banned — which is the whole recurring
+    defect, scoped to one file.
+    """
+    plugin_config(_BANNED)
+
+    status = asyncio.run(plugin_api.api_status())
+    blocked = asyncio.run(plugin_api.api_blocklist())
+
+    assert blocked == RouterService(plugin_api._CONFIG_PATH).blocklist()
+    assert status["banned_models"] == [ban["model"] for ban in blocked["manual_bans"]]
+    assert status["banned_models"] == ["glm-5.3", "gpt-5.5"]
+    assert blocked["fallback_chain"] == ["glm-4.7", "mimo-v2.5"]
+    # One config field, two projections on one surface.
+    assert status["breaker_enabled"] == blocked["breaker_enabled"] is True
+    assert blocked["breaker_cooldowns"] == [], "no persisted state, no cooldowns"
+    assert not hermetic_state.exists(), "reading the blocklist must not write state"
+
+
+def test_plugin_status_drops_a_ban_row_it_cannot_name(plugin_config):
+    """A ban row without a model is omitted, not rendered as a blank chip.
+
+    ``manual_ban`` is hand-edited YAML, so the rows really do arrive malformed.
+    The chip list can only show models, so a row that names none is dropped here
+    while /blocklist still reports it verbatim for the console to describe.
+    """
+    plugin_config({**_TIME_KEYED, "blocklist": {"manual_ban": [
+        "glm-5.3", {"reason": "someone forgot the model"}, {"model": "gpt-5.5"},
+    ]}})
+
+    status = asyncio.run(plugin_api.api_status())
+    assert status["banned_models"] == ["gpt-5.5"]
+    assert asyncio.run(plugin_api.api_blocklist())["manual_bans"] == [
+        "glm-5.3", {"reason": "someone forgot the model"}, {"model": "gpt-5.5"},
+    ]
+
+
+def test_plugin_log_serves_the_decision_explain_returned(plugin_config, monkeypatch):
+    """One decision, described twice: the response and the recorded entry.
+
+    /log is the surface that DISPLAYS what /explain ran, so a divergence here is
+    the recurring defect at its smallest scale. Two ways it could arise, both
+    asserted: ``DecisionLog.record`` rewrites any cause outside its closed set to
+    ``fail_safe_strong``, and the recorded attempted head comes off the PLAN while
+    ``output.model`` is the declared tier primary — a replay reading the wrong one
+    names a rail the planner never chose.
+    """
+    log = plugin_api.DecisionLog()
+    monkeypatch.setattr(plugin_api, "_log", log)
+    plugin_config(_TIME_KEYED)
+
+    explained = asyncio.run(plugin_api.api_explain(task=_TRIVIAL_TASK, at=_PEAK))
+    served = asyncio.run(plugin_api.api_log())
+
+    assert served["entries"] == log.tail(50)
+    entry = served["entries"][-1]
+    assert entry["cause"] == explained["cause"], "the log must not relabel the cause"
+    assert entry["rule_id"] == explained["matched_rule_id"]
+    assert entry["output"]["model"] == explained["output"]["model"]
+    head = explained["chain_plan"]["chain"][0]
+    assert entry["output"]["attempted_model"] == head["model"]
+    assert entry["output"]["attempted_provider"] == head["provider"]
+    assert entry["chain_plan"]["chain"] == explained["chain_plan"]["chain"]
+    assert entry["task"] == _TRIVIAL_TASK
+
+    # ``tail`` bounds the window for the browser AND has a real Python default.
+    # Spelled ``tail: int = Query(50, ...)`` the default an in-process caller
+    # received was fastapi's Query sentinel, and DecisionLog.tail died on
+    # ``-Query(...)`` — a TypeError out of the one surface that promises never to
+    # raise, invisible to the HTTP layer that substitutes the default itself. Both
+    # halves are asserted, because losing the bound to fix the default is no fix.
+    for _ in range(3):
+        asyncio.run(plugin_api.api_explain(task=_TRIVIAL_TASK, at=_PEAK))
+    assert len(asyncio.run(plugin_api.api_log(tail=2))["entries"]) == 2
+    assert asyncio.run(plugin_api.api_log()) == {"entries": log.tail(50)}
+    assert inspect.signature(plugin_api.api_log).parameters["tail"].default == 50
+    # The bound as the BROWSER is told it, read off the mounted schema rather than
+    # off the parameter object, so this passes only while the HTTP contract holds.
+    app = FastAPI()
+    app.include_router(plugin_api.router)
+    declared = next(
+        parameter
+        for parameter in app.openapi()["paths"]["/log"]["get"]["parameters"]
+        if parameter["name"] == "tail"
+    )
+    assert declared["required"] is False
+    assert declared["schema"]["default"] == 50
+    assert (declared["schema"]["minimum"], declared["schema"]["maximum"]) == (1, 500)
+
+
+# ── The router/ vintages this file can be deployed beside ─────────────
+#
+# dashboard/ and router/ are deployed by FILE COPY, so this module can land next
+# to a router/ that predates any helper it delegates to. That is why each
+# delegation has a local mirror — and why the mirrors have to be exercised: an
+# unexercised mirror is a second implementation of the composition that produced
+# the missing clock in the first place, and nobody would know if it drifted.
+
+# The helpers this surface delegates to RouterService for.
+_DELEGATED = (
+    "_resolve_prompt", "_explain_features", "_explain_decision",
+    "_chain_plan_of", "_evaluated_at", "_preview_note",
+)
+
+# task, at, prompt_text — one input sized from the goal and one from a composed
+# prompt, so both arms of the mirrored prompt resolution are compared.
+_MIRROR_INPUTS = (
+    (_TRIVIAL_TASK, _PEAK, None),
+    (_TRIVIAL_GOAL, _PEAK, _COMPOSED),
+)
+
+
+@pytest.mark.parametrize("service_clock", [True, False],
+                         ids=["with_clock_helper", "without_clock_helper"])
+def test_plugin_mirrors_agree_with_the_helpers_they_mirror(
+    plugin_config, monkeypatch, service_clock
+):
+    """The local mirrors must answer exactly what the delegates answer.
+
+    "Behaviourally equivalent" is the claim the mirrors are documented with, and
+    it is the only thing that makes them safe: an operator on an older router/
+    must not be shown a different plan from the one this surface shows on a
+    current one. Asserted against the delegated payload rather than against
+    literals, so the mirror cannot pass by agreeing with a copy of itself.
+
+    The one deliberate difference is the preview NOTE, which degrades to the two
+    keys this route resolved itself — an absent ``sized_from`` renders as
+    "undefined" and reads as a preview that measured nothing at all.
+    """
+    plugin_config(_TIME_KEYED)
+    delegated = [
+        asyncio.run(plugin_api.api_explain(task=task, at=at, prompt_text=prompt))
+        for task, at, prompt in _MIRROR_INPUTS
+    ]
+
+    for name in _DELEGATED:
+        monkeypatch.delattr(RouterService, name)
+    if not service_clock:
+        # A router/ predating the time layer entirely: the clock features are the
+        # EDGE's job, so their absence downstream may not make this endpoint
+        # time-blind again.
+        monkeypatch.delattr(plugin_api._service_mod, "_clock_features")
+
+    for (task, at, prompt), expected in zip(_MIRROR_INPUTS, delegated):
+        mirrored = asyncio.run(
+            plugin_api.api_explain(task=task, at=at, prompt_text=prompt)
+        )
+        assert mirrored["preview"] == {
+            "sized_from": expected["preview"]["sized_from"],
+            "prompt_chars": expected["preview"]["prompt_chars"],
+        }
+        for key, value in expected.items():
+            if key == "preview":
+                continue
+            assert mirrored[key] == value, f"the mirror disagrees on {key}"
+        # Two time-blind answers would also "agree", so pin that the clock still
+        # reached the planner through the mirrored composition.
+        assert mirrored["chain_plan"]["time_agnostic"] is False
+        assert mirrored["evaluated_at"]["utc_hour"] == 7
+
+
+def test_plugin_mirror_refuses_an_unusable_prompt_in_the_same_words(plugin_config):
+    """Both vintages refuse a non-string prompt identically.
+
+    The refusal is the service's when the service has one, and the mirror's when
+    it does not. A mirror that coerced instead would size the turn from ``str(17)``
+    and answer confidently about a plan that never existed.
+    """
+    plugin_config(_CONTEXT_KEYED)
+    with pytest.raises(HTTPException) as delegated:
+        asyncio.run(plugin_api.api_explain(task=_TRIVIAL_GOAL, prompt_text=17))
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.delattr(RouterService, "_resolve_prompt")
+        with pytest.raises(HTTPException) as mirrored:
+            asyncio.run(plugin_api.api_explain(task=_TRIVIAL_GOAL, prompt_text=17))
+
+    assert mirrored.value.status_code == delegated.value.status_code == 400
+    assert str(mirrored.value.detail) == str(delegated.value.detail)
+    assert "prompt_text must be a string" in str(mirrored.value.detail)
+
+
+def test_plugin_reports_that_the_clock_did_not_land_instead_of_claiming_an_hour(
+    plugin_config, monkeypatch
+):
+    """Beside a rules.py that cannot take a clock, the two halves must agree.
+
+    ``evaluated_at.time_aware`` is read back OFF THE PLAN, so "here is the hour I
+    asked about, and no, it was not used" is a pair that cannot come apart. This
+    is the honest form of the exact report the missing clock produced falsely: a
+    ``cheapest_now`` tier degraded to declared order because prices could not be
+    compared, which is a lie when a clock WAS injected and the truth when it was
+    not.
+    """
+    plugin_config(_TIME_KEYED)
+    for name in _DELEGATED:
+        monkeypatch.delattr(RouterService, name)
+    monkeypatch.setattr(plugin_api, "_EXPLAIN_ACCEPTS_RNG", False)
+    monkeypatch.setattr(plugin_api, "_EXPLAIN_ACCEPTS_WHEN", False)
+
+    result = asyncio.run(plugin_api.api_explain(task=_TRIVIAL_TASK, at=_PEAK))
+    plan, evaluated = result["chain_plan"], result["evaluated_at"]
+
+    assert plan["time_agnostic"] is True
+    assert evaluated["time_aware"] is False, "the plan saw no clock; say so"
+    assert plan["multipliers"] == {}, "no hour, no multipliers to report"
+    assert plan["strategy_declared"] == "cheapest_now"
+    assert plan["strategy"] == "sequential" and plan["strategy_degraded"] is True
+    assert "no clock" in plan["strategy_degraded_reason"]
+    # The hour asked about is still named — an audit record without it cannot be
+    # told apart from one that answered a different question.
+    assert (evaluated["at"], evaluated["utc_hour"]) == (
+        "2026-08-17T07:00:00+00:00", 7
+    )
+    # A time-keyed RULE is a feature-vector question, not a planner one, so it
+    # still fires: the vector is built at the edge either way.
+    hard = asyncio.run(plugin_api.api_explain(task=_HARD_TASK, at=_PEAK))
+    assert hard["matched_rule_id"] == "defer-heavy-work-off-peak"
+    assert hard["evaluated_at"]["time_aware"] is False
+
+
+def test_plugin_bypasses_a_planner_helper_it_cannot_call_correctly(
+    plugin_config, monkeypatch
+):
+    """A helper whose parameters this surface cannot satisfy is not called at all.
+
+    Both halves of the resolution are the point. A pre-clock helper (no ``when``)
+    must be BYPASSED — calling it would silently drop the clock, which is the
+    original defect — while a helper that simply predates the ``features``
+    argument must still be called, by keyword, against what it declares: the
+    helper has grown a parameter once already, and a positional call would turn
+    the next such addition into a TypeError inside a read path.
+    """
+    plugin_config(_TIME_KEYED)
+    real = RouterService._explain_decision
+    delegated = asyncio.run(plugin_api.api_explain(task=_TRIVIAL_TASK, at=_PEAK))
+
+    pre_clock_calls = []
+
+    def pre_clock(task, features, config):
+        # Never reached; recorded so the assertion below can prove that.
+        pre_clock_calls.append(task)
+        return {}
+
+    monkeypatch.setattr(RouterService, "_explain_decision", staticmethod(pre_clock))
+    assert asyncio.run(
+        plugin_api.api_explain(task=_TRIVIAL_TASK, at=_PEAK)
+    ) == delegated
+    assert pre_clock_calls == [], "a clockless helper must not plan for this surface"
+
+    # Keyword-ONLY on purpose: a positional call would raise TypeError here, which
+    # is what pins that the plugin calls this helper against its declared names.
+    pre_features_calls = []
+
+    def pre_features(*, task, config, when):
+        pre_features_calls.append(task)
+        return real(task=task, config=config, when=when,
+                    features=RouterService._explain_features(task, when))
+
+    monkeypatch.setattr(RouterService, "_explain_decision",
+                        staticmethod(pre_features))
+    assert asyncio.run(
+        plugin_api.api_explain(task=_TRIVIAL_TASK, at=_PEAK)
+    ) == delegated
+    assert pre_features_calls == [_TRIVIAL_TASK]
+
+
+@pytest.mark.parametrize("helper, unusable", [
+    ("_resolve_prompt", "not a (text, sized_from) pair"),
+    ("_explain_features", ["not", "a", "feature", "vector"]),
+    ("_chain_plan_of", None),
+    ("_evaluated_at", "not a mapping"),
+])
+def test_plugin_ignores_a_helper_answering_in_a_shape_it_cannot_use(
+    plugin_config, monkeypatch, helper, unusable
+):
+    """An unusable answer degrades to the mirror, not to a broken panel.
+
+    Every delegation is type-guarded because the helper on the other side belongs
+    to a separately deployed file. The guard is only worth having if what it
+    degrades TO is the same answer, so that is what is asserted.
+    """
+    plugin_config(_TIME_KEYED)
+    delegated = asyncio.run(plugin_api.api_explain(
+        task=_TRIVIAL_GOAL, at=_PEAK, prompt_text=_COMPOSED,
+    ))
+
+    if helper == "_resolve_prompt":  # an instance method, not a static one
+        monkeypatch.setattr(
+            RouterService, helper, lambda self, task, prompt_text: unusable
+        )
+    else:
+        monkeypatch.setattr(RouterService, helper,
+                            staticmethod(lambda *args: unusable))
+
+    assert asyncio.run(plugin_api.api_explain(
+        task=_TRIVIAL_GOAL, at=_PEAK, prompt_text=_COMPOSED,
+    )) == delegated
+
+
+def test_plugin_injects_the_clock_even_when_the_service_helper_is_unusable(
+    plugin_config, monkeypatch
+):
+    """The clock features are the edge's contribution and cannot be lost downstream.
+
+    ``signals.extract()`` is pure, so ``utc_hour`` exists in the vector only
+    because this edge puts it there. A service whose ``_clock_features`` answers in
+    a shape this surface cannot use does not get to make the endpoint time-blind
+    again — that is precisely the state a time-keyed rule was inert in.
+    """
+    plugin_config(_TIME_KEYED)
+    delegated = asyncio.run(plugin_api.api_explain(task=_HARD_TASK, at=_PEAK))
+
+    monkeypatch.delattr(RouterService, "_explain_features")
+    monkeypatch.setattr(plugin_api._service_mod, "_clock_features",
+                        lambda when: "not a mapping")
+
+    result = asyncio.run(plugin_api.api_explain(task=_HARD_TASK, at=_PEAK))
+    assert result == delegated
+    assert result["matched_rule_id"] == "defer-heavy-work-off-peak"
+    assert result["evaluated_at"]["utc_hour"] == 7
+
+
+def test_plugin_preview_note_always_names_the_text_it_measured(
+    plugin_config, monkeypatch
+):
+    """Whatever the note helper is, the preview says which text produced the plan.
+
+    A note that predates the two size keys keeps its own material and gains
+    them; a note this surface cannot use at all degrades to exactly the two keys
+    this route resolved itself. The failure both cases exist to prevent is the
+    same: a preview sized from the goal line is byte-shaped like one sized from
+    the real turn, so an unlabelled note answers a different question invisibly.
+    """
+    plugin_config(_CONTEXT_KEYED)
+
+    monkeypatch.setattr(RouterService, "_preview_note", staticmethod(
+        lambda decision, plan: {"seed": 0, "reproducible_within": "utc_hour"}
+    ))
+    older = asyncio.run(plugin_api.api_explain(
+        task=_TRIVIAL_GOAL, at=_PEAK, prompt_text=_COMPOSED,
+    ))
+    assert older["preview"] == {
+        "seed": 0,
+        "reproducible_within": "utc_hour",
+        "sized_from": "prompt_text",
+        "prompt_chars": len(_COMPOSED),
+    }
+
+    monkeypatch.setattr(RouterService, "_preview_note",
+                        staticmethod(lambda *args: "not a note"))
+    unusable = asyncio.run(plugin_api.api_explain(
+        task=_TRIVIAL_GOAL, at=_PEAK, prompt_text=_COMPOSED,
+    ))
+    assert unusable["preview"] == {
+        "sized_from": "prompt_text", "prompt_chars": len(_COMPOSED),
+    }
+    # The rest of the answer is the delegated one either way.
+    assert older["matched_rule_id"] == unusable["matched_rule_id"] == (
+        "huge-context-read"
+    )
+
+
+# ── The two module layouts this file is deployed into ─────────────────
+
+
+def test_plugin_binds_the_sibling_router_under_a_package_layout(tmp_path, monkeypatch):
+    """Imported as a package, the plugin must bind its SIBLING router modules.
+
+    Resolving the absolute ``router`` name first did technically work under
+    Hermes's ``hermes_plugins.<slug>`` shape — the sys.path insertion at the top
+    of the module makes the plugin root importable — but it bound a SECOND,
+    independent copy of the router package under the top-level name, so this read
+    path saw different module-level state (its own rule caches, its own breaker)
+    than the write path did. Two copies of one router is the same defect as two
+    views of one decision, so the binding is asserted instead of assumed.
+
+    The insertion itself is asserted here too, in the layout that needs it: the
+    plugin root has to become importable EXACTLY once, since a duplicate sys.path
+    entry is another way a second copy appears.
+    """
+    package = tmp_path / "hermes_plugins_probe"
+    (package / "dashboard").mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "dashboard" / "__init__.py").write_text("", encoding="utf-8")
+    # Symlinked, not copied: the file under test must be the one that ships.
+    (package / "dashboard" / "plugin_api.py").symlink_to(
+        ROOT / "dashboard" / "plugin_api.py"
+    )
+    (package / "router").symlink_to(ROOT / "router", target_is_directory=True)
+
+    plugin_dir = str(plugin_api._PLUGIN_DIR)
+    monkeypatch.setattr(
+        sys, "path", [entry for entry in sys.path if entry != plugin_dir]
+    )
+    sys.path.insert(0, str(tmp_path))
+    try:
+        packaged = importlib.import_module(
+            "hermes_plugins_probe.dashboard.plugin_api"
+        )
+        sibling = importlib.import_module("hermes_plugins_probe.router.service")
+        assert packaged.RouterService is sibling.RouterService
+        assert packaged.RouterService is not RouterService, (
+            "the top-level copy is a different module with its own state"
+        )
+        assert sys.path.count(plugin_dir) == 1, (
+            "the plugin root must become importable exactly once"
+        )
+    finally:
+        for name in [n for n in sys.modules if n.startswith("hermes_plugins_probe")]:
+            del sys.modules[name]
+
+
+def test_plugin_makes_its_own_plugin_root_importable_in_the_flat_layout(monkeypatch):
+    """In the shipped flat layout the absolute import needs that sys.path entry.
+
+    ``dashboard`` is itself top-level there, so ``..router`` is beyond the
+    top-level package and ``router`` is the only name that can resolve — which it
+    can only do while the plugin root is on sys.path. Asserted by importing this
+    module with the entry REMOVED, which is how it arrives in the dashboard's
+    plugin loader: it must put the entry back, exactly once (a duplicate entry is
+    one of the ways a second copy of the router package appears), and still bind
+    the very modules the write path uses rather than fresh ones.
+
+    Reloaded rather than imported under a second name on purpose: a second name
+    would BE the duplicate-copy defect this test exists to rule out.
+    """
+    plugin_dir = str(plugin_api._PLUGIN_DIR)
+    monkeypatch.setattr(
+        sys, "path", [entry for entry in sys.path if entry != plugin_dir]
+    )
+
+    reloaded = importlib.reload(plugin_api)
+
+    assert sys.path.count(plugin_dir) == 1, "the plugin root must be reachable again"
+    assert reloaded is plugin_api
+    assert reloaded.RouterService is RouterService, (
+        "one router package for both paths, not a second top-level copy"
+    )
+    assert reloaded.DecisionLog is DecisionLog
+    assert reloaded._CONFIG_PATH == reloaded._PLUGIN_DIR / "router.yaml"

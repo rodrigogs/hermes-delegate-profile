@@ -1061,3 +1061,124 @@ def test_a_failing_fallback_hop_binds_the_breaker_every_surface_reads(
         assert panel[healthy]["state"] == "alive", (
             "only the rail that actually ran may be marked"
         )
+
+
+# ---------------------------------------------------------------------------
+# The policy scan that fills in half of the breaker key
+# ---------------------------------------------------------------------------
+#
+# ``_provider_of_declared_model`` is the LAST RESORT half of that key: it runs
+# only when the caller could not name the rail it attempted. router.yaml is the
+# operator's live file and is edited by hand, so the scan is written to walk PAST
+# a half-edited row rather than raise or stop. Every guard below is asserted
+# through the same pair the breaker itself turns on — the key
+# ``_record_breaker_outcome`` WRITES and the key the routing path READS — because
+# a scan that resolves the wrong rail files the outcome in a cell nothing
+# consults, which is indistinguishable from not recording it at all.
+
+# One tier table with every malformed shape the scan has to survive, and the real
+# declaration for ``fallback-only-hop`` behind all of them. T3's fallback list is
+# the interesting one: it holds a non-mapping entry, a hop with no model and a hop
+# for a DIFFERENT model, so the scan has to run that list to its end and then
+# carry on to the next tier instead of concluding "not declared".
+_HALF_EDITED_POLICY = {
+    "enabled": True,
+    "blocklist": {"auto_breaker": {"enabled": True, "threshold": 5,
+                                   "window_seconds": 600,
+                                   "base_cooldown_seconds": 60,
+                                   "max_cooldown_seconds": 900,
+                                   "backoff_multiplier": 2.0}},
+    "tiers": {
+        # A tier that is not a mapping at all (a stray list item under `tiers:`).
+        "T1": ["glm-4.7"],
+        # A tier mid-edit: no model yet, and `fallback:` still a scalar.
+        "T2": {"provider": "zai", "fallback": "gpt-5.6-luna"},
+        # A well-formed tier that simply does not declare the elo being scanned.
+        "T3": {"model": "glm-5.3", "provider": "zai", "fallback": [
+            "deepseek-v4-flash",
+            {"provider": "deepseek"},
+            {"model": "deepseek-v4-flash", "provider": "deepseek"},
+        ]},
+        # ...and the row that does declare it, reachable only as a fallback hop.
+        "T4": {"model": "gpt-5.5", "provider": "openai-codex", "fallback": [
+            {"model": "fallback-only-hop", "provider": "xiaomi"},
+        ]},
+    },
+}
+
+
+def test_a_half_edited_tier_table_still_resolves_a_fallback_only_rail(
+    monkeypatch, tmp_path
+):
+    """A malformed row must be walked past, not treated as the end of the scan.
+
+    The elo that ran is declared on ONE rail, in the last tier, as a fallback
+    hop — behind a non-mapping tier, a tier whose `fallback:` is a scalar, and a
+    fallback list that names other models. A scan that stopped or raised at any of
+    those would key this outcome under a bare model, and both assertions below
+    read the pair that would then be empty.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(_dp, "_load_router_config",
+                        lambda: copy.deepcopy(_HALF_EDITED_POLICY))
+
+    _dp._record_breaker_outcome("child", "fallback-only-hop", "quota_exhausted")
+
+    from router.blocklist import Blocklist
+    blocklist = Blocklist(copy.deepcopy(_HALF_EDITED_POLICY))
+    # The RUNNING path and the DISPLAY, for the one outcome just recorded.
+    assert blocklist.is_blocked("fallback-only-hop", "xiaomi") is True, (
+        "the scan lost the rail, so the breaker bound on a key routing never asks"
+    )
+    assert [entry["model_key"] for entry in blocklist.breaker_status()] == [
+        "fallback-only-hop@xiaomi"
+    ]
+    # Non-vacuity: the bare-model key is the one a stopped scan would have
+    # written, and it sees nothing — so the assertion above is about the rail.
+    assert blocklist.is_blocked("fallback-only-hop", "") is False
+
+
+def test_a_policy_with_no_tier_table_records_coarsely_rather_than_not_at_all(
+    monkeypatch, tmp_path
+):
+    """``tiers:`` written as a LIST leaves no rail to derive, and that is not fatal.
+
+    The docstring's stated last resort: "" (a breaker keyed by bare model) rather
+    than a dropped outcome, since a breaker that records nothing is strictly worse
+    than one keyed coarsely. Asserted as the same write/read pair — the coarse key
+    is the one both sides then use, so the record is still legible.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    policy = copy.deepcopy(_HALF_EDITED_POLICY)
+    policy["tiers"] = ["T1", "T2", "T3", "T4"]
+    monkeypatch.setattr(_dp, "_load_router_config", lambda: copy.deepcopy(policy))
+
+    assert _dp._provider_of_declared_model("glm-5.3", policy) == ""
+    _dp._record_breaker_outcome("child", "glm-5.3", "quota_exhausted")
+
+    from router.blocklist import Blocklist
+    blocklist = Blocklist(copy.deepcopy(policy))
+    assert blocklist.is_blocked("glm-5.3", "") is True, (
+        "the outcome was dropped, not recorded coarsely"
+    )
+    assert [entry["model_key"] for entry in blocklist.breaker_status()] == ["glm-5.3"]
+
+
+def test_a_router_yaml_whose_top_level_is_a_list_derives_no_rail(tmp_path):
+    """The whole config, not just ``tiers``, can arrive as a non-mapping.
+
+    ``_load_router_config`` ends in ``yaml.safe_load(...) or {}``, and a list is
+    truthy — so a policy file mis-indented one level to the left reaches the scan
+    as a list and never becomes ``{}``. Provoked with such a file rather than by
+    handing the function a literal, because the ``or {}`` is exactly the step that
+    looks like it already ruled this out.
+
+    Only the scan is asserted: ``Blocklist(config)`` cannot be built from a list
+    at all, so this shape has no breaker to record into either way.
+    """
+    corrupt = tmp_path / "router.yaml"
+    corrupt.write_text("- model: glm-5.3\n  provider: zai\n", encoding="utf-8")
+    config = yaml.safe_load(corrupt.read_text(encoding="utf-8")) or {}
+    assert isinstance(config, list), "the premise: a list survives the `or {}`"
+
+    assert _dp._provider_of_declared_model("glm-5.3", config) == ""

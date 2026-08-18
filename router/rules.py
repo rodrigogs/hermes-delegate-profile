@@ -892,7 +892,11 @@ def _tier_chain(tier: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _lint_tier_shapes(tiers_cfg: Dict[str, Any]) -> List[str]:
     """Hard-error checks for the per-tier routing knobs."""
     errors: List[str] = []
-    if not isinstance(tiers_cfg, dict):
+    # Unreachable from lint(), which reports a non-mapping `tiers` itself and then
+    # normalises it to {} before calling here. Kept because `tiers_cfg: Any` is
+    # what a caller may hand a private helper, and left uncovered on purpose: a
+    # test for it would assert that the guard exists, not any behaviour it holds.
+    if not isinstance(tiers_cfg, dict):  # pragma: no cover - lint() normalises first
         return errors
 
     strategies = _fallback_strategies()
@@ -953,6 +957,31 @@ def _lint_tier_shapes(tiers_cfg: Dict[str, Any]) -> List[str]:
                     # diagnostic it has, not the first. Guarded because a non-dict
                     # hop was already reported above and `'k' in 7` raises.
                     if isinstance(hop, dict):
+                        # IDENTITY, held to the tier's own standard — the same
+                        # symmetry _lint_billing_mode exists for. A hop's model and
+                        # provider were checked for TRUTHINESS only while the
+                        # tier's own must be a non-empty string, so `model: 4.7`
+                        # (what YAML makes of an unquoted glm-4.7) was refused on a
+                        # tier and passed the gate on a hop. It is not an inert
+                        # typo: _build_chain keeps the hop, the capability filter
+                        # reads its id as "" and lets it through on the FAIL-OPEN
+                        # unknown path, and ``unknown`` cannot even name it — that
+                        # list collects string ids — so the one flag whose job is
+                        # to make a fail-open loud stays silent and the router
+                        # attempts a rail whose model id is a float. This gate is
+                        # the only place it is visible. A missing or blank value is
+                        # already reported above, so only a truthy-but-unusable one
+                        # is named here; reporting both would be two errors for one
+                        # defect.
+                        for key in ("model", "provider"):
+                            value = hop.get(key)
+                            if value and (
+                                not isinstance(value, str) or not value.strip()
+                            ):
+                                errors.append(
+                                    f"tier '{tn}': fallback[{i}]: '{key}' must be "
+                                    f"a non-empty string"
+                                )
                         errors.extend(
                             _lint_billing_mode(f"tier '{tn}': fallback[{i}]", hop)
                         )
@@ -1251,7 +1280,10 @@ def _lint_clock_bounds(rid: str, field: str, condition: Any) -> List[str]:
         limit, label = _UTC_WEEKDAY_MAX, "0..6"
     else:
         return []
-    if not isinstance(condition, dict):
+    # Unreachable from lint(), which reports a non-mapping condition as "must be an
+    # op map" and `continue`s before it reaches this check. Same treatment as the
+    # guard in _lint_tier_shapes: the caller already normalised.
+    if not isinstance(condition, dict):  # pragma: no cover - lint() reports it first
         return []
 
     for op, value in condition.items():
@@ -1516,7 +1548,12 @@ def _clock_parts(when: Any) -> Optional[Tuple[int, int]]:
         if not callable(stamp) or not callable(weekday_of):
             return None
         if getattr(when, "hour", None) is None:
-            return None  # a date has a weekday and no hour: not a clock
+            # A stdlib ``date`` never gets this far — it has no ``utctimetuple``
+            # at all — so what this catches is a DUCK-TYPED clock: an object a
+            # caller assembled (a trace decoder, a sibling deployment's shim)
+            # that answers the two calls above and still cannot name an hour.
+            # No hour, no plan hour: "no clock", never hour 0.
+            return None
         parts = stamp()
         hour = int(parts.tm_hour)
         weekday = int(parts.tm_wday)
@@ -1580,6 +1617,17 @@ def _all_clauses_match(
         return False
 
     for field, condition in when.items():
+        # A clause lint REFUSES must not raise through the request path. `when:
+        # {has_code: true}` — the op map an operator forgets to write — reaches
+        # `condition.items()` as a bool and raised AttributeError out of match(),
+        # i.e. lint said "must be an op map" while the engine said 500. A
+        # non-mapping condition names no operator, so it holds for nothing and the
+        # row is dead: exactly what lint reports it as. Guessing an op instead
+        # (reading the bare value as `eq`) is the one answer worse than both,
+        # because it would route on a row the write gate calls invalid.
+        if not isinstance(condition, dict):
+            return False
+
         # Special case: blocked_model injected boolean (never in features)
         if field == "blocked_model":
             # Evaluate the AUTHOR'S operators, not a hardcoded eq. Re-reading the
@@ -1731,6 +1779,12 @@ def _matching_clauses(
     """
     matched: Dict[str, Any] = {}
     for field, condition in when.items():
+        # Same guard as _all_clauses_match, and it has to be the same VERDICT: a
+        # clause the engine cannot evaluate must never come back as a chip that
+        # explains a match. Skipped rather than returned on, because this function
+        # reports per clause — and a rule with such a clause never matched anyway.
+        if not isinstance(condition, dict):
+            continue
         if field == "blocked_model":
             for op, target in condition.items():
                 if _eval_clause(op, blocked_model, target):
@@ -1865,8 +1919,12 @@ def _is_shadowed(
     with zero hits. Hence: two disjoint context thresholds shadow nothing and must
     ship, while a genuinely contained interval is still reported.
     """
+    # Unreachable from lint(), whose shadow loop isinstance-guards both `when`
+    # mappings (a non-mapping `when` is already a reported error) before calling.
+    # Kept for the direct callers in the test suite and for the conservative
+    # contract this whole function states: undecidable is False, never True.
     if not isinstance(earlier_when, dict) or not isinstance(later_when, dict):
-        return False
+        return False  # pragma: no cover - lint() isinstance-guards both first
     if not earlier_when or not later_when:
         return False
     if not set(earlier_when).issubset(set(later_when)):
@@ -1956,7 +2014,11 @@ def _bounds_of(condition: Dict[str, Any]) -> Optional[Tuple[Any, Any]]:
         elif op in ("lt", "lte"):
             upper = _tighter_upper(upper, (value, op == "lt"))
         else:
-            return None
+            # Unreachable from _condition_contains, the only caller: it reaches
+            # _interval_contains only when BOTH conditions' op sets are subsets of
+            # _COMPARISON_OPS, which is exactly the two arms above. Kept so the
+            # function is total for a condition it is handed directly.
+            return None  # pragma: no cover - caller gates on _COMPARISON_OPS
     return lower, upper
 
 
