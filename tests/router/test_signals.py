@@ -9,8 +9,11 @@ from router.signals import (
     EXTRACTED_FEATURE_NAMES,
     INJECTED_FEATURE_NAMES,
     KNOWN_FEATURE_NAMES,
+    _ATTACHMENT_MARKERS,
     _QUESTION_MARKERS,
     _TOOL_MARKERS,
+    _VISION_AMBIGUOUS_NOUNS,
+    _VISION_MARKERS,
     _estimate_input_tokens,
     extract,
 )
@@ -263,9 +266,50 @@ class TestVisionInputVersusVisualNoun:
             "in this file the diagram is generated",
             "plot these points on a log axis",
             "chart the rollout week by week",
+            "let's simplify this design and re-run the tests",
+            "what does this design imply for the schema",
+            "check out the design system tokens in tokens.css",
         ],
     )
     def test_visual_noun_without_a_cue_is_not_vision(self, task):
+        assert extract(task)["needs_vision"] is False
+
+    @pytest.mark.parametrize(
+        "deictic_only,supplied",
+        [
+            ("let's simplify this design and re-run the tests",
+             "look at this design and say what is off"),
+            ("what does this design imply for the schema",
+             "the design attached shows the wrong spacing"),
+            ("re-run this plot against the new sample",
+             "the plot I pasted has the axes swapped"),
+        ],
+    )
+    def test_design_and_plot_need_supply_evidence_not_a_deictic(
+        self, deictic_only, supplied
+    ):
+        # "this design" is one of the commonest phrases in a coding turn, so
+        # unlike chart/diagram/image these two are not promoted by a bare
+        # deictic — only by an attachment, look-at or trailing cue. Both
+        # directions asserted together: weakening the noun list would break the
+        # second half, and re-adding it to the deictic list would break the
+        # first.
+        assert extract(deictic_only)["needs_vision"] is False
+        assert extract(supplied)["needs_vision"] is True
+
+    @pytest.mark.parametrize(
+        "task",
+        [
+            "check out the design system tokens in tokens.css",
+            "read the design doc before the meeting",
+            "look at the design pattern used in the handler",
+            "check out the docker image tag",
+        ],
+    )
+    def test_a_cue_beside_a_non_visual_compound_is_not_vision(self, task):
+        # A design system is a token set and a docker image is a tarball: the
+        # compound names something that is not an image at all, so a cue landing
+        # beside it must not promote it however look-at the phrasing is.
         assert extract(task)["needs_vision"] is False
 
     @pytest.mark.parametrize(
@@ -303,6 +347,128 @@ class TestVisionInputVersusVisualNoun:
         # a vision turn.
         assert extract("look at this traceback")["needs_vision"] is False
         assert extract("look at this function signature")["needs_vision"] is False
+
+
+class TestVisionMarkersMatchWholeWords:
+    """A word that CONTAINS a marker is not a marker.
+
+    The markers used to be matched by containment, so "png" fired inside
+    "libpng-dev" and a makefile turn was routed as visual input: the vision
+    rule sent it to T2, the capability filter dropped both text-capable hops as
+    `no_vision`, and the turn came back on one subscription rail with no
+    fallback left.
+    """
+
+    @pytest.mark.parametrize(
+        "task",
+        [
+            "the build fails on libpng-dev, fix the makefile",
+            "webpack the bundle and check the size budget",
+            "shell out to jpegoptim in the asset step",
+            "the imagemagick pipeline is the slow part",
+            "pngcrush runs on every commit",
+        ],
+    )
+    def test_marker_embedded_in_a_word_is_not_vision(self, task):
+        assert extract(task)["needs_vision"] is False
+
+    @pytest.mark.parametrize(
+        "task",
+        [
+            "Compare the two png exports",
+            "the screenshot.png is stale",
+            "attach the diff and the webp asset",
+            "the jpg is blurry, the jpeg less so",
+        ],
+    )
+    def test_marker_as_a_whole_word_is_still_vision(self, task):
+        assert extract(task)["needs_vision"] is True
+
+
+class TestVisionAgreesWithTheAttachmentTable:
+    """The path that RUNS the decision and the surface that DISPLAYS it agree.
+
+    `needs_vision` is what the capability filter runs on; `attachment_kinds` is
+    what the console shows the operator. For the tokens both tables share, the
+    two read the same image name out of the same turn through their own marker
+    set — so a turn that names one must set both, and a word that merely
+    contains one must set neither. Asserting the pair rather than either side is
+    the point: "libpng-dev" was `needs_vision` True *and* `['image']`, and
+    fixing one table alone would have left the two disagreeing on every
+    extension.
+    """
+
+    SHARED_TOKENS = sorted(_VISION_MARKERS & _ATTACHMENT_MARKERS["image"])
+
+    def test_the_two_tables_do_share_tokens(self):
+        # If this ever empties the agreement below is vacuously true.
+        assert self.SHARED_TOKENS == ["jpeg", "jpg", "png", "screenshot", "webp"]
+
+    @pytest.mark.parametrize("token", SHARED_TOKENS)
+    def test_whole_word_token_sets_both_sides(self, token):
+        fv = extract(f"Compare the two {token} exports")
+        assert fv["needs_vision"] is True
+        assert "image" in fv["attachment_kinds"]
+        assert fv["needs_vision"] == ("image" in fv["attachment_kinds"])
+
+    @pytest.mark.parametrize("token", SHARED_TOKENS)
+    def test_embedded_token_sets_neither_side(self, token):
+        fv = extract(f"the build fails on lib{token}-dev, fix the makefile")
+        assert fv["needs_vision"] is False
+        assert "image" not in fv["attachment_kinds"]
+        assert fv["needs_vision"] == ("image" in fv["attachment_kinds"])
+
+    @pytest.mark.parametrize(
+        "task",
+        [
+            "the build fails on libpng-dev, fix the makefile",
+            "webpack the bundle and check the size budget",
+            "the imagemagick pipeline is the slow part",
+            "Compare the two png exports",
+            "the screenshot.png is stale",
+        ],
+    )
+    def test_the_pair_never_disagrees_on_a_shared_token_turn(self, task):
+        fv = extract(task)
+        assert fv["needs_vision"] == ("image" in fv["attachment_kinds"]), task
+
+
+class TestVisionDocstringClaimHolds:
+    """The stated contract and the marker tables must say the same thing.
+
+    The module header promises the detector "asks whether the turn implies
+    visual *input*, not whether it mentions a visual noun". That sentence is
+    asserted against the source *and* against behaviour, because the two had
+    drifted: the tables promoted an ambiguous noun on a bare deictic while the
+    header said they would not.
+    """
+
+    # One mention-only turn per ambiguous noun. The turn produces or discusses
+    # the artefact; nothing supplies it.
+    MENTION_ONLY = {
+        "chart": "the module has a flow chart in the wiki",
+        "diagram": "generate a mermaid diagram of the request flow",
+        "image": "rebuild the docker image and push it",
+        "design": "let's simplify this design and re-run the tests",
+        "plot": "plot the latency distribution by percentile",
+    }
+
+    def test_every_ambiguous_noun_has_a_mention_only_case(self):
+        # Adding a noun to the table without a case here fails rather than
+        # slipping in unexercised.
+        assert set(self.MENTION_ONLY) == set(_VISION_AMBIGUOUS_NOUNS)
+
+    def test_source_states_the_claim(self):
+        source = Path(signals_module.__file__).read_text(encoding="utf-8")
+        prose = " ".join(source.replace("#", " ").split())  # unwrap the comment
+        assert "not whether it mentions a visual noun" in prose
+        assert "Mentioning a visual noun is not enough" in prose
+
+    @pytest.mark.parametrize("noun", sorted(MENTION_ONLY))
+    def test_mentioning_a_visual_noun_is_not_visual_input(self, noun):
+        task = self.MENTION_ONLY[noun]
+        assert noun in task.lower()          # the noun really is in the turn
+        assert extract(task)["needs_vision"] is False
 
 
 class TestOtherCapabilitySignals:

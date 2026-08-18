@@ -71,7 +71,9 @@ _WHOLE_REPO_MARKERS: frozenset[str] = frozenset({
 # visual noun.
 #
 #   Tier 1 — unambiguous: a token that can only be a supplied image (a file
-#   extension, a screenshot, a design-tool artefact). The noun alone fires.
+#   extension, a screenshot, a design-tool artefact). The noun alone fires,
+#   but on a WORD BOUNDARY — see `_compile_marker_re`, because containment made
+#   "libpng-dev" a visual turn.
 #
 #   Tier 2 — ambiguous nouns ("chart", "diagram", "image", "design", "plot"):
 #   these appear just as often as something the model is asked to PRODUCE or
@@ -87,8 +89,36 @@ _VISION_MARKERS: frozenset[str] = frozenset({
 
 # Nouns that name a visual artefact but do not by themselves say the artefact
 # was supplied to the model. Matched as whole words, plural tolerated.
-_VISION_AMBIGUOUS_NOUNS: frozenset[str] = frozenset({
-    "chart", "diagram", "image", "design", "plot",
+#
+# The two halves differ in how weak a cue may promote them. A bare deictic
+# ("this X") is enough for the nouns that are almost always an artefact when
+# pointed at, but NOT for "design" and "plot": "this design" is one of the most
+# common phrases in a coding turn ("let's simplify this design") and "this
+# plot" reads the same way, so promoting them on a deictic alone strands
+# text-only work on the single vision rail. They need positive evidence of
+# supply — an attachment, look-at or trailing cue ("look at this design", "the
+# design attached").
+_VISION_DEICTIC_NOUNS: frozenset[str] = frozenset({
+    "chart", "diagram", "image",
+})
+_VISION_SUPPLIED_ONLY_NOUNS: frozenset[str] = frozenset({
+    "design", "plot",
+})
+_VISION_AMBIGUOUS_NOUNS: frozenset[str] = (
+    _VISION_DEICTIC_NOUNS | _VISION_SUPPLIED_ONLY_NOUNS
+)
+
+# Compounds in which an ambiguous noun modifies another noun and so names
+# something that is not an image at all: a design system is a token set, a
+# design doc is prose, a docker image is a tarball. They are erased before the
+# proximity test, so a cue that lands beside the compound cannot promote it
+# ("check out the design system tokens in tokens.css" is not visual input).
+# Deliberately short: it lists the compounds this codebase's own turns use, and
+# is not an attempt at general noun-modifier detection.
+_VISION_NON_VISUAL_COMPOUNDS: frozenset[str] = frozenset({
+    "design system", "design doc", "design document", "design pattern",
+    "design review", "design decision", "docker image", "container image",
+    "base image", "image tag", "image name",
 })
 
 # Cues that turn an ambiguous noun into visual input. Deictic cues must sit
@@ -154,13 +184,17 @@ _PATH_LIKE_RE = re.compile(
 # narrows the eligible set slightly. Bias to True when nothing matches.
 _TOOLS_DEFAULT: bool = True
 
-# Markers are deliberately narrow substrings: bare "log" would fire on
-# "logic"/"login"/"logging" and bare "diff" would fire on "different", so the
-# ambiguous kinds are keyed on file extensions and multi-word phrases only.
+# Markers are deliberately narrow, and matched on word boundaries rather than
+# by containment (`_compile_marker_re`): bare "log" would otherwise fire on
+# "logic"/"login"/"logging", bare "diff" on "different" and bare "png" on
+# "libpng-dev". The ambiguous kinds are additionally keyed on file extensions
+# and multi-word phrases only. A dotted marker (".gif") stays literal: the dot
+# is its boundary and the bare form is deliberately not accepted, whereas
+# boundary-matched "png" already covers both "png" and "shot.png", so the
+# dotted duplicates the image kind used to carry are gone.
 _ATTACHMENT_MARKERS: Dict[str, frozenset[str]] = {
     "image": frozenset({
-        "screenshot", "image", ".png", "png", ".jpg", "jpg", "jpeg",
-        ".webp", "webp", ".gif", ".svg",
+        "screenshot", "image", "png", "jpg", "jpeg", "webp", ".gif", ".svg",
     }),
     "pdf": frozenset({"pdf", ".pdf"}),
     "csv": frozenset({"csv", ".csv", "spreadsheet"}),
@@ -264,7 +298,9 @@ def extract(turn: str) -> Dict[str, Any]:
 
     needs_vision means the turn implies visual *input*. Mentioning a visual
     noun is not enough: "plot a chart from the csv" produces a chart and "look
-    at this chart" supplies one. See the marker tables for the two tiers.
+    at this chart" supplies one. Nor is containing one: markers match on word
+    boundaries, so "libpng-dev" is a build dependency, not an image. See the
+    marker tables for the two tiers.
     """
     lower = turn.lower()
     lines = turn.split("\n")
@@ -384,24 +420,46 @@ def _detect_whole_repo(lower: str) -> bool:
     return any(m in lower for m in _WHOLE_REPO_MARKERS)
 
 
+def _compile_marker_re(markers: frozenset[str]) -> re.Pattern[str]:
+    """Compile a marker set into one whole-word matcher, plural tolerated.
+
+    Containment was the original defect: "png" fired inside "libpng-dev", so a
+    makefile turn came back `needs_vision` True, lost both text-capable
+    fallbacks to the capability filter and paid for a vision rail it could not
+    use. A marker that already carries its own leading dot keeps it — the dot is
+    the boundary, and the bare form is intentionally not accepted.
+    """
+    alternatives = []
+    for marker in sorted(markers):
+        stem = re.escape(marker)
+        alternatives.append(stem + r"s?\b" if marker.startswith(".")
+                            else r"\b" + stem + r"s?\b")
+    return re.compile("|".join(alternatives))
+
+
+_VISION_MARKER_RE: re.Pattern[str] = _compile_marker_re(_VISION_MARKERS)
+
+
 def _detect_vision(lower: str) -> bool:
     """True when the turn implies visual INPUT, not merely a visual noun.
 
     Tier 1 is unambiguous (an image extension, a screenshot, a design-tool
-    artefact) and fires on the marker alone. Tier 2 is the ambiguous nouns,
-    which fire only next to an attachment or deictic cue — a chart the turn
-    asks the model to *draw* is not a chart the model has to *see*, and
-    conflating the two strands text-only work on the single vision rail.
+    artefact) and fires on the marker alone, matched as a whole word. Tier 2 is
+    the ambiguous nouns, which fire only next to an attachment or deictic cue —
+    a chart the turn asks the model to *draw* is not a chart the model has to
+    *see*, and conflating the two strands text-only work on the single vision
+    rail.
     """
-    if any(m in lower for m in _VISION_MARKERS):
+    if _VISION_MARKER_RE.search(lower):
         return True
     return _has_visual_input_cue(lower)
 
 
 def _has_visual_input_cue(lower: str) -> bool:
     """Proximity test: an ambiguous visual noun next to an input cue."""
+    stripped = _VISION_COMPOUND_RE.sub(" ", lower)
     for pattern in _VISION_CUE_PATTERNS:
-        if pattern.search(lower):
+        if pattern.search(stripped):
             return True
     return False
 
@@ -409,15 +467,23 @@ def _has_visual_input_cue(lower: str) -> bool:
 def _build_vision_cue_patterns() -> List[re.Pattern[str]]:
     """Compile the proximity patterns once, from the marker tables above.
 
-    Built rather than written out so the noun list and the cue lists stay the
-    single source of truth: adding a noun cannot forget a pattern.
+    Built rather than written out so the noun lists and the cue lists stay the
+    single source of truth: adding a noun cannot forget a pattern. The deictic
+    pattern reads the narrower noun list — "design" and "plot" need positive
+    evidence of supply, not a bare "this".
     """
-    nouns = r"(?:%s)s?\b" % "|".join(sorted(_VISION_AMBIGUOUS_NOUNS))
+    def alt(nouns: frozenset[str]) -> str:
+        return r"(?:%s)s?\b" % "|".join(sorted(nouns))
+
+    nouns = alt(_VISION_AMBIGUOUS_NOUNS)
+    deictic_nouns = alt(_VISION_DEICTIC_NOUNS)
     gap_one = r"(?:\s+[\w.\-]+){0,1}\s+"   # deictic cues stay close to the noun
     gap_two = r"(?:\s+[\w.\-]+){0,2}\s+"   # attachment cues take more qualifiers
     patterns = [
         # "this chart", "this flow chart", "the following diagram"
-        r"\b(?:%s)%s%s" % ("|".join(sorted(_VISION_DEICTIC_CUES)), gap_one, nouns),
+        r"\b(?:%s)%s%s" % (
+            "|".join(sorted(_VISION_DEICTIC_CUES)), gap_one, deictic_nouns,
+        ),
         # "the attached diagram", "the uploaded wiring diagram"
         r"\b(?:%s)%s%s" % ("|".join(sorted(_VISION_ATTACHMENT_CUES)), gap_two, nouns),
         # "look at the chart", "here is the crash image"
@@ -431,6 +497,11 @@ def _build_vision_cue_patterns() -> List[re.Pattern[str]]:
 
 
 _VISION_CUE_PATTERNS: List[re.Pattern[str]] = _build_vision_cue_patterns()
+_VISION_COMPOUND_RE: re.Pattern[str] = re.compile(
+    r"\b(?:%s)s?\b" % "|".join(
+        re.escape(compound) for compound in sorted(_VISION_NON_VISUAL_COMPOUNDS)
+    )
+)
 
 
 def _detect_structured_output(lower: str) -> bool:
@@ -462,10 +533,16 @@ def _mentions_path(lower: str) -> bool:
     return _PATH_LIKE_RE.search(lower) is not None
 
 
+_ATTACHMENT_MARKER_RES: Dict[str, re.Pattern[str]] = {
+    kind: _compile_marker_re(markers)
+    for kind, markers in _ATTACHMENT_MARKERS.items()
+}
+
+
 def _infer_attachment_kinds(lower: str) -> List[str]:
     kinds = {
         kind
-        for kind, markers in _ATTACHMENT_MARKERS.items()
-        if any(m in lower for m in markers)
+        for kind, pattern in _ATTACHMENT_MARKER_RES.items()
+        if pattern.search(lower)
     }
     return sorted(kinds)

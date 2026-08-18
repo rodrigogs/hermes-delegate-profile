@@ -9,6 +9,7 @@ carrying per-role keys that MUST outlive the collapse.
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -21,6 +22,7 @@ from scripts.collapse_profile_routing import (
     collapse,
     collapse_document,
     main,
+    verify_after_write,
 )
 
 STAMP = "20260817T120000Z"
@@ -155,6 +157,14 @@ def _snapshot(home: Path) -> Dict[str, bytes]:
 def _load(home: Path, profile: str) -> Dict[str, Any]:
     raw = (home / "profiles" / profile / "config.yaml").read_text(encoding="utf-8")
     return yaml.safe_load(raw)
+
+
+def _modes(home: Path) -> Dict[str, int]:
+    """Permission bits of the live profile configs — never the backup copies."""
+    return {
+        str(path.relative_to(home)): stat.S_IMODE(path.stat().st_mode)
+        for path in sorted((home / "profiles").glob("*/config.yaml"))
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +337,155 @@ def test_per_role_keys_survive_the_collapse(tmp_path):
     ):
         assert key in reviewer, f"{key} must survive"
     assert reviewer["auxiliary"]["compression"] == {"provider": "zai"}
+
+
+# ---------------------------------------------------------------------------
+# Permissions survive the atomic replace
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(_ROOT_ONLY, reason="umask/ownership behave differently as root")
+def test_every_rewritten_file_keeps_the_mode_it_had(tmp_path):
+    """The AGREEMENT: mode after == mode before, per file, not "not 0600".
+
+    ``tempfile.mkstemp`` creates at 0600 and ``os.replace`` keeps the TEMP file's
+    mode, so every rewritten profile config silently lost its permissions —
+    measured 0664 in, 0600 out. Asserting the pair rather than one side is what
+    makes this test survive a different umask, and it covers the profile that was
+    ALREADY 0600 too, where "not 0600" would have passed on a broken script.
+    """
+    home = _write_home(tmp_path)
+    wanted = {
+        "coder": 0o664,     # the measured real-world mode, and the one that broke
+        "reviewer": 0o600,  # already private: a naive check cannot see this one
+        "thin": 0o644,      # never written; must not be touched either
+    }
+    for profile, mode in wanted.items():
+        (home / "profiles" / profile / "config.yaml").chmod(mode)
+    before = _modes(home)
+
+    assert main(["--hermes-home", str(home), "--apply", "--stamp", STAMP]) == 0
+
+    assert _modes(home) == before
+    # ...and the collapse really did happen, so this is not passing on a no-op.
+    assert "model" not in _load(home, "coder")
+
+
+# ---------------------------------------------------------------------------
+# Post-write re-parse — the runbook's "then re-parse all 16"
+# ---------------------------------------------------------------------------
+
+def test_a_clean_apply_reports_that_it_re_parsed_every_config(tmp_path, capsys):
+    """The deploy doc's §4 claim, asserted against the script that has to honour it."""
+    home = _write_home(tmp_path)
+
+    assert main(["--hermes-home", str(home), "--apply", "--stamp", STAMP]) == 0
+
+    report = capsys.readouterr().out
+    assert "re-parsed all 3 profile config(s) after the write" in report
+    assert "matches the document that was planned" in report
+
+
+def test_a_write_that_lands_unparseable_bytes_is_caught_and_named(
+    tmp_path, capsys, monkeypatch
+):
+    """The runbook's incident, reproduced: PyYAML used, tree still corrupt.
+
+    A write can succeed and still land the wrong bytes, which is exactly why the
+    runbook's constraint has two halves — *"Only ever edit with Python + PyYAML,
+    then re-parse all 16"* — and the script only honoured the first. The operator
+    must be told WHICH file and that a backup exists, on stderr, non-zero.
+    """
+    home = _write_home(tmp_path)
+    real_write = collapse_profile_routing._atomic_write_bytes
+
+    def corrupting_write(path: Path, data: bytes) -> None:
+        if path.parent.name == "reviewer":
+            data = b"max_turns: [unterminated\n"
+        real_write(path, data)
+
+    monkeypatch.setattr(
+        collapse_profile_routing, "_atomic_write_bytes", corrupting_write
+    )
+
+    rc = main(["--hermes-home", str(home), "--apply", "--stamp", STAMP])
+
+    assert rc == 3, "a corrupt tree must not exit 0"
+    out = capsys.readouterr()
+    assert "profiles/reviewer/config.yaml" in out.err
+    assert "does NOT re-parse after the write" in out.err
+    assert str(backup_root(home, STAMP)) in out.err
+    # The per-file line must not read as a clean success either.
+    assert "profiles/reviewer/config.yaml: WRITTEN but does NOT re-parse" in out.out
+    assert "profiles/reviewer/config.yaml: removed" not in out.out
+    # The backup is the recovery path the diagnostic points at, so it has to hold
+    # the original.
+    restored = backup_root(home, STAMP) / "profiles" / "reviewer" / "config.yaml"
+    assert yaml.safe_load(restored.read_text())["model"] == "glm-4.7"
+
+
+def test_a_write_that_parses_but_is_not_what_was_planned_is_caught(
+    tmp_path, capsys, monkeypatch
+):
+    """Parseability is not enough: the disk must match the INTENT.
+
+    Valid YAML that is not the planned document is the failure "does it still
+    parse?" cannot see, and it is the one a de-shadowing script has to rule out —
+    a file that parses with `model` still in it has not been collapsed at all.
+    """
+    home = _write_home(tmp_path)
+    real_write = collapse_profile_routing._atomic_write_bytes
+
+    def stale_write(path: Path, data: bytes) -> None:
+        if path.parent.name == "coder":
+            data = b"model: gpt-5.6-terra\nmax_turns: 40\n"
+        real_write(path, data)
+
+    monkeypatch.setattr(collapse_profile_routing, "_atomic_write_bytes", stale_write)
+
+    rc = main(["--hermes-home", str(home), "--apply", "--stamp", STAMP])
+
+    assert rc == 3
+    err = capsys.readouterr().err
+    assert "profiles/coder/config.yaml" in err
+    assert "does not match the planned document" in err
+
+
+def test_the_re_parse_covers_files_this_run_did_not_write(tmp_path):
+    """"Re-parse all 16" means all of them, not only the rewritten ones."""
+    home = _write_home(tmp_path)
+    assert main(["--hermes-home", str(home), "--apply", "--stamp", STAMP]) == 0
+
+    # `thin` was never written by the run, so `written` says nothing about it;
+    # something else breaking it still has to surface.
+    (home / "profiles" / "thin" / "config.yaml").write_text("a: [oops\n")
+
+    problems = verify_after_write(home, written={})
+
+    assert len(problems) == 1
+    assert problems[0].startswith("profiles/thin/config.yaml:")
+
+
+def test_a_partial_write_is_still_re_parsed(tmp_path, monkeypatch):
+    """A run that stopped halfway is when the tree most needs checking."""
+    home = _write_home(tmp_path)
+    calls: List[Path] = []
+    real_write = collapse_profile_routing._atomic_write_bytes
+
+    def flaky_write(path: Path, data: bytes) -> None:
+        calls.append(path)
+        if len(calls) > 1:
+            raise OSError(28, "No space left on device")
+        real_write(path, data)
+
+    monkeypatch.setattr(collapse_profile_routing, "_atomic_write_bytes", flaky_write)
+
+    report = collapse(home, STAMP, apply=True)
+
+    assert report["applied"] is False
+    assert report["failures"], "the write failure is still reported"
+    # The half-written tree is loadable, and the verification says so rather than
+    # being skipped because the run had already failed.
+    assert report["verify_errors"] == []
 
 
 def test_backups_land_at_the_expected_stamped_paths(tmp_path):

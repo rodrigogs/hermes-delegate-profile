@@ -1,14 +1,30 @@
 # Deploying conditional routing — procedure and rollback
 
-Covers the three commits on `feat/conditional-time-routing` (`1ab0c1a`, `51e4778`, `dfc4f21`) on top of
-`origin/main` at `baae9e1`. Companion documents: the design spec and the time-window addendum under
-`docs/superpowers/specs/`. The general Hermes update procedure this defers to is the operator's
-`hermes-update-RUNBOOK.md`; everything below is specific to this change.
+Covers everything on `feat/conditional-time-routing` on top of `origin/main` at `baae9e1` — i.e.
+`git log --oneline baae9e1..feat/conditional-time-routing`. It was three commits (`1ab0c1a`, `51e4778`,
+`dfc4f21`) when this was written and the branch has grown since, so read the range, not the three ids;
+anything below that counts them ("all three commits are code") means the whole range. Companion documents:
+the design spec and the time-window addendum under `docs/superpowers/specs/`. The general Hermes update
+procedure this defers to is the operator's `hermes-update-RUNBOOK.md`; everything below is specific to this
+change.
 
 Every fact in this document was verified on the running box, not assumed. Where something is unverified
 it says so.
 
+**These claims go stale when the code moves, and this document has already proved it.** Two statements
+here were false against the commit that shipped alongside them — §7 said no human-facing surface rendered
+`unsatisfiable` or `peak_priced` (the console and the CLI both do) and §4 said the collapse script
+re-parsed after writing (it did not, until it was made to). A document that opens by promising verified
+facts is more dangerous when it rots than one that never claimed it, so: **re-run the checks in §6 and
+re-read §4 and §7 against the code on every change to `router/capabilities.py`, `router/rules.py`,
+`router/cli.py`, `scripts/collapse_profile_routing.py` or the console, and correct this file in the same
+commit.** Prefer a claim a command can reproduce over a claim a reader has to trust.
+
 ## 0. What the runtime looks like right now
+
+Observed on the box on 2026-08-18. Everything in this table is BOX STATE, not repository state, so it is
+the part of this document a code change cannot keep true — re-run the right-hand column before relying on
+any row.
 
 | Fact | Value | How it was established |
 |---|---|---|
@@ -32,7 +48,7 @@ precisely because it misleads.
 
 From the operator's runbook, confirmed against this change:
 
-- **Code changes are inert until the gateway restarts.** All three commits are code.
+- **Code changes are inert until the gateway restarts.** Every commit in the range is code.
 - **`router.yaml` is HOT.** `RouterService` re-reads it per request, and the runbook independently records
   that the fallback chain is re-read per turn. A policy swap takes effect with no restart.
 - `config.yaml` and the 15 per-profile configs are RESTART-class for anything the agent binds at
@@ -116,15 +132,30 @@ knob.
 ## 4. Collapsing the per-profile routing blocks — the risky step
 
 This is what makes "one canonical chain with rare overrides" real instead of theoretical. Today the
-routing order exists in 18 places: the global config, `blocklist.fallback_chain`, and 15 per-profile
-`config.yaml` copies that each redeclare `model`, `fallback_providers` and `auxiliary.vision`. A single
-canonical chain is unusable while 15 copies shadow it.
+routing order exists in 18 places: the global `config.yaml`, `router.yaml`'s `tiers`, its
+`blocklist.fallback_chain`, and 15 per-profile `config.yaml` copies that each redeclare `model`,
+`fallback_providers` and `auxiliary.vision`. A single canonical chain is unusable while 15 copies shadow
+it.
 
 It is also the one step the operator's runbook records having already gone wrong: *"All 16 configs
 corrupted at once — a regex/sed edit across `config.yaml` + `profiles/*/config.yaml`. Restore from
-`config-snapshot/`. Only ever edit with Python + PyYAML, then re-parse all 16."* The script honours that
-constraint — PyYAML only, re-parse after write, dry-run by default, write-access pre-flight before the
-first mutation, and a mandatory timestamped backup.
+`config-snapshot/`. Only ever edit with Python + PyYAML, then re-parse all 16."* The script honours both
+halves of that constraint:
+
+| Constraint | How the script honours it | How you can see it |
+|---|---|---|
+| PyYAML only, never sed | `yaml.safe_load` / `yaml.safe_dump`, no regex over the file body | `scripts/collapse_profile_routing.py` imports `yaml` and nothing else that touches content |
+| Re-parse all 16 after the write | `verify_after_write()` re-reads **every** discovered `profiles/*/config.yaml`, and additionally requires each rewritten one to re-parse **equal to the document that was planned** | a clean `--apply` prints `re-parsed all N profile config(s) after the write …`; a failure prints `POST-WRITE RE-PARSE FAILED`, names the file, points at the backup, and exits `3` |
+| Nothing silently changes but comments | permissions are carried across the atomic replace | `tests/test_collapse_profile_routing.py::test_every_rewritten_file_keeps_the_mode_it_had` asserts mode-after == mode-before per file |
+
+The re-parse was added because this document previously asserted it and the script did not do it —
+`tempfile.mkstemp` + `os.replace` also meant every rewritten file dropped from 0664 to 0600, which the
+same fix closed. On top of that: dry-run by default, write-access pre-flight before the first mutation,
+and a mandatory timestamped backup.
+
+Both behaviours are covered by tests, so the claim above is checkable without the box:
+
+    python3.11 -m pytest tests/test_collapse_profile_routing.py -q
 
     V=/home/rodrigo/Workspace/hermes-agent/venv/bin/python
     cd ~/.hermes/plugins/delegate-profile
@@ -134,6 +165,11 @@ first mutation, and a mandatory timestamped backup.
 
 `--dry-run` is the default; writing needs an explicit `--apply`. **It must be run with that venv python** —
 no system interpreter on the box has PyYAML, so `python3` would fail on import.
+
+Read the exit status, do not just read the report: `0` succeeded (dry-run included), `2` a usage error or a
+target that would not parse — **nothing was written**, `3` the write was refused up front, failed mid-run,
+**or the post-write re-parse failed**. On a `3` do not restart anything until you have read the named files
+and, if the re-parse is what failed, restored them from the backup directory the diagnostic prints.
 
 Rollback: the script's own timestamped backup, plus the pre-existing snapshot at
 `~/.hermes/backups/pre-conditional-routing-20260818T0000Z/routing-config/`, which holds `config.yaml`,
@@ -173,23 +209,80 @@ while the executor attempted the declared one. Check the running path, not the r
     $V -m router.cli --config router.yaml chain \
        "Look at this screenshot and fix the chart in the attached image"
 
-    # 3. The clock reaches the decision: the same task at two hours, two answers.
-    $V -m router.cli --config router.yaml chain --at 2026-08-17T07:00:00Z "add a docstring to the helper"
-    $V -m router.cli --config router.yaml chain --at 2026-08-17T15:00:00Z "add a docstring to the helper"
+    # 3. The clock reaches the decision. THREE hours, because two is what made the
+    #    policy comments wrong: 07:00Z and 15:00Z between them miss every hour in
+    #    which T3's avoid_peak actually reorders. Use a task that reaches T3.
+    T="refactor the authentication module and migrate its callers"
+    $V -m router.cli --config router.yaml chain --at 2026-08-17T02:00:00Z "$T"
+    $V -m router.cli --config router.yaml chain --at 2026-08-17T07:00:00Z "$T"
+    $V -m router.cli --config router.yaml chain --at 2026-08-17T15:00:00Z "$T"
 
     # 4. The policy passes the fail-closed gate.
     $V -m router.cli --config router.yaml lint
 
-Step 3 only differs once the policy declares a clock knob, so against the old policy expect identical
-output — that is correct, not a failure.
+Step 3 must produce **three different plans**, and each one checks a different thing:
+
+| Hour | Expected | What it proves |
+|---|---|---|
+| `02:00Z` | chain `gpt-5.6-terra, glm-5.3, deepseek-v4-pro`; `demoted: deepseek-v4-pro`; `peak_priced: deepseek-v4-pro` | deepseek peaks and zai does not, so `avoid_peak` really reorders — the second hop changes rail |
+| `07:00Z` | chain `gpt-5.6-terra, deepseek-v4-pro, glm-5.3`; `demoted` **empty**; `peak_priced: deepseek-v4-pro, glm-5.3` | both peak, so the permutation is the identity and the trace says "nothing moved" instead of claiming a reorder |
+| `15:00Z` | declared order, both lists empty, every multiplier `x1.0` | outside every window the clock changes nothing |
+
+If all three are identical, the clock is not reaching the decision. Against the **old** policy they will be
+identical and that is correct, because it declares no clock knob — check which policy is in place before
+reading this as a failure. Do not substitute a T1 task (`"add a docstring to the helper"`, which the earlier
+version of this step used): T1 is byte-identical at all 168 hours by design, so it cannot distinguish a live
+clock from a dead one.
+
+## 6b. What a claim about the clock has to be verified over
+
+Every time-dependent claim in `router.yaml`, `router.example.yaml` and this file is stated over **the whole
+168-hour week**, not over sample hours, because sampling is how three of them ended up wrong. The
+partitions the shipped policy actually produces, measured by running `rules.plan_chain` at all 168 hours:
+
+| Tier | Behaviour | Hours (of 168) |
+|---|---|---|
+| `T1` | `capped: []`, order unchanged | 168 (100%) — the cap removes nothing at any hour |
+| `T2` | tail `deepseek-v4-flash, gpt-5.6-luna` | 119 (70.8%) |
+| `T2` | tail flips to `gpt-5.6-luna, deepseek-v4-flash` | 49 (29.2%) — deepseek's own two windows, 01:00-04:00 and 06:00-10:00 UTC **daily** |
+| `T3`/`T4` | nothing matches, declared order | 119 (70.8%) |
+| `T3`/`T4` | reorders — `demoted: deepseek-v4-pro` | 29 (17.3%) — 01:00-04:00 UTC daily + 06:00-10:00 UTC at the weekend |
+| `T3`/`T4` | identity, `peak_priced` names both | 20 (11.9%) — 06:00-10:00 UTC Mon-Fri |
+
+`tests/router/test_capabilities.py::test_the_shipped_t3_policy_reorders_for_29_hours_of_the_week` and
+`::test_the_shipped_t2_tail_flips_on_deepseeks_window_alone` pin these numbers, so a registry or window
+change that invalidates the table fails the suite instead of quietly outdating this page.
 
 ## 7. Known and deliberate, at time of writing
 
-- `T1`'s `time_cap` and `T3`/`T4`'s `avoid_peak` earn nothing for their current chain shapes: neither
-  tier holds a dollar-billed elo that peaks. The stages are correct; the shapes cannot exercise them.
-  Changing a chain shape changes which model serves real traffic, so it was left to the operator.
-- Nothing renders `unsatisfiable` or `peak_priced` on a human-facing surface yet. Both reach the plan,
-  the trace and the JSON output.
+- `T1`'s `time_cap` removes nothing at any hour, and that one is genuinely inert: `max_multiplier` is a
+  DOLLAR ceiling, and T1's only peaking elo is plan-covered `glm-4.7`, whose 2.0x doubles a credit draw
+  and no invoice. Verified over all 168 hours, `capped: []` at every one. Changing a chain shape changes
+  which model serves real traffic, so it was left to the operator.
+  **`T3`/`T4`'s `avoid_peak` is NOT inert** — an earlier version of this bullet said both knobs "earn
+  nothing … neither tier holds a dollar-billed elo that peaks", and both halves are wrong: metered
+  `deepseek-v4-pro` is dollar-billed and peaks 2.0x at 01:00-04:00 and 06:00-10:00 UTC daily, and the
+  policy reorders the chain for 29 of the week's 168 hours (see §6b). It changes which model serves the
+  second hop of every hard and adversarial task, from metered `deepseek-v4-pro` to plan-billed `glm-5.3`.
+  Treat it as live behaviour, not as a dormant knob.
+- `unsatisfiable` and `peak_priced` **do** render on human-facing surfaces — an earlier version of this
+  bullet said nothing did. Both are rendered by the router console
+  (`webui_extension/hermes-one-capability-router/console.html`: `unsatisfiableWords()` emits the amber
+  "Requirement no model can meet." line, `peakPriceWords()` the peak-pricing line) and by the CLI
+  (`router/cli.py`: `_unsatisfiable_lines()`, and `peak_priced` in the time-flag block, including the
+  extra "nothing moved" line when `demoted` is empty). They also reach the plan, the trace and the JSON
+  output. `cap_exempt` is the field that genuinely does not surface: `capabilities.apply_time_cap`
+  returns it and `rules.plan_chain` drops it, so an exemption is visible only as `multipliers` and its
+  reason (plan credits, not dollars) is nowhere in the plan.
+- `requirements.min_context` means **input** tokens, not window size, and is now enforced against
+  `max_input_tokens` where a vendor publishes one. Five elos do — `gpt-5.6-sol`/`terra`/`luna` accept
+  922_000 of prompt inside a 1_050_000 window, `gpt-5.3-codex`/`gpt-5.4-mini` 272_000 inside 400_000 — so
+  a request whose estimate exceeds that bound now routes past them instead of to them. This TIGHTENS the
+  filter only, it never loosens it, and `filter_chain` still bypasses rather than emptying a chain. An elo
+  that publishes no separate input bound is taken at its window (`gpt-5.5` is the pointed example: same
+  provider and window as `gpt-5.6-sol`, but no published input limit, and the registry will not invent
+  one). Nothing in the shipped policy changes — `T3`'s floor is 200_000 — but a floor above 272_000 on a
+  tier holding a codex-mini rail now behaves differently than it did.
 - The policy is designed around a z.ai Coding Plan that expires in roughly two months. When it does,
   `glm-5.3` may not be purchasable per token at all — its metered API is not live, it carries no
   published price, and the metered catalogue starts at GLM-5.2. The metered successor is `glm-4.7` at

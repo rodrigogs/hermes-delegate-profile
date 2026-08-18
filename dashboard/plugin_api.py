@@ -66,7 +66,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Dict, Optional, Tuple
 
-# The router modules live in the parent plugin directory
+# The router modules live in the parent plugin directory. This stays for the flat
+# shape only — where ``dashboard`` is itself top-level, ``..router`` is beyond the
+# top-level package, and the absolute name below is the only one that can resolve.
 _PLUGIN_DIR = Path(__file__).resolve().parent.parent  # dashboard/ -> delegate-profile/
 if str(_PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_DIR))
@@ -74,11 +76,26 @@ if str(_PLUGIN_DIR) not in sys.path:
 import yaml
 from fastapi import APIRouter, Body, HTTPException, Query
 
-from router import service as _service_mod
-from router.decision_log import DecisionLog, empty_chain_plan
-from router.rules import explain as rules_explain
-from router.service import RouterService
-from router.signals import extract
+# Relative first, absolute second. ``router`` is a SIBLING of this package, so the
+# relative form climbs one level: under Hermes's ``hermes_plugins.<slug>`` shape
+# this binds the same ``hermes_plugins.<slug>.router`` modules the rest of the
+# plugin uses. Resolving the absolute name first did technically work there —
+# ``_PLUGIN_DIR`` above puts the plugin root on ``sys.path`` — but it imported a
+# SECOND, independent copy of the router package under the top-level name, so this
+# read path saw different module-level state (its own ``rules._caps``,
+# ``_signals``, caches) than the write path did. No None fallback: hard requirements.
+try:
+    from ..router import service as _service_mod
+    from ..router.decision_log import DecisionLog, empty_chain_plan
+    from ..router.rules import explain as rules_explain
+    from ..router.service import RouterService
+    from ..router.signals import extract
+except ImportError:  # pragma: no cover - flat layout, `router` top-level on sys.path
+    from router import service as _service_mod
+    from router.decision_log import DecisionLog, empty_chain_plan
+    from router.rules import explain as rules_explain
+    from router.service import RouterService
+    from router.signals import extract
 
 router = APIRouter()
 

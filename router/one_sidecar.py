@@ -23,8 +23,17 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import yaml
 from urllib.parse import parse_qs, urlsplit
 
-from router.service import RouterService
-from router.threshold import apply_dynamic_thresholds, compute_model_thresholds, p_eff
+# Relative first, absolute second — the shapes ``rules.py``/``service.py`` use.
+# ``python -m router.one_sidecar`` (the systemd unit) satisfies the relative
+# form; loading the plugin as ``hermes_plugins.<slug>.router.one_sidecar``
+# satisfies only the relative form; running this file as a bare script satisfies
+# only the absolute one. No None fallback: both are hard requirements.
+try:
+    from .service import RouterService
+    from .threshold import apply_dynamic_thresholds, compute_model_thresholds, p_eff
+except ImportError:  # pragma: no cover - bare-script/flat layout
+    from router.service import RouterService
+    from router.threshold import apply_dynamic_thresholds, compute_model_thresholds, p_eff
 
 EXTENSION_ID = "hermes-one-capability-router"
 TOKEN_HEADER = "X-Hermes-Sidecar-Token"

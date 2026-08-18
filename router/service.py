@@ -52,6 +52,21 @@ concurrent applies in one process cannot interleave), written atomically via a
 temp-file + ``os.replace`` rename, and revertable from a ``.bak`` snapshot.
 ``config.yaml`` (Hermes core / compaction) is RESTART-class and is deliberately
 NOT reachable here.
+
+TWO THINGS THE WRITE PATH HAS TO BE ABLE TO SAY. A mapping knob is REMOVED by
+sending an explicit null (``{'tiers': {'T1': {'time_cap': None}}}``): a deep merge
+can otherwise only add or overwrite, and two of the four mapping knobs are cost
+controls an operator may need to lift in a hurry. And an edit that changes nothing
+is reported as ``no_op`` by both halves, because ``valid: True`` / ``ok: True``
+about a file that did not change is indistinguishable from a committed edit — that
+is exactly how ``{'time_cap': {}}`` came to look like a successful removal.
+
+THE ROUTE-TRACE READERS NAME THE ELO THAT RAN. :meth:`routes` labels each recent
+decision with ``decision_log.attempted_head_of`` — the head of the planned chain,
+which is what the executor dispatches — and keeps the declared tier primary beside
+it as ``declared_model``. Labelling the list with ``output.model`` made the primary
+operator surface report a model that was filtered out and never attempted, which is
+the whole reason ``output.attempted_model`` is persisted.
 """
 from __future__ import annotations
 
@@ -70,24 +85,62 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import yaml
 
-from router.blocklist import Blocklist
-from router.rules import explain as rules_explain
-from router.rules import lint as rules_lint
-from router.signals import extract
+# Relative first, absolute second — the same two shapes ``rules.py`` resolves in.
+# Hermes loads this plugin as ``hermes_plugins.<slug>.router.service``, where
+# ``router`` is not a top-level package; the direct source-loading test harnesses
+# put it on ``sys.path`` and need the absolute name. There is no third fallback
+# here on purpose: these four are hard requirements, so an install genuinely
+# missing them must fail loudly at import rather than degrade.
+try:
+    from .blocklist import Blocklist
+    from .rules import explain as rules_explain
+    from .rules import lint as rules_lint
+    from .signals import extract
+except ImportError:  # pragma: no cover - flat layout used by the test harness
+    from router.blocklist import Blocklist
+    from router.rules import explain as rules_explain
+    from router.rules import lint as rules_lint
+    from router.signals import extract
 
 # Both are imported defensively: this file is deployed by copy, so it can land
 # next to a rules.py/capabilities.py that predates capability routing. Every use
 # below degrades to pre-capability behaviour when the symbol is missing — a read
 # path must never 500 because a sibling module is older.
+#
+# Each one tries BOTH shapes before concluding the symbol is absent. Trying only
+# the absolute name meant the package shape raised ImportError for the wrong
+# reason — module not found, not symbol not found — so both degraded to None on
+# every production load and the degrade was indistinguishable from an old
+# sibling.
 try:
-    from router.rules import lint_warnings as rules_lint_warnings
-except ImportError:  # pragma: no cover - rules.py without advisory warnings
-    rules_lint_warnings = None  # type: ignore[assignment]
+    from .rules import lint_warnings as rules_lint_warnings
+except ImportError:  # pragma: no cover - flat layout, or rules.py without warnings
+    try:
+        from router.rules import lint_warnings as rules_lint_warnings
+    except ImportError:  # pragma: no cover - rules.py without advisory warnings
+        rules_lint_warnings = None  # type: ignore[assignment]
 
 try:
-    from router import capabilities as _caps
-except ImportError:  # pragma: no cover - registry absent on an older install
-    _caps = None  # type: ignore[assignment]
+    from . import capabilities as _caps
+except ImportError:  # pragma: no cover - flat layout, or registry absent
+    try:
+        from router import capabilities as _caps
+    except ImportError:  # pragma: no cover - registry absent on an older install
+        _caps = None  # type: ignore[assignment]
+
+# The ONE accessor for "which elo did production attempt first" (see
+# decision_log's own docstring). Imported rather than re-derived here: this
+# surface exists to agree with the executor, and a second reading of "head of the
+# chain" is precisely how it came to disagree. Defensive for the reason above —
+# a decision_log that predates the key degrades to the declared tier primary,
+# which is the honest answer for the entries such a build wrote.
+try:
+    from .decision_log import attempted_head_of as _attempted_head_of
+except ImportError:  # pragma: no cover - flat layout, or an older decision_log
+    try:
+        from router.decision_log import attempted_head_of as _attempted_head_of
+    except ImportError:  # pragma: no cover - decision_log without the accessor
+        _attempted_head_of = None  # type: ignore[assignment]
 
 _DEFAULT_MAX_TASK_CHARS = 8_192
 
@@ -333,6 +386,12 @@ def _empty_chain_plan() -> Dict[str, Any]:
     }
 
 
+# "Delete this key" — the merge result for an explicitly null change. A unique
+# object rather than None or a string, so it can never collide with a value an
+# operator could legitimately send in a policy edit.
+_REMOVE = object()
+
+
 def _deep_merge_value(old: Any, new: Any) -> Any:
     """Merge ``new`` over ``old``: dicts recurse, everything else REPLACES.
 
@@ -340,11 +399,36 @@ def _deep_merge_value(old: Any, new: Any) -> Any:
     wholesale so an operator can delete or reorder an entry by sending the full
     new list. An index/union merge would make deletion impossible and could
     corrupt rule order, which ``rules.lint`` shadow-detection depends on.
+
+    REMOVAL IS AN EXPLICIT NULL, and it has to be expressible: a recursive dict
+    merge can only add or overwrite keys, so ``{'time_cap': {}}`` merges nothing
+    over the existing mapping and the edit is a silent no-op — measured on a tier
+    carrying ``time_cap``/``time_policy``, which are the two COST controls an
+    operator may need to lift in a hurry. ``{'time_cap': None}`` therefore means
+    "delete this key", signalled to the caller as :data:`_REMOVE` (a sentinel, not
+    ``None``, because ``None`` is also the value being asked about). ``{}`` keeps
+    its literal meaning — merge no sub-keys, i.e. change nothing — and
+    :meth:`RouterService.plan`/:meth:`~RouterService.apply` now report that as
+    ``no_op`` rather than as a successful edit.
+
+    A null can never SET a key here. That is deliberate and matches what the rest
+    of this file argues about the time knobs: a JSON consumer reads
+    ``Number(null)`` as 0, so a null ``time_cap`` written to the hot file would be
+    a ceiling of $0 rather than an absent one. Absence is the only honest way to
+    spell "no cap", so a null request produces absence. Nothing is displaced by
+    taking the meaning, either: ``rules.lint`` already refuses a null where a
+    mapping or a list belongs, so a null change could previously only be rejected.
     """
+    if new is None:
+        return _REMOVE
     if isinstance(old, dict) and isinstance(new, dict):
         result = dict(old)
         for key, value in new.items():
-            result[key] = _deep_merge_value(result.get(key), value)
+            merged = _deep_merge_value(result.get(key), value)
+            if merged is _REMOVE:
+                result.pop(key, None)  # already absent -> still absent
+            else:
+                result[key] = merged
         return result
     return copy.deepcopy(new)
 
@@ -1453,6 +1537,13 @@ class RouterService:
 
         Returns ``(current, merged)``. Any key outside :data:`_HOT_KEYS` in
         ``changes`` is ignored — never written.
+
+        A null value REMOVES the key, at this level exactly as it does inside a
+        nested mapping (see :func:`_deep_merge_value`): ``{'tiers': None}`` drops
+        the whole block, and ``{'tiers': {'T1': {'time_cap': None}}}`` drops one
+        knob off one tier. Removing something the policy cannot live without is
+        not special-cased here — :meth:`_lint_merged` is the fail-closed gate for
+        that, and it refuses the merged result before any write.
         """
         # plan()/apply() validate that changes is a mapping before calling here.
         current = self._read_config_dict()
@@ -1460,7 +1551,11 @@ class RouterService:
         for key, value in changes.items():
             if key not in _HOT_KEYS:
                 continue
-            merged[key] = _deep_merge_value(current.get(key), value)
+            merged_value = _deep_merge_value(current.get(key), value)
+            if merged_value is _REMOVE:
+                merged.pop(key, None)
+            else:
+                merged[key] = merged_value
         return current, merged
 
     def _read_config_bytes(self) -> bytes:
@@ -1488,6 +1583,13 @@ class RouterService:
 
         The returned ``base_hash`` pins the on-disk state this plan was computed
         against; :meth:`apply` refuses to write if the file has drifted since.
+
+        ``no_op`` says the merge changed nothing — an empty diff reported as a
+        fact instead of left to be noticed. ``valid: True`` on a plan that would
+        write the identical file reads as "your edit is fine" when the truth is
+        "your edit does not exist", which is how an attempted REMOVAL spelled as
+        ``{'time_cap': {}}`` came to look like a success; a removal is spelled with
+        a null (see :func:`_deep_merge_value`).
         """
         if not isinstance(changes, dict):
             raise ValueError("changes must be a mapping")
@@ -1496,7 +1598,8 @@ class RouterService:
             current, merged = self._merge_hot(changes)
         except (OSError, yaml.YAMLError, ValueError) as exc:
             return {"valid": False, "errors": [f"could not read router config: {exc}"],
-                    "diff": "", "preview": {}, "policy": {}, "base_hash": ""}
+                    "diff": "", "no_op": False, "preview": {}, "policy": {},
+                    "base_hash": ""}
         errors = self._lint_merged(merged)
         before = yaml.safe_dump(current, sort_keys=False)
         after = yaml.safe_dump(merged, sort_keys=False)
@@ -1512,6 +1615,9 @@ class RouterService:
             "valid": not errors,
             "errors": errors,
             "diff": diff,
+            # Read off the diff, not off a second comparison: the diff is what the
+            # operator is shown, so "nothing changed" has to be the same answer.
+            "no_op": not diff,
             "preview": merged,
             "policy": merged,
             "base_hash": self._hash_bytes(current_raw),
@@ -1525,6 +1631,29 @@ class RouterService:
         merged result fails lint, snapshots the prior bytes to ``.bak``, and
         writes atomically. Because the router re-reads per request, the change
         is live immediately with no restart.
+
+        AN EDIT THAT CHANGES NOTHING REPORTS ``no_op: True`` and does not write.
+        ``ok: True`` on its own cannot be told apart from a committed change, which
+        is how a mis-spelled removal (``{'time_cap': {}}`` rather than
+        ``{'time_cap': None}``) was answered with success while the knob stayed on
+        disk. Not writing is the other half: rewriting the file with identical
+        content would overwrite the ``.bak`` snapshot with the state it already
+        holds and quietly spend the operator's one revert.
+
+        The no-op test is the MERGED POLICY against the parsed current one, not the
+        serialized bytes: re-serializing a hand-formatted file is a change to the
+        bytes and no change to the routing, and the knob an operator asked about is
+        the routing.
+
+        A REMOVAL MUST BE SENT AS THE CHANGE, not as ``plan()['policy']``. This
+        takes ``changes`` and merges them over the file, and ``policy`` is the
+        already-MERGED result: a key deleted out of it is simply a key the merge
+        does not mention, so the on-disk one survives. Feeding a null-removal plan's
+        ``policy`` back in therefore restores the knob and — because that leaves the
+        file exactly as it was — is answered ``no_op: True`` rather than as a
+        successful deletion. Treating a submitted ``policy`` as a REPLACE instead
+        would fix the round trip by making every partial submit delete the rest of
+        router.yaml, which is a much worse trade on a hot config.
         """
         if not isinstance(changes, dict):
             raise ValueError("changes must be a mapping")
@@ -1537,12 +1666,17 @@ class RouterService:
             if base_hash != current_hash:
                 return {"ok": False, "conflict": True, "base_hash": current_hash}
             try:
-                _current, merged = self._merge_hot(changes)
+                current, merged = self._merge_hot(changes)
             except (yaml.YAMLError, ValueError) as exc:
                 return {"ok": False, "errors": [f"could not parse router config: {exc}"]}
             errors = self._lint_merged(merged)
             if errors:
                 return {"ok": False, "errors": errors}
+            if merged == current:
+                # Nothing to commit. Reported as ok because nothing failed, and as
+                # no_op because "committed" would be a lie; the returned hash is
+                # still the on-disk one, so a follow-up plan cannot false-409.
+                return {"ok": True, "no_op": True, "base_hash": current_hash}
             # Snapshot the exact prior bytes, then write the merged config.
             self._atomic_write_bytes(self._backup_path(), current_raw)
             new_raw = yaml.safe_dump(merged, sort_keys=False).encode("utf-8")
@@ -1550,7 +1684,8 @@ class RouterService:
             # Hash the exact bytes we wrote — not a re-read, which could fail
             # transiently (returning ok with an empty hash) and, worse, differ
             # from the file and cause the next plan()'s base_hash to false-409.
-            return {"ok": True, "base_hash": self._hash_bytes(new_raw)}
+            return {"ok": True, "no_op": False,
+                    "base_hash": self._hash_bytes(new_raw)}
 
     def apply_revert(self) -> Dict[str, Any]:
         """Restore the last ``.bak`` snapshot atomically. No snapshot -> no-op."""
@@ -1620,16 +1755,31 @@ class RouterService:
         corrupt line is skipped, never raised. The trace file is size-bounded,
         so reading it whole keeps the id scheme (ordinal) consistent between
         :meth:`routes` and :meth:`route`.
+
+        DECODED PER LINE, because an undecodable byte is a corrupt LINE and gets
+        the same treatment as unparseable JSON: skipped. Whole-file
+        ``read_text(encoding='utf-8')`` raises ``UnicodeDecodeError`` — a
+        ``ValueError``, not an ``OSError`` — so one bad byte anywhere in
+        routes.jsonl escaped this reader and aborted both :meth:`routes` and
+        :meth:`route`, which the sidecar answers with a dropped connection and a
+        Decisions tab that stays dead until someone finds the file. The writer
+        appends from another process, so a torn multi-byte write is a thing that
+        happens, not a hypothetical. Skipping the line keeps every readable entry —
+        including the ones written AFTER the damage, which is what an operator
+        opening the tab after an incident came for.
         """
         collected: List[Dict[str, Any]] = []
         for path in self._trace_files():
             try:
-                raw = path.read_text(encoding="utf-8")
+                raw = path.read_bytes()
             except OSError:
                 continue
             file_entries: List[Dict[str, Any]] = []
-            for line in raw.splitlines():
-                line = line.strip()
+            for raw_line in raw.splitlines():
+                try:
+                    line = raw_line.decode("utf-8").strip()
+                except UnicodeDecodeError:
+                    continue  # torn/foreign bytes — this line only
                 if not line:
                     continue
                 try:
@@ -1645,10 +1795,27 @@ class RouterService:
     def routes(self, limit: int = 50) -> Dict[str, Any]:
         """Return a compact list of recent routes, most recent first.
 
-        Each item: ``{id, ts, cause, task, model}``. ``id`` is the entry's
-        timestamp-plus-ordinal so a specific trace can be fetched by :meth:`route`.
-        The response also carries the resolved ``trace_path`` and total ``count``
-        so an empty list is diagnosable as 'no traces yet' vs 'wrong path'.
+        Each item: ``{id, ts, cause, rule_id, task, model, provider,
+        declared_model}``. ``id`` is the entry's timestamp-plus-ordinal so a
+        specific trace can be fetched by :meth:`route`. The response also carries
+        the resolved ``trace_path`` and total ``count`` so an empty list is
+        diagnosable as 'no traces yet' vs 'wrong path'.
+
+        ``model`` IS THE ELO THAT RAN, read through
+        :func:`decision_log.attempted_head_of` — the head of the planned chain,
+        which is what the executor dispatches first. It used to be
+        ``output.model``, the DECLARED TIER PRIMARY, and after a capability
+        filter, a time cap, a shuffle or a blocklist veto those are different
+        elos: this list showed ``glm-5.3`` for a vision turn ``gpt-5.6-luna``
+        served. That is the whole reason ``attempted_model`` is persisted, and
+        this is the operator's primary decision surface, so it is the one place
+        the distinction may not be dropped.
+
+        The tier identity is NOT dropped, it moves to ``declared_model``: it is
+        how a decision is tied back to the rule and tier that made it, and
+        ``rule_id`` alone does not name the tier. When nothing was filtered the
+        two are equal, which is the honest report of that case rather than a
+        missing key.
         """
         from router.durable_decision_log import routes_path
 
@@ -1660,6 +1827,7 @@ class RouterService:
         items: List[Dict[str, Any]] = []
         for ordinal, entry in enumerate(entries):
             out = entry.get("output", {}) if isinstance(entry.get("output"), dict) else {}
+            attempted_model, attempted_provider = self._attempted_head(entry)
             items.append({
                 "id": self._trace_id(entry, ordinal),
                 "ts": entry.get("ts"),
@@ -1669,7 +1837,12 @@ class RouterService:
                 # cannot identify it.
                 "rule_id": entry.get("rule_id"),
                 "task": entry.get("task", ""),
-                "model": out.get("model", ""),
+                # What RAN, and the rail it ran on.
+                "model": attempted_model,
+                "provider": attempted_provider,
+                # The tier primary the rule/classifier settled on — equal to
+                # `model` unless the chain was filtered, capped, shuffled or vetoed.
+                "declared_model": out.get("model", ""),
             })
         items.reverse()  # most recent first
         return {
@@ -1687,6 +1860,23 @@ class RouterService:
             if self._trace_id(entry, ordinal) == route_id:
                 return entry
         return None
+
+    @staticmethod
+    def _attempted_head(entry: Dict[str, Any]) -> Tuple[str, str]:
+        """``(model, provider)`` production attempted FIRST for a trace entry.
+
+        A thin pass-through to :func:`decision_log.attempted_head_of` — deliberately
+        thin, because the point of that function is that there is exactly one
+        definition of "the head" and this surface is a reader of it, not a second
+        author. The only local logic is the degrade for a decision_log that predates
+        the accessor: the declared pair, which is all such a build ever wrote.
+        """
+        if _attempted_head_of is not None:
+            return _attempted_head_of(entry)
+        out = entry.get("output") if isinstance(entry, dict) else None
+        if not isinstance(out, dict):
+            return "", ""
+        return str(out.get("model") or ""), str(out.get("provider") or "")
 
     @staticmethod
     def _trace_id(entry: Dict[str, Any], ordinal: int) -> str:

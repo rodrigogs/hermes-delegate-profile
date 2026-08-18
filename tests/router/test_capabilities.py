@@ -195,6 +195,76 @@ def test_min_context_one_token_over_context_window_fails():
     )
 
 
+def test_min_context_is_measured_against_max_input_tokens_when_published():
+    """``min_context`` is an INPUT figure, so the INPUT bound is the ceiling.
+
+    ``max_input_tokens`` used to be populated for five entries, served to the
+    console catalogue, and read by nothing: `satisfies` compared an input budget
+    against the total window it already knew was the wrong ceiling, so a
+    1M-token read routed happily to gpt-5.6-luna, which accepts 922_000 of prompt
+    and advertises a 1_050_000 window. The 128_000 between them is the reply's.
+    """
+    for model, limit, window in (
+        ("gpt-5.6-luna", 922_000, 1_050_000),
+        ("gpt-5.6-terra", 922_000, 1_050_000),
+        ("gpt-5.6-sol", 922_000, 1_050_000),
+        ("gpt-5.3-codex", 272_000, 400_000),
+        ("gpt-5.4-mini", 272_000, 400_000),
+    ):
+        assert MODEL_CAPABILITIES[model]["context_window"] == window, model
+        assert satisfies(model, {"min_context": limit}) == (True, ""), model
+        assert satisfies(model, {"min_context": limit + 1}) == (
+            False, "context_too_small",
+        ), model
+        # The window is NOT the ceiling any more, and that is the whole change.
+        assert satisfies(model, {"min_context": window}) == (
+            False, "context_too_small",
+        ), model
+
+
+def test_an_elo_that_publishes_no_input_bound_is_taken_at_its_window():
+    """Absence is IGNORANCE, not a tighter limit — the module's fail-open rule.
+
+    gpt-5.5 is the pointed case: same provider, same 1_050_000 window and same
+    128_000 max_output as gpt-5.6-sol, but it declares no ``max_input_tokens``, so
+    the registry has no published input bound to hold it to. Deriving one would be
+    inventing a vendor fact; the honest reading is the window.
+    """
+    assert "max_input_tokens" not in MODEL_CAPABILITIES["gpt-5.5"]
+    assert satisfies("gpt-5.5", {"min_context": 1_050_000}) == (True, "")
+    assert satisfies("gpt-5.5", {"min_context": 1_050_001}) == (
+        False, "context_too_small",
+    )
+
+
+def test_a_declared_max_input_tokens_tightens_a_registry_window():
+    """The override direction that matters: an operator can only ever tighten
+    the ceiling by declaring the bound the vendor publishes."""
+    assert satisfies("glm-4.7", {"min_context": 190_000}) == (True, "")
+    assert satisfies(
+        "glm-4.7", {"min_context": 190_000}, {"max_input_tokens": 180_000}
+    ) == (False, "context_too_small")
+
+
+def test_a_declared_input_bound_cannot_widen_the_unsatisfiable_ceiling():
+    """The pair again: a hop that would be REJECTED must not also be counted as
+    evidence the request is servable."""
+    hop = {
+        "model": "house-model",
+        "provider": "local-rail",
+        "context_window": 4_000_000,
+        "max_input_tokens": 100,
+    }
+    assert satisfies("house-model", {"min_context": 3_000_000}, hop) == (
+        False, "context_too_small",
+    )
+    result = filter_chain([hop], {"min_context": 3_000_000})
+    assert result["unsatisfiable"] == ["min_context"]
+    # ...and the filter still bypasses rather than emptying the chain.
+    assert result["bypassed"] is True
+    assert result["eligible"] == [hop]
+
+
 # ---------------------------------------------------------------------------
 # satisfies — unknown capabilities never reject
 # ---------------------------------------------------------------------------
@@ -678,11 +748,54 @@ def test_the_500_file_refactor_reports_every_reason():
     assert result["unsatisfiable"] == ["min_context"]
 
 
-def test_max_registered_context_is_the_biggest_window_in_the_registry():
+def test_max_registered_context_agrees_with_the_ceiling_satisfies_uses():
+    """The constant and the runtime helper are two spellings of one rule.
+
+    ``MAX_REGISTERED_CONTEXT`` runs at import, before ``_as_int`` is bound, so it
+    inlines the min-of-the-two rule that ``_input_ceiling`` implements for the
+    request path. Two spellings is one drift away from the defect class this
+    change keeps producing — the reported ceiling saying a floor is reachable that
+    the filter rejects — so the agreement is asserted per entry, not sampled.
+    """
+    for model, entry in MODEL_CAPABILITIES.items():
+        ceiling = caps_module._input_ceiling(entry)
+        assert ceiling is not None, model
+        assert ceiling <= entry["context_window"], model
+        assert MAX_REGISTERED_CONTEXT >= ceiling, model
     assert MAX_REGISTERED_CONTEXT == max(
-        entry["context_window"] for entry in MODEL_CAPABILITIES.values()
+        caps_module._input_ceiling(entry) for entry in MODEL_CAPABILITIES.values()
     )
+    # Unchanged by honouring max_input_tokens: the widest rails (mimo-v2.5,
+    # mimo-v2.5-pro, gpt-5.5) publish no separate input bound.
     assert MAX_REGISTERED_CONTEXT == 1_050_000
+
+
+def test_no_registered_model_can_serve_a_floor_reported_unsatisfiable():
+    """The two sides of "impossible", asserted against each other.
+
+    ``unsatisfiable`` is a claim about the whole roster and ``satisfies`` is the
+    per-elo verdict; the console renders the first and the router runs the second.
+    Swept just above and just below the ceiling so a stale constant cannot pass.
+    """
+    for floor in (
+        MAX_REGISTERED_CONTEXT - 1,
+        MAX_REGISTERED_CONTEXT,
+        MAX_REGISTERED_CONTEXT + 1,
+        922_000,
+        922_001,
+        272_001,
+    ):
+        servers = [
+            model
+            for model in MODEL_CAPABILITIES
+            if satisfies(model, {"min_context": floor}) == (True, "")
+        ]
+        impossible = filter_chain(
+            [{"model": model, "provider": MODEL_CAPABILITIES[model]["provider"]}
+             for model in MODEL_CAPABILITIES],
+            {"min_context": floor},
+        )["unsatisfiable"]
+        assert bool(servers) == (impossible == []), (floor, servers[:3])
 
 
 def test_an_ordinary_rejection_is_not_reported_as_unsatisfiable():
@@ -1990,12 +2103,97 @@ def test_hours_utc_that_is_not_a_pair_is_a_diagnostic_and_an_inert_window(hours)
 
 def test_a_window_with_an_unusable_multiplier_prices_at_the_base_rate():
     """Lint reports it and the running path ignores it — one reading, again."""
-    for multiplier in (0, -1.0, "double", None):
+    for multiplier in (0, -1.0, "double", None, float("nan"), float("inf"),
+                       float("-inf"), "nan", "inf"):
         windows = [{"hours_utc": [6, 10], "multiplier": multiplier}]
         assert price_window_diagnostics("kimi-k3", windows), multiplier
         assert price_multiplier(
             "kimi-k3", _at(WED, 7), {"price_windows": windows}
         ) == 1.0, multiplier
+
+
+# ---------------------------------------------------------------------------
+# a NON-FINITE number is a diagnostic, never a value
+# ---------------------------------------------------------------------------
+
+# `.inf`/`.nan` are legal YAML, so an operator can put either on any numeric key
+# in router.yaml. Both defeat the arithmetic in a way no other junk does: int()
+# RAISES on them, and every comparison against nan is False.
+_NON_FINITE = (float("inf"), float("-inf"), float("nan"), "inf", "-inf", "nan",
+               " Infinity ", "NaN")
+
+
+@pytest.mark.parametrize("value", _NON_FINITE)
+def test_a_non_finite_number_never_becomes_a_number(value):
+    """Both coercions refuse it, on both routes into them.
+
+    `_as_int` used to RAISE here — OverflowError on ±inf, ValueError on nan — and
+    it sits under `satisfies` and `derive_requirements`, i.e. the request path,
+    where `rules.plan_chain`'s defensive except does not catch OverflowError.
+    `_as_float` used to PROPAGATE it, which is worse than raising: nan compares
+    False against everything, so the value survives every guard silently.
+    """
+    assert caps_module._as_int(value) is None, value
+    assert caps_module._as_float(value) is None, value
+    assert caps_module._as_whole_number(value) is None, value
+
+
+@pytest.mark.parametrize("value", _NON_FINITE)
+def test_a_non_finite_declared_window_is_a_flagged_unknown_not_a_crash(value):
+    """The reviewer's reproduction: `context_window: .inf` on a tier hop.
+
+    It linted CLEAN and then took the whole routing decision down. Two invariants
+    broke at once — the write gate accepted a config that misroutes, and a
+    capability filter broke routing outright — so the fix has to satisfy both: no
+    exception, AND the hop is reported as unverifiable rather than silently
+    trusted.
+    """
+    hop = {"model": "house-model", "provider": "local-rail", "context_window": value}
+    assert satisfies("house-model", {"min_context": 5_000}, hop) == (
+        True, "capability_unknown",
+    )
+    result = filter_chain([hop], {"min_context": 5_000})
+    assert result["unknown"] == ["house-model"], value
+    assert result["bypassed"] is False
+    assert result["eligible"] == [hop]
+    # Same for the input bound, which is the other half of `_input_ceiling`.
+    both = dict(hop, context_window=500_000, max_input_tokens=value)
+    assert satisfies("house-model", {"min_context": 5_000}, both) == (True, "")
+    assert caps_module._input_ceiling(both) == 500_000
+
+
+@pytest.mark.parametrize("value", _NON_FINITE)
+def test_a_non_finite_token_estimate_is_discarded_not_raised(value):
+    """`derive_requirements` runs per request; it may not raise on junk input."""
+    assert derive_requirements({"est_input_tokens": value}) == {}
+    assert derive_requirements({}, {"min_context": value}) == {}
+    # A usable estimate beside the junk floor still survives.
+    assert derive_requirements(
+        {"est_input_tokens": 1_000}, {"min_context": value}
+    ) == {"min_context": 1_250}
+
+
+def test_the_whole_time_layer_survives_a_non_finite_multiplier():
+    """nan is the one value that passes a `> ceiling` guard by being unordered.
+
+    A nan multiplier used to lint clean (`nan <= 0` is False) and then make the
+    elo permanently un-capped, un-peak-priced and unorderable — a routing change
+    with no diagnostic anywhere. Now it is one diagnostic that lint and every
+    running stage read the same way.
+    """
+    hop = {
+        "model": "house-model", "provider": "local-rail",
+        "billing_mode": "metered", "context_window": 500_000,
+        "price_in": 1.0, "price_out": 2.0,
+        "price_windows": [{"hours_utc": [6, 10], "multiplier": float("nan")}],
+    }
+    assert price_window_diagnostics("house-model", hop["price_windows"])
+    assert price_multiplier("house-model", _at(WED, 7), hop) == 1.0
+    assert in_expensive_window("house-model", _at(WED, 7), hop) is False
+    assert effective_price("house-model", _at(WED, 7), hop) == (1.0, 2.0)
+    capped = apply_time_cap([hop], 1.5, _at(WED, 7))
+    assert (capped["capped"], capped["cap_exempt"]) == ([], [])
+    assert capped["chain"] == [hop]
 
 
 def test_a_price_declared_without_any_capability_stays_unknown():
@@ -2325,6 +2523,122 @@ def test_the_shipped_t3_shape_reports_the_price_and_not_a_move():
     ]
     assert moved["demoted"] == ["deepseek-v4-pro", "glm-5.3"]
     assert moved["peak_priced"] == ["deepseek-v4-pro", "glm-5.3"]
+
+
+_HOURS_IN_WEEK = 168
+
+
+def _week() -> list:
+    """Every hour of the reference week, Mon 00:00Z .. Sun 23:00Z (168 of them).
+
+    A time-dependent claim sampled at one or two hours is the defect this file
+    keeps catching: 07:00Z and 15:00Z between them miss every hour where T3's
+    `avoid_peak` actually reorders, because both zai and deepseek peak at 07:00
+    on a weekday and neither peaks at 15:00. The whole week is 168 cheap calls.
+    """
+    return [
+        datetime(2026, 8, MON, tzinfo=UTC) + timedelta(hours=step)
+        for step in range(_HOURS_IN_WEEK)
+    ]
+
+
+def test_the_shipped_t3_policy_reorders_for_29_hours_of_the_week():
+    """The claim router.yaml used to make — "REORDERS NOTHING", "the permutation
+    is the IDENTITY", verified at 07:00Z and 15:00Z — swept across the week.
+
+    It is wrong for 29 of 168 hours (17.26%), and what changes is which model
+    serves the SECOND hop of every hard task: metered deepseek-v4-pro out,
+    plan-billed glm-5.3 in. The identity holds only where BOTH named providers
+    peak together, which is the four weekday hours 07:00Z happens to land in.
+
+    The two lists are read off the returned chain here, not off the match, so this
+    pins the agreement the policy comment got wrong rather than one side of it.
+    """
+    chain = [
+        {"model": "gpt-5.6-terra", "provider": "openai-codex"},
+        {"model": "deepseek-v4-pro", "provider": "deepseek"},
+        {"model": "glm-5.3", "provider": "zai"},
+    ]
+    declared = [hop["model"] for hop in chain]
+    seen: dict = {}
+    for when in _week():
+        result = apply_time_policy(chain, {"avoid_peak": ["deepseek", "zai"]}, when)
+        key = (
+            tuple(hop["model"] for hop in result["chain"]),
+            tuple(result["demoted"]),
+            tuple(result["peak_priced"]),
+        )
+        seen.setdefault(key, []).append((when.weekday(), when.hour))
+
+    # deepseek peaks 01:00-04:00 and 06:00-10:00 EVERY day; zai only 06:00-10:00
+    # MON-FRI. So the pair separates whenever deepseek peaks alone: 01:00-04:00
+    # all week (21h) plus 06:00-10:00 at the weekend (8h).
+    reordered = (
+        ("gpt-5.6-terra", "glm-5.3", "deepseek-v4-pro"),
+        ("deepseek-v4-pro",),
+        ("deepseek-v4-pro",),
+    )
+    both_peaking = (tuple(declared), (), ("deepseek-v4-pro", "glm-5.3"))
+    quiet = (tuple(declared), (), ())
+    assert set(seen) == {reordered, both_peaking, quiet}
+    assert len(seen[reordered]) == 29
+    assert len(seen[both_peaking]) == 20
+    assert len(seen[quiet]) == 119
+    assert sorted(seen[reordered]) == sorted(
+        [(day, hour) for day in range(7) for hour in (1, 2, 3)]
+        + [(day, hour) for day in (5, 6) for hour in (6, 7, 8, 9)]
+    )
+    assert sorted(seen[both_peaking]) == sorted(
+        [(day, hour) for day in range(5) for hour in (6, 7, 8, 9)]
+    )
+    # The identity IS what 07:00Z on a weekday reports — the comment's sample was
+    # true about its hour and false about the week.
+    assert (_at(MON, 7).weekday(), 7) in seen[both_peaking]
+    assert (_at(SAT, 7).weekday(), 7) in seen[reordered]
+
+
+def test_the_shipped_t2_tail_flips_on_deepseeks_window_alone():
+    """T2's `cheapest_now` note framed the flip on the deepseek/zai OVERLAP.
+
+    It cannot be that: glm-5.3 is the pinned primary, so zai's window never
+    reaches the ordered tail, and the tail is [flat 1.20 seat, 0.66->1.32 metered
+    rail] whose order depends on deepseek-v4-flash's multiplier and nothing else.
+    The flipped set is therefore BOTH deepseek windows every day — 01:00-04:00 and
+    06:00-10:00, 49 of 168 hours — not the four hours zai overlaps, and it does not
+    thin out at the weekend when zai stops peaking.
+    """
+    chain = [
+        {"model": "glm-5.3", "provider": "zai", "billing_mode": "plan"},
+        {"model": "gpt-5.6-luna", "provider": "openai-codex",
+         "billing_mode": "subscription"},
+        {"model": "deepseek-v4-flash", "provider": "deepseek",
+         "billing_mode": "metered"},
+    ]
+    flipped: list = []
+    for when in _week():
+        ordered = [
+            hop["model"] for hop in order_chain(
+                chain, "cheapest_now", pin_primary=True, when=when
+            )
+        ]
+        assert ordered[0] == "glm-5.3", when
+        # The order and the price that produced it, asserted together: the tail is
+        # ascending effective output price, whichever way round it came out.
+        prices = [effective_price(model, when)[1] for model in ordered[1:]]
+        assert prices == sorted(prices), (when, ordered, prices)
+        if ordered[1] == "gpt-5.6-luna":
+            flipped.append((when.weekday(), when.hour))
+            assert in_expensive_window("deepseek-v4-flash", when), when
+        else:
+            assert not in_expensive_window("deepseek-v4-flash", when), when
+
+    assert len(flipped) == 49
+    assert sorted(flipped) == sorted(
+        [(day, hour) for day in range(7) for hour in (1, 2, 3, 6, 7, 8, 9)]
+    )
+    # Every one of those hours is deepseek's alone; zai's Mon-Fri window overlaps
+    # 20 of them and explains none of them.
+    assert len([1 for day, hour in flipped if day < 5 and hour in (6, 7, 8, 9)]) == 20
 
 
 def test_peak_priced_names_only_the_providers_avoid_peak_named():

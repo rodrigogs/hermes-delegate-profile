@@ -2998,3 +2998,233 @@ class TestOneCauseTable:
                 rules_mod._determine_cause(rid, {"model": "m"})
                 == _cause_from_rule(rid, {"model": "m"})
             )
+
+
+# ---------------------------------------------------------------------------
+# Loading shape: the capability layer must be LIVE under the PACKAGE name
+# ---------------------------------------------------------------------------
+#
+# Every other test in this file imports ``router.*`` — the FLAT shape, where
+# ``router`` is a top-level package on sys.path. Production is not that shape:
+# Hermes loads this plugin as ``hermes_plugins.<slug>.router.rules`` (see the
+# ``_LOADED_AS_PACKAGE`` switch in the plugin's ``__init__``). rules.py used to
+# resolve its registry by the ABSOLUTE name only, so under the production shape
+# both defensive imports raised ImportError, ``_caps``/``_signals`` fell to None,
+# and plan_chain degraded to ``_unfiltered_plan``: the declared chain, with no
+# capability filter, no time_cap, no time_policy and no cheapest_now — and lint
+# quietly stopped validating ``when`` field names at the one gate that is
+# supposed to be fail-closed. A green suite could not see it, because the suite
+# only ever loaded the other shape.
+#
+# The guard runs the import in a CHILD interpreter whose sys.path cannot reach
+# this repo, so the absolute name is genuinely unresolvable — the production
+# condition itself, not a simulation of it. In-process this would prove nothing:
+# ``router.capabilities`` and ``router.signals`` are already in this
+# interpreter's sys.modules from the imports at the top of this file, so the
+# absolute fallback would find the cached top-level copies and
+# ``_caps is not None`` would hold with the defect fully restored.
+#
+# What it asserts is the AGREEMENT, not one side: the plan the production shape
+# computes must EQUAL the plan this file's flat-shape import computes, for the
+# same tiers, features and clock. Asserting only that the child filters would
+# still pass if both shapes were inert in the same way, and asserting only that
+# the flat shape filters is precisely the mistake that hid this for six weeks.
+
+_PLUGIN_SLUG = "delegate_profile"
+
+#: The cases both shapes are asked to plan, defined ONCE and handed to the child
+#: as data — a second copy on the child side is a mirror, and a drifted mirror
+#: would make the two shapes look like they disagreed when only the fixture did.
+_SHAPE_CASES = (
+    # A vision requirement must actually REJECT the text-only elos. Under the
+    # defect this came back as all three declared hops in declared order.
+    ({"model": "T4"}, CAPS_TIERS, _vision_features(), None),
+    # The time layer rides the same import: a dollar cap at a peak hour.
+    ({"model": "T1"}, TIME_TIERS, _mkf(), PEAK_MONDAY),
+)
+
+#: Rule ids whose cause label is decided by the adapter's table, not by the
+#: output shape — i.e. the ones that need ``_cause_labeller`` to have resolved.
+#: All three are non-default labels, so "both sides say default_fallthrough"
+#: cannot pass for agreement.
+_SHAPE_CAUSE_IDS = ("vision-required", "huge-context-read", "hard-verbs")
+
+#: Runs in the child. Reports which modules the relative import actually bound,
+#: not merely that something was bound. ``__SLUG__`` is substituted rather than
+#: str.format()-ed so the dict literals below need no brace doubling.
+_SHAPE_PROBE = '''
+import json
+import sys
+from datetime import datetime
+
+payload = json.load(sys.stdin)
+
+from hermes_plugins.__SLUG__.router import rules
+from hermes_plugins.__SLUG__.router.adapter import _cause_from_rule
+
+out = {
+    "module": rules.__name__,
+    "caps": None if rules._caps is None else rules._caps.__name__,
+    "signals": None if rules._signals is None else rules._signals.__name__,
+    "labeller_reachable": rules._cause_labeller() is not None,
+    "plans": [],
+}
+
+# Non-vacuity, checked from inside: if the top-level name were reachable here the
+# absolute fallback could satisfy every assertion in the parent with the defect
+# restored, and this probe would be testing nothing.
+try:
+    import router  # noqa: F401
+except ImportError:
+    out["absolute_name_reachable"] = False
+else:
+    out["absolute_name_reachable"] = True
+
+for case in payload["cases"]:
+    when = datetime.fromisoformat(case["when"]) if case["when"] else None
+    resolved = rules.resolve_tiers(case["selector"], case["tiers"])
+    out["plans"].append(rules.plan_chain(resolved, case["features"], when=when))
+
+# Both halves of the cause pair, read in the SAME interpreter: the surface that
+# displays a decision and the path that runs it.
+out["causes"] = {
+    rid: [
+        rules._determine_cause(rid, {"model": "m"}),
+        _cause_from_rule(rid, {"model": "m"}),
+    ]
+    for rid in payload["cause_rule_ids"]
+}
+
+json.dump(out, sys.stdout)
+'''
+
+
+def _build_plugin_package(root):
+    """Lay out ``hermes_plugins.<slug>.router`` under ``root``.
+
+    COPIED, never symlinked: the child must not be able to reach this repo by any
+    path other than the one under test.
+    """
+    import shutil
+    from pathlib import Path
+
+    pkg = root / "hermes_plugins" / _PLUGIN_SLUG
+    pkg.mkdir(parents=True)
+    shutil.copytree(
+        Path(rules_mod.__file__).resolve().parent,
+        pkg / "router",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    (root / "hermes_plugins" / "__init__.py").write_text("")
+    (pkg / "__init__.py").write_text("")
+    return root
+
+
+def _probe_package_shape(root, cases, cause_rule_ids):
+    """Plan ``cases`` in a child interpreter that can only see the package shape."""
+    import os
+    import subprocess
+    import sys
+
+    _build_plugin_package(root)
+    script = root / "shape_probe.py"
+    script.write_text(_SHAPE_PROBE.replace("__SLUG__", _PLUGIN_SLUG))
+
+    payload = json.dumps({
+        "cases": [
+            {
+                "selector": selector,
+                "tiers": tiers,
+                "features": features,
+                "when": None if when is None else when.isoformat(),
+            }
+            for selector, tiers, features, when in cases
+        ],
+        "cause_rule_ids": list(cause_rule_ids),
+    })
+    # cwd AND PYTHONPATH are the package root and nothing else. Python prepends
+    # cwd to sys.path, so leaving it at the repo root would put `router` back
+    # within reach and hand the absolute fallback a way to succeed.
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        input=payload,
+        capture_output=True,
+        text=True,
+        cwd=str(root),
+        env={**os.environ, "PYTHONPATH": str(root)},
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+class TestCapabilityLayerIsLiveUnderHermesPluginPackageShape:
+    """The shape production loads must get the same routing engine tests do."""
+
+    @pytest.fixture(scope="class")
+    def probe(self, tmp_path_factory):
+        # Class-scoped: one child interpreter answers every case below.
+        return _probe_package_shape(
+            tmp_path_factory.mktemp("plugin_shape"), _SHAPE_CASES, _SHAPE_CAUSE_IDS
+        )
+
+    def test_registry_and_signals_bind_the_sibling_copies(self, probe):
+        """``_caps``/``_signals`` are live, and are the modules NEXT TO rules.py.
+
+        Identity, not just non-None: binding some other ``router.capabilities``
+        that happened to be importable would be the double-import bug rather than
+        this one, and both surfaces would still be describing different state.
+        """
+        assert probe["module"] == f"hermes_plugins.{_PLUGIN_SLUG}.router.rules"
+        assert probe["absolute_name_reachable"] is False
+        assert probe["caps"] == f"hermes_plugins.{_PLUGIN_SLUG}.router.capabilities"
+        assert probe["signals"] == f"hermes_plugins.{_PLUGIN_SLUG}.router.signals"
+
+    def test_plan_chain_agrees_with_the_flat_shape_case_for_case(self, probe):
+        """The two loading shapes must not be able to route differently."""
+        assert len(probe["plans"]) == len(_SHAPE_CASES)
+        for (selector, tiers, features, when), produced in zip(
+            _SHAPE_CASES, probe["plans"]
+        ):
+            expected = plan_chain(
+                resolve_tiers(selector, tiers), features, when=when
+            )
+            assert produced == expected, selector
+
+    def test_the_package_shape_plan_actually_filtered(self, probe):
+        """Agreement alone would also hold if BOTH shapes were inert.
+
+        So this pins the side that has to be non-trivial: the declared chain is
+        three hops, a vision requirement leaves exactly one, and the dollar cap
+        drops exactly the metered rail that is over it.
+        """
+        vision_plan, capped_plan = probe["plans"]
+
+        assert [hop["model"] for hop in vision_plan["chain"]] == ["vision-elo"]
+        assert vision_plan["requirements"] == {"vision": True}
+        assert [r["model"] for r in vision_plan["rejected"]] == [
+            "text-only-elo", "another-text-elo",
+        ]
+        assert {r["reject_reason"] for r in vision_plan["rejected"]} == {"no_vision"}
+        assert vision_plan["bypassed"] is False
+
+        assert [c["model"] for c in capped_plan["capped"]] == ["deepseek-v4-pro"]
+        assert capped_plan["time_cap"] == {"max_multiplier": 1.5}
+        assert capped_plan["time_agnostic"] is False
+
+    def test_the_cause_label_pair_agrees_under_the_package_shape(self, probe):
+        """``_cause_labeller`` resolves the adapter, so both halves say the same.
+
+        ``_determine_cause`` is the label the DISPLAY surfaces show and
+        ``adapter._cause_from_rule`` is the one the RUNNING path records; the
+        delegation exists so there is one answer. Resolving the adapter by the
+        absolute name only made "no labeller reachable" the normal state here, so
+        every rule-keyed cause displayed as ``default_fallthrough`` while the
+        adapter kept recording the real one — the pair silently disagreeing on the
+        shape production runs, with the flat-shape tests all green.
+        """
+        assert probe["labeller_reachable"] is True
+        assert set(probe["causes"]) == set(_SHAPE_CAUSE_IDS)
+        for rid, (displayed, ran) in probe["causes"].items():
+            assert displayed == ran, rid
+            # Non-vacuity: agreeing on the no-labeller degrade is not agreement.
+            assert displayed != "default_fallthrough", rid

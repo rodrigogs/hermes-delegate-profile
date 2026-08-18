@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import threading
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 import yaml
@@ -398,7 +399,11 @@ def test_routes_lists_recent_first_with_projection(tmp_path, monkeypatch, config
     assert result["trace_path"].endswith("routes.jsonl")
     # Most recent first.
     assert result["routes"][0]["cause"] == "classifier"
+    # These entries predate `attempted_model` (every historical trace does), so
+    # the declared primary IS the honest answer for what ran — and both fields
+    # say so rather than one of them going blank.
     assert result["routes"][0]["model"] == "m2"
+    assert result["routes"][0]["declared_model"] == "m2"
     assert result["routes"][1]["task"] == "a"
 
 
@@ -484,6 +489,189 @@ def test_routes_skips_absent_backup_in_chain(tmp_path, monkeypatch, config_path)
     # count reflects all readable entries across the chain.
     assert result["count"] == 4  # 3 current + 1 from .2
     assert any(r["task"] == "deep" for r in svc.routes(limit=100)["routes"])
+
+
+# ---------------------------------------------------------------------------
+# routes() must name the elo that RAN — the recurring defect, on the primary
+# operator surface. Every test below drives a REAL routing decision through
+# adapter.route (the running path) and reads it back through routes() (the
+# displaying path), then asserts the two AGREE. Asserting either side alone is
+# what let this diverge: the writer was fixed and the reader was not.
+# ---------------------------------------------------------------------------
+
+# The live policy — the same one production routes on. `_seed_live_router_config`
+# (tests/conftest.py) guarantees it exists in a fresh checkout.
+LIVE_POLICY = Path(__file__).resolve().parents[2] / "router.yaml"
+
+# A vision turn: the shipped T2 primary cannot see, so the capability filter
+# promotes a fallback hop and the DECLARED tier primary is not what runs. That
+# gap is the whole subject of these tests.
+VISION_TASK = "Look at this screenshot and tell me why the layout breaks"
+
+# 07:00 UTC Monday — inside the shipped peak windows, so the time layer is live
+# for these turns rather than a no-op. Injected, never read from the wall clock.
+PEAK_CLOCK = datetime(2026, 8, 17, 7, 0, tzinfo=timezone.utc)
+
+
+def _executor_targets(routed):
+    """The attempt order the delegate_profile executor really derives.
+
+    The plugin's own ``_routed_targets``, loaded from ``__init__.py`` rather than
+    re-implemented here: a mirror of "which target runs first" written inside the
+    test is exactly the second opinion this whole family of defects is made of.
+    """
+    import importlib.util
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    spec = importlib.util.spec_from_file_location(
+        "delegate_profile_executor_view", root / "__init__.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module._routed_targets(routed)
+
+
+def _route_and_list(task, **kwargs):
+    """Route ``task`` for real, then read the decision back off routes().
+
+    Returns ``(result, entry, listed)`` — the executor's decision, the persisted
+    trace entry, and the projection routes() serves for that same decision. The
+    autouse ``_isolate_route_trace`` fixture points the trace file at tmp_path, so
+    the writer and this reader converge on one temp file.
+    """
+    from router.durable_decision_log import DurableDecisionLog
+    from router.adapter import route as adapter_route
+
+    config = yaml.safe_load(LIVE_POLICY.read_text(encoding="utf-8"))
+    dlog = DurableDecisionLog()
+    result = adapter_route(task, config, decision_log=dlog, now=PEAK_CLOCK, **kwargs)
+    listed = RouterService(LIVE_POLICY).routes()["routes"][0]
+    return result, dlog.tail(1)[0], listed
+
+
+def test_routes_names_the_elo_that_ran_and_keeps_the_tier_identity(tmp_path):
+    """The agreement itself: routes()'s model IS the executor's first target.
+
+    routes() labelled every decision with ``output.model``, the DECLARED tier
+    primary, which after a capability filter, a time cap, a shuffle or a blocklist
+    veto is not the elo the executor dispatches. Measured on the shipped policy at
+    07:00Z: the Decisions tab said the turn below ran ``glm-5.3`` — a model that
+    cannot see, and was never attempted — while ``gpt-5.6-luna`` served it. The
+    writer side (``output.attempted_model``) was fixed on this branch; this reader
+    was not, so the branch is what made the two disagree.
+    """
+    from router.decision_log import attempted_head_of
+
+    result, entry, listed = _route_and_list(VISION_TASK)
+
+    executor_first = _executor_targets(result)[0]
+    # The precondition, asserted so this test can never pass vacuously: if the
+    # policy stops promoting a fallback hop here, declared == attempted and there
+    # is no disagreement left to catch.
+    assert executor_first[0] != result["model"], (
+        "this task no longer separates the declared primary from the attempted "
+        "head, so the agreement below proves nothing"
+    )
+
+    # The two sides, on the same decision: what the operator is SHOWN, and what
+    # the executor RUNS.
+    assert (listed["model"], listed["provider"]) == executor_first
+    # ...and the surface agrees with the single accessor the writer persists
+    # through, rather than having its own reading of "the head".
+    assert (listed["model"], listed["provider"]) == attempted_head_of(entry)
+    # The tier identity is kept as secondary, not dropped: it is what ties the
+    # decision back to the tier the rule chose.
+    assert listed["declared_model"] == result["model"]
+    assert listed["rule_id"] == entry["rule_id"]
+
+
+@pytest.mark.parametrize("task", [
+    VISION_TASK,
+    "Rename getCwd in src/utils.py",
+    "Debug a race condition in the user cache",
+    "an entirely ambiguous request",
+])
+def test_every_listed_decision_agrees_with_what_the_executor_would_run(task, tmp_path):
+    """One property over four routing paths, rather than four literals.
+
+    A filtered chain, an unfiltered one, a hard rule and a classifier answer all
+    have to project the same way: the elo that ran, whether or not it happens to
+    equal the tier primary. The un-filtered cases are the ones that make the
+    difference invisible, which is why they are in here too.
+    """
+    result, _entry, listed = _route_and_list(
+        task, classify_fn=lambda _t, _f: {"tier": "T3", "confidence": "high"},
+    )
+    assert (listed["model"], listed["provider"]) == _executor_targets(result)[0], (
+        f"the Decisions tab and the executor disagree for {task!r}"
+    )
+
+
+def test_a_denied_decision_names_no_model_rather_than_the_one_it_refused(tmp_path):
+    """A veto that attempts nothing must not be labelled with the elo it blocked.
+
+    ``output.model`` survives on a denial (it is the decision that WOULD have run),
+    so projecting it would have the tab reporting a model for a turn nothing was
+    dispatched for. ``attempted_head_of`` answers "" for an empty chain and that
+    answer has to reach the surface intact.
+    """
+    from router.blocklist import Blocklist
+    from router.durable_decision_log import DurableDecisionLog
+    from router.adapter import route as adapter_route
+
+    config = yaml.safe_load(LIVE_POLICY.read_text(encoding="utf-8"))
+    chosen = adapter_route(VISION_TASK, config, now=PEAK_CLOCK)["model"]
+    banned = yaml.safe_load(LIVE_POLICY.read_text(encoding="utf-8"))
+    chain = [chosen, "gpt-5.6-luna", "deepseek-v4-flash", "glm-5.3"]
+    banned["blocklist"]["fallback_chain"] = chain
+    banned["blocklist"]["manual_ban"] = [
+        {"model": model, "provider": "", "reason": "test-ban"} for model in chain
+    ]
+
+    dlog = DurableDecisionLog()
+    result = adapter_route(VISION_TASK, banned, blocklist=Blocklist(banned),
+                           decision_log=dlog, now=PEAK_CLOCK)
+    assert result["deny"] is True
+    assert _executor_targets(result) == [], "a denial attempts nothing"
+
+    listed = RouterService(LIVE_POLICY).routes()["routes"][0]
+    assert listed["cause"] == "blocklist_veto"
+    assert (listed["model"], listed["provider"]) == ("", "")
+
+
+def test_routes_survives_an_undecodable_byte_and_still_serves_the_readable_lines(
+    tmp_path, monkeypatch, config_path,
+):
+    """One invalid byte must cost that LINE, not the whole read path.
+
+    ``read_text`` raises ``UnicodeDecodeError`` — a ``ValueError``, so the reader's
+    ``except OSError`` never saw it — and the trace is appended to by another
+    process, so a torn multi-byte write is a thing that happens. Unhandled it
+    escaped both routes() and route(), which the sidecar answers with an aborted
+    connection and a Decisions tab that stays dead until someone finds the file.
+    """
+    monkeypatch.setenv("HERMES_ROUTE_TRACE_FILE", str(tmp_path / "routes.jsonl"))
+    from router.durable_decision_log import routes_path
+    path = routes_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    good_first = json.dumps({"ts": 1.0, "cause": "hard_rule", "task": "first",
+                             "output": {"model": "m1"}}).encode("utf-8")
+    torn = b'{"ts": 2.0, "cause": "classifier", "task": "\xff\xfe torn"}'
+    good_last = json.dumps({"ts": 3.0, "cause": "classifier", "task": "last",
+                            "output": {"model": "m3"}}).encode("utf-8")
+    path.write_bytes(good_first + b"\n" + torn + b"\n" + good_last + b"\n")
+
+    svc = RouterService(config_path)
+    result = svc.routes()  # must not raise
+
+    assert [r["task"] for r in result["routes"]] == ["last", "first"]
+    assert result["count"] == 2
+    # ...and route() reads the same file through the same reader, so the entry
+    # AFTER the corruption is still fetchable by id.
+    assert svc.route(result["routes"][0]["id"])["task"] == "last"
 
 
 def test_validate_fail_safe_is_noop_when_absent():
@@ -1845,6 +2033,97 @@ def test_hot_apply_round_trips_time_cap_and_a_reordered_fallback(time_config_pat
     assert peak["chain_plan"]["time_cap"] == {"max_multiplier": 1.5}
     assert [c["model"] for c in peak["chain_plan"]["capped"]] == ["deepseek-v4-pro"]
     assert _chain(peak) == ["MiniMax-M3", "glm-4.6"]
+
+
+def test_lifting_a_cost_control_is_expressible_and_a_no_op_edit_says_so(
+    time_config_path,
+):
+    """A mapping knob can be REMOVED, and an edit that changes nothing admits it.
+
+    The write path could only add or overwrite: a deep merge of ``{'time_cap': {}}``
+    merges no sub-keys, so the cap stayed on disk while plan() answered
+    ``valid: True`` with an empty diff and apply() answered ``ok: True``. Two of the
+    four mapping knobs this branch added are COST controls, and "lift the cap now"
+    is the request an operator makes in a hurry — the one case where being told the
+    edit succeeded while nothing happened costs money.
+
+    Both halves are asserted here: the null spelling REMOVES, and every spelling
+    that changes nothing (an empty mapping, and a removal plan's merged policy fed
+    back in) is reported as ``no_op`` instead of as a committed edit.
+    """
+    service = RouterService(time_config_path)
+    # Put T1 in the shape the finding was measured on: BOTH cost controls at once.
+    setup = service.plan({"tiers": {
+        "T1": {"time_policy": {"avoid_peak": ["deepseek"]}},
+    }})
+    assert setup["no_op"] is False
+    assert service.apply(setup["base_hash"], setup["policy"])["ok"] is True
+    t1 = yaml.safe_load(time_config_path.read_text(encoding="utf-8"))["tiers"]["T1"]
+    assert t1["time_cap"] == {"max_multiplier": 1.5}
+    assert t1["time_policy"] == {"avoid_peak": ["deepseek"]}
+
+    # The spelling that cannot work: an empty mapping merges nothing. It is now
+    # reported as the no-op it always was, on BOTH halves of the write path.
+    empty = service.plan({"tiers": {"T1": {"time_cap": {}}}})
+    assert (empty["valid"], empty["diff"], empty["no_op"]) == (True, "", True)
+    before = time_config_path.read_bytes()
+    assert service.apply(empty["base_hash"], empty["policy"]) == {
+        "ok": True, "no_op": True,
+        "base_hash": RouterService._hash_bytes(before),
+    }
+    assert time_config_path.read_bytes() == before  # and it did not write
+
+    # The spelling that works: an explicit null removes the knob, and only that one.
+    removal = {"tiers": {"T1": {"time_cap": None}}}
+    planned = service.plan(removal)
+    assert planned["valid"] is True
+    assert planned["no_op"] is False
+    assert "time_cap" not in planned["policy"]["tiers"]["T1"]
+    applied = service.apply(planned["base_hash"], removal)
+    assert applied["ok"] is True and applied["no_op"] is False
+
+    lifted = yaml.safe_load(time_config_path.read_text(encoding="utf-8"))["tiers"]["T1"]
+    assert "time_cap" not in lifted                      # the cap is GONE, not null
+    assert lifted["time_policy"] == {"avoid_peak": ["deepseek"]}  # sibling survived
+    assert lifted["fallback"][0]["model"] == "deepseek-v4-pro"
+    # Live on the next read: the peak hour no longer caps this tier's elos, which
+    # is the operator-visible effect they were asking for.
+    assert "time_cap" not in service.policy()["tiers"]["T1"]
+    peak = service.explain(_TRIVIAL_TASK, _PEAK_0200)
+    assert peak["chain_plan"]["capped"] == []
+    assert _chain(peak) == ["deepseek-v4-flash", "deepseek-v4-pro"]
+
+    # A removal cannot be round-tripped through plan()['policy'] — a merge cannot
+    # see absence — and that path is reported as the no-op it is, never as a
+    # deletion that happened.
+    restore = service.plan({"tiers": {"T1": {"time_cap": {"max_multiplier": 1.5}}}})
+    assert service.apply(restore["base_hash"], restore["policy"])["ok"] is True
+    assert "time_cap" in service.policy()["tiers"]["T1"]  # cap back on disk
+    round_trip = service.plan(removal)
+    assert round_trip["no_op"] is False                   # the PLAN removes it
+    replayed = service.apply(round_trip["base_hash"], round_trip["policy"])
+    assert replayed["no_op"] is True                      # the merged policy cannot
+    assert service.policy()["tiers"]["T1"]["time_cap"] == {"max_multiplier": 1.5}
+
+
+def test_a_null_removal_that_would_misroute_is_refused_by_the_write_gate(
+    time_config_path,
+):
+    """Removal rides the same fail-closed gate as every other edit.
+
+    ``null`` is a delete, not an escape hatch: dropping a tier a rule targets is a
+    misroute, so lint refuses the merged result before anything is written.
+    """
+    service = RouterService(time_config_path)
+    before = time_config_path.read_bytes()
+
+    # T4 is the tier `hard-verbs` routes to. Deleting it breaks that rule.
+    plan = service.plan({"tiers": {"T4": None}})
+    assert plan["valid"] is False
+    assert plan["no_op"] is False
+    assert any("T4" in error for error in plan["errors"])
+    assert service.apply(plan["base_hash"], {"tiers": {"T4": None}})["ok"] is False
+    assert time_config_path.read_bytes() == before
 
 
 def test_apply_rejects_an_invalid_time_cap_and_time_policy(time_config_path):

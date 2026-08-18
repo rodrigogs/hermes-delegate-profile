@@ -15,10 +15,14 @@
 #      and `time_cap` only removes elos it puts in the dollars bucket
 #      (metered/subscription), so a wrong mode silently changes routing.
 #   2. YOUR UTC OFFSET. Every window here is UTC, because that is how the
-#      providers bill. The deepseek and zai peaks OVERLAP at 06:00-10:00 UTC; on
-#      the reference install (UTC-03) that is 03:00-07:00 local, i.e. overnight
-#      unattended work pays double on both primary rails at once. Work out where
-#      that block lands in YOUR timezone before tuning anything time-related.
+#      providers bill. The deepseek and zai peaks overlap at 06:00-10:00 UTC on
+#      WEEKDAYS ONLY (deepseek also peaks 01:00-04:00 daily and all weekend at
+#      06:00-10:00; zai's window is Mon-Fri); on the reference install (UTC-03)
+#      06:00-10:00 UTC is 03:00-07:00 local, i.e. overnight unattended work pays
+#      double on both primary rails at once. Where the two windows DIVERGE is
+#      where T3/T4's `avoid_peak` reorders — 29 of the week's 168 hours — so work
+#      out where BOTH blocks land in your timezone before tuning anything
+#      time-related.
 #   3. WHETHER TO ENABLE the commented-out `defer-heavy-work-off-peak` rule
 #      (see the note on it). It trades capability for price, so it is off here.
 #   4. YOUR OWN blocklist.manual_ban — shipped empty on purpose.
@@ -290,14 +294,18 @@ tiers:
     # excludes any DOLLAR-BILLED rail currently in a peak window while admitting
     # every flat rail (and xiaomi's 0.8x discount, which is cheaper than flat).
     # A multiplier, not a dollar ceiling, so it survives a list-price change.
-    # ON THIS ROSTER IT REMOVES NOTHING, and that is expected: max_multiplier is
-    # a DOLLAR ceiling, so it only evicts metered/subscription elos. glm-4.7 is
+    # ON THIS ROSTER IT REMOVES NOTHING AT ANY HOUR (verified over all 168 hours
+    # of the week, not sampled), and that is expected: max_multiplier is a DOLLAR
+    # ceiling, so it only evicts metered/subscription elos. glm-4.7 is
     # plan-covered — its 2.0x doubles a CREDIT draw off an allowance already
-    # bought and adds no dollars, so the cap cannot evict it and REPORTS it
-    # instead (cap_exempt), while gpt-5.6-luna is flat and mimo-v2.5's only
-    # window is a discount. Keep it anyway: it is already in force over both
-    # hops that can bill money, and the day a dollar-billed hop with an
-    # expensive window lands here it is capped from the first request.
+    # bought and adds no dollars, so the cap cannot evict it and
+    # capabilities.apply_time_cap reports it as cap_exempt instead, while
+    # gpt-5.6-luna is flat and mimo-v2.5's only window is a discount. What the
+    # TRACE shows for that is `multipliers: {glm-4.7: 2.0}` — rules.plan_chain
+    # does not forward cap_exempt, so do not expect that key in a plan. Keep the
+    # cap anyway: it is already in force over both hops that can bill money, and
+    # the day a dollar-billed hop with an expensive window lands here it is capped
+    # from the first request.
     # If a future edit leaves EVERY hop capped, the cap SELF-BYPASSES: the
     # original chain is restored and the trace carries time_cap_bypassed: true.
     # A cost control must never be able to cause an outage.
@@ -322,10 +330,17 @@ tiers:
     # OUTPUT price at the injected time — output, because output tokens dominate
     # agent cost — with ties keeping declared order, so the ordering is stable
     # and the order written here still expresses operator preference.
-    # What it trades on: inside the 06:00-10:00 UTC deepseek/zai overlap the tail
-    # is [gpt-5.6-luna $1.20/1M out, deepseek-v4-flash $1.32]; outside it the
-    # tail flips to [deepseek-v4-flash $0.66, gpt-5.6-luna $1.20]. A real
-    # reordering, not a formality.
+    # What it trades on is DEEPSEEK'S WINDOW ALONE, not the deepseek/zai overlap:
+    # glm-5.3 is the pinned primary, so zai's 2.0x never reaches the ordered tail.
+    # That tail is one flat $1.20/1M-out seat against one metered rail at $0.66
+    # base and $1.32 in peak, so its order is a function of deepseek-v4-flash's
+    # multiplier and nothing else:
+    #   inside deepseek's peak -> [gpt-5.6-luna $1.20, deepseek-v4-flash $1.32]
+    #   outside it             -> [deepseek-v4-flash $0.66, gpt-5.6-luna $1.20]
+    # Verified over ALL 168 HOURS of the week: flipped for 49 of them (29.17%) —
+    # 01:00-04:00 AND 06:00-10:00 UTC, EVERY day, i.e. deepseek's two declared
+    # windows. It does not change at the weekend when zai stops peaking, which is
+    # how you can see zai was never the cause.
     # pin_primary: true deliberately: glm-5.3 is plan-covered, so while the plan
     # lasts it is free AT THE MARGIN and no dollar price beats it. It also has no
     # published per-token price (price_in: None), which cheapest_now ranks by
@@ -354,27 +369,37 @@ tiers:
     fallback_strategy: sequential
     requirements:
       min_context: 200000
-    # TIME POLICY. Why it is here: the two rails behind the primary have
-    # OVERLAPPING expensive windows — deepseek 2.0x at 01:00-04:00 and
-    # 06:00-10:00 UTC daily, zai 2.0x at 06:00-10:00 UTC Mon-Fri — so in that
-    # four-hour block BOTH hops bill double at once. On the reference install
-    # (UTC-03) that is 03:00-07:00 local, the overnight unattended window, so the
-    # traffic nobody is watching is the traffic paying double on both rails.
-    # T3/T4 are the expensive tiers, which is why the knob is here.
-    # ON THIS CHAIN SHAPE IT REORDERS NOTHING: avoid_peak DEMOTES rather than
-    # removes and demotion PRESERVES relative order, so with both named providers
-    # already in the trailing two positions the permutation is the IDENTITY and
-    # `demoted` comes back EMPTY. What it does produce inside the overlap is
-    # `peak_priced: [deepseek-v4-pro, glm-5.3]` — the PRICE reading, naming every
-    # elo it matched in a dearer window whether or not moving it changed
-    # anything. Read `peak_priced` as the cost signal and `demoted` as the order
-    # signal; neither is a saving on this shape.
-    # To get the REORDERING, add a hop on a provider with no expensive window
-    # (xiaomi's mimo-v2.5-pro is flat apart from a 0.8x discount and clears the
-    # 200_000 floor at 1.05M); the pair then demotes behind it.
+    # TIME POLICY. Why it is here: the two rails behind the primary have PARTLY
+    # overlapping expensive windows — deepseek 2.0x at 01:00-04:00 and 06:00-10:00
+    # UTC daily, zai 2.0x at 06:00-10:00 UTC Mon-Fri — so where they overlap BOTH
+    # hops bill double at once. On the reference install (UTC-03) that is
+    # 03:00-07:00 local, the overnight unattended window, so the traffic nobody is
+    # watching is the traffic paying double on both rails. T3/T4 are the expensive
+    # tiers, which is why the knob is here.
+    # WHAT IT DOES, over ALL 168 HOURS of the week — the three cases partition it:
+    #   119h (70.8%)  nothing matches -> declared order, both lists empty.
+    #    29h (17.3%)  deepseek peaks ALONE, so the pair separates: the chain
+    #                 becomes [gpt-5.6-terra, glm-5.3, deepseek-v4-pro] with
+    #                 `demoted: [deepseek-v4-pro]`. That is 01:00-04:00 UTC daily
+    #                 plus 06:00-10:00 UTC at the WEEKEND, when zai's weekday-only
+    #                 window is shut. The second hop of every hard task changes
+    #                 model AND billing rail in those hours.
+    #    20h (11.9%)  both peak together (06:00-10:00 UTC Mon-Fri) -> the
+    #                 permutation is the IDENTITY, because demotion preserves
+    #                 relative order and both named providers already occupy the
+    #                 trailing two slots. `demoted: []` with
+    #                 `peak_priced: [deepseek-v4-pro, glm-5.3]`.
+    # Read `peak_priced` as the cost signal and `demoted` as the order signal.
+    # Verify any claim like this by sweeping the week, never at one hour: an
+    # earlier version of this comment said the shape "REORDERS NOTHING" on the
+    # strength of 07:00Z and 15:00Z, and both of those miss all 29 hours.
+    # To make the demotion bite in the remaining 20 hours too, add a hop on a
+    # provider with no expensive window (xiaomi's mimo-v2.5-pro is flat apart from
+    # a 0.8x discount and clears the 200_000 floor at 1.05M); the pair then
+    # demotes behind it.
     # Keep demotion rather than removal: a demoted rail beats no rail, the same
-    # invariant the capability filter holds. Outside 06:00-10:00 UTC (and all
-    # weekend for zai) nothing matches and both lists are empty.
+    # invariant the capability filter holds. Outside deepseek's two windows AND
+    # zai's one, nothing matches and both lists are empty.
     time_policy:
       avoid_peak: [deepseek, zai]
   # T4 — adversarial. Same two hops as T3 by design: if the strongest rail is
@@ -396,9 +421,11 @@ tiers:
     - model: glm-5.3
       provider: zai
       billing_mode: plan
-    # Same policy as T3, same reason, same caveat — T4 just costs the most per
-    # request, so a 2x here hurts most in absolute terms. Keep the two in step:
-    # the chains are intentionally identical below the primary, so a divergence
-    # between their time policies is a bug, not a deliberate difference.
+    # Same policy as T3, same reason, and — because the chain shape below the
+    # primary is identical — the same measured 119h/29h/20h split, verified the
+    # same way. T4 just costs the most per request, so a 2x here hurts most in
+    # absolute terms. Keep the two in step: the chains are intentionally identical
+    # below the primary, so a divergence between their time policies is a bug, not
+    # a deliberate difference.
     time_policy:
       avoid_peak: [deepseek, zai]

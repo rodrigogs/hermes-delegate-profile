@@ -602,6 +602,175 @@ class TestCLIChainSeed:
 
 
 # ---------------------------------------------------------------------------
+# --prompt-text — the other input a plan must not invent. Sized against the REAL
+# registry and the REAL planner: the point is that the CLI answers the question
+# production asks, so nothing here is stubbed.
+# ---------------------------------------------------------------------------
+
+#: A composed turn: 800k chars of context plus the goal. ~222k estimated tokens,
+#: so the derived min_context (safety headroom included) lands near 278k — above
+#: glm-4.7's 200k window and well inside glm-5.3's 1M. Below
+#: ``RouterService._max_prompt_chars`` (1 MiB), so both surfaces accept it and can
+#: be compared. The numbers are read off the plans below, never hardcoded.
+_SIZING_GOAL = "Debug a race condition in the user cache"
+_SIZING_CONTEXT = "CONTEXT:\n" + ("x" * 800_000)
+_COMPOSED_PROMPT = _SIZING_CONTEXT + "\n\nGOAL: " + _SIZING_GOAL
+
+
+@pytest.fixture
+def sizing_config_file(tmp_path):
+    """A lint-valid policy whose tier spans one big-window elo and one small one.
+
+    Both are REGISTERED, so the capability filter can actually act on a derived
+    ``min_context``: glm-5.3 holds 1M tokens and glm-4.7 holds 200k. Lint-valid
+    (all four tiers present) because the same file is handed to RouterService,
+    which fails closed on an invalid policy — the two surfaces have to be asked
+    the same question off the same policy for their answers to be comparable.
+    """
+    config = {
+        "enabled": True,
+        "classifier": {"model": "glm-5.3", "provider": "zai"},
+        "fail_safe": {"profile": "coder", "model": "glm-5.3", "provider": "zai"},
+        "blocklist": {"manual_ban": [], "fallback_chain": [],
+                      "auto_breaker": {"enabled": False}},
+        "rules": [
+            {"id": "hard-verbs", "status": "stable",
+             "when": {"verb_class": {"eq": "hard"}},
+             "then": {"profile": "coder", "model": "T2"}},
+        ],
+        "default": {"profile": "coder", "model": "T2"},
+        "tiers": {
+            "T1": {"model": "glm-4.7", "provider": "zai"},
+            "T2": {"model": "glm-5.3", "provider": "zai",
+                   "fallback": [{"model": "glm-4.7", "provider": "zai"}]},
+            "T3": {"model": "glm-5.3", "provider": "zai"},
+            "T4": {"model": "glm-5.3", "provider": "zai"},
+        },
+    }
+    path = tmp_path / "router.yaml"
+    with open(path, "w") as f:
+        yaml.dump(config, f)
+    return str(path)
+
+
+def _sizing_json(capsys, config, *argv):
+    return json.loads(_chain_text_for(capsys, config, _SIZING_GOAL, "--json",
+                                      "--at", _MON_PEAK, *argv))
+
+
+class TestCLIChainPromptText:
+    """The CLI was the only read surface that could not size a turn, or say so."""
+
+    def test_prompt_text_sizes_the_plan_the_way_production_sizes_it(
+        self, sizing_config_file, capsys
+    ):
+        """Without the option the CLI answered a different question, invisibly.
+
+        ``est_input_tokens`` and the ``min_context`` derived from it decide which
+        elos survive the filter. Measured on the goal line the turn is 40 chars and
+        every hop qualifies; measured on the composed prompt the small-window hop
+        cannot hold the turn and is rejected — which is what production does with
+        the same text.
+        """
+        goal_only = _sizing_json(capsys, sizing_config_file)
+        sized = _sizing_json(capsys, sizing_config_file,
+                             "--prompt-text", _COMPOSED_PROMPT)
+
+        goal_plan, sized_plan = goal_only["chain_plan"], sized["chain_plan"]
+        # The goal line alone derives a floor no elo could fail.
+        assert [h["model"] for h in goal_plan["chain"]] == ["glm-5.3", "glm-4.7"]
+        assert goal_plan["rejected"] == []
+        # The composed prompt derives the real floor, and it filters.
+        assert sized_plan["requirements"]["min_context"] > \
+            goal_plan["requirements"]["min_context"]
+        assert [h["model"] for h in sized_plan["chain"]] == ["glm-5.3"]
+        assert [(h["model"], h["reject_reason"]) for h in sized_plan["rejected"]] == \
+            [("glm-4.7", "context_too_small")]
+        # ...and the filter did not empty the chain, so nothing bypassed itself.
+        assert sized_plan["bypassed"] is False
+
+    def test_the_plan_discloses_which_text_it_measured(
+        self, sizing_config_file, capsys
+    ):
+        """The vocabulary is the one every other surface already reports.
+
+        ``preview.sized_from`` / ``preview.prompt_chars`` — the same two keys and
+        the same two values (``task``, ``prompt_text``) as
+        ``RouterService.explain``, the sidecar's /explain and the dashboard's. A
+        plan sized from the goal line is a legitimate answer; an UNLABELLED one is
+        indistinguishable from a plan sized from the real turn.
+        """
+        sized = _sizing_json(capsys, sizing_config_file,
+                             "--prompt-text", _COMPOSED_PROMPT)
+        assert sized["preview"] == {
+            "sized_from": "prompt_text", "prompt_chars": len(_COMPOSED_PROMPT),
+        }
+
+        goal_only = _sizing_json(capsys, sizing_config_file)
+        assert goal_only["preview"] == {
+            "sized_from": "task", "prompt_chars": len(_SIZING_GOAL),
+        }
+
+        # An empty or whitespace value is measured exactly as production measures
+        # it — the same falsy test adapter.route and explain() use, so "" is the
+        # goal line and "   " is three chars of prompt.
+        assert _sizing_json(capsys, sizing_config_file,
+                            "--prompt-text", "")["preview"]["sized_from"] == "task"
+        blank = _sizing_json(capsys, sizing_config_file, "--prompt-text", "   ")
+        assert blank["preview"] == {"sized_from": "prompt_text", "prompt_chars": 3}
+
+    def test_the_human_rendering_names_the_measured_text_too(
+        self, sizing_config_file, capsys
+    ):
+        """``--json`` is not the operator's default, so the disclosure is printed."""
+        sized = _chain_text_for(capsys, sizing_config_file, _SIZING_GOAL,
+                                "--at", _MON_PEAK,
+                                "--prompt-text", _COMPOSED_PROMPT)
+        line = _line_starting(sized, "sized_from:")
+        assert "prompt_text" in line
+        assert str(len(_COMPOSED_PROMPT)) in line
+
+        goal_only = _chain_text_for(capsys, sizing_config_file, _SIZING_GOAL,
+                                    "--at", _MON_PEAK)
+        goal_line = _line_starting(goal_only, "sized_from:")
+        assert "task" in goal_line
+        # ...and it says how to ask the other question, which is the half an
+        # operator cannot guess from a plan that looks complete.
+        assert "--prompt-text" in goal_line
+
+    def test_the_cli_and_the_service_agree_on_the_same_composed_turn(
+        self, sizing_config_file, capsys
+    ):
+        """The AGREEMENT, not one side: two surfaces, one question, one answer.
+
+        ``chain --prompt-text`` and ``RouterService.explain(..., prompt_text=)`` are
+        the shell and the HTTP readings of the same plan. Asserting only that the
+        CLI accepts the option would leave it free to measure something else, which
+        is the shape of the defect it exists to close.
+        """
+        from router.service import RouterService
+
+        cli_payload = _sizing_json(capsys, sizing_config_file,
+                                   "--prompt-text", _COMPOSED_PROMPT)
+        service = RouterService(Path(sizing_config_file)).explain(
+            _SIZING_GOAL, _MON_PEAK, prompt_text=_COMPOSED_PROMPT,
+        )
+
+        cli_plan, service_plan = cli_payload["chain_plan"], service["chain_plan"]
+        assert [h["model"] for h in cli_plan["chain"]] == \
+            [h["model"] for h in service_plan["chain"]]
+        assert cli_plan["requirements"] == service_plan["requirements"]
+        assert [(h["model"], h["reject_reason"]) for h in cli_plan["rejected"]] == \
+            [(h["model"], h["reject_reason"]) for h in service_plan["rejected"]]
+        # The disclosure is the same fact in the same words on both surfaces.
+        assert cli_payload["preview"]["sized_from"] == service["preview"]["sized_from"]
+        assert cli_payload["preview"]["prompt_chars"] == \
+            service["preview"]["prompt_chars"]
+        # The clock is the same too, so neither answer can be the other hour's.
+        assert cli_payload["utc_hour"] == service["evaluated_at"]["utc_hour"]
+
+
+# ---------------------------------------------------------------------------
 # The injected clock — prices, multipliers and the time-layer flags
 # ---------------------------------------------------------------------------
 
@@ -1350,6 +1519,13 @@ class TestCLIParser:
         assert args.task == "debug a race"
         assert args.json is False
         assert args.seed is None
+        # Omitted means "measure the task line", which the payload then discloses.
+        assert args.prompt_text == ""
+
+    def test_parser_chain_prompt_text(self):
+        parser = build_parser()
+        args = parser.parse_args(["chain", "t", "--prompt-text", "ctx\n\ngoal"])
+        assert args.prompt_text == "ctx\n\ngoal"
 
     def test_parser_chain_json_and_seed(self):
         parser = build_parser()

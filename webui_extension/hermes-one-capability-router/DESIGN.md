@@ -19,7 +19,7 @@ to one of them; anything serving none of them does not ship.
 |---|---|---|
 | Is it healthy? | **Health** | which models can be routed to, right now |
 | How does it route? | **Pipeline** | where a task lands, and the ordered policy that put it there |
-| What did it decide? | **Routes** | recent real decisions, replayable step by step |
+| What did it decide? | **Routes** | recent real decisions, replayable step by step — with the chain the router persisted for each |
 
 Blocklist and Compaction are subordinate detail, not peers: they live inside
 Health and Pipeline respectively unless they carry an active condition.
@@ -189,6 +189,16 @@ one an operator acts on:
   price is NEVER rendered as `$0` — it is billed in plan or subscription credits,
   and a zero would both say the opposite of the truth and make it look like the
   cheapest thing on screen. A genuine `0.00` (a free rail) is a price and stays.
+  **The UNIT travels with the number, and it is read off the BILLING MODE, never
+  off whether a rate exists.** Three plan-covered zai elos also carry the metered
+  list price they are separately purchasable at, so `plan` and "no dollar figure"
+  are not the same case: plan-billed glm-4.7 rendered `2× peak · $1.20 in / $4.40
+  out per 1M` — four figures of dollars for a rail that draws 16 output credits, 32
+  inside the window, and invoices none of it on a plan key. So a plan elo's prices
+  are named as the list price they are, with the credits qualifier the console
+  previously spent only where there was no number to misread. `subscription` gets
+  no qualifier: every seat elo here publishes the per-token rate its rail bills at,
+  which is exactly why the cost bucketing counts it as dollars.
 - **why the time policy moved it**, when it did: `capped`, `demoted` and
   `promoted` in words that name the consequence ("moved to the end — deepseek is
   in an expensive window, so it is tried only if everything ahead of it fails").
@@ -202,6 +212,24 @@ OpenRouter, so a chain hopping from one to the other survives nothing. The tier
 head reports independent rails against hops, and a chain whose FIRST TWO hops
 share an upstream is called out by name with the reorder to make — that is the
 pair redundancy actually uses.
+
+**A declared knob is described by what it DOES, and a price ceiling is described
+IN ITS OWN UNIT.** The tier head carries `time_cap` and `time_policy` as
+consequences, not as config echoed back. A `time_cap` is a DOLLAR ceiling
+(`capabilities.apply_time_cap`): it removes only the `metered` and `subscription`
+hops over the multiplier, and it EXEMPTS `plan`, `free` and undescribable ones
+however dear their window gets — reporting them as `cap_exempt` rather than
+silently keeping them. "Declines any rail over 1.5×" was therefore false about
+precisely the rail it matters most for: T1's primary is plan-billed and doubles on
+weekday mornings, and the cap cannot touch it, because credits come off an
+allowance already bought and no multiplier on them adds a dollar. That claim was
+corrected twice in router.yaml's comments and then shipped here, so the line now
+says both halves — the two modes the ceiling can act on, and this tier's own
+exempt hops with the reason. Where nothing in the chain is priced in dollars the
+cap removes nothing at all and says so; where a hop's mode is UNDECLARED it does
+not, because a cost control must never be reported as inert on the strength of a
+gap. The unit table is `capabilities._BILLING_RANK`, the same one `cheapest_now`
+buckets on — one answer to "which unit is this quoted in?", not two.
 
 **Conditions an operator must never discover by accident**, all surfaced before
 anything else in a chain plan, each naming what the router will do AND what the
@@ -300,6 +328,16 @@ is not any one screen's subject: it changes what all three of them mean.
   it was planned against, every price under it is read at that hour and the panel
   says `planned at 03:00 UTC`. When it reports none, the console's hour is used —
   which is the hour this line already names, so there is still one authority.
+- **A DECISION THAT ALREADY HAPPENED never falls back to the browser's hour.** On
+  Routes the subject is a recorded decision, and the clock line above reports NOW,
+  which is not when the decision was made. So a replayed plan is priced at its own
+  reported hour, then at the hour its TRACE records (`ts`, the log's own), then at
+  no hour at all — never at the console's, because putting this morning's
+  multipliers on last night's chain is the same error as reading a clock inside a
+  rule. The hour is always named there, with its source, since the line at the top
+  cannot name it: `planned at 03:00 UTC` when the router reported one, `priced at
+  03:00 UTC, the hour this decision was recorded` when only the trace did. Liveness
+  is not consulted at all for a replay: a read taken after the fact measures now.
 
 ## 4. Writing is a mode, and it is off by default
 
@@ -411,7 +449,16 @@ up. A cause label ("fail safe strong") is a phrase, so it is sans, not mono.
 - Nav items keep `class="tab"` + `role="tab"` + `data-tab` + `aria-controls`,
   and panels keep `id="panel-<tab>"`; one delegate drives selection.
 - These ids are load-bearing for tests: `sheet`, `probeTask`, `ladder`,
-  `routesTable`, `replayPath`, `chainPlan`, `clockbar`.
+  `routesTable`, `replayPath`, `chainPlan`, `replayPlan`, `clockbar`.
+- ONE chain renderer serves both surfaces. The Explain panel plans a task that has
+  not run and Routes replays one that has, and they are the same reading, so
+  `renderChainPlan` takes the box it draws into rather than either screen growing
+  its own chain vocabulary. `replayPlan` existed for a release with nothing ever
+  filling it, which left the one surface that answers "what did the router actually
+  do" showing a path and two blocks of JSON — while the head the executor really
+  dispatched (`output.attempted_model`, copied off `chain_plan.chain[0]` by
+  `decision_log.record`) was in the reply the whole time. Hop 1 of that panel and
+  that field are the same elo, and a test asserts they agree.
 - `nowUtc()` is the ONLY reader of a wall clock, and `state.clock` overrides it.
   Every time-dependent function takes `{hour, weekday}` as a parameter, so the
   console's own tests pin an hour instead of inheriting the one they run at.

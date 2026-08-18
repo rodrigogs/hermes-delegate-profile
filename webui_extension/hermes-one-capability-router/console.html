@@ -1133,7 +1133,9 @@
                  it really meant to try, what it dropped and why, and any cost
                  control it bypassed. Same presentation as the Explain panel — one
                  chain vocabulary, learned once — and absent for the historical
-                 entries written before plans were recorded. -->
+                 entries written before plans were recorded. Priced at the hour the
+                 decision HAPPENED, which the clock line above cannot name, so that
+                 hour is stated here with its source (DESIGN.md §3c). -->
             <div id="replayPlan"></div>
           </div>
         </div>
@@ -1410,6 +1412,16 @@
         if (!key) return { word: 'billing undeclared', meaning: 'this elo declares no billing_mode, so its cost cannot be read here', unknown: true };
         return { word: key.replace(/_/g, ' '), meaning: 'not a billing mode this router knows', unknown: true };
       }
+      // WHICH UNIT THE PRICE IS QUOTED IN — the question `cheapest_now`'s bucketing
+      // and a `time_cap`'s ceiling both key on, mirroring capabilities._BILLING_RANK.
+      // `subscription` is dollars and not a flat rate: every seat elo in the registry
+      // publishes the per-token rate its rail bills at. `plan` and `free` spend no
+      // dollars at the margin, and a mode nothing can describe is not guessed at all —
+      // this answers only "is it dollars?", so an unknown mode answers false and the
+      // caller's cost control steps aside instead of dropping a rail on a guess.
+      const DOLLAR_BILLED = { subscription: true, metered: true };
+      const billsInDollars = (mode) =>
+        DOLLAR_BILLED[String(mode == null ? '' : mode).trim().toLowerCase()] === true;
 
       // A context window is compared, not counted: 1M against 200K is the whole
       // reading, and 1,048,576 spends four characters saying nothing an operator
@@ -1853,6 +1865,24 @@
       // two prices the comparison ran on. Empty when there is nothing to say: a flat
       // rail with no published rate spends no line on saying so twice.
       //
+      // THE UNIT IS PART OF THE PRICE, and it is the part this function dropped. A
+      // `plan` elo spends CREDITS off an allowance already bought, so a dollar rate
+      // published for it is the separately-purchasable METERED LIST PRICE the
+      // registry also records ("also purchasable metered at the same price") and not
+      // a number any invoice will carry: the shipped T1 rendered plan-billed glm-4.7
+      // as `2× peak · $1.20 in / $4.40 out per 1M`, four figures of dollars for a
+      // rail that draws 16 output credits, 32 inside the window. Credits-versus-
+      // dollars is what `cheapest_now` buckets on and the only thing a `time_cap` may
+      // act on (capabilities._BILLING_RANK), so the one surface that shows prices may
+      // not erase it. The qualifier therefore fires on the BILLING MODE — it used to
+      // fire only on the absence of a rate, which is the one case where there are no
+      // dollars on screen to be misread.
+      //
+      // `subscription` deliberately gets no qualifier: every seat elo here publishes
+      // the per-token rate its rail bills at, so its cost stays denominated in
+      // dollars and stays comparable with metered, which is exactly why the cost
+      // bucketing puts it there.
+      //
       // `published` is pricePublished()'s three-valued answer. false is a REPORTED
       // absence and earns words — the credits an elo is billed in are what it costs,
       // and an operator has to know a plan rail is not free. null is an unanswered
@@ -1863,15 +1893,22 @@
       function priceWords(caps, multiplier, billingMode, published) {
         const m = Number.isFinite(Number(multiplier)) ? Number(multiplier) : 1;
         const prices = effectivePrices(caps, m);
+        const mode = String(billingMode == null ? '' : billingMode).trim().toLowerCase();
         const parts = [];
         if (m > 1) parts.push(`${times(m)} peak`);
         else if (m < 1) parts.push(`${times(m)} cheap window`);
-        if (prices) parts.push(`${money(prices.in)} in / ${money(prices.out)} out per 1M`);
-        else {
+        if (prices) {
+          parts.push(`${money(prices.in)} in / ${money(prices.out)} out per 1M`);
+          // The multiplier is true of the credit draw as well — the window doubles
+          // both — so what needs saying is whose unit those two figures are in. Two
+          // clauses and no more: the row is dense, the badge beside it already reads
+          // PLAN, and §3b of DESIGN.md carries the whole explanation. "list price"
+          // says the dollars are not the bill; "billed in plan credits" says what is.
+          if (mode === 'plan') parts.push('list price — billed in plan credits');
+        } else {
           // Three arguments is the old call shape and it carried no answer, so the
           // caps themselves are asked. Nothing here invents one.
           const known = published === undefined ? pricePublished(caps, null) : published;
-          const mode = String(billingMode == null ? '' : billingMode).trim().toLowerCase();
           const covered = mode === 'plan' || mode === 'subscription';
           if (known === false && (m !== 1 || covered)) {
             parts.push(covered
@@ -2763,14 +2800,76 @@
         return chain;
       }
 
+      // Why a `time_cap` CANNOT touch a hop, by the unit that hop is priced in. One
+      // sentence per mode, because "credits are not dollars" and "nobody could place
+      // the unit" are two different reasons and the second is a finding. `''` covers
+      // both halves of that second case — an absent mode and one this console has not
+      // learned — exactly as _BILLING_RANK.get() answers undefined for both.
+      const CAP_EXEMPT_WHY = {
+        plan: 'credits come off an allowance already bought, so no multiplier on them adds a dollar',
+        free: 'a multiple of no charge is still no charge',
+        '': 'a unit the router cannot place is never guessed at in order to drop a rail',
+      };
+      // How each of them is named in that sentence, in the mode's own word — and a
+      // mode this console has not learned is named AS WRITTEN rather than swallowed.
+      const CAP_EXEMPT_LABEL = {
+        plan: (model) => `plan-billed ${model}`,
+        free: (model) => `free ${model}`,
+      };
       // A tier's declared time knobs, said as what they DO. Each is rendered only
       // when declared: a tier with no cap and no policy spends no words saying so.
-      function timeKnobWords(tier) {
+      //
+      // A `time_cap` IS A DOLLAR CEILING (capabilities.apply_time_cap): it removes
+      // only the metered and subscription hops over the multiplier, and it EXEMPTS
+      // plan, free and undescribable ones however dear their window gets. "Declines
+      // any rail over 1.5×" was therefore false about the rails the cap cannot
+      // reach — and on the shipped T1 the rail it cannot reach is the plan-billed
+      // PRIMARY, whose 2.0× weekday window doubles a credit draw and adds no dollars,
+      // so the cap reports it (`cap_exempt`) and leaves it first in the chain. The
+      // same claim had already been corrected twice in router.yaml's comments before
+      // it shipped here, which is why this line now names both halves: the two modes
+      // the ceiling can act on, and this tier's own exempt hops with the reason.
+      function timeKnobWords(tier, options) {
         const t = tier && typeof tier === 'object' ? tier : {};
+        const o = options || {};
         const words = [];
         const cap = t.time_cap && typeof t.time_cap === 'object' ? Number(t.time_cap.max_multiplier) : NaN;
         if (Number.isFinite(cap)) {
-          words.push(`declines any rail over ${times(cap)} — the cap is dropped if that would empty the chain`);
+          words.push(`declines a metered or subscription hop over ${times(cap)} — the cap is dropped if that would empty the chain`);
+          // WHICH OF THIS TIER'S HOPS THE CEILING CANNOT REACH. The mode is resolved
+          // exactly as eloRow resolves it — the elo's own declaration first, then the
+          // registry — so the sentence names the same rails apply_time_cap exempts.
+          const hops = Array.isArray(o.hops) ? o.hops : tierChain(t);
+          const labels = [];
+          const reasons = [];
+          let dollars = 0;
+          let undescribed = 0;
+          hops.forEach((hop) => {
+            const model = String((hop && hop.model) || '');
+            if (!model) return;
+            const caps = hopCaps(hop, o.registry).caps;
+            const declared = hop.billing_mode !== undefined ? hop.billing_mode : caps.billing_mode;
+            if (billsInDollars(declared)) { dollars += 1; return; }
+            const mode = String(declared == null ? '' : declared).trim().toLowerCase();
+            const named = CAP_EXEMPT_LABEL[mode];
+            if (!named) undescribed += 1;
+            labels.push(named ? named(model)
+              : mode ? `${model}, billed in ${mode}` : `${model}, billing undeclared`);
+            const why = CAP_EXEMPT_WHY[named ? mode : ''];
+            if (reasons.indexOf(why) < 0) reasons.push(why);
+          });
+          if (labels.length) {
+            words.push(`a dollar ceiling, so it cannot remove ${nameList(labels)} — ${reasons.join('; ')}`);
+          }
+          // A cap over a chain with nothing dollar-priced in it removes nothing at
+          // all: it is insurance against a future dollar-billed hop plus a standing
+          // report of the credit peak. Said only when every hop's mode was legible —
+          // with an undeclared one in the chain the console does not know that the
+          // cap has nothing to act on, and a cost control must never be reported as
+          // inert on the strength of a gap.
+          if (!dollars && !undescribed && labels.length) {
+            words.push('nothing in this chain is priced in dollars, so the cap removes nothing here — it reports the peak and leaves the chain alone');
+          }
         }
         const policy = t.time_policy && typeof t.time_policy === 'object' ? t.time_policy : {};
         const avoid = Array.isArray(policy.avoid_peak)
@@ -2834,8 +2933,11 @@
           // The tier's own time knobs, in the operator's words. They are facts about
           // the CONFIG — what it will decline to pay, and which rails it steps
           // around — while "which rail is expensive right now" belongs to the clock
-          // line at the top of the screen and is said only there.
-          timeKnobWords(t).forEach((words) => head.append(el('span', 'tier-fact', words)));
+          // line at the top of the screen and is said only there. The chain and the
+          // registry go with them because the cap's ceiling is in DOLLARS: which of
+          // these hops it can actually remove is a fact about their billing modes.
+          timeKnobWords(t, { hops, registry }).forEach(
+            (words) => head.append(el('span', 'tier-fact', words)));
           const floorChips = requirementChips(t.requirements);
           block.append(head);
           if (strategy.note) block.append(el('div', 'tier-fact', strategy.note));
@@ -3125,8 +3227,21 @@
         return { title: 'Peak-priced hops.', said: said.join(' ') };
       }
 
-      function renderChainPlan(plan) {
-        const box = $('chainPlan');
+      // ONE CHAIN PANEL, TWO SURFACES. The Explain tab plans a task that has not run
+      // yet; the Routes tab replays one that already did (renderStep). They are the
+      // same reading — the order the router meant to try, what it dropped and why,
+      // and any cost control it bypassed — so they share this renderer rather than
+      // growing a second chain vocabulary. `opts.box` is where it draws;
+      // `opts.recorded` says the plan belongs to a decision that already happened,
+      // and `opts.at` is the instant the trace recorded for it. Pricing last night's
+      // decision at this morning's multipliers is the same class of lie as reading
+      // the clock inside a rule, so a recorded plan never falls back to the browser's
+      // hour: it uses its own, then the trace's, then none.
+      function renderChainPlan(plan, opts) {
+        const o = opts || {};
+        const box = o.box || $('chainPlan');
+        // A recorded decision, whose hour the clock line at the top cannot name.
+        const past = o.recorded === true;
         clear(box);
         if (!plan || typeof plan !== 'object') return;
         const chain = Array.isArray(plan.chain) ? plan.chain : [];
@@ -3141,17 +3256,27 @@
 
         // The hour every price and every position below is relative to. The plan's
         // own hour wins when it reports one — that is the clock the router planned
-        // against; otherwise the console's, which is the hour the clock line at the
-        // top of the screen already names, so there is still one authority for it.
-        const clock = planWhen(plan, nowUtc());
+        // against; otherwise the fallback instant, which for the Explain panel is the
+        // console's own hour (the one the clock line at the top of the screen already
+        // names, so there is still one authority for it) and for a replay is the
+        // moment the decision was recorded.
+        const clock = planWhen(plan, past ? (o.at instanceof Date ? o.at : null) : nowUtc());
         const when = clock.when;
-        // "planned at 03:00 UTC" is only worth a line when the plan was made at
-        // ANOTHER hour than the one the clock line at the top of the screen is
-        // reporting. Saying it about the current hour is the same fact twice
-        // (DESIGN.md §2.3), and it was the second "07:00 UTC" in one sentence.
+        // "planned at 03:00 UTC" is only worth a line when the hour below is NOT the
+        // one the clock line at the top of the screen is reporting. Saying it about
+        // the current hour is the same fact twice (DESIGN.md §2.3), and it was the
+        // second "07:00 UTC" in one sentence. For a replay it is always worth the
+        // line: the decision happened at an hour that line cannot name, and an
+        // unlabelled multiplier there would read as this hour's.
         const consoleWhen = whenOf(nowUtc());
-        const elsewhere = clock.source === 'plan' && when
-          && (!consoleWhen || consoleWhen.hour !== when.hour);
+        const elsewhere = !!when && (past || (clock.source === 'plan'
+          && (!consoleWhen || consoleWhen.hour !== when.hour)));
+        // Which clock the hour came from, because the two answer different questions:
+        // the router reported the hour it planned against, or the trace reported when
+        // it happened and the prices below are read at that hour.
+        const hourNote = !elsewhere ? ''
+          : clock.source === 'plan' ? `planned at ${hourLabel(when.hour)}`
+          : `priced at ${hourLabel(when.hour)}, the hour this decision was recorded`;
         // `plan.strategy` is the strategy that RAN, and it is the one that decides
         // whether the chain below gets ordinals — so it is the one asked here.
         const strategy = strategyWords(plan.strategy, {
@@ -3165,8 +3290,10 @@
         const multipliers = plan.multipliers && typeof plan.multipliers === 'object' ? plan.multipliers : null;
         // liveness fills in an elo the plan priced no multiplier for, but only when it
         // was evaluated at the hour this plan was made at — never as a substitute for
-        // the plan's own number.
-        const live = liveMultipliers(state.liveness, when);
+        // the plan's own number, and never at all under a REPLAY: a liveness read
+        // taken after the decision is a measurement of now, and the same hour a week
+        // later is a different request's price.
+        const live = past ? {} : liveMultipliers(state.liveness, when);
         const cap = timeCapOf(plan);
         const outcome = droppedElos(plan);
 
@@ -3265,7 +3392,7 @@
         const note = plan.strategy_degraded === true ? '' : strategy.note;
         head.append(el('span', 'screen-note',
                        `${strategy.label}${note ? ` — ${note}` : ''}`
-                       + (elsewhere ? ` · planned at ${hourLabel(when.hour)}` : '')));
+                       + (hourNote ? ` · ${hourNote}` : '')));
         group.append(head);
 
         if (chips.length) group.append(chipList(chips));
@@ -4018,11 +4145,28 @@
         });
       }
 
+      // `GET /routes?id=` answers with the WHOLE recorded entry — service.route
+      // returns the trace as it was written — so the reply carries `steps`, the
+      // `output` the executor was handed (with `attempted_model`: the head it really
+      // dispatched, which is not `output.model` once a filter, a cap or a shuffle has
+      // run) and, for anything recorded since plans were persisted, `chain_plan`.
+      // Every one of those is kept: `plan` is what the Chain-plan panel renders, and
+      // `recordedAt` is the instant it is priced at, because a decision's hour is the
+      // hour it happened and not the hour an operator opens it.
       async function pickRoute(id) {
         const res = await call(`/routes?id=${encodeURIComponent(id)}`);
         if (res.error || res.missing) { $('routesNote').textContent = 'That trace could not be read.'; return; }
-        const steps = Array.isArray(res.data.steps) ? res.data.steps : [];
-        state.replay = { id, steps, at: 0 };
+        const entry = res.data && typeof res.data === 'object' ? res.data : {};
+        const steps = Array.isArray(entry.steps) ? entry.steps : [];
+        const plan = entry.chain_plan && typeof entry.chain_plan === 'object' ? entry.chain_plan : null;
+        // Seconds since the epoch, as the log writes it. Junk is no instant at all:
+        // the panel then falls back to the plan's own hour or to nothing, which is
+        // what an unpriced chain should read as.
+        const ts = Number(entry.ts);
+        state.replay = {
+          id, steps, at: 0, plan,
+          recordedAt: Number.isFinite(ts) && ts > 0 ? new Date(ts * 1000) : null,
+        };
         renderRoutes();
         renderStep();
       }
@@ -4031,6 +4175,18 @@
         drawPath();
         const box = $('stepDetail');
         clear(box);
+        // THE CHAIN THE ROUTER PERSISTED WITH THIS DECISION, in the Explain panel's
+        // own presentation: the order it meant to try, what it dropped and why, and
+        // any cost control it bypassed. The element existed and nothing ever filled
+        // it, which left the one surface that answers "what did the router actually
+        // do" showing a four-step path and two blocks of JSON. Entries written before
+        // plans were recorded carry none, and then this renders nothing — an absence
+        // is the honest answer and a framed void is not (DESIGN.md §2.1).
+        renderChainPlan(state.replay ? state.replay.plan : null, {
+          box: $('replayPlan'),
+          recorded: true,
+          at: state.replay ? state.replay.recordedAt : null,
+        });
         if (!state.replay) return;
         const { steps, at } = state.replay;
         const step = steps[at] || {};
@@ -4243,13 +4399,13 @@
       globalThis.__router = {
         state, setMode, renderRail, renderHealth, renderRoutes, renderStep, renderInspector,
         renderWarnings,
-        drawPath, stepNode, stepOutcome, causeColor, worstOf, modelState,
+        drawPath, pickRoute, stepNode, stepOutcome, causeColor, worstOf, modelState,
         phraseCondition, phraseWhen, renderSheet, renderLadder, ruleHits, probe,
         // Context, capability and fallback-strategy reading: every one of these is
         // pure, so the words an operator acts on are pinned by tests rather than
         // eyeballed on a screenshot.
         predicateFamily, predicateChip, predicateChips, requirementChips,
-        billingBadge, ctxWindow, rejectWhy, contextShortfall, strategyWords,
+        billingBadge, billsInDollars, ctxWindow, rejectWhy, contextShortfall, strategyWords,
         upstreamGroup, independentRails, sharedUpstream, hopCaps, billingIndex,
         capabilityRegistry, tierChain, renderChainPlan,
         // The time layer. Every one of these takes its clock as a PARAMETER, which

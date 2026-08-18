@@ -38,6 +38,13 @@ Contract
 * Fail-closed: if any target fails to parse (or is not a mapping), nothing is
   written at all and the exit status is non-zero. Parsing of every target
   happens before the first byte is written.
+* Re-parsed AFTER the write, all of them, because that is the second half of the
+  constraint the operator's runbook records from the incident that corrupted all
+  16 configs at once: *"Only ever edit with Python + PyYAML, then re-parse all
+  16."* A rewritten file must also re-parse EQUAL to the document that was
+  planned, which is what catches a write that succeeded and landed the wrong
+  bytes. A failure here is loud on both streams, names the file, points at the
+  backup and exits non-zero — see :func:`verify_after_write`.
 * Fail-closed on permissions too: under ``--apply`` every file the plan intends
   to rewrite is checked for WRITE access (the file itself and its directory,
   since the atomic replace needs both) before the first byte is written. An
@@ -54,8 +61,9 @@ Contract
 * Idempotent: a profile that is already collapsed produces a warning, not a
   failure, and a second ``--apply`` is a clean no-op that creates no backup.
 * Exit status: ``0`` success (dry-run included), ``2`` usage / missing hermes
-  home / parse failure (nothing written), ``3`` write refused up front or a write
-  failed mid-run (the report says which files changed).
+  home / parse failure (nothing written), ``3`` write refused up front, a write
+  failed mid-run, or the post-write re-parse failed (the report says which files
+  changed either way).
 
 IO
 --
@@ -70,8 +78,9 @@ NOT achievable with pyyaml alone, and no dependency is added for it: pyyaml
 discards comments and reformats scalars/indentation on ``safe_dump``. Rewritten
 profile files therefore lose their comments and their exact byte layout. The
 script says so in its own output, and the timestamped backup is the recovery
-path. Nothing else about the data changes: key order is preserved, and no key is
-added.
+path. Nothing else about the data changes: key order is preserved, no key is
+added, and the file's PERMISSIONS are carried across the atomic replace (see
+:func:`_atomic_write_bytes` — they were not, and 0664 came back as 0600).
 """
 from __future__ import annotations
 
@@ -79,6 +88,7 @@ import argparse
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -287,12 +297,31 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
 
     Mirrors ``RouterService._atomic_write_bytes``: a half-written profile config
     can never be observed, because the rename is atomic.
+
+    THE MODE IS CARRIED OVER, and it has to be: ``mkstemp`` creates at 0600 and
+    ``os.replace`` keeps the TEMP file's mode, so without this every rewritten
+    profile config silently lost its permissions (measured: 0664 in, 0600 out).
+    That is a data change the script's contract does not license — it claims only
+    comments and byte layout are lost — and it is invisible until something else
+    that reads these files as another user stops working. The chmod happens on the
+    temp file, BEFORE the rename, so the config is never briefly readable by fewer
+    principals than it was under its real name.
+
+    A path that does not exist yet has no mode to preserve, so mkstemp's 0600
+    stands; this script only ever rewrites files it already parsed, so that is the
+    untaken branch rather than the normal case.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        original_mode: Optional[int] = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        original_mode = None
     fd, tmp_path = tempfile.mkstemp(suffix=".yaml", prefix="collapse-", dir=str(path.parent))
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
+        if original_mode is not None:
+            os.chmod(tmp_path, original_mode)
         os.replace(tmp_path, str(path))
     except Exception:
         try:
@@ -342,6 +371,45 @@ def write_access_errors(changes: List[Dict[str, Any]]) -> List[str]:
     return errors
 
 
+def verify_after_write(
+    hermes_home: Path,
+    written: Dict[str, Dict[str, Any]],
+) -> List[str]:
+    """RE-PARSE every profile config on disk after a write. [] means clean.
+
+    This is the operator runbook's constraint, quoted verbatim in the deploy doc:
+    *"All 16 configs corrupted at once — a regex/sed edit across config.yaml +
+    profiles/*/config.yaml. Restore from config-snapshot/. Only ever edit with
+    Python + PyYAML, then re-parse all 16."* The script honoured the first half
+    and not the second, while the deploy doc asserted it did both.
+
+    EVERY discovered target is re-read, not only the rewritten ones — that is what
+    "re-parse all 16" says, and a target this run did not touch failing to parse is
+    news either way. For a file this run DID write the check is stronger than
+    parseability: the re-parsed document must EQUAL the document that was planned,
+    which is the only assertion that catches a write that succeeded and landed
+    something other than what was intended. Comparing the plan to itself would
+    prove nothing; comparing it to what came back off the disk is the agreement.
+
+    Returns diagnostics, never raises: every string names the file, so an operator
+    reading it knows which of the 16 to restore.
+    """
+    problems: List[str] = []
+    for target in discover_targets(hermes_home):
+        relative = str(target.relative_to(hermes_home))
+        document, error = _load_profile(target)
+        if error is not None:
+            problems.append(f"{relative}: does NOT re-parse after the write: {error}")
+            continue
+        planned = written.get(relative)
+        if planned is not None and document != planned:
+            problems.append(
+                f"{relative}: re-parsed, but does not match the planned document "
+                f"— the file on disk is not what this run intended to write"
+            )
+    return problems
+
+
 def collapse(
     hermes_home: Path,
     stamp: str,
@@ -354,8 +422,10 @@ def collapse(
     ``write_errors`` (pre-flight permission/backup failures — nothing was
     written), ``written`` and ``not_written`` (relative paths, so the operator is
     told exactly which files changed), ``failures`` (per-file mid-run write
-    diagnostics), ``applied`` (True only when every planned write succeeded) and
-    ``backup_dir`` (``None`` when nothing was written).
+    diagnostics), ``verify_errors`` (post-write re-parse diagnostics — see
+    :func:`verify_after_write`), ``applied`` (True only when every planned write
+    succeeded AND every config still re-parses) and ``backup_dir`` (``None`` when
+    nothing was written).
 
     Never raises on an IO failure: every problem comes back as a diagnostic.
     """
@@ -373,6 +443,7 @@ def collapse(
         "written": [],
         "not_written": [],
         "failures": [],
+        "verify_errors": [],
         "applied": False,
         "backup_dir": None,
     }
@@ -400,6 +471,10 @@ def collapse(
         return report
     report["backup_dir"] = str(root)
 
+    # Relative path -> the document that write was supposed to land, so the
+    # post-write re-parse can compare the disk against the intent rather than
+    # merely against "is this still YAML".
+    intended: Dict[str, Dict[str, Any]] = {}
     for index, change in enumerate(planned["changes"]):
         relative = str(change["relative"])
         payload = yaml.safe_dump(
@@ -415,9 +490,16 @@ def collapse(
             report["not_written"] = [
                 str(remaining["relative"]) for remaining in planned["changes"][index:]
             ]
-            return report
+            break
         report["written"].append(relative)
-    report["applied"] = True
+        intended[relative] = change["document"]
+
+    # Re-parse ALL of them, and on the partial path too: a run that stopped
+    # halfway is exactly when the operator most needs to know the tree is still
+    # loadable. Verification cannot undo a write, so it does not gate one — it
+    # gates the SUCCESS CLAIM, which is the thing the deploy doc was wrong about.
+    report["verify_errors"] = verify_after_write(hermes_home, intended)
+    report["applied"] = not report["failures"] and not report["verify_errors"]
     return report
 
 
@@ -456,10 +538,15 @@ def _print_report(report: Dict[str, Any], apply: bool) -> None:
     written = set(report["written"])
     failed = {failure["relative"]: failure["error"] for failure in report["failures"]}
     aborted = bool(report["write_errors"]) or bool(report["failures"])
+    # A file the re-parse rejected must NOT read as a clean "removed ..." line
+    # three lines above the diagnostic saying it is corrupt.
+    unverified = {error.split(":", 1)[0] for error in report["verify_errors"]}
     for change in report["changes"]:
         relative = change["relative"]
         removed = ", ".join(change["removed"])
-        if relative in written:
+        if relative in unverified:
+            print(f"{relative}: WRITTEN but does NOT re-parse — restore it")
+        elif relative in written:
             print(f"{relative}: removed {removed}")
         elif relative in failed:
             print(f"{relative}: NOT WRITTEN (write failed: {failed[relative]})")
@@ -492,6 +579,23 @@ def _print_report(report: Dict[str, Any], apply: bool) -> None:
         )
         for failure in report["failures"]:
             print(f"  - {failure['relative']}: {failure['error']}")
+    if report["verify_errors"]:
+        # The runbook's own instruction ("re-parse all 16") turned into the
+        # sentence an operator can act on: which file, and where the original is.
+        print(
+            f"collapse: POST-WRITE RE-PARSE FAILED for "
+            f"{len(report['verify_errors'])} file(s). The tree may be corrupt — "
+            f"restore the file(s) named below from {report['backup_dir']} before "
+            f"restarting anything:"
+        )
+        for error in report["verify_errors"]:
+            print(f"  - {error}")
+    elif apply and report["written"]:
+        print(
+            f"re-parsed all {len(report['unchanged']) + len(report['changes'])} "
+            f"profile config(s) after the write; every one loads under PyYAML and "
+            f"each rewritten file matches the document that was planned"
+        )
     if not apply and report["changes"]:
         print("dry-run: nothing was written. Re-run with --apply --stamp <stamp> to write.")
 
@@ -542,6 +646,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(
             f"collapse: partial write — see the report above; originals are in "
             f"{report['backup_dir']}",
+            file=sys.stderr,
+        )
+        return 3
+    if report["verify_errors"]:
+        # Loud on BOTH streams for the same reason the permission abort is: this
+        # is the runbook's corruption incident happening again, and the operator
+        # has to be told which file and that a backup exists before they restart.
+        for error in report["verify_errors"]:
+            print(f"collapse: {error}", file=sys.stderr)
+        print(
+            f"collapse: the post-write re-parse FAILED — files were written and at "
+            f"least one no longer loads as expected. Restore the file(s) named "
+            f"above from {report['backup_dir']} before restarting the gateway.",
             file=sys.stderr,
         )
         return 3

@@ -156,6 +156,128 @@ test('replay renders the recorded path, not a map of the whole policy', () => {
   assert.equal(drawn.length, 3, 'one line per recorded step — no policy nodes the trace never touched');
 });
 
+// ── replay answers "what did the router actually do" ──────────────────────
+// One recorded decision exactly as GET /routes?id= answers it: one_sidecar returns
+// service.route's result, which is the trace entry the decision log WROTE. So the
+// reply carries `steps`, the `output` the executor was handed — including
+// `attempted_model`, which decision_log.record copies off `chain_plan.chain[0]`
+// because `output.model` stays the DECLARED tier primary — and `chain_plan` itself
+// for anything recorded since plans were persisted.
+//
+// 03:20 UTC on the Monday: deliberately NOT the hour the console is read at, because
+// a decision's prices belong to the hour it happened.
+const TRACE_AT = Date.UTC(2026, 7, 17, 3, 20) / 1000;
+function tracedDecision(extra) {
+  const plan = chainPlan(Object.assign({
+    requirements: { vision: true },
+    chain: [
+      { model: 'gpt-5.6-luna', provider: 'openai-codex', billing_mode: 'subscription' },
+      { model: 'mimo-v2.5', provider: 'xiaomi', billing_mode: 'metered' },
+    ],
+    rejected: [{ model: 'glm-5.3', provider: 'zai', reject_reason: 'no_vision' }],
+    utc_hour: 3, utc_weekday: 0, time_agnostic: false,
+  }, extra || {}));
+  return {
+    ts: TRACE_AT,
+    cause: 'keyword_match',
+    rule_id: 'image-attached',
+    task: 'describe this screenshot',
+    output: {
+      model: 'glm-5.3', provider: 'zai',
+      attempted_model: plan.chain[0].model,
+      attempted_provider: plan.chain[0].provider,
+    },
+    steps: [
+      { stage: 'blocklist', out: { blocked: false } },
+      { stage: 'signals', out: { needs_vision: true } },
+      { stage: 'rules', cause: 'keyword_match', out: { rule_id: 'image-attached', tier: 'T2' } },
+    ],
+    chain_plan: plan,
+  };
+}
+
+test('replay renders the chain plan the router persisted with the decision', async () => {
+  // `<div id="replayPlan">` shipped with a comment promising the plan the router
+  // persisted and nothing ever filled it: the one surface that answers "what did it
+  // actually do" showed a four-step path and two blocks of JSON, while the model the
+  // executor really dispatched was in the reply the whole time.
+  const entry = tracedDecision();
+  const { api, dom } = loadConsole({
+    fetch: () => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(entry)) }),
+  });
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.state.clock = PEAK;   // 07:14 UTC — the hour it is READ at, four hours later
+  api.state.routes = [{
+    id: 'r1', cause: entry.cause, model: entry.output.model, task: entry.task, ts: entry.ts,
+  }];
+  await api.pickRoute('r1');
+
+  const box = dom.get('replayPlan');
+  const text = flat(box);
+  assert.notEqual(text, '', 'the element existed and nothing ever filled it');
+  // The trace itself is untouched: the plan is an addition, not a replacement.
+  assert.equal(dom.get('replayPath').children.length, entry.steps.length);
+
+  // AGREEMENT, and it is the whole point of rendering this at all: hop 1 of the panel
+  // is the head the executor dispatched, which is the one the log recorded on the
+  // entry — never output.model, the declared primary the row on the left shows.
+  const hops = findAll(findAll(box, 'hops')[0], 'hop-model').map((n) => n.textContent);
+  assert.deepEqual(hops, entry.chain_plan.chain.map((hop) => hop.model));
+  assert.equal(hops[0], entry.output.attempted_model);
+  assert.notEqual(entry.output.attempted_model, entry.output.model,
+    'the fixture is only worth asserting on because the two differ');
+
+  // What it dropped and why, in the words the Explain panel uses for the same reason.
+  assert.match(text, /glm-5\.3/);
+  assert.match(text, /cannot read images/);
+
+  // THE HOUR IS THE DECISION'S. Reading a 03:00 decision at 07:14 must not price it
+  // at 07:00: every multiplier under this panel is the one the router planned with.
+  assert.match(text, /03:00 UTC/);
+  assert.doesNotMatch(text, /07:00 UTC/, 'the console\'s own hour is not this decision\'s');
+
+  // ONE PRESENTATION, NOT TWO. The same plan through the Explain panel yields the
+  // same chain and the same rejections — same classes, same words — because both
+  // surfaces go through renderChainPlan.
+  api.renderChainPlan(entry.chain_plan);
+  const shape = (id) => findAll(dom.get(id), 'hop-model').map((n) => n.textContent).join(' ')
+    + ' | ' + findAll(dom.get(id), 'reject-why').map((n) => n.textContent).join(' ');
+  assert.equal(shape('replayPlan'), shape('chainPlan'),
+    'a second chain vocabulary is a second answer to the same question');
+
+  // A decision recorded before plans were persisted carries none, and then the panel
+  // is ABSENT rather than a framed void (DESIGN.md §2.1).
+  api.state.replay.plan = null;
+  api.renderStep();
+  assert.equal(dom.get('replayPlan').children.length, 0);
+});
+
+test('a replayed plan with no hour of its own is priced at the hour it was recorded', async () => {
+  // The raw entry is whatever was written to disk, so `utc_hour` can be absent —
+  // and then the fallback must be the trace's own timestamp. Falling back to the
+  // BROWSER's hour would put this morning's multipliers on last night's decision,
+  // which is the same class of error as reading the clock inside a rule.
+  const entry = tracedDecision();
+  delete entry.chain_plan.utc_hour;
+  delete entry.chain_plan.utc_weekday;
+  delete entry.chain_plan.time_agnostic;
+  const { api, dom } = loadConsole({
+    fetch: () => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(entry)) }),
+  });
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.state.clock = PEAK;
+  api.state.routes = [{ id: 'r1', cause: entry.cause, model: entry.output.model, task: entry.task, ts: entry.ts }];
+  await api.pickRoute('r1');
+
+  const text = flat(dom.get('replayPlan'));
+  assert.match(text, /priced at 03:00 UTC, the hour this decision was recorded/,
+    'the hour is named AND its source, because the clock line above reports now');
+  assert.doesNotMatch(text, /planned at/, 'the router reported no hour, so nothing may claim it did');
+  assert.doesNotMatch(text, /07:00 UTC/);
+});
+
 test('a step says what it concluded, so the JSON is optional', () => {
   const { api } = loadConsole();
   assert.equal(api.stepOutcome({ out: { rule_id: 'hard-verbs' } }), 'hard-verbs');
@@ -1809,6 +1931,39 @@ function catalogueEntry(model) {
   if (facts.price_windows.length) entry.price_windows = facts.price_windows;
   return entry;
 }
+// ── WHICH UNIT A RAIL IS PRICED IN, read out of the running path ──────────
+// `cheapest_now`'s buckets and a `time_cap`'s ceiling key on the SAME table:
+// capabilities._BILLING_RANK. apply_time_cap removes an elo only out of the
+// dollars bucket and reports every other mode as `cap_exempt`, left in the chain.
+// So the table is parsed from capabilities.py rather than restated here: a console
+// that describes the cap as evicting a plan rail then fails against the module
+// that does the evicting, which is the disagreement three reviews missed. The
+// bucket name is read from apply_time_cap's own comparison, so moving
+// `subscription` out of dollars breaks this test instead of the operator's mental
+// model.
+function billingUnits() {
+  const source = fs.readFileSync(REGISTRY_PATH, 'utf8');
+  const start = source.indexOf('_BILLING_RANK: Dict[str, int] = {');
+  assert.ok(start > 0, `_BILLING_RANK must still be the unit table in ${REGISTRY_PATH}`);
+  const body = source.slice(start, source.indexOf('}', start));
+  const modes = [...body.matchAll(/"([a-z_]+)": (_BUCKET_[A-Z_]+)/g)]
+    .map((hit) => ({ mode: hit[1], bucket: hit[2] }));
+  assert.ok(modes.length >= 4, 'every billing mode the router knows must appear in the table');
+  const cap = source.slice(source.indexOf('def apply_time_cap'));
+  const dollars = (cap.match(/_BILLING_RANK\.get\(mode\) == (_BUCKET_[A-Z_]+)/) || [])[1];
+  assert.ok(dollars, 'apply_time_cap must still name the bucket it is allowed to remove from');
+  const credits = (body.match(/"plan": (_BUCKET_[A-Z_]+)/) || [])[1];
+  return {
+    modes,
+    // What the cap may remove, and what it may only report.
+    removable: modes.filter((m) => m.bucket === dollars).map((m) => m.mode),
+    exempt: modes.filter((m) => m.bucket !== dollars).map((m) => m.mode),
+    // The credits bucket specifically: a published dollar rate on one of these is
+    // a list price nobody is invoiced for.
+    inCredits: modes.filter((m) => m.bucket === credits).map((m) => m.mode),
+    dollarsBucket: dollars,
+  };
+}
 // The whole catalogue for a set of models, in the endpoint's own envelope.
 const catalogue = (...models) => ({
   data: {
@@ -2257,7 +2412,6 @@ test('a tier states what its time knobs will do', () => {
   };
   api.renderLadder();
   const text = flat(dom.get('ladder'));
-  assert.match(text, /declines any rail over 1\.5×/);
   assert.match(text, /the cap is dropped if that would empty the chain/,
     'a cost control that can cause an outage is the one thing the cap must not be');
   assert.match(text, /moves deepseek and zai to the end while they are in a peak window/);
@@ -2265,6 +2419,83 @@ test('a tier states what its time knobs will do', () => {
   // The knobs are facts about the CONFIG. Which rail is expensive right now is the
   // clock line's fact, and it is said in exactly one place.
   assert.deepEqual(plain(api.timeKnobWords({})), [], 'a tier with no knobs spends no words');
+
+  // ── THE CAP SAYS WHAT THE CAP DOES ──────────────────────────────────────
+  // "declines any rail over 1.5×" was false about exactly the rail it matters most
+  // for: T1's primary is plan-billed, its zai window is 2.0×, and apply_time_cap
+  // cannot remove it because the ceiling is denominated in DOLLARS and a plan draws
+  // credits off an allowance already bought. The same claim had been corrected twice
+  // in router.yaml's comments before it shipped in this line, so it is pinned here
+  // against the module that does the removing rather than against the wording.
+  const units = billingUnits();
+  const tier = api.state.policy.tiers.T1;
+  const hops = plain(api.tierChain(tier));
+  const words = plain(api.timeKnobWords(tier, { hops }));
+  const declines = words.find((w) => /declines/.test(w)) || '';
+  const exemption = words.find((w) => /cannot remove/.test(w)) || '';
+
+  assert.doesNotMatch(text, /declines any rail/,
+    'the third appearance of a dollar cap described as evicting anything it is priced against');
+  units.removable.forEach((mode) => assert.match(declines, new RegExp(mode),
+    `the cap removes ${mode} hops, so it has to name them`));
+  units.exempt.forEach((mode) => assert.doesNotMatch(declines, new RegExp(mode),
+    `${mode} is not in the dollars bucket, so the cap cannot decline it`));
+  // And the exemption is named on THIS tier's own hop, with the reason: an operator
+  // reading 1.5× over a 2.0× primary is owed the answer, not left to measure it.
+  assert.match(exemption, /glm-4\.7/);
+  assert.match(exemption, /credits come off an allowance already bought/);
+  assert.match(exemption, /adds a dollar/, 'why credits are not dollars, not just that they differ');
+  assert.equal(words.some((w) => /removes nothing here/.test(w)), false,
+    'this chain still holds two dollar-billed hops, so the cap is not inert');
+
+  // AGREEMENT ON THE TABLE ITSELF, mode for mode: the console's answer to "is this
+  // priced in dollars?" is capabilities._BILLING_RANK's, or the sentence above is
+  // true today and wrong after one registry edit.
+  units.modes.forEach(({ mode, bucket }) => assert.equal(
+    api.billsInDollars(mode), bucket === units.dollarsBucket,
+    `${mode} belongs to ${bucket}`));
+  assert.equal(api.billsInDollars('carrier-pigeon'), false, 'an unknown unit is never assumed to be dollars');
+  assert.equal(api.billsInDollars(undefined), false, 'and neither is an undeclared one');
+});
+
+test('a cap over a chain with no dollar-billed hop says it can remove nothing', () => {
+  // capabilities.apply_time_cap's own worked example: behind a plan primary a tier
+  // may hold nothing the ceiling can act on, and then the cap is insurance plus a
+  // standing report of the credit peak. Reading "declines … over 1.5×" there sends
+  // an operator looking for a hop it dropped, of which there are none.
+  const { api } = loadConsole();
+  const tier = {
+    model: 'glm-4.7', provider: 'zai', billing_mode: 'plan',
+    fallback: [{ model: 'nemotron-ultra', provider: 'nous', billing_mode: 'free' }],
+    time_cap: { max_multiplier: 1.5 },
+  };
+  const words = plain(api.timeKnobWords(tier)).join(' ');
+  assert.match(words, /cannot remove plan-billed glm-4\.7 and free nemotron-ultra/);
+  assert.match(words, /no charge is still no charge/, 'each unit gets its own reason');
+  assert.match(words, /removes nothing here/);
+
+  // A hop whose billing mode NOBODY declared is not evidence that the cap is inert:
+  // the console does not know that hop's unit, so it says what it does know — the
+  // cap leaves it alone — and drops the "removes nothing" claim.
+  const undeclared = plain(api.timeKnobWords({
+    model: 'glm-4.7', provider: 'zai', billing_mode: 'plan',
+    fallback: [{ model: 'mystery-1', provider: 'somewhere' }],
+    time_cap: { max_multiplier: 1.5 },
+  })).join(' ');
+  assert.match(undeclared, /mystery-1, billing undeclared/);
+  assert.match(undeclared, /never guessed at in order to drop a rail/);
+  assert.doesNotMatch(undeclared, /removes nothing here/,
+    'a cost control is never reported as inert on the strength of a gap');
+
+  // A mode the console has not learned is exempt for the same reason — _BILLING_RANK
+  // answers undefined for it too — and is named AS WRITTEN rather than swallowed.
+  const foreign = plain(api.timeKnobWords({
+    model: 'glm-4.7', provider: 'zai', billing_mode: 'plan',
+    fallback: [{ model: 'mystery-1', provider: 'somewhere', billing_mode: 'prepaid' }],
+    time_cap: { max_multiplier: 1.5 },
+  })).join(' ');
+  assert.match(foreign, /mystery-1, billed in prepaid/);
+  assert.doesNotMatch(foreign, /removes nothing here/);
 });
 
 test('a bypassed time cap is as loud as a bypassed capability filter', () => {
@@ -3183,6 +3414,43 @@ test('an unanswered price question renders as silence, never as "no price"', () 
   // A rate declared on the elo in router.yaml still wins over the catalogue's answer,
   // the same precedence capabilities.capabilities_for applies everywhere else.
   assert.equal(api.pricePublished({ price_in: 0.5, price_out: 1 }, { price_published: false }), true);
+});
+
+test('a plan-billed elo with a list price still says the dollars are not invoiced', () => {
+  // glm-4.7 is the case this line was wrong about: plan-covered AND carrying a
+  // published rate ("also purchasable metered at the same price"), so the console
+  // rendered `2× peak · $1.20 in / $4.40 out per 1M` for a rail that draws 16 output
+  // credits — 32 inside the window — and invoices none of those dollars on a plan
+  // key. The credits-versus-dollars split is what cheapest_now buckets on and the
+  // only thing a time_cap may act on, so the surface that shows prices must carry it.
+  const { api } = loadConsole();
+  const entry = catalogueEntry('glm-4.7');
+  const facts = registryFacts('glm-4.7');
+  assert.equal(entry.billing_mode, 'plan', 'the registry bills this one in credits');
+  assert.equal(entry.price_published, true, 'and publishes a dollar rate anyway — that is the trap');
+  assert.deepEqual(facts.price_windows, [{ hours_utc: [6, 10], weekdays: [0, 1, 2, 3, 4], multiplier: 2.0 }]);
+
+  // The mode comes from the entry the endpoint sent, not from a literal here.
+  const peak = api.priceWords(entry, facts.price_windows[0].multiplier, entry.billing_mode,
+                              api.pricePublished(entry, entry));
+  assert.match(peak, /2× peak/);
+  assert.match(peak, new RegExp(`\\$${(facts.price_in * 2).toFixed(2)} in / \\$${(facts.price_out * 2).toFixed(2)} out per 1M`),
+    'the numbers stay: they are the registry rate times the declared multiplier');
+  assert.match(peak, /list price/, 'the dollars are named as the list price they are, not left as the bill');
+  assert.match(peak, /billed in plan credits/, 'and what the elo actually spends is said in the same breath');
+
+  // AGREEMENT WITH THE BUCKETING, mode for mode. The qualifier fires on the modes
+  // capabilities._BILLING_RANK puts in the credits bucket and on no others —
+  // `subscription` publishes the per-token rate its seat bills at, so its dollars are
+  // real dollars and marking them as credits would take a whole chain's prices off
+  // the comparison the console is auditing.
+  const units = billingUnits();
+  units.modes.forEach(({ mode }) => {
+    const words = api.priceWords(entry, 1, mode, true);
+    assert.equal(/credits/.test(words), units.inCredits.indexOf(mode) !== -1,
+      `${mode} prices read in ${units.inCredits.indexOf(mode) !== -1 ? 'credits' : 'dollars'}`);
+    assert.match(words, /\$0\.60 in \/ \$2\.20 out per 1M/, 'every mode still shows the published rate');
+  });
 });
 
 test('the chain plan shows the catalogue\'s prices instead of reporting it has none', () => {

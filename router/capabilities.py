@@ -27,6 +27,14 @@ make a model "known", though: ``billing_mode``, ``notes`` and the price fields
 are commercial metadata, and a hop that declares nothing but its billing mode
 is still unknown to this registry and must be reported as such.
 
+A SIZE HAS A UNIT TOO, and the pairing that matters is ``context_window`` (total)
+against ``max_input_tokens`` (prompt only, when the vendor bounds it separately —
+five openai-codex entries do). ``min_context`` asks about the PROMPT, so
+:func:`_input_ceiling` is the single reading of that pair and both
+:func:`satisfies` and :data:`MAX_REGISTERED_CONTEXT` go through it. Measuring an
+input budget against a total window is how a 1M-token read got routed to
+gpt-5.6-luna, which advertises a 1_050_000 window and accepts 922_000 of prompt.
+
 Time-varying pricing is encoded per entry as ``price_windows``; the stored
 ``price_in``/``price_out`` are always the BASE rate, i.e. the rate OUTSIDE
 every declared window (see :func:`price_multiplier`).
@@ -119,6 +127,15 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 # ---------------------------------------------------------------------------
 
 #: Requirement keys a rule/tier may ask for. Anything else is ignored.
+#:
+#: ``min_context`` MEANS: the number of INPUT tokens the rail must be able to
+#: accept. :func:`derive_requirements` builds it from ``est_input_tokens`` (plus
+#: 1.25x headroom for the preamble, tool schemas and the reply), and
+#: :func:`satisfies` compares it against :func:`_input_ceiling` — the tightest
+#: INPUT bound the elo publishes. It is deliberately NOT "the total window":
+#: those two differ on every rail whose output is drawn from a separate budget,
+#: and comparing an input figure against a total is how a request gets routed to
+#: a rail that cannot accept it.
 REQUIREMENT_KEYS: frozenset = frozenset(
     {"min_context", "vision", "tool_calling", "structured_output"}
 )
@@ -161,6 +178,18 @@ _REASONS: frozenset = frozenset(
 #: full field list: an elo that declares nothing but ``billing_mode`` (which
 #: router.yaml requires of every elo) asserts no capability at all, so treating
 #: it as known would silence the unknown-model warning for every elo in policy.
+#:
+#: ``max_input_tokens`` IS ENFORCED, and saying so here is the point: it used to
+#: be populated for five entries, served to the console catalogue, and read by
+#: nothing. ``min_context`` is derived from an INPUT estimate, so for those five
+#: the filter was comparing an input budget against a total-window number the
+#: registry already knew was the wrong ceiling — gpt-5.6-luna advertises a
+#: 1_050_000 window and accepts 922_000 input, and a 1M-token read routed to it
+#: anyway. :func:`_input_ceiling` is now the single reading of that pair, and a
+#: field in this set that nothing consults is the shape of that defect: it looks
+#: enforced to whoever declares it. ``max_output`` is the remaining example and
+#: is honest about it — no requirement key asks about output, so nothing implies
+#: a ceiling on it (see :data:`REQUIREMENT_KEYS`).
 CAPABILITY_ASSERTION_KEYS: frozenset = frozenset(
     {
         "context_window",
@@ -299,6 +328,13 @@ _MULTIPLIER_EPSILON = 1e-9
 
 #: Neutral multiplier — no window matches, no clock, or an unknown model.
 _FLAT_MULTIPLIER = 1.0
+
+# Non-finite numbers are a DIAGNOSTIC everywhere in this module, never a value:
+# `.inf` and `.nan` are legal YAML, so an operator can put either on any numeric
+# key, and both defeat the arithmetic silently — `int(inf)` raises, and every
+# comparison against `nan` is False. Named once here so `_as_int`/`_as_float`
+# refuse them by the same rule without importing `math`.
+_INFINITY = float("inf")
 
 # Providers that resolve to a shared upstream. Two hops in the same group give
 # no real redundancy — one upstream outage takes both down.
@@ -883,17 +919,38 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
     },
 }
 
-#: The largest context window ANY registered model has. A ``min_context``
-#: requirement above this is unsatisfiable by construction — no registered rail
-#: can ever serve it — which :func:`filter_chain` reports as a named condition
-#: instead of letting it look like an ordinary per-elo rejection.
+#: The largest INPUT any registered model accepts. A ``min_context`` requirement
+#: above this is unsatisfiable by construction — no registered rail can ever
+#: serve it — which :func:`filter_chain` reports as a named condition instead of
+#: letting it look like an ordinary per-elo rejection.
+#:
+#: It is the max of :func:`_input_ceiling`, NOT of ``context_window``, because
+#: that is the number :func:`satisfies` rejects against: a ceiling taken from a
+#: total window could say "some rail could serve this" about a floor every rail
+#: refuses. The value is unchanged at 1_050_000 — the widest rails (mimo-v2.5,
+#: mimo-v2.5-pro, gpt-5.5) publish no separate input bound, so their window IS
+#: their input ceiling — but the RULE now matches, and stays matched if a future
+#: entry declares ``max_input_tokens`` on the widest rail.
+#:
+#: The min-of-the-two rule is spelled out twice: once here (this runs at import,
+#: before :func:`_as_int` is bound) and once in :func:`_input_ceiling`, which is
+#: what the request path uses. ``test_max_registered_context_agrees_with_the_
+#: ceiling_satisfies_uses`` asserts the two answer identically for every entry.
 MAX_REGISTERED_CONTEXT: int = max(
     (
-        window
-        for window in (
-            _entry.get("context_window") for _entry in MODEL_CAPABILITIES.values()
+        min(bounds)
+        for bounds in (
+            [
+                size
+                for size in (
+                    _entry.get("context_window"),
+                    _entry.get("max_input_tokens"),
+                )
+                if isinstance(size, int) and not isinstance(size, bool) and size > 0
+            ]
+            for _entry in MODEL_CAPABILITIES.values()
         )
-        if isinstance(window, int) and not isinstance(window, bool) and window > 0
+        if bounds
     ),
     default=0,
 )
@@ -964,6 +1021,12 @@ def satisfies(
     "capability_unknown") so the caller can flag it without breaking routing.
     Only a KNOWN contradiction rejects, and a contradiction always wins over
     an unknown.
+
+    ``min_context`` is an INPUT figure (:data:`REQUIREMENT_KEYS`) and is compared
+    against :func:`_input_ceiling`, which is ``max_input_tokens`` when the elo
+    publishes one and ``context_window`` when it does not. Absence is IGNORANCE,
+    not permission: a rail that publishes no separate input bound is taken at its
+    window, which is the same fail-open rule the boolean capabilities follow.
     """
     caps = capabilities_for(model, declared)
     if caps is None:
@@ -981,10 +1044,10 @@ def satisfies(
             needed = _as_int(wanted)
             if needed is None or needed <= 0:
                 continue
-            window = _as_int(caps.get("context_window"))
-            if window is None:
+            ceiling = _input_ceiling(caps)
+            if ceiling is None:
                 unknown = True
-            elif needed > window:
+            elif needed > ceiling:
                 return False, "context_too_small"
             continue
 
@@ -1217,12 +1280,13 @@ def filter_chain(
 
     ``unsatisfiable`` names requirement keys that NO available model could ever
     meet — today only ``min_context``, when the derived floor exceeds both
-    :data:`MAX_REGISTERED_CONTEXT` and every ``context_window`` declared in this
-    chain. That is a pathological request (a turn implying a few hundred files
-    already exceeds the largest registered window), not an ordinary per-elo
-    rejection, so it is reported as its own named condition. It is
-    informational: it never changes eligibility, and it can be set with
-    ``bypassed`` False when some hop passes on a fail-open unknown.
+    :data:`MAX_REGISTERED_CONTEXT` and every input ceiling declared in this chain
+    (:func:`_input_ceiling`, the same reading :func:`satisfies` rejects with).
+    That is a pathological request (a turn implying a few hundred files already
+    exceeds the largest registered window), not an ordinary per-elo rejection, so
+    it is reported as its own named condition. It is informational: it never
+    changes eligibility, and it can be set with ``bypassed`` False when some hop
+    passes on a fail-open unknown.
     """
     entries = [entry for entry in (chain or []) if isinstance(entry, dict)]
     unsatisfiable = _unsatisfiable_requirements(requirements, entries)
@@ -1660,6 +1724,16 @@ def derive_requirements(
     ``tier_requirements`` is an explicit per-tier floor and wins on conflict;
     for ``min_context`` the MAXIMUM of the two is used. Only keys in
     REQUIREMENT_KEYS ever appear in the result.
+
+    ``min_context`` comes out of this function as an INPUT figure — the estimate
+    is of the PROMPT — which is why :func:`satisfies` measures it against
+    :func:`_input_ceiling` rather than against the total window. A tier floor is
+    read on the same terms: ``requirements: {min_context: 200000}`` means "must
+    accept 200_000 tokens of input", not "must have a 200_000 window".
+
+    Nothing here raises on a malformed number: ``est_input_tokens: .inf`` (legal
+    YAML) is discarded by :func:`_as_int` like any other unusable value, because
+    this function is on the request path.
     """
     result: Dict[str, Any] = {}
     feats = features if isinstance(features, dict) else {}
@@ -1862,6 +1936,37 @@ def _declared_overrides(declared: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _input_ceiling(caps: Any) -> Optional[int]:
+    """The most INPUT tokens ``caps`` can accept, or None when it bounds neither.
+
+    THE ONE READING of the pair ``context_window``/``max_input_tokens``, used by
+    :func:`satisfies` and :func:`_unsatisfiable_requirements` so a floor the
+    filter rejects can never be a floor the unsatisfiable report calls reachable.
+
+    The tighter of the two wins, because both are ceilings on the same quantity
+    and ``min_context`` is an INPUT figure (:data:`REQUIREMENT_KEYS`). The five
+    openai-codex entries that publish both are exactly why: gpt-5.6-luna's window
+    is 1_050_000 and its input limit is 922_000, and the 128_000 tokens between
+    them are the reply's, not the prompt's. Comparing a 1M-token read against the
+    window said yes to a rail that would have refused the request.
+
+    None — not 0 — when neither bound is usable: 0 would claim the elo holds
+    nothing, and "unpublished" has to stay distinguishable from "tiny" for
+    :func:`satisfies` to fail OPEN on it.
+    """
+    if not isinstance(caps, dict):
+        return None
+    bounds = [
+        size
+        for size in (
+            _as_int(caps.get("context_window")),
+            _as_int(caps.get("max_input_tokens")),
+        )
+        if size is not None and size > 0
+    ]
+    return min(bounds) if bounds else None
+
+
 def _unsatisfiable_requirements(
     requirements: Any,
     entries: Sequence[Any],
@@ -1869,11 +1974,16 @@ def _unsatisfiable_requirements(
     """Return requirement keys no available model could ever satisfy.
 
     Only ``min_context`` can be unsatisfiable by construction today: a floor
-    above every context window in the registry AND above every window declared
-    in this chain cannot be met by anything the router can reach, however the
-    chain is ordered. Declared windows are consulted so an operator who
-    describes a bigger house model in YAML is not told their request is
-    impossible when it is not.
+    above every input ceiling in the registry AND above every ceiling declared in
+    this chain cannot be met by anything the router can reach, however the chain
+    is ordered. Declared bounds are consulted so an operator who describes a
+    bigger house model in YAML is not told their request is impossible when it is
+    not.
+
+    Both ceilings come from :func:`_input_ceiling`, the same function
+    :func:`satisfies` rejects with — including on a hop that declares a
+    ``max_input_tokens`` TIGHTER than its window, which therefore cannot widen
+    this ceiling past what that elo would actually accept.
     """
     if not isinstance(requirements, dict):
         return []
@@ -1883,9 +1993,7 @@ def _unsatisfiable_requirements(
 
     ceiling = MAX_REGISTERED_CONTEXT
     for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        declared = _as_int(entry.get("context_window"))
+        declared = _input_ceiling(entry)
         if declared is not None and declared > ceiling:
             ceiling = declared
     return ["min_context"] if needed > ceiling else []
@@ -2193,13 +2301,30 @@ def _as_int(value: Any) -> Optional[int]:
     DESIGN for floats (a 1.5-token estimate truncates), which is why the window
     shape uses :func:`_as_whole_number` instead: there, losing the fraction would
     move a price window off the hour it was written on.
+
+    A NON-FINITE float is not a usable number either, and refusing it here is
+    load bearing rather than tidy. ``int()`` does not coerce ``inf``/``nan``, it
+    RAISES (OverflowError and ValueError respectively), and this coercion sits
+    under :func:`satisfies` and :func:`derive_requirements` — the request path. A
+    tier hop declaring ``context_window: .inf`` therefore linted CLEAN and then
+    took the whole routing decision down with an OverflowError that
+    ``rules.plan_chain``'s defensive except does not catch. Two invariants broke
+    at once: the write gate accepted a config that misroutes, and a capability
+    filter broke routing outright. So a non-finite number comes back as None —
+    a diagnostic, exactly like every other malformed value — which is the rule
+    :func:`_as_whole_number` already documented for its own inputs.
     """
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, int):
         return value
     if isinstance(value, float):
-        return int(value)
+        # Caught rather than pre-tested: naming the two exceptions int() raises
+        # says WHY inf/nan are refused, and no `math` import buys anything here.
+        try:
+            return int(value)
+        except (OverflowError, ValueError):
+            return None
     if isinstance(value, str):
         try:
             return int(value.strip())
@@ -2214,17 +2339,36 @@ def _as_float(value: Any) -> Optional[float]:
     Bools are rejected on purpose — ``True`` is not a price and not a multiplier.
     None stays None all the way through :func:`effective_price`: an unpublished
     price must never become 0.0.
+
+    NON-FINITE is refused for the same reason as in :func:`_as_int`, reached by a
+    different route: ``float()`` does not raise on ``inf``/``nan``, it PROPAGATES
+    them. ``price_windows`` is overridable per elo in router.yaml, and
+    ``multiplier: .nan`` used to lint clean (``nan <= 0`` is False, so
+    :func:`price_window_diagnostics` had nothing to say) and then poison every
+    comparison downstream: ``nan > 1.0`` and ``nan > cap`` are both False, so the
+    elo was silently never peak-priced, never capped, and unorderable by
+    ``cheapest_now``. None instead makes it one diagnostic that both the gate and
+    the running path read the same way — :func:`_multiplier_at` skips exactly the
+    window :func:`price_window_diagnostics` reports.
     """
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
+        number = float(value)
+    elif isinstance(value, str):
         try:
-            return float(value.strip())
+            number = float(value.strip())
         except ValueError:
             return None
-    return None
+    else:
+        return None
+    # One finiteness check for both routes, so ``.nan`` and the string "nan" can
+    # never be answered differently. ``x != x`` is nan; the membership test is
+    # ±inf. Written out rather than imported, so this module's import list stays
+    # {__future__, datetime, random, typing} — the proof that it does no IO.
+    if number != number or number in (_INFINITY, -_INFINITY):
+        return None
+    return number
 
 
 def _with_safety_margin(tokens: int) -> int:

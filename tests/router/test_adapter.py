@@ -1150,6 +1150,17 @@ PEAK_CLOCK = datetime(2026, 8, 17, 7, 0, tzinfo=timezone.utc)
 SHIPPED_VISION_HEAD = "gpt-5.6-luna"
 SHIPPED_VISION_HEAD_PROVIDER = "openai-codex"
 
+# An ordinary code turn: matches `standard-implementation` -> T2, and NOTHING is
+# dropped by the capability filter, so the planned chain is all three declared
+# hops. That is what makes it the shape where a substituted primary can collide
+# with a hop the veto has already refused.
+SHIPPED_STANDARD_TASK = "Add a retry decorator to the http client in src/http.py"
+
+# The ordinary shape of a provider incident: TWO rails degraded at once. T2's
+# plan-covered primary and the metered deepseek hop the shipped fallback_chain
+# hands back when that primary is refused, each with its own OPEN breaker.
+SHIPPED_TWO_RAIL_INCIDENT = [("glm-5.3", "zai"), ("deepseek-v4-flash", "deepseek")]
+
 
 def _banned_live_config(model, provider=""):
     """The shipped policy with ``model`` added to blocklist.manual_ban.
@@ -1164,12 +1175,16 @@ def _banned_live_config(model, provider=""):
     return cfg
 
 
-def _open_breaker_config(model, provider, tmp_path, monkeypatch, *, now=None):
-    """The shipped policy plus an OPEN breaker for ``model@provider``.
+def _open_breakers_config(pairs, tmp_path, monkeypatch, *, now=None):
+    """The shipped policy plus an OPEN breaker for every (model, provider) pair.
 
     Writes the state file Blocklist loads at construction, in the temp HERMES_HOME
     so nothing touches the real box. The cooldown is far in the future so the
     OPEN -> HALF_OPEN transition cannot fire mid-test and make this flaky.
+
+    Keys are ``model@provider`` because that is the key ``record_failure`` writes
+    and the key ``is_blocked(model, provider)`` reads — the pair whose two halves
+    the whole veto depends on being the same string.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     state_dir = tmp_path / "delegate-profile" / "state"
@@ -1187,12 +1202,82 @@ def _open_breaker_config(model, provider, tmp_path, monkeypatch, *, now=None):
                 "cooldown_until": stamp + 86_400,
                 "backoff_seconds": 60.0,
                 "last_failure_kind": "ttfb_stall",
-            },
+            }
+            for model, provider in pairs
         },
     }), encoding="utf-8")
     cfg = copy.deepcopy(_live_config())
     cfg["blocklist"]["auto_breaker"]["enabled"] = True
     return cfg
+
+
+def _open_breaker_config(model, provider, tmp_path, monkeypatch, *, now=None):
+    """The shipped policy plus an OPEN breaker for one ``model@provider``."""
+    return _open_breakers_config(
+        [(model, provider)], tmp_path, monkeypatch, now=now,
+    )
+
+
+def _declared_rails(cfg):
+    """model -> provider, read off the tier table the way an OPERATOR reads it.
+
+    Deliberately not ``adapter._dispatch_provider``: a test that resolved the rail
+    with the code under test would be checking the fix against itself. The shipped
+    policy declares exactly one rail per elo, so first-appearance is the answer.
+    """
+    rails = {}
+    for tier in (cfg.get("tiers") or {}).values():
+        for hop in [tier] + list(tier.get("fallback") or []):
+            if hop.get("model") and hop.get("provider"):
+                rails.setdefault(hop["model"], hop["provider"])
+    return rails
+
+
+# The degradation shapes the veto has to survive: one per branch it can take, and
+# reached through BOTH halves of Blocklist.is_blocked (config deny rows and
+# persisted cooldowns), because the veto must not depend on which one fired. Each
+# builds (config, task) and takes the tmp_path/monkeypatch a cooldown needs — the
+# ban-only shapes use them too, pointing HERMES_HOME at an empty temp dir: the
+# shipped policy enables the auto-breaker, so without that a ban-only scenario
+# would load the OPERATOR'S live cooldowns and assert something different on their
+# box than in CI.
+
+def _incident_banned_primary(tmp_path, monkeypatch):
+    """The T2 primary banned on every rail — the substitution branch."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    return _banned_live_config("glm-5.3"), SHIPPED_STANDARD_TASK
+
+
+def _incident_two_rails_in_cooldown(tmp_path, monkeypatch):
+    """The T2 primary AND its fallback_chain successor in cooldown."""
+    return (_open_breakers_config(SHIPPED_TWO_RAIL_INCIDENT, tmp_path, monkeypatch),
+            SHIPPED_STANDARD_TASK)
+
+
+def _incident_tail_hop_in_cooldown(tmp_path, monkeypatch):
+    """A healthy primary with one hop behind it cooling — the drop branch."""
+    return (_open_breaker_config(SHIPPED_VISION_HEAD, SHIPPED_VISION_HEAD_PROVIDER,
+                                 tmp_path, monkeypatch),
+            SHIPPED_STANDARD_TASK)
+
+
+def _incident_filtered_chain_fully_banned(tmp_path, monkeypatch):
+    """Every hop the capability filter left is banned — the widening branch."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cfg = copy.deepcopy(_live_config())
+    cfg["blocklist"]["manual_ban"].extend(
+        {"model": model, "provider": "", "reason": "test-ban"}
+        for model in (SHIPPED_VISION_HEAD, "deepseek-v4-flash")
+    )
+    return cfg, SHIPPED_VISION_TASK
+
+
+VETO_INCIDENTS = [
+    _incident_banned_primary,
+    _incident_two_rails_in_cooldown,
+    _incident_tail_hop_in_cooldown,
+    _incident_filtered_chain_fully_banned,
+]
 
 
 class TestTheVetoBindsWhatRuns:
@@ -1306,10 +1391,65 @@ class TestTheVetoBindsWhatRuns:
         targets = _targets(result)
         assert targets, "a cooldown must not leave the turn with nothing to attempt"
         first_model, first_provider = targets[0]
-        assert bl.is_blocked(first_model, first_provider or "") is False
+        # The rail is asserted before it is used: a cooldown is keyed
+        # model@provider, so `is_blocked(model, "")` answers False for every elo in
+        # cooldown and a head that lost its rail would pass this vacuously.
+        assert first_provider, "an attempt with no rail cannot be vetted on one"
+        assert bl.is_blocked(first_model, first_provider) is False
         assert first_model != SHIPPED_VISION_HEAD
         assert [hop["model"] for hop in
                 dlog.tail(1)[0]["chain_plan"]["blocked"]] == [SHIPPED_VISION_HEAD]
+
+    def test_a_substituted_primary_is_vetted_on_the_rail_it_will_run_on(
+        self, tmp_path, monkeypatch,
+    ):
+        """A two-rail incident must not substitute onto the second dead rail.
+
+        The reproduction: ``Blocklist`` keys cooldowns ``model@provider`` and the
+        executor always records them provider-qualified, so the substitution walk
+        asking ``is_blocked(replacement, "")`` looked in a cell nothing writes. It
+        therefore accepted deepseek-v4-flash — whose own breaker was OPEN — as the
+        replacement for glm-5.3, and the plan came back naming that elo in
+        ``blocked`` while ``chain[0]`` was the same elo.
+        """
+        cfg = _open_breakers_config(
+            SHIPPED_TWO_RAIL_INCIDENT, tmp_path, monkeypatch,
+        )
+        bl = Blocklist(cfg)
+        rails = _declared_rails(cfg)
+        for model, provider in SHIPPED_TWO_RAIL_INCIDENT:
+            assert bl.is_blocked(model, provider) is True, \
+                f"the OPEN cooldown for {model}@{provider} must load"
+            # The premise the fix turns on, pinned so a change to Blocklist's key
+            # shape shows up here as a failing premise rather than as a silently
+            # weakened veto: the provider-qualified key is the ONLY key that sees
+            # a cooldown, so a lookup that drops the provider sees nothing.
+            assert bl.is_blocked(model, "") is False
+
+        dlog = DecisionLog()
+        result = route(SHIPPED_STANDARD_TASK, cfg, blocklist=bl,
+                       decision_log=dlog, now=PEAK_CLOCK)
+
+        targets = _targets(result)
+        assert targets, "two cooldowns must not leave the turn with nothing to run"
+        for model, provider in targets:
+            # NON-VACUITY, both halves. The rail has to be ON the hop, or the
+            # executor dispatches without one; and the lookup has to be made WITH
+            # it, or a cooldown keyed model@provider cannot answer. Resolving the
+            # rail from the policy rather than from the hop is what makes this
+            # fail if the substitution loses the provider again.
+            assert provider, f"{model} would be dispatched on no rail at all"
+            assert provider == rails[model], "the hop names a rail no tier declares"
+            assert bl.is_blocked(model, provider) is False, \
+                f"{model}@{provider} is in cooldown and would still be attempted"
+        assert targets[0][0] not in {model for model, _p in SHIPPED_TWO_RAIL_INCIDENT}
+
+        # The declared primary was refused, so this is the substitution path and
+        # the trace says so on the decision the caller got.
+        assert result["cause"] == "blocklist_substituted"
+        assert result["blocked_model"] == "glm-5.3"
+        entry = dlog.tail(1)[0]
+        assert attempted_head_of(entry) == targets[0]
 
     def test_a_clean_turn_is_untouched_and_records_no_veto_keys(self):
         """The veto must be invisible when it has nothing to do.
@@ -1449,6 +1589,48 @@ class TestTheTraceNamesTheModelThatRuns:
 
         assert attempted_head_of(entry) == _targets(result)[0]
         assert entry["output"]["attempted_model"] != SHIPPED_VISION_HEAD
+
+    @pytest.mark.parametrize("incident", VETO_INCIDENTS,
+                             ids=lambda fn: fn.__name__)
+    def test_no_elo_is_both_refused_and_attempted(
+        self, incident, tmp_path, monkeypatch,
+    ):
+        """`blocked` DISPLAYS what the veto refused; `chain` is what RUNS.
+
+        Reading one list is how this defect class keeps shipping: the plan named
+        deepseek-v4-flash in `blocked` AND led the chain with it, and every test
+        that consulted a single side agreed with itself. This reads both, on the
+        same turn, across every branch the veto can take.
+        """
+        cfg, task = incident(tmp_path, monkeypatch)
+        bl = Blocklist(cfg)
+        rails = _declared_rails(cfg)
+        dlog = DecisionLog()
+        result = route(task, cfg, blocklist=bl, decision_log=dlog, now=PEAK_CLOCK)
+
+        plan = dlog.tail(1)[0]["chain_plan"]
+        refused = {hop["model"] for hop in plan.get("blocked") or []}
+        assert refused, "this incident refused nothing, so it asserts nothing"
+
+        running = [model for model, _p in _targets(result)]
+        assert running, "an incident must not leave the turn with nothing to run"
+        assert refused.isdisjoint(running), (
+            f"{sorted(refused.intersection(running))} is refused AND attempted"
+        )
+        # The same disjointness on the plan a console renders — one turn cannot be
+        # reported clean and dispatched dirty, or the reverse.
+        assert refused.isdisjoint(hop.get("model") for hop in plan["chain"])
+        assert plan["blocklist_bypassed"] is False
+
+        for model, provider in _targets(result):
+            # A hop that names no rail dispatches without --provider, which is
+            # exactly how the rail the blocklist cleared and the rail that runs
+            # come apart. The lookup uses the rail the POLICY declares, not the one
+            # the hop carries, so it still binds if a hop loses its provider.
+            assert provider, f"{model} would be dispatched on no rail at all"
+            assert bl.is_blocked(model, rails.get(model, provider)) is False, (
+                f"{model} is blocked on the rail it would actually run on"
+            )
 
     @pytest.mark.parametrize("task", [
         SHIPPED_VISION_TASK,

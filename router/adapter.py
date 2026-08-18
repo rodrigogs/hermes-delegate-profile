@@ -261,7 +261,12 @@ def route(
         list.
         """
         plan = _plan_chain_for(output, features, rng=turn_rng, when=when)
-        decided, plan, cause = _veto_blocked(output, plan, bl, cause)
+        # ``config`` rather than the ``tiers`` local below: the Stage-0 veto path
+        # calls finish() before that local is bound, and the tier table is what
+        # tells a substituted primary which rail it will be dispatched on.
+        decided, plan, cause = _veto_blocked(
+            output, plan, bl, cause, tiers=config.get("tiers"),
+        )
         dlog.record(
             cause, decided, matched_rule_id=matched_rule_id,
             task_preview=task[:120], steps=steps, chain_plan=plan,
@@ -560,6 +565,8 @@ def _veto_blocked(
     plan: Optional[Dict[str, Any]],
     bl: Blocklist,
     cause: str,
+    *,
+    tiers: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], str]:
     """Hold what will ACTUALLY be attempted to the blocklist.
 
@@ -575,9 +582,16 @@ def _veto_blocked(
          ``blocklist.fallback_chain``; when that chain offers no reachable
          replacement the decision is DENIED rather than dispatched to a target
          known to be down (an operator who bans the primary and every link of
-         its escape hatch meant to refuse the turn).
+         its escape hatch meant to refuse the turn). A candidate is vetted on the
+         RAIL it would be dispatched on and that rail travels back paired with
+         it — see :func:`_reachable_replacement`, which is where vetting the
+         model alone left a hole in the invariant below.
       2. ``plan["chain"]`` — the hops the executor iterates. Blocked hops are
          dropped.
+
+    ``tiers`` is the policy tier table, read ONLY to recover which rail a
+    ``fallback_chain`` entry would run on: that list is flat model ids and
+    carries no provider of its own.
 
     The ordering is not cosmetic; it is what lets both invariants hold at once:
 
@@ -607,7 +621,7 @@ def _veto_blocked(
     if not chosen or not bl.is_blocked(chosen, str(output.get("provider") or "")):
         return output, _vet_plan_chain(plan, output, bl, head=None), cause
 
-    replacement = _reachable_replacement(chosen, bl)
+    replacement = _reachable_replacement(chosen, bl, output, tiers)
     if replacement is None:
         denied = {
             "deny": True,
@@ -627,12 +641,21 @@ def _veto_blocked(
     # chain. Substituting from the vetted plan head instead would be strictly
     # better, but it also changes when a fully-banned fallback_chain still denies,
     # so it is reported rather than smuggled in with this fix.
+    sub_model, sub_provider = replacement
     vetted = dict(output)
-    vetted["model"] = replacement
-    # The provider belonged to the model we just rejected; the fallback chain
-    # does not carry one, so drop it rather than pair a new model with a stale
-    # provider and produce a target that exists nowhere.
-    vetted.pop("provider", None)
+    vetted["model"] = sub_model
+    # The provider that lands here is the one the replacement was VETTED on, and
+    # _headed_chain copies it onto the head hop — so the rail the blocklist
+    # cleared is the rail the executor dispatches, structurally rather than by
+    # coincidence. The old provider belonged to the model we just rejected and is
+    # never kept: pairing a new model with a stale provider names a target that
+    # exists nowhere. "" (no rail declared anywhere in the policy) drops the key,
+    # which is also what the dispatch will carry, so the "" lookup that vetted it
+    # is the honest one.
+    if sub_provider:
+        vetted["provider"] = sub_provider
+    else:
+        vetted.pop("provider", None)
     vetted["blocked_model"] = chosen
     vetted["cause"] = "blocklist_substituted"
     # `blocklist_substituted` is NOT a member of decision_log.VALID_CAUSES (it
@@ -641,22 +664,94 @@ def _veto_blocked(
     return vetted, _vet_plan_chain(plan, output, bl, head=vetted), cause
 
 
-def _reachable_replacement(chosen: str, bl: Blocklist) -> Optional[str]:
-    """Walk ``blocklist.fallback_chain`` to the first UNBLOCKED model.
+def _reachable_replacement(
+    chosen: str,
+    bl: Blocklist,
+    output: Dict[str, Any],
+    tiers: Optional[Dict[str, Any]],
+) -> Optional[Tuple[str, str]]:
+    """Walk ``blocklist.fallback_chain`` to the first UNBLOCKED (model, rail).
 
     A replacement that is itself blocked is no replacement, so the walk
     continues rather than swapping one dead target for another. ``seen`` guards a
     fallback_chain an operator made cyclic. None means "no reachable
     replacement", which is the caller's cue to deny.
+
+    Each candidate is vetted WITH THE PROVIDER IT WOULD BE DISPATCHED ON,
+    resolved by :func:`_dispatch_provider`, and that provider is returned paired
+    with the model so the caller can put the vetted pair on the decision. Asking
+    ``is_blocked(model, "")`` instead was a hole in exactly the invariant this
+    veto exists to establish: ``Blocklist`` keys breaker cooldowns
+    ``model@provider`` and the executor now always records them
+    provider-qualified, so a lookup with no provider reads a cell nothing ever
+    writes and cannot see a cooldown at all. Measured on the shipped policy with
+    the zai and deepseek rails degraded together (the ordinary shape of a provider
+    incident): glm-5.3's cooldown sent the veto here, the walk handed back
+    deepseek-v4-flash whose OWN cooldown was open, and the plan then listed that
+    elo in ``blocked`` — the DISPLAY — while ``chain[0]`` was the same elo, which
+    is what RUNS.
+
+    NOT fixed by also asking ``is_blocked(model, "")``: for a provider-scoped
+    manual ban that call is strictly MORE blocking (``Blocklist._match`` reads an
+    empty provider as "banned on every rail"), so ORing the two would refuse a
+    model on rails the operator never named.
     """
     replacement = bl.fallback_for(chosen)
     seen = {chosen}
     while replacement and replacement not in seen:
-        if not bl.is_blocked(replacement, ""):
-            return replacement
+        provider = _dispatch_provider(replacement, output, tiers)
+        if not bl.is_blocked(replacement, provider):
+            return replacement, provider
         seen.add(replacement)
         replacement = bl.fallback_for(replacement)
     return None
+
+
+def _dispatch_provider(
+    model: str,
+    output: Dict[str, Any],
+    tiers: Optional[Dict[str, Any]],
+) -> str:
+    """The rail ``model`` would run on, or "" when the policy declares none.
+
+    ``blocklist.fallback_chain`` is a flat list of model ids, so a substitution
+    taken from it has to recover its rail from the policy — and it has to, because
+    a breaker cooldown is keyed ``model@provider`` and half of that key cannot be
+    guessed at lookup time.
+
+    This decision's OWN declared hops are consulted first: the tier that won this
+    turn has already paired that elo with a rail, and it is the rail the executor
+    would use for it. Then the tier table — primaries before per-tier ``fallback``
+    hops — which is what makes the answer total on the shipped policy, since
+    router.yaml regenerates ``fallback_chain`` from the tier members. (The
+    executor's ``_provider_of_declared_model`` scans the same two places for the
+    same reason: it is filling in the other half of the same key.)
+
+    A row that names no provider is not an answer, only the absence of one, so the
+    scan keeps going rather than letting a half-edited tier shadow the row that
+    does name the rail. Defensive rather than raising throughout: the config is
+    HOT and may be mid-edit, so a non-mapping tier or a non-list ``fallback`` is
+    skipped. "" means no rail is declared anywhere, which is also what the
+    dispatch will then carry.
+    """
+    for hop in _declared_chain(output):
+        if hop.get("model") == model and hop.get("provider"):
+            return str(hop["provider"])
+    if not isinstance(tiers, dict):
+        return ""
+    rows = [cfg for cfg in tiers.values() if isinstance(cfg, dict)]
+    for cfg in rows:
+        if cfg.get("model") == model and cfg.get("provider"):
+            return str(cfg["provider"])
+    for cfg in rows:
+        hops = cfg.get("fallback")
+        if not isinstance(hops, list):
+            continue
+        for hop in hops:
+            if (isinstance(hop, dict) and hop.get("model") == model
+                    and hop.get("provider")):
+                return str(hop["provider"])
+    return ""
 
 
 def _vet_plan_chain(
@@ -685,14 +780,20 @@ def _vet_plan_chain(
 
     ``bl`` is queried with each hop's OWN provider, so a cooldown recorded
     against ``model@provider`` binds on a fallback hop and not just on a tier
-    primary. NOTE for whoever owns the executor in __init__.py: that only pays
-    off if the write side agrees — ``_record_breaker_outcome`` is called with
-    ``attempt_model`` alone and re-derives the provider by scanning TIER
-    PRIMARIES, so a fallback hop is recorded under a bare model key that this
-    lookup can never match. Working around it HERE by also querying
-    ``is_blocked(model, "")`` is not an option: that call is strictly MORE
-    blocking for a provider-scoped manual ban, so it would ban a model on rails
-    the operator did not name.
+    primary. The write side agrees, which is what makes that pay off:
+    ``_record_breaker_outcome`` takes the ATTEMPTED provider as a fourth argument
+    and the executor passes the one that attempt actually dispatched on, so a
+    failing fallback hop is recorded under the same ``model@provider`` key this
+    lookup asks for. (Its policy scan is only a gap-filler for a caller that
+    could not name the rail.) Both sides being provider-qualified is also why the
+    substitution in :func:`_reachable_replacement` must carry a real provider:
+    with the write side qualified, a lookup that drops the provider is guaranteed
+    to miss.
+
+    Still NOT an option here or there: widening a lookup by also querying
+    ``is_blocked(model, "")``. That call is strictly MORE blocking for a
+    provider-scoped manual ban, so it would ban a model on rails the operator did
+    not name.
     """
     if not isinstance(plan, dict):
         return plan
@@ -948,10 +1049,17 @@ def _cause_from_rule(rule_id: Any, output: Dict[str, Any]) -> str:
     job is to label a decision the operator wants explained - so a numbered rule
     took down the explanation of the very route it selected.
 
-    NOTE for whoever owns router/rules.py: ``rules._determine_cause`` has the
-    same rule-id gap this table closes, and it is the one /explain reads. The two
-    functions must agree or the console labels a decision differently from the
-    trace of the same decision.
+    This function is now the ONE rule-id labeller for both halves of that pair.
+    ``rules._determine_cause`` — what /explain, RouterService.explain, the
+    sidecar and the dashboard read — no longer keeps its own copy of the table or
+    of the heuristic below: it fetches this function at call time
+    (``rules._cause_labeller``) and delegates the rule-id axis to it, keeping only
+    the two labels keyed on the OUTPUT rather than on the id (``deny`` and
+    ``action: classify``). So the console and the trace of the same decision agree
+    by construction, and an edit HERE moves both surfaces at once — including the
+    substring probes, which is why a row renamed around a signal keeps its axis on
+    both. Do not re-add a mirror of this table over there; the drifted copy is the
+    defect that arrangement replaced.
     """
     if output.get("deny"):
         return "blocklist_veto"

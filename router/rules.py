@@ -38,20 +38,42 @@ if TYPE_CHECKING:  # pragma: no cover - annotations only, never imported at run 
 # this engine still loads (and degrades to pre-capability behaviour) when the
 # registry is absent — every capability code path below is skipped when
 # ``_caps is None``.
+#
+# RELATIVE FIRST, and the order is load-bearing. Hermes loads this plugin as
+# ``hermes_plugins.<slug>.router.rules`` (see the package switch in the plugin
+# ``__init__``), where ``router`` is NOT a top-level package and the absolute
+# name cannot resolve. Trying absolute first there meant ImportError -> ``_caps
+# is None`` -> ``plan_chain`` degrading to ``_unfiltered_plan``: the whole
+# capability, time_cap, time_policy and cheapest_now layer silently inert in the
+# only shape production uses, with nothing but a degrade flag to show for it.
+# The absolute name stays as the SECOND attempt because the direct source-loading
+# test harnesses put ``router`` on ``sys.path`` as a top-level package. ``None``
+# stays as the third, for a genuinely absent registry — but it is no longer
+# reachable merely by how the module was loaded.
 try:
-    from router import capabilities as _caps
-except ImportError:  # pragma: no cover - registry not installed
-    _caps = None  # type: ignore[assignment]
+    from . import capabilities as _caps
+except ImportError:  # pragma: no cover - flat layout, or registry not installed
+    try:
+        from router import capabilities as _caps  # flat-layout fallback
+    except ImportError:  # pragma: no cover - registry not installed
+        _caps = None  # type: ignore[assignment]
 
 # Signal vocabulary, imported for ONE reason: lint validates every
 # ``when.<field>`` name against it. The list is NOT mirrored here — a mirror is
 # how the linter and the extractor drift, and a drifted mirror rejects a
 # legitimate field at the write gate. Without the module the field-name check is
 # skipped (see :func:`_known_when_fields`).
+#
+# Relative first for the reason above: under the package shape the absolute name
+# raised, and lint quietly stopped checking ``when`` field names at the one gate
+# that is supposed to be fail-closed.
 try:
-    from router import signals as _signals
-except ImportError:  # pragma: no cover - signals not installed
-    _signals = None  # type: ignore[assignment]
+    from . import signals as _signals
+except ImportError:  # pragma: no cover - flat layout, or signals not installed
+    try:
+        from router import signals as _signals  # flat-layout fallback
+    except ImportError:  # pragma: no cover - signals not installed
+        _signals = None  # type: ignore[assignment]
 
 # The third external table this module reads is the rule-id → cause map, and it
 # is the only one NOT resolved here: ``router.adapter`` owns it
@@ -1742,11 +1764,24 @@ def _cause_labeller() -> Optional[Callable[[Any, Dict[str, Any]], str]]:
     None means "no labeller reachable" — the module is absent, too old to export
     the name, or mid-import. Returned rather than raised: the caller's job is to
     label a decision, and a diagnostic must not raise through /explain.
+
+    Relative first, absolute second, for the reason the module-scope registry
+    imports resolve that way. Resolving only the absolute name made None the
+    NORMAL answer under Hermes's ``hermes_plugins.<slug>`` shape rather than the
+    exotic one this docstring describes, and that is the precise disagreement the
+    delegation exists to prevent: every rule-keyed cause degraded to
+    ``default_fallthrough`` on the surfaces that DISPLAY a decision while the
+    adapter — which reaches this module fine from its own module scope — went on
+    recording ``keyword_match`` / ``size_rule`` / ``hard_rule`` for the same
+    match on the path that RUNS it.
     """
     try:
-        from router.adapter import _cause_from_rule
-    except ImportError:  # pragma: no cover - adapter absent, or mid-import
-        return None
+        from .adapter import _cause_from_rule
+    except ImportError:  # pragma: no cover - flat layout, absent, or mid-import
+        try:
+            from router.adapter import _cause_from_rule
+        except ImportError:  # pragma: no cover - adapter absent, or mid-import
+            return None
     if not callable(_cause_from_rule):  # pragma: no cover - not a function
         return None
     return _cause_from_rule

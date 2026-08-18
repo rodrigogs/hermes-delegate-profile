@@ -16,6 +16,13 @@ there" is answerable from a shell at 14:00; ``--time-agnostic`` passes no clock
 at all (time-dependent features are omitted and time-dependent ordering
 degrades to sequential).
 
+The SIZE is injected the same way, and for the same reason: ``chain
+--prompt-text`` sizes the turn from the composed context + goal the child would
+really receive, because ``est_input_tokens`` and the ``min_context`` derived from
+it decide which elos survive the filter. Every other read surface takes that
+parameter, and every one of them reports ``preview.sized_from``; this one now does
+too, so a plan measured from the goal line is labelled rather than assumed.
+
 Imports of the newer router modules are GUARDED: the CLI is the operator's tool
 of last resort, so it must still start (and still lint) when ``capabilities.py``
 or a newer ``rules`` helper is absent or mid-write. Every time-layer entry point
@@ -92,6 +99,13 @@ _PRICE_UNAVAILABLE = "unavailable"
 _BARE_HOUR_RE = re.compile(r"^(\d{1,2})$")
 _HOUR_MINUTE_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
 
+#: Which text a plan was SIZED from. The same two words, spelled the same way,
+#: that ``RouterService._preview_note`` and the sidecar/dashboard ``/explain``
+#: responses report in ``preview.sized_from`` — one vocabulary across every read
+#: surface, so "this plan measured the goal line" needs no translation table.
+_SIZED_FROM_TASK = "task"
+_SIZED_FROM_PROMPT = "prompt_text"
+
 
 # ---------------------------------------------------------------------------
 # Config loading
@@ -105,6 +119,50 @@ def load_config(path: str = "router.yaml") -> Dict[str, Any]:
         sys.exit(1)
     with open(p) as f:
         return yaml.safe_load(f)
+
+
+# ---------------------------------------------------------------------------
+# The measured text — the other input a preview must not invent
+# ---------------------------------------------------------------------------
+
+def resolve_prompt(args: argparse.Namespace) -> Tuple[str, str]:
+    """Return ``(text_to_size_from, sized_from)`` for a plan.
+
+    ``task`` is the GOAL line; ``--prompt-text`` is the full text the child would
+    actually receive (context + goal), which is what production sizes a turn from.
+    Signals are extracted from the returned text, because ``est_input_tokens`` and
+    the ``min_context`` requirement derived from it decide the route: a 120k-char
+    context is 33344 estimated tokens and a real floor, while the goal line alone
+    measures 6 and derives no floor at all. Without the option this command
+    silently answered a different question than production asked — the same defect
+    ``prompt_text`` was added to ``adapter.route`` and ``RouterService.explain`` to
+    close — and, being the only surface that did not report which text it measured,
+    it answered it invisibly.
+
+    ``prompt_text or task`` is the SAME falsy test the other two surfaces use, so
+    ``--prompt-text ''`` and ``--prompt-text '  '`` are measured here exactly as
+    production measures them. Being cleverer (stripping, or treating whitespace as
+    absent) would make this plan disagree with the path it exists to reproduce, in
+    the one direction that matters: char_len.
+
+    The composition of context and goal is NOT re-implemented: the operator pastes
+    the composed text, so the plugin's ``_compose_prompt`` stays its single
+    definition.
+
+    No length bound, unlike ``RouterService.explain``: that bound exists because an
+    unbounded HTTP read path can be made to cost arbitrary CPU by a caller, and
+    here the caller IS the operator, spending their own shell on their own box.
+    Refusing a 2 MiB prompt would only send them back to measuring the goal line,
+    which is the answer this option exists to stop them getting.
+
+    Reads the parsed NAMESPACE rather than a bare string so another subcommand can
+    adopt the option without a second copy of the falsy test that decides which
+    text was measured.
+    """
+    prompt_text = getattr(args, "prompt_text", "") or ""
+    if not prompt_text:
+        return args.task, _SIZED_FROM_TASK
+    return prompt_text, _SIZED_FROM_PROMPT
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +348,12 @@ def cmd_chain(args: argparse.Namespace) -> None:
     bypass plus a run of identical rejections. ``--json`` prints the same payload
     machine readable.
 
+    ``--prompt-text`` is the composed context + goal the child would really
+    receive; the signals are read from it and ``preview.sized_from`` /
+    ``preview.prompt_chars`` name the text that produced the plan, the same way
+    every other read surface reports it. Omitted, the goal line is measured — which
+    is a legitimate answer, and now a DISCLOSED one instead of an assumption.
+
     ``--seed N`` plans with ``random.Random(N)`` instead of reusing explain's
     fixed-seed preview, so different seeds really do produce different
     ``random``-strategy orders and the same seed reproduces byte-identically —
@@ -304,7 +368,11 @@ def cmd_chain(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     task = args.task
     when, at_source = resolve_when(args)
-    features = extract(task)
+    # The task stays the GOAL line (it is what the classifier and the response
+    # cache key on) while the signals are measured from the composed prompt — the
+    # same split production makes.
+    prompt, sized_from = resolve_prompt(args)
+    features = extract(prompt)
     features.update(_time_features(when))
 
     requested_model = getattr(args, "model", "") or ""
@@ -328,6 +396,10 @@ def cmd_chain(args: argparse.Namespace) -> None:
         "plan_time_aware": plan_time_aware,
         "chain_plan": plan,
         "pricing": _pricing_rows(plan, when),
+        # Which text the plan was sized from, in the vocabulary every other
+        # surface reports it in. A plan sized from the goal line looks exactly
+        # like one sized from the real turn and answers a different question.
+        "preview": {"sized_from": sized_from, "prompt_chars": len(prompt)},
     }
     payload.update(_time_payload(when, at_source))
 
@@ -772,6 +844,7 @@ def _print_chain_plan(payload: Dict[str, Any]) -> None:
     print(f"matched_rule: {payload.get('matched_rule_id') or '-'} "
           f"cause={payload.get('cause') or '-'}")
     print(f"plan_source: {payload.get('plan_source', 'unavailable')}")
+    print(_sized_from_line(payload))
     print(_at_line(payload))
     if payload.get("at") is not None and not payload.get("plan_time_aware", True):
         # An order computed without the clock must not be read as the order for
@@ -882,6 +955,25 @@ def _context_ceiling() -> Optional[int]:
     if not _is_number(value) or value <= 0:
         return None
     return int(value)
+
+
+def _sized_from_line(payload: Dict[str, Any]) -> str:
+    """The size header — the requirements and rejections below are relative to it.
+
+    Printed next to the clock line because the two are the same kind of fact: the
+    inputs a preview would otherwise invent. A ``min_context`` requirement derived
+    from a goal line is the most misleading output this command can produce, and
+    the only thing that distinguishes it from the real one is this line.
+    """
+    preview = payload.get("preview")
+    preview = preview if isinstance(preview, dict) else {}
+    sized_from = preview.get("sized_from", _SIZED_FROM_TASK)
+    chars = preview.get("prompt_chars", 0)
+    if sized_from == _SIZED_FROM_PROMPT:
+        return (f"sized_from: {sized_from} ({chars} chars — the composed context "
+                "+ goal)")
+    return (f"sized_from: {sized_from} ({chars} chars — the GOAL LINE only; pass "
+            "--prompt-text to size from the composed prompt production sends)")
 
 
 def _at_line(payload: Dict[str, Any]) -> str:
@@ -1042,6 +1134,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_chain.add_argument("task", help="Task description to plan")
     p_chain.add_argument("--model", default="",
                          help="Requested model (for blocklist check)")
+    p_chain.add_argument("--prompt-text", default="",
+                         help="The composed prompt (context + goal) the child "
+                              "would receive. Signals are measured from it, so "
+                              "the plan is sized like production's. Omitted, the "
+                              "task line is measured (and reported as such)")
     p_chain.add_argument("--seed", type=int, default=None,
                          help="RNG seed for the 'random' fallback strategy "
                               "(same seed => same order; different seeds => "
