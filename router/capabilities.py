@@ -81,11 +81,27 @@ Vendor context that does not fit a registry field, kept here so it is not lost:
     hot-swapped mid-session (it was trained with preserved thinking history).
   nous — a white-label reseller in front of OpenRouter, so it shares an
     upstream with it and the two are NOT independent rails.
+  anthropic — FIRST-PARTY API ids only (``claude-opus-5``), metered by API key,
+    and the listed prices are that rail's own per-token rates, exactly as the
+    openai-codex note above says of its numbers. The prefixed
+    ``us.anthropic.<model>`` form in router.example.yaml is the SAME WEIGHTS
+    reached through a DIFFERENT rail (the template routes it via ``copilot-acp``;
+    Bedrock/Vertex are partner-operated and priced separately) and is
+    deliberately NOT registered: a seat or a partner marketplace is a different
+    commercial deal, so registering it against these dollars would assert a price
+    that rail may not charge, and asserting its context window would claim a
+    capability nobody here has verified for it. The ``capability_unknown``
+    warning that id raises is therefore CORRECT and stays; an operator who knows
+    their own seat's terms silences it with per-elo `declared` keys in
+    router.yaml, which is what that override exists for.
 
-  No other provider here prices by the clock. OpenAI Batch/Flex and Gemini
-  Batch are 50% off but are SEPARATE ENDPOINTS, not clock windows, so they are
-  deliberately NOT modelled as ``price_windows`` — a window would claim a
-  discount the router gets without changing anything about how it calls.
+  No other provider here prices by the clock. OpenAI Batch/Flex, Gemini Batch
+  and the Anthropic Batch API are 50% off but are SEPARATE ENDPOINTS, not clock
+  windows, so they are deliberately NOT modelled as ``price_windows`` — a window
+  would claim a discount the router gets without changing anything about how it
+  calls. A dated introductory rate (claude-sonnet-5's, below) is not a window
+  either: it is a calendar promotion, and the same call costs the same at every
+  hour of the day it runs.
 
 The 06:00-10:00 UTC window is peak on BOTH primary rails at once (deepseek
 every day, zai on weekdays), which is why the time policy has to be able to
@@ -659,6 +675,75 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "price_in": 0.95,
         "price_out": 4.00,
         "notes": "strict json_schema not documented, only JSON Mode",
+    },
+    # -- anthropic (first-party API, metered by API key) -------------------
+    # Bare first-party ids on purpose: `us.anthropic.claude-opus-5` is another
+    # rail's id for the same weights and is left unregistered, see the module
+    # docstring. No entry carries `price_windows` — Anthropic publishes no
+    # peak/off-peak split, and Batch (50% off) is a separate endpoint.
+    "claude-fable-5": {
+        "provider": "anthropic",
+        "context_window": 1_000_000,
+        "max_output": 128_000,
+        "vision": True,
+        "tool_calling": True,
+        "structured_output": True,
+        "billing_mode": "metered",
+        "price_in": 10.00,
+        "price_out": 50.00,
+        "notes": (
+            "thinking is always on and cannot be disabled; unavailable under "
+            "zero data retention"
+        ),
+    },
+    "claude-opus-5": {
+        "provider": "anthropic",
+        "context_window": 1_000_000,
+        "max_output": 128_000,
+        "vision": True,
+        "tool_calling": True,
+        "structured_output": True,
+        "billing_mode": "metered",
+        "price_in": 5.00,
+        "price_out": 25.00,
+    },
+    "claude-opus-4-8": {
+        "provider": "anthropic",
+        "context_window": 1_000_000,
+        "max_output": 128_000,
+        "vision": True,
+        "tool_calling": True,
+        "structured_output": True,
+        "billing_mode": "metered",
+        "price_in": 5.00,
+        "price_out": 25.00,
+        "notes": "same price as claude-opus-5; ties break on declared order",
+    },
+    "claude-sonnet-5": {
+        "provider": "anthropic",
+        "context_window": 1_000_000,
+        "max_output": 128_000,
+        "vision": True,
+        "tool_calling": True,
+        "structured_output": True,
+        "billing_mode": "metered",
+        "price_in": 3.00,
+        "price_out": 15.00,
+        "notes": (
+            "standard rate; an introductory 2.00/10.00 runs to 2026-08-31 — a "
+            "calendar promotion, NOT a clock window"
+        ),
+    },
+    "claude-haiku-4-5": {
+        "provider": "anthropic",
+        "context_window": 200_000,
+        "max_output": 64_000,
+        "vision": True,
+        "tool_calling": True,
+        "structured_output": True,
+        "billing_mode": "metered",
+        "price_in": 1.00,
+        "price_out": 5.00,
     },
     # -- nous (white-label reseller in front of openrouter) ----------------
     "stepfun/step-3.7-flash:free": {

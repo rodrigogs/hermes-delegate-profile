@@ -73,8 +73,12 @@ _ROUTING_KEYS = frozenset(
 
 #: Plan fields the time layer sets, printed ONLY when set: an absent or falsey
 #: flag is noise in the common case and would bury the one that fired.
+#: ``peak_priced`` sits next to ``demoted`` on purpose — they are the PRICE and
+#: the POSITION reading of the same ``avoid_peak`` match, and an operator can
+#: only tell them apart if they are printed side by side.
 _TIME_FLAG_KEYS: Tuple[str, ...] = (
-    "capped", "demoted", "promoted", "time_cap_bypassed", "strategy_degraded",
+    "capped", "demoted", "peak_priced", "promoted", "time_cap_bypassed",
+    "strategy_degraded",
 )
 
 # Price lookup outcomes. "unpriced" and "unavailable" are deliberately
@@ -279,9 +283,12 @@ def cmd_chain(args: argparse.Namespace) -> None:
     Shows the injected clock, the derived requirements, the eligible order
     actually tried, the per-elo price multiplier and effective price at that
     clock, the rejected elos with their reason, the fallback strategy, the
-    time-layer flags that fired (``capped``, ``demoted``, ``promoted``,
-    ``time_cap_bypassed``, ``strategy_degraded``) and the number of independent
-    upstream rails. ``--json`` prints the same payload machine readable.
+    time-layer flags that fired (``capped``, ``demoted``, ``peak_priced``,
+    ``promoted``, ``time_cap_bypassed``, ``strategy_degraded``) and the number of
+    independent upstream rails. A requirement nothing could ever meet is
+    headlined from ``unsatisfiable`` rather than left to be inferred from a
+    bypass plus a run of identical rejections. ``--json`` prints the same payload
+    machine readable.
 
     ``--seed N`` plans with ``random.Random(N)`` instead of reusing explain's
     fixed-seed preview, so different seeds really do produce different
@@ -774,6 +781,10 @@ def _print_chain_plan(payload: Dict[str, Any]) -> None:
     print(f"strategy: {plan.get('strategy', 'sequential')}")
     print(f"independent_rails: {plan.get('independent_rails', 0)}")
     print(f"bypassed: {str(bool(plan.get('bypassed', False))).lower()}")
+    # Printed before the time flags and above the rejections it explains: this
+    # is the headline of the pathological case, not a footnote to it.
+    for line in _unsatisfiable_lines(plan):
+        print(line)
     for line in _time_flag_lines(plan):
         print(line)
 
@@ -812,6 +823,65 @@ def _print_chain_plan(payload: Dict[str, Any]) -> None:
     unknown = plan.get("unknown") or []
     if unknown:
         print(f"unknown_capabilities: {', '.join(str(u) for u in unknown)}")
+
+
+def _unsatisfiable_lines(plan: Dict[str, Any]) -> List[str]:
+    """The headline for a pathological request, or nothing at all.
+
+    ``unsatisfiable`` names the requirement keys NO elo could ever meet. Without
+    it rendered, this case reaches the operator as ``bypassed: true`` plus three
+    identical ``context_too_small`` rejections and they have to work out for
+    themselves that the requirement, not the roster, is the impossible half —
+    the exact reconstruction the field was added to remove. So it is printed
+    first among the diagnostics, it names the requirement, and it prints the
+    ceiling that makes the requirement impossible, because "1.5M needed against
+    a 1.05M largest window" is what tells an operator whether to split the task
+    or add a rail.
+
+    Never re-derived: ``capabilities.filter_chain`` owns "no model could ever
+    meet this" and ``plan_chain`` carries it through unchanged, so a second
+    opinion computed here could only ever be a second answer. The ceiling is a
+    registry LOOKUP, and an absent one just drops that clause.
+    """
+    names = plan.get("unsatisfiable")
+    if not isinstance(names, list) or not names:
+        return []
+    keys = [str(name) for name in names]
+    lines = [f"unsatisfiable: {', '.join(keys)} "
+             "(no registered elo could EVER meet this — the requirement is "
+             "unmeetable, not these particular elos)"]
+
+    requirements = plan.get("requirements")
+    requirements = requirements if isinstance(requirements, dict) else {}
+    ceiling = _context_ceiling()
+    for key in keys:
+        needed = requirements.get(key)
+        if key == "min_context" and _is_number(needed) and ceiling is not None:
+            lines.append(f"  {key}: {needed} needed, and the largest registered "
+                         f"context window is {ceiling}")
+        elif needed is not None:
+            lines.append(f"  {key}: {needed} needed, and nothing registered "
+                         f"offers it")
+        else:
+            lines.append(f"  {key}: nothing registered can satisfy it")
+    lines.append("  → split the task into smaller reads, or add a rail that can "
+                 "meet it; reordering this chain cannot help")
+    return lines
+
+
+def _context_ceiling() -> Optional[int]:
+    """The largest context window any REGISTERED elo has, or None.
+
+    Guarded like every other registry read here: an older or mid-write
+    ``capabilities.py`` has no ``MAX_REGISTERED_CONTEXT``, and a headline that
+    names the unmeetable requirement without its ceiling is still the half the
+    operator cannot get from anywhere else.
+    """
+    value = (getattr(_caps, "MAX_REGISTERED_CONTEXT", None)
+             if _caps is not None else None)
+    if not _is_number(value) or value <= 0:
+        return None
+    return int(value)
 
 
 def _at_line(payload: Dict[str, Any]) -> str:
@@ -867,6 +937,16 @@ def _time_flag_lines(plan: Dict[str, Any]) -> List[str]:
     ``time_cap_bypassed`` is the one an operator must never miss: it means a
     cost cap was dropped to keep the chain non-empty (a cost control must not be
     able to cause an outage), so it is annotated rather than printed bare.
+
+    ``demoted`` and ``peak_priced`` are annotated for a different reason: they
+    are two readings of one ``avoid_peak`` match and printing both bare would
+    leave the operator to guess which is which. ``demoted`` is a POSITION fact —
+    what this plan actually moved later; ``peak_priced`` is a PRICE fact — every
+    matched elo inside a dearer window, moved or not. On the shipped T3/T4 shape
+    the matched rails are already the trailing hops, so nothing moves and only
+    ``peak_priced`` is printed; that case gets an extra line saying so outright,
+    because "the order looks untouched but two rails cost double" is otherwise
+    read as a policy that failed to fire.
     """
     lines: List[str] = []
     for key in _TIME_FLAG_KEYS:
@@ -880,7 +960,17 @@ def _time_flag_lines(plan: Dict[str, Any]) -> List[str]:
             rendered += " (time_cap would have emptied the chain — cap dropped)"
         elif key == "strategy_degraded":
             rendered += " (declared strategy needed a clock/rng it did not get)"
+        elif key == "demoted":
+            rendered += " (POSITION: time_policy moved these later in the chain)"
+        elif key == "peak_priced":
+            rendered += (" (PRICE: avoid_peak matched these inside a dearer "
+                         "window at this hour — a statement about the bill, not "
+                         "about the order)")
         lines.append(f"{key}: {rendered}")
+        if key == "peak_priced" and not plan.get("demoted"):
+            lines.append("  nothing moved: these were already the trailing hops, "
+                         "so the order above is unchanged and correct — they cost "
+                         "more at this hour and this chain cannot step around them")
     return lines
 
 

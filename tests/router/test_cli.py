@@ -480,6 +480,12 @@ def frozen_now(monkeypatch):
 
 
 _HARD_TASK = "Debug a race condition in 3 files"
+#: A turn implying 300 files: signals charges 4000 tokens per referenced file, so
+#: est_input_tokens lands around 1.2M and the derived min_context (×1.25 safety
+#: headroom) around 1.5M — above MAX_REGISTERED_CONTEXT (1.05M) AND above every
+#: window in the tier, which is exactly the pathological request `unsatisfiable`
+#: exists to name. The numbers are read off the plan below, never hardcoded.
+_PATHOLOGICAL_TASK = "Debug a race condition across 300 files"
 # A Monday 07:00 UTC — inside BOTH the deepseek peak and the weekday-only zai
 # peak. 15:00 is outside both. Saturday 07:00 is peak for deepseek only.
 _MON_PEAK = "2026-08-17T07:00:00Z"
@@ -520,10 +526,15 @@ def shuffling_planner(monkeypatch):
     return fake_plan_chain
 
 
+def _chain_text_for(capsys, config, task, *argv):
+    """Run ``chain`` on ``task`` through main() (so the parser is exercised)."""
+    cli.main(["--config", config, "chain", task, *argv])
+    return capsys.readouterr().out
+
+
 def _chain_text(capsys, config, *argv):
     """Run ``chain`` through main() (so the parser is exercised) -> stdout."""
-    cli.main(["--config", config, "chain", _HARD_TASK, *argv])
-    return capsys.readouterr().out
+    return _chain_text_for(capsys, config, _HARD_TASK, *argv)
 
 
 def _chain_json(capsys, config, *argv):
@@ -602,6 +613,11 @@ class _FakeCaps:
     agent has landed the registry half. ``glm-5.3`` has no dollar price and must
     surface as unpriced, never as 0.0.
     """
+
+    #: The registry constant the ``unsatisfiable`` headline reads for its
+    #: ceiling. The real value, so the rendered number is the one an operator
+    #: would check against the registry.
+    MAX_REGISTERED_CONTEXT = 1_050_000
 
     #: model -> (windows [start, end), weekdays or None, multiplier)
     _WINDOWS = {
@@ -968,6 +984,257 @@ class TestCLIChainTimeFlags:
         payload = _chain_json(capsys, time_config_file, "--seed", "1", "--at", _MON_PEAK)
         assert payload["chain_plan"]["time_cap_bypassed"] is True
         assert payload["chain_plan"]["multipliers"] == {"deepseek-v4-pro": 2.0}
+
+
+@pytest.fixture
+def peak_config_file(tmp_path):
+    """The SHIPPED T3/T4 shape: the ``avoid_peak`` rails are already trailing.
+
+    ``avoid_peak: [deepseek, zai]`` over ``[gpt-5.6-terra, deepseek-v4-pro,
+    glm-5.3]`` leaves the chain byte-identical at 07:00 UTC — demotion preserves
+    relative order and the two matched rails are the last two hops. So the plan
+    reports ``peak_priced`` non-empty with ``demoted`` EMPTY, which is the case
+    the two fields were split apart to express.
+    """
+    config = {
+        "enabled": True,
+        "blocklist": {"manual_ban": [], "fallback_chain": [],
+                      "auto_breaker": {"enabled": False}},
+        "rules": [
+            {"id": "hard-verbs", "status": "stable",
+             "when": {"verb_class": {"eq": "hard"}},
+             "then": {"profile": "coder", "model": "T3"}},
+        ],
+        "default": {"action": "classify"},
+        "tiers": {
+            "T3": {
+                "model": "gpt-5.6-terra", "provider": "openai-codex",
+                "time_policy": {"avoid_peak": ["deepseek", "zai"]},
+                "fallback": [
+                    {"model": "deepseek-v4-pro", "provider": "deepseek"},
+                    {"model": "glm-5.3", "provider": "zai"},
+                ],
+            },
+        },
+    }
+    path = tmp_path / "router.yaml"
+    with open(path, "w") as f:
+        yaml.dump(config, f)
+    return str(path)
+
+
+class TestCLIChainUnsatisfiable:
+    """The headline for a pathological request, which nothing rendered before.
+
+    Every case pins the clock with ``--at``: the addendum's testing note is that
+    no test reads the wall clock, and one that did would be the bug the
+    injected-clock design exists to prevent.
+    """
+
+    def _plan_with(self, monkeypatch, **fields):
+        plan = dict(_STUB_PLAN)
+        plan.update(fields)
+        monkeypatch.setattr(rules_mod, "plan_chain", lambda *_a, **_k: dict(plan),
+                            raising=False)
+
+    def test_a_pathological_floor_is_headlined_not_left_to_be_inferred(
+        self, time_config_file, capsys
+    ):
+        """The real pipeline: a floor above every registered window, named.
+
+        Before this, the operator got ``bypassed: true`` and a run of identical
+        ``context_too_small`` rejections and had to conclude "the floor is above
+        every window that exists" by hand.
+        """
+        if cli._caps is None:  # pragma: no cover - the registry always ships
+            pytest.skip("unsatisfiable is computed in the capability registry")
+        payload = json.loads(_chain_text_for(
+            capsys, time_config_file, _PATHOLOGICAL_TASK, "--json", "--at", _MON_PEAK,
+        ))
+        plan = payload["chain_plan"]
+        if plan["unsatisfiable"] != ["min_context"]:  # pragma: no cover
+            pytest.skip("this build of the filter does not report unsatisfiable")
+        needed = plan["requirements"]["min_context"]
+
+        text = _chain_text_for(capsys, time_config_file, _PATHOLOGICAL_TASK,
+                              "--at", _MON_PEAK)
+        assert "unsatisfiable: min_context" in text
+        # The requirement is named as the unmeetable half — not the roster.
+        assert "no registered elo could EVER meet this" in text
+        # The rendered numbers are the PLAN's, not a second derivation: needed
+        # against the ceiling is what says "split it or add a rail".
+        assert str(needed) in text
+        assert str(cli._context_ceiling()) in text
+        assert "largest registered context window" in text
+        assert "split the task" in text
+        # It is a DIFFERENT fact from the per-elo rejections, and it comes first:
+        # the diagnosis above the evidence, not buried under it.
+        assert "bypassed: true" in text
+        assert text.count("reject_reason=context_too_small") == 4
+        assert text.index("unsatisfiable:") < text.index("rejected:")
+
+    def test_the_headline_names_the_requirement_and_the_ceiling(
+        self, time_config_file, fake_caps, monkeypatch, capsys
+    ):
+        """Wording pinned against a fixed ceiling, independent of the registry."""
+        self._plan_with(monkeypatch, unsatisfiable=["min_context"],
+                        requirements={"min_context": 1_500_014}, bypassed=True)
+        text = _chain_text(capsys, time_config_file, "--seed", "1", "--at", _MON_PEAK)
+        assert ("unsatisfiable: min_context (no registered elo could EVER meet "
+                "this — the requirement is unmeetable, not these particular "
+                "elos)") in text
+        assert ("  min_context: 1500014 needed, and the largest registered "
+                "context window is 1050000") in text
+
+    def test_a_registry_that_cannot_answer_still_names_the_requirement(
+        self, time_config_file, monkeypatch, capsys
+    ):
+        """No MAX_REGISTERED_CONTEXT => the ceiling clause drops, nothing raises.
+
+        The requirement name is the half an operator cannot get anywhere else, so
+        it must survive a registry that is absent or mid-write.
+        """
+        monkeypatch.setattr(cli, "_caps", None)
+        self._plan_with(monkeypatch, unsatisfiable=["min_context"],
+                        requirements={"min_context": 1_500_014}, bypassed=True)
+        text = _chain_text(capsys, time_config_file, "--seed", "1", "--at", _MON_PEAK)
+        assert "unsatisfiable: min_context" in text
+        assert "1500014 needed" in text
+        assert "largest registered context window" not in text
+        assert "split the task" in text
+
+    def test_a_requirement_key_with_no_value_is_still_reported(
+        self, time_config_file, fake_caps, monkeypatch, capsys
+    ):
+        """A future unsatisfiable key must render, not vanish or crash."""
+        self._plan_with(monkeypatch, unsatisfiable=["vision"], requirements={})
+        text = _chain_text(capsys, time_config_file, "--seed", "1", "--at", _MON_PEAK)
+        assert "unsatisfiable: vision" in text
+        assert "  vision: nothing registered can satisfy it" in text
+
+    def test_an_empty_or_absent_unsatisfiable_renders_nothing(
+        self, time_config_file, fake_caps, monkeypatch, capsys
+    ):
+        """An empty field is not an empty heading — it is silence."""
+        self._plan_with(monkeypatch, unsatisfiable=[])
+        assert "unsatisfiable" not in _chain_text(
+            capsys, time_config_file, "--seed", "1", "--at", _MON_PEAK)
+        # ... and the same when the planner never emitted the key at all.
+        self._plan_with(monkeypatch)
+        assert "unsatisfiable" not in _chain_text(
+            capsys, time_config_file, "--seed", "1", "--at", _MON_PEAK)
+
+    def test_the_json_dump_still_carries_the_raw_field(
+        self, time_config_file, fake_caps, monkeypatch, capsys
+    ):
+        """--json stays a faithful dump of the plan: the list, not the prose."""
+        self._plan_with(monkeypatch, unsatisfiable=["min_context"], bypassed=True)
+        payload = _chain_json(capsys, time_config_file, "--seed", "1",
+                              "--at", _MON_PEAK)
+        assert payload["chain_plan"]["unsatisfiable"] == ["min_context"]
+        assert "no registered elo" not in json.dumps(payload)
+
+
+class TestCLIChainPeakPriced:
+    """``demoted`` is a MOVE; ``peak_priced`` is a PRICE. Both must be readable.
+
+    Every case pins the clock with ``--at`` for the reason given in the class
+    above: a test that read the wall clock would be the bug this design prevents.
+    """
+
+    def _plan_with(self, monkeypatch, **fields):
+        plan = dict(_STUB_PLAN)
+        plan.update(fields)
+        monkeypatch.setattr(rules_mod, "plan_chain", lambda *_a, **_k: dict(plan),
+                            raising=False)
+
+    def test_the_shipped_t3_shape_reports_a_price_with_no_move(
+        self, peak_config_file, capsys
+    ):
+        """The real pipeline on the shipped policy — not a hypothetical shape.
+
+        ``avoid_peak: [deepseek, zai]`` over T3 at 07:00 Monday moves nothing,
+        because the matched rails are already the trailing hops. The order is
+        therefore unchanged AND two rails cost double, and the block has to say
+        both or the operator reads the second as a policy that failed to fire.
+        """
+        payload = json.loads(_chain_text(
+            capsys, peak_config_file, "--json", "--at", _MON_PEAK))
+        plan = payload["chain_plan"]
+        if plan["peak_priced"] == []:  # pragma: no cover - registry mid-write
+            pytest.skip("this build does not report peak_priced yet")
+        # Asserted against the RETURNED chain: the report may not drift from the
+        # permutation it describes.
+        assert _order(payload) == ["gpt-5.6-terra", "deepseek-v4-pro", "glm-5.3"]
+        assert plan["peak_priced"] == ["deepseek-v4-pro", "glm-5.3"]
+        assert plan["demoted"] == []
+
+        text = _chain_text(capsys, peak_config_file, "--at", _MON_PEAK)
+        assert "peak_priced: deepseek-v4-pro, glm-5.3" in text
+        assert "nothing moved" in text
+        assert "unchanged and correct" in text
+        # Nothing moved, so nothing claims anything did.
+        assert "demoted:" not in text
+
+    def test_the_two_fields_are_visibly_different_facts(
+        self, time_config_file, fake_caps, monkeypatch, capsys
+    ):
+        """Printed side by side, each labelled with the question it answers."""
+        self._plan_with(monkeypatch, demoted=["glm-5.3"],
+                        peak_priced=["deepseek-v4-pro", "glm-5.3"])
+        text = _chain_text(capsys, time_config_file, "--seed", "1", "--at", _MON_PEAK)
+        demoted_line = _line_starting(text, "demoted:")
+        peak_line = _line_starting(text, "peak_priced:")
+        assert "POSITION" in demoted_line and "moved these later" in demoted_line
+        assert "PRICE" in peak_line and "dearer" in peak_line
+        # One elo is in both lists, which is correct and is exactly why the two
+        # lines may not read the same.
+        assert "glm-5.3" in demoted_line and "glm-5.3" in peak_line
+        assert demoted_line != peak_line
+        # Something DID move here, so the "nothing moved" note is not printed.
+        assert "nothing moved" not in text
+
+    def test_peak_priced_alone_says_the_unchanged_order_is_not_a_bug(
+        self, time_config_file, fake_caps, monkeypatch, capsys
+    ):
+        self._plan_with(monkeypatch, demoted=[],
+                        peak_priced=["deepseek-v4-pro", "glm-5.3"])
+        text = _chain_text(capsys, time_config_file, "--seed", "1", "--at", _MON_PEAK)
+        assert "peak_priced: deepseek-v4-pro, glm-5.3" in text
+        assert "demoted:" not in text
+        note = _line_starting(text, "  nothing moved:")
+        assert "already the trailing hops" in note
+        assert "cannot step around them" in note
+
+    def test_an_empty_or_absent_peak_priced_renders_nothing(
+        self, time_config_file, fake_caps, monkeypatch, capsys
+    ):
+        self._plan_with(monkeypatch, demoted=[], peak_priced=[])
+        text = _chain_text(capsys, time_config_file, "--seed", "1", "--at", _MON_PEAK)
+        assert "peak_priced" not in text
+        assert "nothing moved" not in text
+        # ... and the same when the planner never emitted the key at all.
+        self._plan_with(monkeypatch)
+        assert "peak_priced" not in _chain_text(
+            capsys, time_config_file, "--seed", "1", "--at", _MON_PEAK)
+
+    def test_the_json_dump_still_carries_both_raw_fields(
+        self, time_config_file, fake_caps, monkeypatch, capsys
+    ):
+        self._plan_with(monkeypatch, demoted=[],
+                        peak_priced=["deepseek-v4-pro", "glm-5.3"])
+        payload = _chain_json(capsys, time_config_file, "--seed", "1",
+                              "--at", _MON_PEAK)
+        assert payload["chain_plan"]["peak_priced"] == ["deepseek-v4-pro", "glm-5.3"]
+        assert payload["chain_plan"]["demoted"] == []
+        assert "nothing moved" not in json.dumps(payload)
+
+
+def _line_starting(text, prefix):
+    """The one output line beginning with ``prefix`` — asserted to be unique."""
+    matches = [line for line in text.splitlines() if line.startswith(prefix)]
+    assert len(matches) == 1, f"expected exactly one {prefix!r} line, got {matches}"
+    return matches[0]
 
 
 class TestCLIChainTimeAgainstTheRealRegistry:

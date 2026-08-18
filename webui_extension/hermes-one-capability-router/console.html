@@ -2974,6 +2974,157 @@
         return { dropped, retained, filterBypassed, capBypassed, gaveWay };
       }
 
+      // Model ids in a sentence. Two get "and", three or more get commas and a
+      // final "and", because these lines are read aloud beside the chain they name.
+      const nameList = (names) => {
+        const list = (Array.isArray(names) ? names : []).filter(Boolean);
+        if (list.length < 3) return list.join(' and ');
+        return `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`;
+      };
+
+      // ── THE REQUIREMENT NOTHING COULD EVER MEET ─────────────────────
+      // `unsatisfiable` IS NOT A REJECTION LIST, and the whole reason the field
+      // exists is that the two read differently. A rejection says THESE elos are
+      // wrong for this task; `unsatisfiable` says the REQUIREMENT is one nothing the
+      // router can reach could ever meet — a min_context floor above every context
+      // window there is — so no reorder, no extra hop and no hour makes the task
+      // routable. Three coincidental `context_too_small` rows carry that only to an
+      // operator who reconstructs it from the coincidence, which is the inference
+      // these words exist to remove. It is INDEPENDENT of the bypass:
+      // capabilities.filter_chain reports it with `bypassed` False whenever a
+      // fail-open unknown hop stays eligible.
+
+      // The ceiling the router measured against, read from the SAME two places
+      // capabilities._unsatisfiable_requirements reads: every context_window in the
+      // registry, and every window this chain's elos declare — a declared window
+      // WINS, so hopCaps is asked rather than the raw entry. `scope` says which of
+      // the two the console could actually see, because /capabilities is an OPTIONAL
+      // read (DESIGN.md §7) and a ceiling taken from three declared hops must not be
+      // described as every model the router can reach. null means nobody published
+      // one, and then the requirement is named without a number — a zero here would
+      // claim the router can hold nothing.
+      function contextCeiling(plan, registry) {
+        const p = plan && typeof plan === 'object' ? plan : {};
+        const table = registry && typeof registry === 'object' ? registry : null;
+        let tokens = null;
+        const widen = (value) => {
+          const size = Number(value);
+          if (!Number.isFinite(size) || size <= 0) return;
+          if (tokens === null || size > tokens) tokens = size;
+        };
+        [].concat(Array.isArray(p.chain) ? p.chain : [],
+                  Array.isArray(p.rejected) ? p.rejected : [])
+          .forEach((hop) => {
+            if (hop && typeof hop === 'object') widen(hopCaps(hop, table).caps.context_window);
+          });
+        if (table) {
+          Object.keys(table).forEach((model) => {
+            const entry = table[model];
+            if (entry && typeof entry === 'object') widen(entry.context_window);
+          });
+        }
+        return { tokens, scope: tokens === null ? '' : (table ? 'registry' : 'chain') };
+      }
+
+      // What the widest window is a window OF — the honest subject for the ceiling,
+      // and the one thing the console must not overstate when it never read the
+      // registry.
+      const CEILING_SCOPE = {
+        registry: 'The widest context window the router can reach',
+        chain: 'The widest context window this chain declares',
+      };
+      // Which requirement is unmeetable, against what ceiling, and what an operator
+      // can actually do — which is never "add an elo that qualifies", because by
+      // definition none could.
+      function unsatisfiableWords(plan, registry) {
+        const p = plan && typeof plan === 'object' ? plan : {};
+        const keys = (Array.isArray(p.unsatisfiable) ? p.unsatisfiable : [])
+          .map((key) => String(key == null ? '' : key).trim()).filter(Boolean);
+        if (!keys.length) return null;
+        const req = p.requirements && typeof p.requirements === 'object' ? p.requirements : {};
+        const said = [];
+        const context = keys.indexOf('min_context') !== -1;
+        if (context) {
+          const ceiling = contextCeiling(p, registry);
+          const gap = contextShortfall(ceiling.tokens, req.min_context);
+          const needed = Number(req.min_context);
+          if (gap) said.push(`${CEILING_SCOPE[ceiling.scope]} ${gap}.`);
+          else if (Number.isFinite(needed) && needed > 0) {
+            said.push(`Nothing the router can reach holds the ${fmt(needed)} tokens this task needs, and no elo here publishes a window to compare it against.`);
+          } else said.push('Nothing the router can reach can hold this task’s context.');
+        }
+        // A requirement key this console has not learned still renders, for the same
+        // reason requirementChips renders one: dropping it would leave the loudest
+        // fact about the request unsaid.
+        const others = keys.filter((key) => key !== 'min_context').map((key) => key.replace(/_/g, ' '));
+        if (others.length) said.push(`No model the router can reach can meet ${nameList(others)}.`);
+        // The sentence that separates this from a Dropped row. An ordinary rejection
+        // is a fact about the roster; this is a fact about the request.
+        said.push('That is the requirement being impossible, not these elos being wrong for it — no ordering, no extra hop and no hour changes it.');
+        said.push(context && !others.length
+          ? 'Split the work into smaller turns, or add a model with a bigger context window.'
+          : 'Split the work, or relax what the rule requires of the model.');
+        return { title: 'Requirement no model can meet.', said: said.join(' ') };
+      }
+
+      // ── PRICE AND POSITION ARE TWO READINGS ─────────────────────────
+      // `peak_priced` is the BILL: every elo the tier's `avoid_peak` matched inside a
+      // dearer window at the planned hour, whether or not moving it changed
+      // anything. `demoted` is the POSITION: only the elos the reorder actually moved
+      // later, and capabilities.apply_time_policy derives it from the chain it
+      // RETURNED, so the report and the permutation cannot drift apart. The shipped
+      // T3/T4 pair produces the awkward case — avoid_peak matches the two trailing
+      // hops, the permutation is the identity, so `demoted` is EMPTY while
+      // `peak_priced` names both. One field could not carry both readings without
+      // lying about one of them, and a console that printed "moved to the end" out of
+      // an empty `demoted` would be claiming an order changed when nothing did.
+      function peakPricing(plan) {
+        const p = plan && typeof plan === 'object' ? plan : {};
+        // Both shapes, for the same reason timeFlagIndex accepts both: the plan may
+        // carry a list of ids or a list of entries.
+        const models = (value) => (Array.isArray(value) ? value : []).reduce((out, item) => {
+          const model = typeof item === 'string' ? item
+            : (item && typeof item === 'object' ? String(item.model || '') : '');
+          if (model && out.indexOf(model) === -1) out.push(model);
+          return out;
+        }, []);
+        const priced = models(p.peak_priced);
+        const moved = models(p.demoted);
+        // What the policy matched and could NOT move: the elos an operator has to
+        // read as "this chain has nothing cheaper to try ahead of them".
+        return { priced, moved, stuck: priced.filter((model) => moved.indexOf(model) === -1) };
+      }
+
+      // The bill first, then what the chain was able to do about it — and the second
+      // sentence is about `demoted` alone, so an empty `demoted` says "nothing
+      // moved" instead of implying a reorder that never happened.
+      function peakPriceWords(plan, when) {
+        const p = plan && typeof plan === 'object' ? plan : {};
+        const report = peakPricing(p);
+        if (!report.priced.length) return null;
+        const many = report.priced.length !== 1;
+        const them = many ? 'them' : 'it';
+        const hour = when ? ` at ${hourLabel(when.hour)}` : '';
+        const said = [`${nameList(report.priced)} ${many ? 'are' : 'is'} in a dearer window${hour}, so the task pays the higher rate on ${many ? 'those hops' : 'that hop'}.`];
+        if (!report.moved.length) {
+          said.push(`The tier’s time policy matched ${them} and moved nothing — ${many ? 'they are' : 'it is'} already at the back of the chain, so there is nothing cheaper to try ahead of ${them}. The order below is the order the policy left.`);
+        } else if (!report.stuck.length) {
+          said.push(`The tier’s time policy moved ${report.moved.length !== 1 ? 'them' : 'it'} later, so every cheaper hop is tried first.`);
+        } else {
+          // Only the STUCK elos are named here. Which hop moved is already said on
+          // that hop's own row, in the words that name its consequence (§3b), and
+          // naming it twice would give one fact two authorities.
+          said.push(`The tier’s time policy moved what it could; ${nameList(report.stuck)} could not go any further back, so there is nothing cheaper to try ahead of ${report.stuck.length !== 1 ? 'them' : 'it'}.`);
+        }
+        // The two moves left are the hour and the roster, and they are named ONCE per
+        // viewport: the time-cap bypass line above already carries both, and saying
+        // them twice is the same fact twice (DESIGN.md §2.3).
+        if (report.stuck.length && !p.time_cap_bypassed) {
+          said.push('Move the work to an off-peak hour, or add a rail that is cheap at this one.');
+        }
+        return { title: 'Peak-priced hops.', said: said.join(' ') };
+      }
+
       function renderChainPlan(plan) {
         const box = $('chainPlan');
         clear(box);
@@ -3019,14 +3170,34 @@
         const cap = timeCapOf(plan);
         const outcome = droppedElos(plan);
 
-        // BYPASSED FIRST, and as loud as this console gets. It means the filter
+        // THE REQUIREMENT BEFORE THE ROSTER. This line is the CAUSE of the bypass
+        // below whenever both fire, and cause-first is the order an operator
+        // diagnosing reads in: "no elo can meet these requirements" over three
+        // context_too_small rows left the operator to reconstruct that the request
+        // itself was pathological. It takes the amber line rather than the red one
+        // because nothing was refused — the router kept routing, and the red line
+        // below is the one that reports a control giving way (DESIGN.md §3).
+        const impossible = unsatisfiableWords(plan, registry);
+        if (impossible) {
+          const line = el('div', 'warn-line');
+          line.append(el('strong', '', impossible.title), el('span', '', impossible.said));
+          box.append(line);
+        }
+        // BYPASSED, and as loud as this console gets. It means the filter
         // disqualified every elo and was overridden to keep routing alive: the task
         // will run on a model that cannot meet its stated requirements.
         if (outcome.filterBypassed) {
           const line = el('div', 'warn-line bad');
           line.append(el('strong', '', 'Capability filter bypassed.'),
-                      el('span', '', 'No elo in this chain can meet these requirements, so the router will try them all anyway rather than refuse the task. '
-                                   + 'Add an elo that qualifies, or lower the tier’s requirements.'));
+                      // With an unmeetable requirement named above, the cause and the
+                      // fix belong to THAT line: repeating "no elo can meet these
+                      // requirements" would be the same fact twice, and "add an elo
+                      // that qualifies" would be advice nobody can take, because
+                      // nothing could qualify.
+                      el('span', '', impossible
+                        ? 'Every elo was disqualified, so the router will try them all anyway rather than refuse the task — whichever one it picks cannot meet the requirement above.'
+                        : 'No elo in this chain can meet these requirements, so the router will try them all anyway rather than refuse the task. '
+                          + 'Add an elo that qualifies, or lower the tier’s requirements.'));
           box.append(line);
         }
         // The time cap bypassing is the same class of event and gets the same
@@ -3039,6 +3210,18 @@
           line.append(el('strong', '', 'Time cap bypassed.'),
                       el('span', '', `Every elo was over the tier’s price cap${cap !== null ? ` of ${times(cap)}` : ''} at ${when ? hourLabel(when.hour) : 'this hour'}, so the cap was dropped rather than leave the task with no rail. `
                                    + 'This request pays peak price. Add a rail that is off-peak at this hour, raise the cap, or move the work to an off-peak hour.'));
+          box.append(line);
+        }
+        // WHAT IS BILLING DOUBLE, which is a different question from what moved. The
+        // chain above already carries each elo's own multiplier and effective prices,
+        // but not the fact that the tier's `avoid_peak` MATCHED these elos and how far
+        // the reorder got — and on the shipped T3/T4 chain the reorder got nowhere,
+        // which has to read as "these bill double and this chain cannot step around
+        // them" rather than as a policy that failed to fire.
+        const peak = peakPriceWords(plan, when);
+        if (peak) {
+          const line = el('div', 'warn-line');
+          line.append(el('strong', '', peak.title), el('span', '', peak.said));
           box.append(line);
         }
         // A strategy that did not run is not a strategy — and the two words are BOTH
@@ -4081,6 +4264,10 @@
         // from the RUNNING path rather than from the declared config: which elos are
         // really out of the chain, and where this task actually goes.
         liveMultipliers, droppedElos, verdictRoute,
+        // The two facts the plan carried that nothing rendered: the requirement no
+        // elo could ever meet, and what is billing at peak as distinct from what
+        // actually moved.
+        contextCeiling, unsatisfiableWords, peakPricing, peakPriceWords, nameList,
         say, ago, fmt, isNarrow, csrf, writable, call, load, absence, matchesQuery,
         syncKeyboard,
         // The write spine: the only code here that changes how the agent routes

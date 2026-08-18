@@ -2453,3 +2453,146 @@ def test_every_move_the_policy_reports_is_a_move_the_returned_chain_made():
                     entry = declared_of[model]
                     assert in_expensive_window(model, when, entry), (label, model)
                     assert entry.get("provider", "").lower() in avoid, (label, model)
+
+
+# ---------------------------------------------------------------------------
+# anthropic — first-party ids, flat priced at every hour
+# ---------------------------------------------------------------------------
+
+# (id, (price_in, price_out)) in DECLARED registry order — the order
+# `cheapest_now` falls back to when two entries cost the same.
+_ANTHROPIC_PRICES = (
+    ("claude-fable-5", (10.00, 50.00)),
+    ("claude-opus-5", (5.00, 25.00)),
+    ("claude-opus-4-8", (5.00, 25.00)),
+    ("claude-sonnet-5", (3.00, 15.00)),
+    ("claude-haiku-4-5", (1.00, 5.00)),
+)
+
+# Everything but haiku, which is the one 200K entry.
+_ANTHROPIC_1M = (
+    "claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-sonnet-5",
+)
+
+
+def test_every_anthropic_model_resolves_through_capabilities_for():
+    for model, _ in _ANTHROPIC_PRICES:
+        entry = capabilities_for(model)
+        assert entry is not None, model
+        assert entry["provider"] == "anthropic", model
+        assert entry["billing_mode"] == "metered", model
+
+
+def test_the_prefixed_rail_id_is_left_unknown_on_purpose():
+    """Same weights, different rail — so not these prices, and not registered.
+
+    router.example.yaml reaches `us.anthropic.claude-opus-5` through
+    `copilot-acp`, a seat that need not bill the first-party per-token rate.
+    Registering it here would assert that price anyway, so its
+    capability_unknown warning is CORRECT and stays; an operator who knows their
+    own seat's terms declares it per elo in router.yaml.
+    """
+    assert capabilities_for("us.anthropic.claude-opus-5") is None
+    assert satisfies(
+        "us.anthropic.claude-opus-5", {"min_context": 200_000, "vision": True}
+    ) == (True, "capability_unknown")
+
+
+def test_no_anthropic_entry_trips_the_registry_diagnostics():
+    for model, _ in _ANTHROPIC_PRICES:
+        entry = MODEL_CAPABILITIES[model]
+        # Deliberately window-free: no published peak/off-peak split.
+        assert "price_windows" not in entry, model
+        assert price_window_diagnostics(model, entry.get("price_windows")) == []
+    assert [
+        problem for problem in registry_diagnostics() if "claude" in problem
+    ] == []
+
+
+def test_anthropic_models_accept_vision_and_a_200k_min_context():
+    for model in _ANTHROPIC_1M:
+        assert satisfies(
+            model, {"vision": True, "min_context": 200_000}
+        ) == (True, ""), model
+    # haiku's window is exactly 200K, and equal passes.
+    assert satisfies(
+        "claude-haiku-4-5", {"vision": True, "min_context": 200_000}
+    ) == (True, "")
+
+
+def test_haiku_rejects_a_400k_min_context_and_the_1m_entries_do_not():
+    assert satisfies("claude-haiku-4-5", {"min_context": 400_000}) == (
+        False, "context_too_small"
+    )
+    for model in _ANTHROPIC_1M:
+        assert satisfies(model, {"min_context": 400_000}) == (True, ""), model
+
+
+def test_anthropic_prices_are_the_same_at_every_hour():
+    """No `price_windows`, so the flat pair comes back for all 24 hours.
+
+    Asserted on a weekday and on a Saturday because the two shipped peaks are
+    hour-gated and one of them is weekday-gated; neither touches these entries.
+    """
+    for model, expected in _ANTHROPIC_PRICES:
+        assert effective_price(model, None) == expected, model
+        for day in (WED, SAT):
+            for hour in range(24):
+                when = _at(day, hour)
+                assert effective_price(model, when) == expected, (model, day, hour)
+
+
+def test_no_anthropic_model_is_ever_in_an_expensive_window():
+    for model, _ in _ANTHROPIC_PRICES:
+        assert in_expensive_window(model, None) is False, model
+        for day in (WED, SAT):
+            for hour in range(24):
+                assert in_expensive_window(model, _at(day, hour)) is False, (
+                    model, day, hour
+                )
+
+
+def test_cheapest_now_sorts_the_anthropic_entries_by_output_price():
+    # 07:00 Wednesday is peak on both primary rails and moves nothing here.
+    chain = [{"model": model, "provider": "anthropic"}
+             for model, _ in _ANTHROPIC_PRICES]
+    ordered = order_chain(
+        chain, "cheapest_now", pin_primary=False, when=_at(WED, 7)
+    )
+    assert [hop["model"] for hop in ordered] == [
+        "claude-haiku-4-5", "claude-sonnet-5",
+        "claude-opus-5", "claude-opus-4-8",       # 25.00 tie, declared order
+        "claude-fable-5",
+    ]
+
+
+def test_the_two_opus_entries_tie_and_keep_declared_order():
+    when = _at(WED, 7)
+    assert effective_price("claude-opus-5", when) == effective_price(
+        "claude-opus-4-8", when
+    )
+    first = [{"model": "claude-opus-5", "provider": "anthropic"},
+             {"model": "claude-opus-4-8", "provider": "anthropic"}]
+    second = [{"model": "claude-opus-4-8", "provider": "anthropic"},
+              {"model": "claude-opus-5", "provider": "anthropic"}]
+    assert [hop["model"] for hop in order_chain(
+        first, "cheapest_now", pin_primary=False, when=when)] == [
+        "claude-opus-5", "claude-opus-4-8"]
+    assert [hop["model"] for hop in order_chain(
+        second, "cheapest_now", pin_primary=False, when=when)] == [
+        "claude-opus-4-8", "claude-opus-5"]
+
+
+def test_an_anthropic_elo_sorts_inside_the_dollars_bucket():
+    """Metered dollars, so behind a plan-credit rail and behind a free one."""
+    chain = [
+        {"model": "claude-haiku-4-5", "provider": "anthropic"},  # metered, 5.00
+        {"model": "tencent/hy3:free", "provider": "nous"},       # free
+        {"model": "glm-4.7", "provider": "zai"},                 # plan credits
+    ]
+    ordered = order_chain(
+        chain, "cheapest_now", pin_primary=False, when=_at(WED, 7)
+    )
+    assert [hop["model"] for hop in ordered] == [
+        "glm-4.7", "tencent/hy3:free", "claude-haiku-4-5",
+    ]

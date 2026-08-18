@@ -192,7 +192,10 @@ one an operator acts on:
 - **why the time policy moved it**, when it did: `capped`, `demoted` and
   `promoted` in words that name the consequence ("moved to the end — deepseek is
   in an expensive window, so it is tried only if everything ahead of it fails").
-  A flag alone describes a position, not a reason.
+  A flag alone describes a position, not a reason. `demoted` is the only field
+  that may say "moved": it is derived from the permutation
+  `apply_time_policy` RETURNED, and an empty `demoted` therefore means nothing
+  moved and must render as nothing.
 
 **Redundancy is counted in upstreams, not in vendor names.** Nous Portal resells
 OpenRouter, so a chain hopping from one to the other survives nothing. The tier
@@ -204,11 +207,45 @@ pair redundancy actually uses.
 anything else in a chain plan, each naming what the router will do AND what the
 operator can do:
 
+- `unsatisfiable` — the derived requirement NO elo could ever meet: a `min_context`
+  floor above every context window the router can reach. This is the CAUSE of the
+  bypass below whenever both fire, so it is said FIRST and the bypass line then
+  carries only what the router did — otherwise "no elo can meet these requirements"
+  is stated twice and "add an elo that qualifies" is offered when nothing could
+  qualify. It names the requirement and the ceiling it was measured against ("the
+  widest context window the router can reach holds 1,050,000, needs 1,050,002"),
+  read from the same two places `_unsatisfiable_requirements` reads: the registry,
+  and the windows this chain declares. When `GET /capabilities` never answered the
+  ceiling is scoped to the chain IN WORDS, because a ceiling taken from three
+  declared hops is not "every model the router can reach"; when nothing published
+  one, the requirement is named without a number, since a zero would claim the
+  router can hold nothing. It takes the AMBER line, not the red one — nothing was
+  refused, the router kept routing, and red is reserved for a control giving way.
+  It is independent of `bypassed` (the filter reports it with `bypassed` false when
+  a fail-open unknown hop stays eligible), and it is the whole difference between
+  "this request is pathological" and "these particular elos were rejected" — which
+  three coincidental `context_too_small` reasons carry only to an operator who
+  reconstructs it.
 - `bypassed` — the filter disqualified every elo and overrode itself to keep
   routing alive, so the task runs on a model that cannot meet its own stated
   requirements. When the bypass reports no per-elo reasons, that is said too: an
   absent Dropped section beside "bypassed" otherwise reads as "nothing was
   dropped", the opposite of what happened.
+- `peak_priced` — PRICE, and a different fact from `demoted`'s POSITION: every elo
+  `avoid_peak` matched inside a dearer window, whether or not moving it changed
+  anything. The shipped T3/T4 chain is the case the split exists for —
+  `avoid_peak: [deepseek, zai]` over hops that are already trailing leaves the order
+  byte-identical, so `demoted` is EMPTY while `peak_priced` names both. That has to
+  read as "these bill double and this chain cannot step around them", never as a
+  policy that failed to fire, so the line states the bill first and then how far the
+  reorder got: everything moved, nothing moved because the matches are already at
+  the back, or — the mixed case — it names only what could NOT go further back
+  (`peak_priced` minus `demoted`), because which hop moved is already said on that
+  hop's own row. Amber, the colour that means paying double needs attention
+  (§3c). The recovery — another hour, or a rail that is cheap at this one — is named
+  once per viewport, so it is omitted when the `time_cap_bypassed` line above
+  already carries it. Each elo's own multiplier and effective prices stay where
+  §3b puts them, on the elo; this line's subject is the tier's policy.
 - `time_cap_bypassed` — a COST control was dropped, deliberately, because
   enforcing it would have left the task with no rail. Same volume as the filter
   bypass, because it is the same class of event: the request pays peak price, and

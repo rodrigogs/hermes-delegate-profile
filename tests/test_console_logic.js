@@ -1507,9 +1507,12 @@ function chainPlan(extra) {
     //   multipliers — a mapping, always present, EMPTY without a clock. Absent, it
     //     arrived at eloRow as `null`, which Number() reads as 0, and every hop
     //     rendered "0× cheap window".
-    //   capped / demoted / promoted / time_cap_bypassed / unsatisfiable — the time
-    //     layer's diagnostics, always emitted, so "no cap fired" is a reported fact
-    //     rather than a missing key.
+    //   capped / demoted / promoted / peak_priced / time_cap_bypassed /
+    //     unsatisfiable — the time layer's diagnostics, always emitted, so "no cap
+    //     fired" is a reported fact rather than a missing key. `peak_priced` and
+    //     `demoted` are two of them and not one: apply_time_policy's own invariant
+    //     is set(demoted) <= set(peak_priced), so a plan carrying `demoted` without
+    //     `peak_priced` is one the router cannot send.
     strategy_declared: 'sequential',
     strategy_degraded: false,
     strategy_degraded_reason: '',
@@ -1518,6 +1521,7 @@ function chainPlan(extra) {
     capped: [],
     demoted: [],
     promoted: [],
+    peak_priced: [],
     multipliers: {},
   }, extra || {});
 }
@@ -2441,6 +2445,10 @@ test('an elo the time policy moved says why it moved', () => {
     ],
     demoted: [{ model: 'deepseek-v4-pro', provider: 'deepseek' }],
     promoted: ['gpt-5.6-luna'],
+    // A demoted elo is a peak-priced one by construction — apply_time_policy only
+    // demotes what is inside a multiplier > 1.0 window — so the plan that carries
+    // one carries the other.
+    peak_priced: ['deepseek-v4-pro'],
   }));
   const text = flat(dom.get('chainPlan'));
   assert.match(text, /moved to the end — deepseek is in an expensive window/);
@@ -2658,6 +2666,277 @@ test('a bypassed time cap drops nothing either, and the two bypasses are indepen
   assert.deepEqual(ordinary.retained, []);
   assert.equal(ordinary.gaveWay, '');
   assert.deepEqual(plain(api.droppedElos(null)), { dropped: [], retained: [], filterBypassed: false, capBypassed: false, gaveWay: '' });
+});
+
+// ── `unsatisfiable`: the request is pathological, not the roster ──────────
+// The field exists so "no elo could EVER meet this" is distinguishable from "these
+// particular elos were rejected", without an operator reconstructing it from three
+// coincidental context_too_small reasons. capabilities._unsatisfiable_requirements
+// computes it by comparing the derived floor against MAX_REGISTERED_CONTEXT and
+// every window the chain declares — so the console's ceiling is read from those same
+// two places and never invented.
+
+test('an unsatisfiable requirement names the requirement and the ceiling, not the roster', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = tierPolicy();
+  // The registry as GET /capabilities really serves it, so the ceiling below is
+  // gpt-5.6-terra's own published window rather than a number written here:
+  // 1,050,000, which is MAX_REGISTERED_CONTEXT in router/capabilities.py.
+  api.state.capabilities = api.capabilityRegistry(
+    catalogue('gpt-5.6-terra', 'deepseek-v4-pro', 'glm-5.3'));
+  // The shipped pathological case: ~840,001 est_input_tokens on T3 derives
+  // min_context = ceil(tokens × 1.25) = 1,050,002 — two tokens above the widest
+  // window there is, so every hop is rejected and the filter bypasses itself.
+  const plan = chainPlan({
+    bypassed: true,
+    unsatisfiable: ['min_context'],
+    requirements: { min_context: 1050002 },
+    chain: [
+      { model: 'gpt-5.6-terra', provider: 'openai-codex' },
+      { model: 'deepseek-v4-pro', provider: 'deepseek' },
+      { model: 'glm-5.3', provider: 'zai' },
+    ],
+    rejected: [
+      { model: 'gpt-5.6-terra', provider: 'openai-codex', reject_reason: 'context_too_small' },
+      { model: 'deepseek-v4-pro', provider: 'deepseek', reject_reason: 'context_too_small' },
+      { model: 'glm-5.3', provider: 'zai', reject_reason: 'context_too_small' },
+    ],
+  });
+  api.renderChainPlan(plan);
+  const box = dom.get('chainPlan');
+  const text = flat(box);
+
+  // CAUSE FIRST: the requirement is why the bypass below happened.
+  const first = box.children[0];
+  assert.match(first.className, /warn-line/);
+  assert.doesNotMatch(first.className, /bad/, 'nothing was refused — the router kept routing');
+  const said = String(first.textContent || '') + flat(first);
+  assert.match(said, /Requirement no model can meet/);
+  // The ceiling, at the precision that keeps the two figures DIFFERENT: both round
+  // to "1.1M", and "holds 1.1M, needs 1.1M" would deny its own reason.
+  assert.match(said, /widest context window the router can reach holds 1,050,000, needs 1,050,002/);
+  assert.match(said, /requirement being impossible, not these elos being wrong for it/,
+    'the whole distinction the field carries');
+  assert.match(said, /Split the work into smaller turns, or add a model with a bigger context window/,
+    'and a recovery that is actually available');
+  assert.doesNotMatch(said, /min_context/, 'the requirement key never reaches the screen');
+
+  // The bypass line keeps its own fact — what the router does — and hands the cause
+  // and the fix to the line above rather than saying either twice.
+  const bypass = box.children[1];
+  assert.match(bypass.className, /warn-line bad/);
+  const bypassSaid = String(bypass.textContent || '') + flat(bypass);
+  assert.match(bypassSaid, /try them all anyway/);
+  assert.match(bypassSaid, /cannot meet the requirement above/);
+  assert.doesNotMatch(bypassSaid, /No elo in this chain can meet these requirements/,
+    'the cause is stated once');
+  assert.doesNotMatch(bypassSaid, /Add an elo that qualifies/,
+    'advice nobody can take: by definition nothing could qualify');
+
+  // And the bypass still means nothing was dropped: every elo is in the chain.
+  assert.doesNotMatch(text, /Dropped/);
+  assert.match(text, /Still in the chain \(3\)/);
+});
+
+test('an unsatisfiable requirement is reported even when the filter did not bypass', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = tierPolicy();
+  api.state.capabilities = api.capabilityRegistry(catalogue('glm-5.3'));
+  // capabilities.filter_chain reports `unsatisfiable` with `bypassed` False whenever
+  // a fail-open unknown hop stays eligible — the floor is still unmeetable, and the
+  // task is about to run on a model nobody checked. The two flags are independent.
+  api.renderChainPlan(chainPlan({
+    bypassed: false,
+    unsatisfiable: ['min_context'],
+    requirements: { min_context: 4000000 },
+    chain: [{ model: 'who-knows', provider: 'zai' }],
+    rejected: [{ model: 'glm-5.3', provider: 'zai', reject_reason: 'context_too_small' }],
+    unknown: ['who-knows'],
+  }));
+  const text = flat(dom.get('chainPlan'));
+  assert.match(text, /Requirement no model can meet/);
+  assert.match(text, /holds 1M, needs 4M/, 'the ceiling is the registry\'s widest, not the chain\'s');
+  assert.doesNotMatch(text, /Capability filter bypassed/, 'no control gave way here');
+  assert.match(text, /eligible by assumption/, 'and the unverified hop is still named');
+});
+
+test('the ceiling is read from what published one, and never invented', () => {
+  const { api } = loadConsole();
+  // Two sources, exactly the two capabilities._unsatisfiable_requirements consults.
+  const registry = api.capabilityRegistry(catalogue('glm-5.3', 'gpt-5.6-terra'));
+  assert.deepEqual(plain(api.contextCeiling({ chain: [{ model: 'glm-5.3' }] }, registry)),
+    { tokens: 1050000, scope: 'registry' },
+    'with a registry the ceiling is over every model the router can reach');
+
+  // A DECLARED window wins over the registry, the same precedence capabilities_for
+  // applies, so an operator who describes a bigger house model is not told their
+  // request is impossible when it is not.
+  assert.equal(api.contextCeiling(
+    { chain: [{ model: 'glm-5.3', context_window: 2000000 }] }, registry).tokens, 2000000);
+
+  // /capabilities is an OPTIONAL read: with no registry the only windows visible are
+  // the ones the chain declares, and the words must not claim more than that.
+  const chainOnly = plain(api.contextCeiling({
+    chain: [{ model: 'a', context_window: 200000 }],
+    rejected: [{ model: 'b', context_window: 128000 }],
+  }, null));
+  assert.deepEqual(chainOnly, { tokens: 200000, scope: 'chain' });
+
+  // Nobody published one. A zero would claim the router can hold nothing.
+  assert.deepEqual(plain(api.contextCeiling({ chain: [{ model: 'a' }] }, null)),
+    { tokens: null, scope: '' });
+  assert.deepEqual(plain(api.contextCeiling(null, null)), { tokens: null, scope: '' });
+});
+
+test('an unsatisfiable requirement with no visible ceiling still says which requirement', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = tierPolicy();
+  // No registry read answered and no hop declares a window, so there is no number to
+  // compare against — the requirement is still named, and no ceiling is fabricated.
+  api.renderChainPlan(chainPlan({
+    unsatisfiable: ['min_context'],
+    requirements: { min_context: 1050002 },
+    chain: [{ model: 'who-knows', provider: 'zai' }],
+  }));
+  const text = flat(dom.get('chainPlan'));
+  assert.match(text, /Nothing the router can reach holds the 1,050,002 tokens this task needs/);
+  assert.match(text, /no elo here publishes a window to compare it against/);
+  assert.doesNotMatch(text, /holds 0|0 tokens/, 'an unknown ceiling is never zero');
+
+  // A requirement key this console has not learned still renders, for the same
+  // reason a requirement chip does: the loudest fact about the request must not be
+  // dropped because the vocabulary grew.
+  const grown = api.unsatisfiableWords({ unsatisfiable: ['min_output_tokens'] }, null);
+  assert.match(grown.said, /No model the router can reach can meet min output tokens/);
+  assert.match(grown.said, /relax what the rule requires of the model/);
+
+  // Absence renders nothing at all — not an empty line, not a framed void.
+  assert.equal(api.unsatisfiableWords(chainPlan(), null), null, 'an empty list is not a section');
+  assert.equal(api.unsatisfiableWords({}, null), null, 'and neither is a plan without the key');
+  assert.equal(api.unsatisfiableWords(null, null), null);
+});
+
+// ── `peak_priced` is PRICE, `demoted` is POSITION ─────────────────────────
+// apply_time_policy's own split: `peak_priced` names every elo `avoid_peak` matched
+// inside a dearer window whether or not moving it changed anything, and `demoted`
+// names only what the returned permutation actually moved later. One field claiming
+// both readings was lying about one of them.
+
+test('peak-priced hops with an unchanged order read as billing double, not as a broken policy', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = tierPolicy();
+  api.state.clock = PEAK;
+  api.state.capabilities = api.capabilityRegistry(catalogue('deepseek-v4-pro', 'glm-5.3'));
+  // THE SHIPPED T3/T4 CASE, exactly as apply_time_policy reports it: avoid_peak
+  // [deepseek, zai] over [gpt-5.6-terra, deepseek-v4-pro, glm-5.3] at 07:00 UTC
+  // leaves the chain byte-identical, so `demoted` is EMPTY and `peak_priced` names
+  // both. Rendering `demoted` here would be a claim about an order nothing changed.
+  api.renderChainPlan(chainPlan({
+    utc_hour: 7, utc_weekday: 0,
+    chain: [
+      { model: 'gpt-5.6-terra', provider: 'openai-codex' },
+      { model: 'deepseek-v4-pro', provider: 'deepseek' },
+      { model: 'glm-5.3', provider: 'zai' },
+    ],
+    demoted: [],
+    peak_priced: ['deepseek-v4-pro', 'glm-5.3'],
+    multipliers: { 'deepseek-v4-pro': 2, 'glm-5.3': 2 },
+  }));
+  const text = flat(dom.get('chainPlan'));
+  assert.match(text, /Peak-priced hops/);
+  assert.match(text, /deepseek-v4-pro and glm-5\.3 are in a dearer window at 07:00 UTC/);
+  assert.match(text, /pays the higher rate on those hops/, 'the BILL, which is what the field is about');
+  assert.match(text, /matched them and moved nothing/, 'the policy fired and the permutation was the identity');
+  assert.match(text, /already at the back of the chain/);
+  assert.match(text, /nothing cheaper to try ahead of them/,
+    'this chain cannot step around them — which is not the same as a policy that failed');
+  // POSITION is a different fact, and there is no position to report.
+  assert.doesNotMatch(text, /moved to the end/, 'nothing moved, so nothing says it moved');
+  assert.doesNotMatch(text, /moved them later/);
+  // The per-elo prices are still the router's own numbers, so the line and the hops
+  // cannot disagree about which hour this is true of.
+  assert.match(text, /2× peak/);
+});
+
+test('a peak-priced hop the policy did move reports the move and the price separately', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = tierPolicy();
+  api.state.clock = PEAK;
+  api.renderChainPlan(chainPlan({
+    utc_hour: 7, utc_weekday: 0,
+    chain: [
+      { model: 'gpt-5.6-luna', provider: 'openai-codex' },
+      { model: 'deepseek-v4-pro', provider: 'deepseek' },
+    ],
+    demoted: ['deepseek-v4-pro'],
+    peak_priced: ['deepseek-v4-pro'],
+    multipliers: { 'deepseek-v4-pro': 2 },
+  }));
+  const text = flat(dom.get('chainPlan'));
+  assert.match(text, /deepseek-v4-pro is in a dearer window at 07:00 UTC/, 'singular, because one hop matched');
+  assert.match(text, /moved it later, so every cheaper hop is tried first/);
+  assert.doesNotMatch(text, /moved nothing/);
+  // The elo's own row still carries the position, which is where a position belongs.
+  assert.match(text, /moved to the end — deepseek is in an expensive window/);
+
+  // A chain the policy could only partly reorder names both halves, so neither
+  // reading is implied from the other.
+  api.renderChainPlan(chainPlan({
+    utc_hour: 7, utc_weekday: 0,
+    chain: [
+      { model: 'gpt-5.6-luna', provider: 'openai-codex' },
+      { model: 'glm-5.3', provider: 'zai' },
+      { model: 'deepseek-v4-pro', provider: 'deepseek' },
+    ],
+    demoted: ['deepseek-v4-pro'],
+    peak_priced: ['deepseek-v4-pro', 'glm-5.3'],
+    multipliers: { 'deepseek-v4-pro': 2, 'glm-5.3': 2 },
+  }));
+  const partly = flat(dom.get('chainPlan'));
+  assert.match(partly, /moved what it could/);
+  assert.match(partly, /glm-5\.3 could not go any further back/);
+  assert.match(partly, /nothing cheaper to try ahead of it/);
+  // Which hop moved is said on that hop's own row and nowhere else, so one fact
+  // does not get two authorities half a panel apart.
+  assert.equal(partly.match(/deepseek-v4-pro/g).length, 2, 'the chain hop and the peak set, not a third claim');
+  assert.match(partly, /moved to the end — deepseek is in an expensive window/);
+});
+
+test('peak pricing splits price from position, and absence renders nothing', () => {
+  const { api, dom } = loadConsole();
+  // Both list shapes the router uses, and the split the console reads: `stuck` is
+  // what avoid_peak matched and the permutation could not move.
+  assert.deepEqual(plain(api.peakPricing({
+    peak_priced: ['deepseek-v4-pro', { model: 'glm-5.3' }, 'glm-5.3'],
+    demoted: [{ model: 'deepseek-v4-pro' }],
+  })), {
+    priced: ['deepseek-v4-pro', 'glm-5.3'],
+    moved: ['deepseek-v4-pro'],
+    stuck: ['glm-5.3'],
+  });
+  assert.deepEqual(plain(api.peakPricing({})), { priced: [], moved: [], stuck: [] });
+  assert.deepEqual(plain(api.peakPricing(null)), { priced: [], moved: [], stuck: [] });
+
+  // No peak, no line — an empty list is not a section (DESIGN.md §2.1).
+  assert.equal(api.peakPriceWords(chainPlan(), { hour: 7, weekday: 0 }), null);
+  assert.equal(api.peakPriceWords({}, null), null, 'and neither is a plan without the key');
+  api.state.policy = tierPolicy();
+  api.renderChainPlan(chainPlan());
+  assert.doesNotMatch(flat(dom.get('chainPlan')), /Peak-priced/);
+
+  // A time-agnostic plan has no hour to report the window at, and inventing the
+  // browser's would price a plan that never saw a clock.
+  const clockless = api.peakPriceWords({ peak_priced: ['glm-5.3'], demoted: [] }, null);
+  assert.match(clockless.said, /glm-5\.3 is in a dearer window, so the task pays/);
+  assert.doesNotMatch(clockless.said, /UTC/);
+
+  // The two moves left are named once per viewport: the time-cap bypass line already
+  // carries both, so this line does not repeat them.
+  const alsoCapped = api.peakPriceWords(
+    { peak_priced: ['glm-5.3'], demoted: [], time_cap_bypassed: true }, { hour: 7, weekday: 0 });
+  assert.doesNotMatch(alsoCapped.said, /off-peak hour/);
+  assert.match(api.peakPriceWords({ peak_priced: ['glm-5.3'], demoted: [] }, { hour: 7, weekday: 0 }).said,
+    /Move the work to an off-peak hour/);
 });
 
 // ── the headline verdict answers from the plan, not from the declared route ──
