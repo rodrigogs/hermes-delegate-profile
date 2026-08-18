@@ -295,18 +295,23 @@ def plugin_config(tmp_path, monkeypatch):
     return write
 
 
-def _service_explain(task, at):
-    """``RouterService.explain`` for the same task and the same instant.
+def _service_explain(task, at, prompt_text=""):
+    """``RouterService.explain`` for the same task, instant and prompt.
 
-    ``at`` is forwarded only when the installed service declares it, so this
-    parity assertion still MEANS something against a service predating the
-    injected clock instead of dying on an unexpected keyword — the plugin and the
-    service are then compared as the two time-agnostic surfaces they both are.
+    Each parameter is forwarded only when the installed service declares it, so
+    this parity assertion still MEANS something against a service predating the
+    injected clock or the composed prompt instead of dying on an unexpected
+    keyword — the plugin and the service are then compared as the two equally
+    time-agnostic (or equally goal-sized) surfaces they both are.
     """
     service = RouterService(plugin_api._CONFIG_PATH)
-    if "at" in inspect.signature(service.explain).parameters:
-        return service.explain(task, at=at)
-    return service.explain(task)
+    declared = inspect.signature(service.explain).parameters
+    kwargs = {}
+    if "at" in declared:
+        kwargs["at"] = at
+    if "prompt_text" in declared:
+        kwargs["prompt_text"] = prompt_text
+    return service.explain(task, **kwargs)
 
 
 def _plan_of(payload):
@@ -514,13 +519,24 @@ def test_plugin_explain_agrees_with_the_service_at_the_same_instant(plugin_confi
     # Two blank plans also "agree", so pin that this instant produced REAL time
     # material — otherwise the assertions above would still pass with the clock
     # dropped on both surfaces. At Monday 07:00 UTC zai bills glm-4.7 at 2.0x,
-    # over T1's declared ceiling of 1.5, so the primary is refused and named.
+    # over T1's declared ceiling of 1.5.
+    ceiling = _TIME_KEYED["tiers"]["T1"]["time_cap"]["max_multiplier"]
     assert plugin_plan["time_agnostic"] is False, "the clock must reach the planner"
-    assert plugin_plan["multipliers"], "the multipliers in force must be reported"
-    capped = {entry["model"]: entry["multiplier"] for entry in plugin_plan["capped"]}
-    assert "glm-4.7" in capped, "the over-priced primary must be reported as capped"
-    assert capped["glm-4.7"] > _TIME_KEYED["tiers"]["T1"]["time_cap"]["max_multiplier"]
-    assert "glm-4.7" not in [hop.get("model") for hop in plugin_plan["chain"]]
+    assert plugin_plan["multipliers"]["glm-4.7"] > ceiling, (
+        "the multipliers in force at this hour must be reported"
+    )
+    # T1's ceiling is a DOLLAR ceiling and glm-4.7 is plan-billed, so the cap
+    # cannot evict it (see capabilities.apply_time_cap: a credit multiplier adds no
+    # dollars, and paying metered money to dodge a sunk cost is not a cost
+    # control). What the cap governs on this tier is the metered tail, and neither
+    # hop is over the ceiling at this hour — hence nothing removed.
+    chain_models = [hop.get("model") for hop in plugin_plan["chain"]]
+    assert "glm-4.7" in chain_models, "a dollar ceiling may not evict a plan rail"
+    # Whatever the cap DID remove must be gone from the chain, unless it gave way
+    # entirely — the one invariant that holds under either unit regime.
+    if not plugin_plan.get("time_cap_bypassed"):
+        for entry in plugin_plan["capped"]:
+            assert entry["model"] not in chain_models
     assert plugin_plan["chain"], "a cap may never empty the chain"
 
 
@@ -563,3 +579,192 @@ def test_plugin_explain_treats_a_blank_at_as_now(plugin_config):
     plugin_config(_TIME_KEYED)
     result = asyncio.run(plugin_api.api_explain(task=_HARD_TASK, at="  "))
     assert result["evaluated_at"]["at_source"] == "now"
+
+
+# ── The size: /explain must measure the turn production sends ────────
+#
+# The clock was the first half of this endpoint answering a question production
+# does not ask; the SIZE was the second. ``task`` is the goal line and
+# ``prompt_text`` is the composed context + goal the child really receives, which
+# is what ``est_input_tokens`` — and therefore every context-conditional rule and
+# the derived ``min_context`` requirement — has to be measured from.
+
+# A context-keyed row: the shape router.yaml ships for long reads. It is keyed on
+# est_input_tokens, which is measured from the TEXT, so this policy is the direct
+# probe for "was the turn sized from the prompt or from the goal?".
+_CONTEXT_KEYED = {
+    "enabled": True,
+    "default": {"model": "T1"},
+    "rules": [
+        {
+            "id": "huge-context-read",
+            "when": {"est_input_tokens": {"gt": 20000}},
+            "then": {"model": "T3"},
+        },
+    ],
+    "tiers": {
+        "T1": {"model": "glm-4.7", "provider": "zai"},
+        "T2": {"model": "glm-5.3", "provider": "zai"},
+        "T3": {"model": "gpt-5.6-terra", "provider": "openai-codex",
+               "requirements": {"min_context": 200000}},
+        "T4": {"model": "gpt-5.5", "provider": "openai-codex"},
+    },
+}
+
+# A goal line that matches no row on its own (6-ish estimated tokens) plus a
+# context that production really would send. 120k chars is ~33k tokens at the
+# router's 3.6-chars-per-token ratio, so it clears the row's 20k threshold.
+_TRIVIAL_GOAL = "summarise this log"
+_BIG_CONTEXT = "WARN retry scheduled for the nightly job\n" * 3000
+_COMPOSED = f"Context: {_BIG_CONTEXT.strip()}\n\nTask: {_TRIVIAL_GOAL}"
+
+
+def test_plugin_explain_sizes_the_turn_from_the_prompt_not_the_goal(plugin_config):
+    """A context-heavy turn must preview as the route production takes.
+
+    Sized from the goal line the same turn measures ~6 estimated tokens: no row
+    matches, the plan derives a trivial ``min_context``, and the operator is shown
+    a plan that never existed. Both calls go through the same endpoint, so the
+    ONLY difference is which text was measured.
+    """
+    plugin_config(_CONTEXT_KEYED)
+
+    sized = asyncio.run(plugin_api.api_explain(
+        task=_TRIVIAL_GOAL, at=_OFF_PEAK, prompt_text=_COMPOSED,
+    ))
+    assert sized["matched_rule_id"] == "huge-context-read"
+    assert sized["matched_clauses"]["est_input_tokens"] == {"gt": 20000}
+    assert sized["output"]["model"] == "gpt-5.6-terra", "T3 is the long-context tier"
+    assert sized["preview"]["sized_from"] == "prompt_text"
+    assert sized["preview"]["prompt_chars"] == len(_COMPOSED)
+    sized_plan = _plan_of(sized)
+    assert sized_plan["requirements"]["min_context"] > 20000, (
+        "the derived floor must come from the real input size"
+    )
+    assert sized_plan["chain"], "a filter may never empty the chain"
+
+    # The same goal with no prompt: the historical behaviour, now LABELLED.
+    goal_only = asyncio.run(plugin_api.api_explain(task=_TRIVIAL_GOAL, at=_OFF_PEAK))
+    assert goal_only["matched_rule_id"] is None, "6 tokens matches no context row"
+    assert goal_only["output"]["model"] == "glm-4.7", "it falls through to T1"
+    assert goal_only["preview"]["sized_from"] == "task"
+    assert goal_only["preview"]["prompt_chars"] == len(_TRIVIAL_GOAL)
+    assert _plan_of(goal_only)["requirements"]["min_context"] < 1000
+
+
+def test_plugin_explain_agrees_with_the_service_on_the_same_prompt(plugin_config):
+    """One turn, one instant, one prompt — the two surfaces must agree.
+
+    Agreement is the assertion, not any particular chain: the plan
+    ``RouterService`` composes is the one production attempts. Asserting the
+    dashboard's own answer alone is exactly how this endpoint shipped twice with a
+    plan production would never produce — first with no clock, then with the turn
+    sized from the goal line.
+    """
+    plugin_config(_CONTEXT_KEYED)
+
+    plugin = asyncio.run(plugin_api.api_explain(
+        task=_TRIVIAL_GOAL, at=_PEAK, prompt_text=_COMPOSED,
+    ))
+    service = _service_explain(_TRIVIAL_GOAL, _PEAK, prompt_text=_COMPOSED)
+    decision = service["decision"]
+
+    for key in ("matched_rule_id", "output", "cause", "matched_clauses"):
+        assert plugin[key] == decision[key], f"the two surfaces disagree on {key}"
+    assert _plan_of(plugin) == _plan_of(service)
+    assert plugin["evaluated_at"] == service["evaluated_at"]
+    # The size disclaimer is shared material too: a console rendering either
+    # surface must read the same "this measured the real turn" note.
+    assert plugin["preview"] == service["preview"]
+    # Two goal-sized plans would also "agree", so pin that this call really
+    # measured the composed prompt on BOTH surfaces.
+    assert plugin["preview"]["sized_from"] == "prompt_text"
+    assert plugin["matched_rule_id"] == "huge-context-read"
+
+
+def test_plugin_explain_refuses_an_unusable_prompt_text(plugin_config):
+    """An unusable prompt is the CALLER's error: a 400, never a wrong size.
+
+    Truncating or coercing it would answer with a smaller ``est_input_tokens``
+    than the turn really has — a confidently wrong plan, which is the precise
+    failure this parameter exists to fix — and the bound is what keeps an
+    unauthenticated read path from being made to cost arbitrary CPU.
+    """
+    plugin_config(_CONTEXT_KEYED)
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(plugin_api.api_explain(task=_TRIVIAL_GOAL, prompt_text=17))
+    assert raised.value.status_code == 400
+    assert "prompt_text" in str(raised.value.detail)
+
+    oversized = "x" * (1_048_576 + 1)
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(plugin_api.api_explain(task=_TRIVIAL_GOAL, prompt_text=oversized))
+    assert raised.value.status_code == 400
+    assert "prompt_text" in str(raised.value.detail)
+    # The refusal is the service's own, so the two surfaces refuse the same input.
+    with pytest.raises(ValueError):
+        _service_explain(_TRIVIAL_GOAL, _OFF_PEAK, prompt_text=oversized)
+
+
+def test_plugin_explain_treats_an_empty_prompt_text_as_the_task(plugin_config):
+    """An empty field is an absent parameter; whitespace is text, as production has it.
+
+    A form that submits ``prompt_text=`` must not change the answer, and must not
+    400 the panel. Whitespace is NOT normalised away — ``adapter.route`` sizes the
+    turn with the same falsy test — so that case is asserted against the SERVICE
+    rather than against a number this file made up.
+    """
+    plugin_config(_CONTEXT_KEYED)
+
+    empty = asyncio.run(plugin_api.api_explain(task=_TRIVIAL_GOAL, prompt_text=""))
+    assert empty["preview"]["sized_from"] == "task"
+    assert empty["preview"]["prompt_chars"] == len(_TRIVIAL_GOAL)
+
+    blank = asyncio.run(plugin_api.api_explain(
+        task=_TRIVIAL_GOAL, at=_OFF_PEAK, prompt_text="   ",
+    ))
+    service = _service_explain(_TRIVIAL_GOAL, _OFF_PEAK, prompt_text="   ")
+    assert blank["preview"] == service["preview"]
+
+
+def test_plugin_explain_post_is_the_same_answer_through_a_wider_pipe(plugin_config):
+    """A 120k-char prompt does not fit in a URL, so the body carries it.
+
+    The two forms must be one handler: same names, same validation, same payload
+    for the same input. A POST that answered differently would be the two-surfaces
+    defect inside a single file — and a GET-only endpoint could not carry the
+    prompt this parameter exists for at all, which is a preview that silently goes
+    back to measuring the goal line.
+    """
+    plugin_config(_CONTEXT_KEYED)
+
+    posted = asyncio.run(plugin_api.api_explain_post(
+        {"task": _TRIVIAL_GOAL, "at": _OFF_PEAK, "prompt_text": _COMPOSED}
+    ))
+    got = asyncio.run(plugin_api.api_explain(
+        task=_TRIVIAL_GOAL, at=_OFF_PEAK, prompt_text=_COMPOSED,
+    ))
+    assert posted == got
+    assert posted["matched_rule_id"] == "huge-context-read"
+    assert posted["preview"]["prompt_chars"] == len(_COMPOSED)
+    assert len(_COMPOSED) > 100_000, "the pipe has to be wider than a query string"
+
+    # An explicit null is the one thing a query string cannot express: it reads as
+    # "not supplied", not as an unusable value.
+    nulled = asyncio.run(plugin_api.api_explain_post(
+        {"task": _TRIVIAL_GOAL, "at": _OFF_PEAK, "prompt_text": None}
+    ))
+    assert nulled["preview"]["sized_from"] == "task"
+
+    # Fail-closed on the caller's own input, with the sidecar's wording.
+    for body, fragment in (
+        ({"task": _TRIVIAL_GOAL, "at": 7}, "at must be a string"),
+        ({"task": _TRIVIAL_GOAL, "prompt_text": 17}, "prompt_text must be a string"),
+        ({"at": _OFF_PEAK}, "task is required"),
+        ("not an object", "must be a JSON object"),
+    ):
+        with pytest.raises(HTTPException) as raised:
+            asyncio.run(plugin_api.api_explain_post(body))
+        assert raised.value.status_code == 400
+        assert fragment in str(raised.value.detail)

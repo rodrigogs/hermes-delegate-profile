@@ -6,6 +6,7 @@ fast no-socket cases: token gate outcomes, route dispatch and token precedence.
 from __future__ import annotations
 
 import json
+import re
 from typing import Optional
 
 import yaml
@@ -568,3 +569,137 @@ def test_missing_default_token_is_reported_unprovisioned(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_WEBUI_STATE_DIR", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "empty"))
     assert read_expected_token().present is False
+
+
+# ---------------------------------------------------------------------------
+# GET /capabilities — the route the console's price audit reads
+# ---------------------------------------------------------------------------
+
+# Every path the console fetches, as it writes them: call('/x'), call(`/x?y`).
+# call(path, ...) — the one dynamic form — carries no literal and is skipped.
+_CONSOLE_CALL = re.compile(r"""call\(\s*['"`](/[^'"`?\s]*)""")
+
+
+def _real_number(value):
+    """A price only counts as published when it is a real number; bool is not one."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def test_capabilities_route_serves_the_catalogue_the_console_asks_for(tmp_path):
+    """The console calls GET /capabilities on every load, so it has to exist.
+
+    While it did not, that call 404'd — and the price panel did not render blank,
+    it rendered FALSE: every elo capability-unverified and every rail publishing
+    no per-token price, including the metered ones that publish one.
+    """
+    app = _app(tmp_path)
+
+    # Token-gated like every other data route (only /health is exempt).
+    assert app.dispatch("GET", "/capabilities", {})[0] == 401
+    status, body = app.dispatch("GET", "/capabilities", _auth())
+    assert status == 200
+    assert body["registry_available"] is True
+    assert body["models"]
+    # Read-only: a write method on a KNOWN route is a 405, never a 404.
+    assert app.dispatch("POST", "/capabilities", _auth())[0] == 405
+    # A model catalogue carries no credential, now or after the registry grows.
+    serialized = json.dumps(body).lower()
+    assert "api_key" not in serialized
+    assert "secret" not in serialized
+
+
+def test_capabilities_route_serves_exactly_what_the_service_reads(tmp_path):
+    """The HTTP surface adds nothing and drops nothing on the way out."""
+    app = _app(tmp_path)
+    service = RouterService(_config_path(tmp_path))
+
+    status, body = app.dispatch("GET", "/capabilities", _auth())
+
+    assert status == 200
+    assert body == service.capabilities()
+    # It survives the JSON round trip the console actually receives it through:
+    # an unpublished price has to arrive as null, never as 0.
+    assert json.loads(json.dumps(body)) == body
+    unpriced = [
+        model for model, entry in body["models"].items()
+        if not entry["price_published"]
+    ]
+    assert unpriced
+    for model in unpriced:
+        entry = json.loads(json.dumps(body["models"][model]))
+        assert not (
+            _real_number(entry.get("price_in"))
+            and _real_number(entry.get("price_out"))
+        ), model
+    # The fixture's elos are unknown to the registry: flagged, never fabricated.
+    assert "tiny" in body["unknown_models"]
+    assert "tiny" not in body["models"]
+
+
+def test_every_route_the_console_calls_is_a_route_that_answers(tmp_path):
+    """The console and the dispatcher must agree on the route list.
+
+    This is the check that was missing. GET /capabilities was wired into the
+    console's load and into no route table, so it 404'd on every load, and a
+    404'd audit panel renders a false answer rather than a blank one. Asserting
+    the AGREEMENT is the only form of this test that holds — asserting either
+    side alone is precisely what let the two drift apart.
+    """
+    console = sidecar_mod._CONSOLE_PATH.read_text(encoding="utf-8")
+    called = {match.group(1) for match in _CONSOLE_CALL.finditer(console)}
+    known = sidecar_mod._GET_ROUTES | sidecar_mod._POST_ROUTES
+
+    assert "/capabilities" in called, "the console still asks for the catalogue"
+    assert called
+    assert not called - known
+
+    # Named is not the same as answering: every GET the console makes must reach
+    # a handler rather than fall through to the unknown-route arm.
+    app = _app(tmp_path)
+    for path in sorted(called & sidecar_mod._GET_ROUTES):
+        _status, body = app.dispatch("GET", path, _auth())
+        assert body.get("error") != "unknown route", path
+
+
+def test_explain_accepts_prompt_text_on_both_get_and_post(tmp_path):
+    """Both /explain surfaces take the parameter, and take it the same way.
+
+    GET is the link-shaped probe; POST is the wider pipe for a context too large
+    for an HTTP request line. Same name, same meaning, same answer — asserted as
+    an agreement between the two, since a preview that sized the goal line while
+    production sized the composed turn is the failure the parameter exists for.
+    """
+    app = _app(tmp_path)
+    task = "Debug a race condition"
+    prompt = ("context line\n" * 4000) + task
+    at = "2026-08-17T07:00:00Z"
+
+    get_status, get_body = app.dispatch(
+        "GET", "/explain", _auth(),
+        {"task": [task], "at": [at], "prompt_text": [prompt]},
+    )
+    post_status, post_body = app.dispatch(
+        "POST", "/explain", _auth(),
+        body={"task": task, "at": at, "prompt_text": prompt},
+    )
+
+    assert (get_status, post_status) == (200, 200)
+    # The clock is pinned, so the two responses are comparable byte for byte.
+    assert get_body == post_body
+
+    # Not merely accepted — MEASURED. The preview names the text it sized from,
+    # and the goal line alone measures a fraction of it.
+    assert get_body["preview"]["sized_from"] == "prompt_text"
+    assert get_body["preview"]["prompt_chars"] == len(prompt)
+    goal_only = app.dispatch("GET", "/explain", _auth(),
+                             {"task": [task], "at": [at]})[1]
+    assert goal_only["preview"]["sized_from"] == "task"
+    assert (
+        get_body["features"]["est_input_tokens"]
+        > goal_only["features"]["est_input_tokens"]
+    )
+
+    # Fail-CLOSED on an unusable value, identically on both surfaces: a JSON
+    # number is not a prompt, and coercing one would size a turn from "0".
+    assert app.dispatch("POST", "/explain", _auth(),
+                        body={"task": task, "prompt_text": 0})[0] == 400

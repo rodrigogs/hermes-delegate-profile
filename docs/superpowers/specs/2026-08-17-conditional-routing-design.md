@@ -384,10 +384,12 @@ moves:
 5. **`capabilities.filter_chain(chain, requirements)`** — over the assembled chain
    `[{model, provider}] + output["fallback"]`, i.e. the primary is `chain[0]`. The tier's
    `declared_capabilities` are the primary hop's overrides; each fallback row carries its own.
-6. **`time_cap`** — drop hops whose price multiplier at the injected clock exceeds
-   `time_cap.max_multiplier` (time layer; no cap declared or no clock ⇒ no-op).
-7. **`time_policy`** — `avoid_peak` demotes, `prefer` promotes, neither ever removes (time layer;
-   no policy or no clock ⇒ no-op).
+6. **`time_cap`** — drop **dollar-billed** hops (`metered`/`subscription`) whose price multiplier at
+   the injected clock exceeds `time_cap.max_multiplier`; a `plan`, `free` or undescribable rail is
+   exempt from a dollar ceiling and is reported in `cap_exempt` instead (time layer; no cap declared or
+   no clock ⇒ no-op).
+7. **`time_policy`** — `avoid_peak` demotes, `prefer` promotes, neither ever removes, and the stage is
+   unit-agnostic because reordering spends nothing (time layer; no policy or no clock ⇒ no-op).
 8. **`capabilities.order_chain(survivors, strategy, pin_primary, rng, when)`** — apply the tier's
    strategy (`sequential` | `random` | `cheapest_now`) to whatever is left.
 9. **Emit decision plus trace** — the ordered head becomes `output["model"]`/`["provider"]`, the
@@ -482,12 +484,16 @@ the same `plan_chain`, with the same inputs, and the only intended difference is
 records it in the trace's `steps` entry for the chain stage.
 
 That "only intended difference" is an assertion, so it is a test:
-**`tests/router/test_adapter.py::test_route_and_explain_agree_on_the_chain_plan`** — the
-two-surface-agreement test. It routes a task through `adapter.route()` and explains the same task
-through the same config with the same injected rng, and asserts the two `chain_plan`s are equal,
-including the head model, the tail order, `rejected` and `bypassed`. It is the guard that would
-have failed on day one of phase 1, and it is the check that keeps the display surface honest as
-the time layer adds stages to the same function.
+**`tests/router/test_adapter.py::TestPlannedChain::test_production_chain_matches_explain_for_the_same_task`**
+— the two-surface-agreement test. It routes a task through `adapter.route()` and explains the same task
+through the same config with the same injected rng and the same fixed clock, and asserts that the
+targets production would attempt — the planned head plus tail — are the same hops, in the same order,
+that `explain()`'s `chain_plan` reports, *and* that the plan written to the decision log agrees with
+both. (It asserts the attempted chain, not every plan key; `rejected` and `bypassed` are asserted
+against the production path in the sibling
+`test_vision_task_drops_the_elos_that_cannot_see`.) It is the guard that would have failed on day one
+of phase 1, and it is the check that keeps the display surface honest as the time layer adds stages to
+the same function.
 
 ## Failure-mode decisions
 
@@ -572,6 +578,24 @@ So the two facts are reported separately, because they are separate facts: `elig
 hops were dropped — `bypassed: True` sitting beside them says they were not. `unknown` is retained
 on the same terms, though on the bypass path it can only ever be empty, since it is populated from
 entries that made it into `eligible`.
+
+**How far `unsatisfiable` actually travels, verified against the code.** `filter_chain` computes it,
+`plan_chain` carries it through unchanged (it is deliberately *not* re-derived — the filter owns "no
+model could ever meet this", and a second implementation here would be a second answer), it is a
+member of `decision_log.CHAIN_PLAN_KEYS` and of `empty_chain_plan()`, so it survives
+`bound_chain_plan` into `routes.jsonl` and comes back out of `chain_plan_of`, and it appears in the
+`chain_plan` that `RouterService.explain()` returns — both nested in the decision trace and lifted to
+the response's top level. `service._empty_chain_plan()` mirrors the same key, so a read path never
+hands a consumer a plan without it.
+
+**No human-facing surface renders it today.** Not the operator console
+(`webui_extension/hermes-one-capability-router/console.html`), not the dashboard bundle, not
+`router/cli.py`. It is an operator-visible fact only in the sense that it is present in the JSON an
+operator can fetch or read out of `routes.jsonl` — the console's bypass panel still shows
+"bypassed" plus the per-elo `context_too_small` reasons and does not say "this request is
+pathological" in words. Saying otherwise here would be the recurring bug in this codebase committed
+in the spec: describing a decision through a surface that does not in fact display it. Rendering it
+is a console change, not a routing change, and is not part of this work.
 
 `time_cap` reuses this invariant verbatim, including the diagnostics: if the cap would empty the
 chain, the original chain is restored and the trace carries `time_cap_bypassed: true` alongside the
@@ -794,9 +818,10 @@ that true, each one load-bearing:
   `cheapest_now` and `time_cap` compare *relative* prices under a clock the caller injects, and
   `time_cap` is expressed as a multiplier rather than a dollar ceiling precisely because a dollar
   ceiling would rot silently while a multiplier stays correct. `billing_mode` is no longer a pure
-  label — `cheapest_now` uses its rank to order models with **no** dollar price — but it is still
-  never converted into money. See the addendum; a plan credit and a dollar are not commensurable
-  without an operator policy decision, and a `None` price is never coerced to `0.0`.
+  label — `cheapest_now` buckets **every** elo by its rank, priced or not, and compares dollars only
+  inside the dollar bucket — but it is still never converted into money. See the addendum; a plan
+  credit and a dollar are not commensurable without an operator policy decision, and a `None` price is
+  never coerced to `0.0`.
 - **Onboarding new providers.** `capabilities.py` describes models the operator already routes
   to. Adding a rail is credentials, install, and liveness work; it is not routing policy, and
   conflating the two would make the registry a deploy artifact instead of a lookup table.
@@ -827,9 +852,10 @@ that true, each one load-bearing:
 - **Adapter — the two surfaces must agree.** `adapter.route()` is tested directly, not only through
   `explain()`: that the returned head/tail is the *planned* chain and not the declared one, that
   `chain_plan` reaches every `dlog.record(...)` site, and — the load-bearing one —
-  `test_route_and_explain_agree_on_the_chain_plan`, which asserts route and explain produce the same
-  plan for the same task under the same injected rng. A test that exercises only the display surface
-  cannot detect a feature that is wired only into the display surface.
+  `TestPlannedChain::test_production_chain_matches_explain_for_the_same_task`, which asserts route and
+  explain attempt the same chain for the same task under the same injected rng and clock. A test that
+  exercises only the display surface cannot detect a feature that is wired only into the display
+  surface.
 - **Requirements are a floor:** a tier declaring `vision: false` against a signal-derived
   `vision: true` must still require vision; `min_context` still takes the max in both directions.
 - **Shadow detection:** disjoint numeric thresholds on one field lint clean in both orders, a
@@ -864,9 +890,10 @@ model while the console showed that model correctly rejected. The suite was gree
 the diagnostic surface what it thought, and the diagnostic surface was right. Nothing asked the
 decision path. The generalisation: when a feature has an execution surface and a display surface,
 the test that matters is the one asserting they **agree** —
-`tests/router/test_adapter.py::test_route_and_explain_agree_on_the_chain_plan` — and it must
-exercise the execution surface directly, or the display surface will keep vouching for itself.
-Coverage of `explain()` measured our belief, not the router's behaviour.
+`tests/router/test_adapter.py::TestPlannedChain::test_production_chain_matches_explain_for_the_same_task`
+— and it must exercise the execution surface directly, or the display surface will keep vouching for
+itself. Coverage of `explain()` measured our belief, not the router's behaviour. See *The lesson that
+outlived every fix* below: this one did not stay a phase-1 lesson.
 
 **2. A diagnostic is worth least when it is easiest to drop.** The bypass returned `rejected: []`,
 the shadow detector treated undecidable as shadowed, `registry_diagnostics()` had no caller, and
@@ -880,6 +907,62 @@ counted as a declared capability, and `router.yaml` mandates `billing_mode` on e
 unknown-model guard could never fire — and removing a line from the config was what made the warning
 appear. Deriving "is this a capability assertion?" by *exclusion* let a documentation convention
 reach into a safety check. Closed sets have to be enumerated positively.
+
+## Retrospective — the lesson that outlived every fix
+
+Every individual defect in this work was local and is now local history. One lesson was not, because
+it kept coming back under a different name. **A decision verified through the surface that DISPLAYS
+it is not verified.** It has now been found four separate times across this feature:
+
+1. **`adapter.route()` ignored the plan while `explain()` showed it.** The whole capability feature was
+   wired into the display surface only: production routed the declared, unfiltered chain and sent
+   vision turns to a blind model while the console rendered that same model correctly rejected.
+2. **`dashboard/plugin_api` omitted the clock** that `RouterService` passes. The plugin's Explain
+   answered a question production never asks — a time-agnostic plan — so the two operator surfaces
+   disagreed on the chain order, the multipliers in force and which rails a `time_cap` refused, at the
+   exact hour an operator would be looking.
+3. **The recent-routes list labelled a decision with the declared primary.** `RouterService.routes()`
+   projects `output["model"]`, which is the tier's declared primary, while the model production
+   actually attempts first is the planned head in `chain_plan["chain"][0]`. On any tier whose plan
+   reorders or filters — `cheapest_now`, `random`, `time_policy`, a capability rejection — the list
+   names a rail the request never touched, and it is the surface an operator scans to answer "what has
+   this router been doing?".
+4. **`rules._determine_cause` disagreed with `adapter._cause_from_rule`** about the same decision. Two
+   implementations of one classification: the trace surface computed a cause from a rule id, the
+   production path computed another, and nothing compared them, so `explain()` could explain a
+   decision with a cause the decision log never recorded.
+
+**What makes this structural rather than four slips: every one of them passed a green suite.** Not a
+thin suite — 1195 Python and 115 JS tests, plus a clean policy lint. They passed because in each case
+the tests asserted **one side of a pair**. `explain()` was tested and was right. The plugin was tested
+and was self-consistent. `routes()`'s projection was tested and did project the field it claimed to.
+`_determine_cause` was tested and returned what its own test expected. A test that asks one surface
+what it thinks gets the answer that surface believes, and a display surface will always vouch for
+itself. Coverage of a surface measures our belief about that surface; only an assertion that two
+surfaces **agree** measures the system. Where a decision has an execution path and one or more
+reporting paths, the load-bearing test is the agreement test, it must exercise the execution path
+directly, and it must be written at the *pair*, not at either member.
+
+The agreement tests that now guard the pairs:
+
+- `tests/router/test_adapter.py::TestPlannedChain::test_production_chain_matches_explain_for_the_same_task`
+  — routes a task through `adapter.route()` and explains the same task under the same rng and clock,
+  and asserts the targets production would attempt, `explain()`'s `chain_plan` and the plan written to
+  the decision log are the same hops in the same order.
+- `tests/test_webui_extension.py::test_plugin_explain_agrees_with_the_service_at_the_same_instant`
+  — asserts the plugin's Explain and `RouterService.explain()` render one plan for one task at one
+  instant. Its docstring states the rule outright: agreement is the requirement, not any particular
+  chain.
+- `tests/router/test_rules.py::test_the_matcher_and_the_chips_never_disagree` — the same shape one
+  layer down: the clause chips a surface renders may not contradict what the matcher did.
+- `tests/router/test_rules.py::TestUnsatisfiableIsCarried::test_the_plan_agrees_with_the_filter_it_came_from`
+  — `plan_chain` carries the filter's `unsatisfiable` rather than re-deriving it, and the test asserts
+  the two answers are identical instead of asserting the plan's answer alone.
+
+Two of the four pairs were closed in this round (the routes projection and the cause pair); their
+guards belong to the same family and must be written the same way — assert the pair, not the member.
+The rule for the next change to this feature: if you add a stage to `plan_chain` and a panel that
+renders it, the test you owe is not "the panel renders it" but "the panel and the router agree".
 
 A spec that disagrees with the shipped code is worse than no spec, because the next reader trusts
 it. That is why this document was revised against the code rather than the code against the

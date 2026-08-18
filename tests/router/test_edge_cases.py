@@ -480,7 +480,16 @@ def test_rules_remaining_pure_branches():
     assert traced["cause"] == "classifier"
     assert _determine_cause("keyword-search", {}) == "keyword_match"
     assert _determine_cause("size-limit", {}) == "size_rule"
-    assert _determine_cause("misc", {}) == "classifier"
+    # An id in no cause row is default_fallthrough, not classifier. The two
+    # producers of this label — rules._determine_cause and
+    # adapter._cause_from_rule — now read ONE table, and for four of the eight
+    # shipped rules they used to disagree: the surface that DISPLAYS a decision
+    # called it "classifier" while the path that RUNS it called it
+    # keyword_match or size_rule. For an unmatched id, "it fell through to the
+    # default" is what the running path always reported, and it is honest in a
+    # way that claiming a classifier decided is not. Do not revert: a green
+    # assertion here was the drift.
+    assert _determine_cause("misc", {}) == "default_fallthrough"
 
     errors = lint({
         "default": {}, "tiers": {"T1": {}, "T2": {}, "T3": {}, "T4": {}},
@@ -525,4 +534,9 @@ def test_explain_handles_rule_id_missing_from_rows(monkeypatch):
     monkeypatch.setattr(rules_mod, "match", lambda *_args: ({"model": "m"}, "orphan"))
     result = rules_mod.explain("task", {}, False, [], {}, {})
     assert result["matched_rule_id"] == "orphan"
-    assert result["cause"] == "classifier"
+    # "orphan" is in no cause row, so the unified table reports the fall-through
+    # rather than inventing a classifier that never saw this decision. The cause
+    # set stays CLOSED for a reason: decision_log.record() coerces an unknown
+    # cause to fail_safe_strong, so a new string here would relabel healthy
+    # routes as fail-safe.
+    assert result["cause"] == "default_fallthrough"

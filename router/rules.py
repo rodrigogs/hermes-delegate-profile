@@ -25,7 +25,7 @@ from __future__ import annotations
 import inspect
 import random
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple
 
 if TYPE_CHECKING:  # pragma: no cover - annotations only, never imported at run time
     # The clock is a PARAMETER, so ``datetime`` is needed for the annotation and
@@ -52,6 +52,15 @@ try:
     from router import signals as _signals
 except ImportError:  # pragma: no cover - signals not installed
     _signals = None  # type: ignore[assignment]
+
+# The third external table this module reads is the rule-id → cause map, and it
+# is the only one NOT resolved here: ``router.adapter`` owns it
+# (``_RULE_ID_CAUSES``, applied by ``adapter._cause_from_rule``) and imports THIS
+# module at its own module scope, so an import back at this scope would build one
+# half of the pair against a half-initialised other half. It is fetched at call
+# time instead — see :func:`_cause_labeller`. Not mirrored here, for the reason
+# the signal vocabulary above is not mirrored: a copy drifts, and this particular
+# copy did (see :func:`_determine_cause`).
 
 # ---------------------------------------------------------------------------
 # Closed operator set — extend ONLY by adding a row, never a new operator family
@@ -317,6 +326,10 @@ def plan_chain(
         "capped": list(capped["capped"]),
         "demoted": list(policy["demoted"]),
         "promoted": list(policy["promoted"]),
+        # Charging more at this hour, whether or not the order changed. An
+        # ``avoid_peak`` whose matched elos are already the trailing hops moves
+        # nothing, so ``demoted`` is empty while this still names them.
+        "peak_priced": list(policy["peak_priced"]),
         "multipliers": multipliers,
     }
     plan.update(_clock_keys(clock))
@@ -773,6 +786,7 @@ def _empty_chain_plan() -> Dict[str, Any]:
         "capped": [],
         "demoted": [],
         "promoted": [],
+        "peak_priced": [],
         "multipliers": {},
     }
 
@@ -820,6 +834,7 @@ def _unfiltered_plan(
         "capped": [],
         "demoted": [],
         "promoted": [],
+        "peak_priced": [],
         "multipliers": {},
     }
     plan.update(_clock_keys(when))
@@ -889,14 +904,7 @@ def _lint_tier_shapes(tiers_cfg: Dict[str, Any]) -> List[str]:
         if "pin_primary" in tier and not isinstance(tier["pin_primary"], bool):
             errors.append(f"tier '{tn}': 'pin_primary' must be boolean")
 
-        if "billing_mode" in tier:
-            mode = tier["billing_mode"]
-            if not isinstance(mode, str) or mode not in _billing_modes():
-                errors.append(
-                    f"tier '{tn}': 'billing_mode' must be one of "
-                    f"{sorted(_billing_modes())}"
-                )
-
+        errors.extend(_lint_billing_mode(f"tier '{tn}'", tier))
         errors.extend(_lint_requirements(tn, tier))
         errors.extend(_lint_time_knobs(tn, tier))
 
@@ -915,10 +923,52 @@ def _lint_tier_shapes(tiers_cfg: Dict[str, Any]) -> List[str]:
                             f"tier '{tn}': fallback[{i}] must be a mapping with "
                             f"'model' and 'provider'"
                         )
+                    # A hop's own knobs, checked with the same rigour as the
+                    # tier's: the planner reads a hop's declaration with the same
+                    # weight as the tier's, so a knob validated on one and not the
+                    # other is a gap the operator cannot see. Reported alongside a
+                    # shape defect rather than instead of it — lint returns every
+                    # diagnostic it has, not the first. Guarded because a non-dict
+                    # hop was already reported above and `'k' in 7` raises.
+                    if isinstance(hop, dict):
+                        errors.extend(
+                            _lint_billing_mode(f"tier '{tn}': fallback[{i}]", hop)
+                        )
 
         errors.extend(_lint_price_windows(tier))
 
     return errors
+
+
+def _lint_billing_mode(label: str, entry: Dict[str, Any]) -> List[str]:
+    """Validate the ``billing_mode`` on ONE elo — a tier's own, or a fallback hop.
+
+    One implementation for both, called with the label of whoever declared it, so
+    the two can never be held to different standards. They were: the tier's mode
+    was checked and a hop's was not, and a hop declares it for the same reason a
+    tier does — ``resolve_tiers`` hands every hop's declarations to
+    ``capabilities._declared_overrides``, where a declared mode OVERRIDES the
+    registry's correct one. So ``billing_mode: meterd`` on a hop is not an inert
+    typo: ``capabilities._billing_rank`` finds no such mode, drops that elo into
+    the unknown bucket, and ``cheapest_now`` — whose OUTER sort key is that bucket
+    — sorts it last. Measured on a `cheapest_now` tier with `pin_primary: false`,
+    primary gpt-5.5 (subscription, $30.00/1M out) and one hop glm-4.7-flashx
+    (metered, $0.40/1M out): with the typo lint returned [] and the chain came
+    back gpt-5.5 first, i.e. the cost strategy demoted the rail that was 75x
+    cheaper on output, for one missing character in a file that read as correct.
+
+    Value-shaped like every other closed set in this gate: the isinstance guard
+    comes first because ``x in frozenset`` raises TypeError for an unhashable x
+    and YAML can legally produce a list or a mapping here, and lint() is the write
+    gate — that has to come back as a diagnostic, never as a raise through the
+    operator's apply.
+    """
+    if "billing_mode" not in entry:
+        return []
+    mode = entry["billing_mode"]
+    if isinstance(mode, str) and mode in _billing_modes():
+        return []
+    return [f"{label}: 'billing_mode' must be one of {sorted(_billing_modes())}"]
 
 
 def _lint_requirements(tn: str, tier: Dict[str, Any]) -> List[str]:
@@ -1351,7 +1401,7 @@ def _apply_time_policy(
     result of a different length is discarded in favour of the input rather than
     trusted.
     """
-    neutral = {"chain": list(chain), "demoted": [], "promoted": []}
+    neutral = {"chain": list(chain), "demoted": [], "promoted": [], "peak_priced": []}
     fn = getattr(_caps, "apply_time_policy", None) if _caps else None
     if when is None or not isinstance(policy, dict) or not callable(fn):
         return neutral
@@ -1368,6 +1418,15 @@ def _apply_time_policy(
         "chain": list(moved),
         "demoted": [m for m in (result.get("demoted") or []) if isinstance(m, str)],
         "promoted": [m for m in (result.get("promoted") or []) if isinstance(m, str)],
+        # POSITION vs PRICE, carried separately on purpose. ``demoted`` names only
+        # what this call actually moved later; ``peak_priced`` names every elo
+        # ``avoid_peak`` matched that is inside a dearer window, whether or not
+        # moving it changed anything. Dropping the second one here is how the
+        # console ended up with no way to say "these are charging more" — the
+        # very distinction the split exists to express.
+        "peak_priced": [
+            m for m in (result.get("peak_priced") or []) if isinstance(m, str)
+        ],
     }
 
 
@@ -1662,30 +1721,88 @@ def _matching_clauses(
     return matched
 
 
+def _cause_labeller() -> Optional[Callable[[Any, Dict[str, Any]], str]]:
+    """The ONE rule-id → cause labeller: ``adapter._cause_from_rule``.
+
+    Imported at CALL time, not at module scope, because ``router.adapter``
+    imports this module at ITS module scope — the cycle would leave whichever of
+    the two was imported second reading a half-built first. That is the whole
+    reason this is a function and not another ``try: from router import ...``
+    block at the top of the file. Nothing is memoised: a warm import is a
+    sys.modules lookup, and a cached handle would be module STATE this module
+    promises not to keep (and would freeze a transient failure forever).
+
+    Fetching the labeller rather than just its ``_RULE_ID_CAUSES`` table is
+    deliberate: the table AND the substring heuristic that backs it up are both
+    drift surfaces, and this module had a copy of the heuristic that already
+    lagged the original by two probes. One function means one answer, including
+    when the two files are a version apart (this plugin is deployed by copy) — a
+    version-skewed adapter that predates the table still agrees with itself.
+
+    None means "no labeller reachable" — the module is absent, too old to export
+    the name, or mid-import. Returned rather than raised: the caller's job is to
+    label a decision, and a diagnostic must not raise through /explain.
+    """
+    try:
+        from router.adapter import _cause_from_rule
+    except ImportError:  # pragma: no cover - adapter absent, or mid-import
+        return None
+    if not callable(_cause_from_rule):  # pragma: no cover - not a function
+        return None
+    return _cause_from_rule
+
+
 def _determine_cause(rule_id: Any, output: Dict[str, Any]) -> str:
     """Map rule id + output to a closed-set cause label.
 
-    rule_id is whatever the policy author wrote. YAML happily yields an int for
-    `id: 7`, and .lower() on that raises AttributeError, which service.explain does
-    not catch — it catches ValueError — so /explain died uncaught. Coerce.
+    This is the label the surface that DISPLAYS a decision shows — explain(),
+    RouterService.explain, the sidecar's /explain, the dashboard. The path that
+    RUNS the decision labels the same rule match with
+    ``adapter._cause_from_rule``, so the rule-id axis is NOT decided here: it is
+    delegated to that exact function (:func:`_cause_labeller`), whose
+    ``_RULE_ID_CAUSES`` is the one table.
+
+    It used to be decided here, by a private copy of the heuristic, and the copy
+    drifted: measured on the shipped policy, the running path recorded
+    `vision-required` as ``keyword_match`` while every /explain surface reported
+    ``classifier`` for the same decision, and `huge-context-read`,
+    `cross-file-or-protocol` and `standard-implementation` disagreed the same way
+    — four of eight shipped rows labelled two different things depending on which
+    surface an operator asked.
+
+    Two labels stay local because they are keyed on the OUTPUT, not on the rule
+    id, and each matches what the running path records for that output:
+
+      * ``deny`` is the blocklist veto. Decided first, ahead of the delegation,
+        so the veto label — the one that must never be wrong — does not depend on
+        another module being importable. The labeller decides it identically.
+      * ``action: classify`` means the pure core delegated the model choice to
+        Stage 1, and ``classifier`` is exactly what ``adapter.route()`` records
+        for such a route. Labelling it from the rule id here instead would put
+        /explain at odds with the recorded cause of every `review-request` route.
+
+    ``rule_id`` is whatever the policy author wrote and is NOT coerced here. YAML
+    yields an int for `id: 7` and the classifier path passes None; the labeller
+    owns that coercion (``.lower()`` on an int raised AttributeError, which
+    service.explain does not catch — it catches ValueError — so /explain died
+    uncaught inside the code whose only job is to explain a route).
+
+    With no labeller reachable the id cannot be labelled and this returns
+    ``default_fallthrough``, the closed-set member for "no rule-keyed cause". In
+    that state nothing disagrees, because the module that records the other half
+    of the pair is the one that failed to import. The cause set is CLOSED on
+    purpose: ``decision_log.record()`` coerces an unknown cause to
+    ``fail_safe_strong``, so inventing a cause string here would relabel healthy
+    routes as fail-safe.
     """
-    rule_id = "" if rule_id is None else str(rule_id)
     if output.get("deny"):
         return "blocklist_veto"
     if output.get("action") == "classify":
         return "classifier"
-
-    # Rule-id-based causes
-    if "keyword" in rule_id.lower() or "review" in rule_id.lower():
-        return "keyword_match"
-    if "size" in rule_id.lower():
-        return "size_rule"
-    if "code" in rule_id.lower() or "trivial" in rule_id.lower():
-        return "has_code_rule"
-    if "hard" in rule_id.lower():
-        return "hard_rule"
-
-    return "classifier"  # fallback
+    labeller = _cause_labeller()
+    if labeller is None:
+        return "default_fallthrough"
+    return labeller(rule_id, output)
 
 
 def _is_shadowed(

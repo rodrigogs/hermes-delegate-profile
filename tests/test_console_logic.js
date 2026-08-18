@@ -1267,6 +1267,20 @@ test('a dropped elo says WHY in words, never as a raw enum', () => {
   assert.equal(api.contextShortfall(200000, 500000), 'holds 200K, needs 500K');
   assert.equal(api.contextShortfall(undefined, 500000), '', 'no invented numbers');
   assert.equal(api.contextShortfall(200000, 0), '');
+  // A near-miss must not read as a tie. min_context is ceil(est_input_tokens × 1.25)
+  // (capabilities.derive_requirements), so a 840,001-token turn asks 1,050,002 of
+  // gpt-5.6-terra's 1,050,000 — and rounded to one decimal both are "1.1M", which put
+  // "holds 1.1M, needs 1.1M" beside "its context window is smaller than this task
+  // needs": the row denying its own reason. Where the rounding hides the difference,
+  // the digits are shown.
+  const window = registryFacts('gpt-5.6-terra').context_window;
+  assert.equal(window, 1050000, 'the window this comparison is against');
+  assert.equal(api.ctxWindow(window), api.ctxWindow(Math.ceil(840001 * 1.25)),
+    'both round to the same string, which is the trap');
+  assert.equal(api.contextShortfall(window, Math.ceil(840001 * 1.25)),
+    'holds 1,050,000, needs 1,050,002');
+  // And an actual tie is not dressed up as a shortfall with invented digits.
+  assert.equal(api.contextShortfall(window, window), 'holds 1.1M, needs 1.1M');
 });
 
 test('the derived requirements read in the same three families as the rules', () => {
@@ -1483,6 +1497,28 @@ function chainPlan(extra) {
     // "the primary stays first" about a chain whose index 0 had been shuffled.
     pin_primary: true,
     independent_rails: 2,
+    // THE FULL SHAPE rules.plan_chain ALWAYS EMITS (see its docstring). Every key
+    // below was missing from this factory, and each absence let a test pass against
+    // a plan the router cannot produce:
+    //   strategy_declared / strategy_degraded_reason — the two fields the degrade
+    //     banner has to read. Without them a test could only pin the console's own
+    //     re-derivation, which is how "The tier declares “sequential”, but it did
+    //     not run" survived four reviews.
+    //   multipliers — a mapping, always present, EMPTY without a clock. Absent, it
+    //     arrived at eloRow as `null`, which Number() reads as 0, and every hop
+    //     rendered "0× cheap window".
+    //   capped / demoted / promoted / time_cap_bypassed / unsatisfiable — the time
+    //     layer's diagnostics, always emitted, so "no cap fired" is a reported fact
+    //     rather than a missing key.
+    strategy_declared: 'sequential',
+    strategy_degraded: false,
+    strategy_degraded_reason: '',
+    unsatisfiable: [],
+    time_cap_bypassed: false,
+    capped: [],
+    demoted: [],
+    promoted: [],
+    multipliers: {},
   }, extra || {});
 }
 
@@ -1715,6 +1751,68 @@ const WEEKEND = new Date(Date.UTC(2026, 7, 22, 7, 0));
 // Inside xiaomi's night discount, outside everything else.
 const NIGHT = new Date(Date.UTC(2026, 7, 17, 18, 0));
 
+// ── the registry's declarations, READ OUT OF THE RUNNING PATH ─────────────
+// These fixtures used to be hand-written, and one of them was hand-written wrong
+// in the direction that hid a bug: a `{provider: 'deepseek'}` elo with no windows
+// of its own was handed the RAIL's two peak windows by eloWindows(), so a test
+// asserting "2× at 07:00" passed for an elo whose registry entry says nothing of
+// the kind. So the facts are now READ from router/capabilities.py — the same
+// literals capabilities.price_multiplier prices with and GET /capabilities serves
+// — and a registry edit that moves a window can no longer leave these green
+// against a stale number.
+const REGISTRY_PATH = 'router/capabilities.py';
+function registryFacts(model) {
+  const source = fs.readFileSync(REGISTRY_PATH, 'utf8');
+  const start = source.indexOf(`\n    "${model}": {`);
+  assert.ok(start > 0, `${model} must be a real entry in ${REGISTRY_PATH}`);
+  // Entries sit at one indent inside MODEL_CAPABILITIES, so the first `\n    },`
+  // after the key is this entry's own close and never an inner list's.
+  const entry = source.slice(start, source.indexOf('\n    },', start));
+  const number = (key) => {
+    const hit = entry.match(new RegExp(`"${key}": (None|[\\d.]+)`));
+    return hit ? (hit[1] === 'None' ? null : Number(hit[1])) : undefined;
+  };
+  const windows = [...entry.matchAll(
+    /\{"hours_utc": \[(\d+), (\d+)\](?:, "weekdays": \[([\d, ]+)\])?, "multiplier": ([\d.]+)\}/g,
+  )].map((match) => {
+    const window = { hours_utc: [Number(match[1]), Number(match[2])], multiplier: Number(match[4]) };
+    if (match[3]) window.weekdays = match[3].split(',').map((day) => Number(day.trim()));
+    return window;
+  });
+  return {
+    provider: (entry.match(/"provider": "([^"]+)"/) || [])[1],
+    billing_mode: (entry.match(/"billing_mode": "([^"]+)"/) || [])[1],
+    context_window: Number(String((entry.match(/"context_window": ([\d_]+)/) || [])[1]).replace(/_/g, '')),
+    price_in: number('price_in'),
+    price_out: number('price_out'),
+    price_windows: windows,
+  };
+}
+// One elo exactly as GET /capabilities serves it (router/service.py:capabilities):
+// the allowlisted registry fields, plus `price_published` — which service.py
+// answers by asking capabilities.effective_price, the function cheapest_now ranks
+// on, so the catalogue cannot disagree with the ordering the console audits.
+function catalogueEntry(model) {
+  const facts = registryFacts(model);
+  const entry = {
+    provider: facts.provider,
+    billing_mode: facts.billing_mode,
+    context_window: facts.context_window,
+    price_in: facts.price_in === undefined ? null : facts.price_in,
+    price_out: facts.price_out === undefined ? null : facts.price_out,
+    price_published: typeof facts.price_in === 'number' && typeof facts.price_out === 'number',
+  };
+  if (facts.price_windows.length) entry.price_windows = facts.price_windows;
+  return entry;
+}
+// The whole catalogue for a set of models, in the endpoint's own envelope.
+const catalogue = (...models) => ({
+  data: {
+    models: models.reduce((all, model) => Object.assign(all, { [model]: catalogueEntry(model) }), {}),
+    unknown_models: [], warnings: [], registry_available: true, time_agnostic: true,
+  },
+});
+
 test('the clock is read as the router reads it: UTC hour, and Monday is 0', () => {
   const { api } = loadConsole();
   assert.deepEqual(plain(api.whenOf(PEAK)), { hour: 7, weekday: 0 },
@@ -1765,17 +1863,35 @@ test('a declared window is read from either spelling, and junk is read as flat',
   }
 });
 
-test('an elo with no window of its own inherits its rail\'s', () => {
+test('an elo with no window of its own is priced flat, never at its rail\'s peak', () => {
   const { api } = loadConsole();
-  // /capabilities is an OPTIONAL read, so most elos arrive with no window data at
-  // all. Falling back to the rail's declared windows is what keeps the clock line
-  // true on a sidecar that publishes no registry.
-  assert.equal(api.eloWindows({ provider: 'deepseek' }).length, 2);
-  assert.equal(api.eloWindows({ provider: 'zai' }).length, 1);
-  assert.equal(api.eloWindows({ provider: 'openai-codex' }).length, 0, 'a flat rail declares nothing');
-  // Its own declaration wins, exactly as `declared` wins over the registry.
+  // N9. glm-4.6 is on zai, and zai peaks 2× at 06:00-10:00 UTC Mon-Fri — but
+  // glm-4.6 declares NO price_windows, so capabilities.price_multiplier('glm-4.6',
+  // Monday 07:00) is 1.0 and its effective price never leaves (0.60, 2.20). The
+  // console said "2× peak · $1.20 in / $4.40 out per 1M" about it, because
+  // eloWindows() fell back to the rail. A vendor's peak is a fact about the
+  // vendor's windowed models, not about every id it serves.
+  const flat = registryFacts('glm-4.6');
+  assert.deepEqual(flat.price_windows, [], 'the registry gives glm-4.6 no window');
+  assert.equal(api.eloWindows(catalogueEntry('glm-4.6')).length, 0);
+  assert.equal(api.priceMultiplier(api.eloWindows(catalogueEntry('glm-4.6')), { hour: 7, weekday: 0 }), 1,
+    'flat at the hour its rail doubles — the same answer capabilities.price_multiplier gives');
+  const words = api.priceWords(catalogueEntry('glm-4.6'), 1, 'metered', true);
+  assert.equal(words, '$0.60 in / $2.20 out per 1M', 'and the price it renders is the base rate, undoubled');
+  assert.doesNotMatch(words, /peak/);
+
+  // An elo that DOES declare one keeps it, and it is the registry's own.
+  const windowed = api.eloWindows(catalogueEntry('glm-4.7'));
+  assert.deepEqual(plain(windowed), [{ hours: [6, 10], multiplier: 2, weekdays: [0, 1, 2, 3, 4] }]);
+  assert.equal(api.priceMultiplier(windowed, { hour: 7, weekday: 0 }), 2);
+  // A rate declared on the elo in router.yaml still wins over the registry's.
   assert.deepEqual(plain(api.eloWindows({ provider: 'deepseek', price_windows: [{ hours_utc: [0, 2], multiplier: 3 }] })),
     [{ hours: [0, 2], multiplier: 3, weekdays: null }]);
+
+  // WHICH VENDOR IS EXPENSIVE is still said, once, where the claim is about the
+  // vendor and is therefore true: the clock line's own rows.
+  const zai = plain(api.railWindowRows(null, { hour: 7, weekday: 0 })).find((row) => row.rail === 'zai');
+  assert.equal(zai.multiplier, 2, 'the rail claim survives; only the per-elo one was false');
 });
 
 test('the multiplier is 1.0 whenever the clock was not supplied', () => {
@@ -1783,17 +1899,47 @@ test('the multiplier is 1.0 whenever the clock was not supplied', () => {
   // The spec's fail-direction: no clock means no time-based pricing, never a
   // guessed hour. A console that defaulted to `new Date()` here would report a
   // peak on a plan the router made time-agnostically.
-  const deepseek = api.eloWindows({ provider: 'deepseek' });
+  const deepseek = api.eloWindows(catalogueEntry('deepseek-v4-flash'));
   assert.equal(api.priceMultiplier(deepseek, null), 1);
   assert.equal(api.priceMultiplier(deepseek, {}), 1);
   assert.equal(api.priceMultiplier(deepseek, { hour: 'seven' }), 1);
 });
 
+test('an overlap resolves the way the router resolves it, not the other way', () => {
+  const { api } = loadConsole();
+  // N10. Overlapping windows are a lint error, so neither side is a resolution
+  // POLICY — both are determinism guarantees for a malformed registry. But the two
+  // fallbacks must still agree, and they did not: capabilities._multiplier_at
+  // returns on its FIRST match while this console accumulated, so for the pair
+  // below the router priced hour 9 at 2.0 and the console displayed 3.0.
+  const overlapping = api.entryWindows({
+    price_windows: [{ hours_utc: [6, 10], multiplier: 2 }, { hours_utc: [8, 12], multiplier: 3 }],
+  });
+  assert.equal(api.priceMultiplier(overlapping, { hour: 9, weekday: 0 }), 2,
+    'the first matching window wins, exactly as capabilities._multiplier_at does');
+  assert.equal(api.priceMultiplier(overlapping, { hour: 7, weekday: 0 }), 2, 'only the first matches here');
+  assert.equal(api.priceMultiplier(overlapping, { hour: 11, weekday: 0 }), 3, 'only the second matches here');
+
+  // Read off the running path rather than remembered: _multiplier_at returns
+  // INSIDE its loop, which is what makes it first-match-wins. An edit that made it
+  // accumulate would flip the router without touching this console, and this is the
+  // assertion that fails then.
+  const source = fs.readFileSync(REGISTRY_PATH, 'utf8');
+  const start = source.indexOf('def _multiplier_at(');
+  assert.ok(start > 0, 'capabilities._multiplier_at must exist');
+  const fn = source.slice(start, source.indexOf('\ndef ', start + 1));
+  assert.match(fn, /first matching window/, 'and it documents first-match-wins');
+  assert.match(fn, /for window in windows:[\s\S]*\n        return multiplier\n/,
+    'returning inside the loop IS the first-match rule');
+});
+
 test('the verified windows price the hour they say they do', () => {
   const { api } = loadConsole();
-  const deepseek = api.eloWindows({ provider: 'deepseek' });
-  const zai = api.eloWindows({ provider: 'zai' });
-  const xiaomi = api.eloWindows({ provider: 'xiaomi' });
+  // Per ELO, from the registry's own declarations: deepseek-v4-flash carries both
+  // peaks, glm-4.7 the weekday-gated one, mimo-v2.5 the cheap night window.
+  const deepseek = api.eloWindows(catalogueEntry('deepseek-v4-flash'));
+  const zai = api.eloWindows(catalogueEntry('glm-4.7'));
+  const xiaomi = api.eloWindows(catalogueEntry('mimo-v2.5'));
 
   // deepseek: both peaks, every day.
   assert.equal(api.priceMultiplier(deepseek, { hour: 1, weekday: 0 }), 2);
@@ -1809,6 +1955,15 @@ test('the verified windows price the hour they say they do', () => {
   // A weekday-restricted window with no weekday to check against must NOT match:
   // claiming a peak on an unknown day overstates the price.
   assert.equal(api.priceMultiplier(zai, { hour: 7 }), 1);
+  // And an explicit null is the same "nobody said" — not Monday. `Number(null)` is 0
+  // and 0 IS Monday, so this matched zai's Mon-Fri peak on a day nobody named. It is
+  // reachable: planWhen builds exactly this shape for a plan reporting utc_hour with
+  // no utc_weekday.
+  assert.equal(api.priceMultiplier(zai, { hour: 7, weekday: null }), 1);
+  assert.deepEqual(plain(api.planWhen({ utc_hour: 7 }, PEAK)).when, { hour: 7, weekday: null },
+    'the shape the console really builds');
+  assert.equal(api.priceMultiplier(deepseek, { hour: 7, weekday: null }), 2,
+    'an ungated window still matches — an unknown day only blocks a gated one');
 
   // xiaomi is the one that goes the other way — a discount, not a peak.
   assert.equal(api.priceMultiplier(xiaomi, { hour: 18, weekday: 0 }), 0.8);
@@ -1823,9 +1978,9 @@ test('the verified windows price the hour they say they do', () => {
 
 test('the next change is a real hour, so "until when" is not invented', () => {
   const { api } = loadConsole();
-  const deepseek = api.eloWindows({ provider: 'deepseek' });
-  const zai = api.eloWindows({ provider: 'zai' });
-  const xiaomi = api.eloWindows({ provider: 'xiaomi' });
+  const deepseek = api.eloWindows(catalogueEntry('deepseek-v4-flash'));
+  const zai = api.eloWindows(catalogueEntry('glm-4.7'));
+  const xiaomi = api.eloWindows(catalogueEntry('mimo-v2.5'));
 
   const out = plain(api.nextWindowChange(deepseek, { hour: 7, weekday: 0 }));
   assert.equal(out.hour, 10, 'the peak ends at 10:00 UTC');
@@ -1844,12 +1999,17 @@ test('the next change is a real hour, so "until when" is not invented', () => {
   // Nothing to report is null, never a fabricated hour.
   assert.equal(api.nextWindowChange([], { hour: 7, weekday: 0 }), null);
   assert.equal(api.nextWindowChange(deepseek, null), null);
+  // An unknown day cannot answer "until when" for a weekday-GATED window: the peak it
+  // would count down to may be two days off, so null is the only honest answer. An
+  // ungated window is unaffected, because it does not depend on the day.
+  assert.equal(api.nextWindowChange(zai, { hour: 7, weekday: null }), null);
+  assert.equal(api.nextWindowChange(deepseek, { hour: 7, weekday: null }).hour, 10);
 });
 
 test('a rail says what it costs now and until when, in one clause', () => {
   const { api } = loadConsole();
-  const deepseek = api.eloWindows({ provider: 'deepseek' });
-  const xiaomi = api.eloWindows({ provider: 'xiaomi' });
+  const deepseek = api.eloWindows(catalogueEntry('deepseek-v4-flash'));
+  const xiaomi = api.eloWindows(catalogueEntry('mimo-v2.5'));
   assert.equal(api.windowWords(deepseek, { hour: 7, weekday: 0 }), '2× peak until 10:00 UTC');
   assert.equal(api.windowWords(deepseek, { hour: 12, weekday: 0 }), 'base rate until 01:00 UTC, then 2×');
   assert.equal(api.windowWords(xiaomi, { hour: 18, weekday: 0 }), '0.8× cheap window until 00:00 UTC');
@@ -2053,11 +2213,11 @@ test('the tier chains show a cheapest_now order as time-relative, with the price
   policy.tiers.T2.fallback_strategy = 'cheapest_now';
   policy.tiers.T2.pin_primary = true;
   api.state.policy = policy;
-  api.state.capabilities = {
-    'glm-5.3': { provider: 'zai', context_window: 1000000, price_in: null, price_out: null },
-    'deepseek-v4-pro': { provider: 'deepseek', context_window: 1048576, price_in: 0.66, price_out: 1.98 },
-    'gpt-5.5': { provider: 'openai-codex', context_window: 400000, price_in: 2, price_out: 12 },
-  };
+  // The catalogue as the endpoint serves it, so every price and every window below
+  // is the registry's own rather than this file's idea of it. deepseek-v4-pro
+  // DECLARES the 06:00-10:00 peak — which is why it doubles here, and the reason the
+  // fixture may not simply name its rail.
+  api.state.capabilities = api.capabilityRegistry(catalogue('glm-5.3', 'deepseek-v4-pro', 'gpt-5.5'));
   api.renderLadder();
 
   const text = flat(dom.get('ladder'));
@@ -2066,8 +2226,11 @@ test('the tier chains show a cheapest_now order as time-relative, with the price
   assert.match(text, /07:00 UTC/);
   // The numbers the comparison ran on, per elo — and the peak multiplier applied
   // to the stored base rate rather than a pre-doubled number.
+  const pro = registryFacts('deepseek-v4-pro');
   assert.match(text, /2× peak · \$1\.32 in \/ \$3\.96 out per 1M/);
-  assert.match(text, /\$2\.00 in \/ \$12\.00 out per 1M/);
+  assert.deepEqual([pro.price_in * 2, pro.price_out * 2], [1.32, 3.96],
+    'and those two numbers are the registry rate times the declared multiplier');
+  assert.match(text, /\$5\.00 in \/ \$30\.00 out per 1M/);
   // The plan-covered primary has no dollar price and must not acquire one.
   assert.match(text, /plan credits/);
   assert.doesNotMatch(text, /\$0 in/);
@@ -2117,15 +2280,80 @@ test('a bypassed time cap is as loud as a bypassed capability filter', () => {
   assert.match(said, /raise the cap|off-peak hour/, 'and what the operator can do');
 });
 
-test('a degraded strategy is surfaced, not left as a label that lies', () => {
+test('a degraded strategy names the DECLARED word and the router\'s own reason', () => {
   const { api, dom } = loadConsole();
   api.state.policy = tierPolicy();
   api.state.clock = PEAK;
-  api.renderChainPlan(chainPlan({ strategy: 'cheapest_now', strategy_degraded: true }));
-  const text = flat(dom.get('chainPlan')) + String(dom.get('chainPlan').children[0].textContent || '');
-  assert.match(text, /Fallback order degraded/);
-  assert.match(text, /cheapest_now/, 'what the tier declares');
-  assert.match(text, /declared one/, 'and what actually ran');
+  // N4, and the shape is the one rules.plan_chain really emits: `strategy` is what
+  // RAN, `strategy_declared` is what the tier asked for, and
+  // `strategy_degraded_reason` is rules._effective_strategy's own sentence. The
+  // banner read `strategy` — the effective one — so after a degrade it rendered
+  // "The tier declares “sequential”, but it did not run", a sentence that
+  // contradicts itself, and then GUESSED the reason the router had already computed.
+  api.renderChainPlan(chainPlan({
+    strategy: 'sequential',
+    strategy_declared: 'cheapest_now',
+    strategy_degraded: true,
+    strategy_degraded_reason: 'no clock was injected, so prices could not be compared',
+    time_agnostic: true,
+  }));
+  const banner = dom.get('chainPlan').children[0];
+  const said = String(banner.textContent || '') + flat(banner);
+  assert.match(said, /Fallback order degraded/);
+  assert.match(said, /declares “cheapest_now”/, 'the DECLARED word, which is the only one that can have failed to run');
+  assert.doesNotMatch(said, /declares “sequential”/, 'never the strategy that did run');
+  assert.match(said, /no clock was injected, so prices could not be compared/,
+    'the router computed the reason; the console must not guess at it');
+  assert.match(said, /order that DID run — tried in order/, 'and what ran instead');
+
+  // The reason is the SERVER'S: change it and the banner changes with it.
+  api.renderChainPlan(chainPlan({
+    strategy: 'sequential',
+    strategy_declared: 'random',
+    strategy_degraded: true,
+    strategy_degraded_reason: 'no rng was injected, so the tail was not shuffled',
+  }));
+  const random = flat(dom.get('chainPlan')) + String(dom.get('chainPlan').children[0].textContent || '');
+  assert.match(random, /declares “random”/);
+  assert.match(random, /no rng was injected, so the tail was not shuffled/);
+
+  // A plan that reports no reason still states the degrade, and the fallback wording
+  // is derived from the DECLARED word — asking about the effective one returned an
+  // empty note, which is what made the guess unconditional.
+  api.renderChainPlan(chainPlan({
+    strategy: 'sequential', strategy_declared: 'random', strategy_degraded: true, strategy_degraded_reason: '',
+  }));
+  assert.match(flat(dom.get('chainPlan')) + String(dom.get('chainPlan').children[0].textContent || ''),
+    /random.*random source/s, 'the fallback wording is about random, because random is what was declared');
+
+  // And a plan that reports no declared word names none: the degrade is still said,
+  // without inventing a strategy nobody sent.
+  api.renderChainPlan(chainPlan({ strategy: 'sequential', strategy_degraded: true, strategy_declared: '' }));
+  const nameless = String(dom.get('chainPlan').children[0].textContent || '')
+    + flat(dom.get('chainPlan').children[0]);
+  assert.match(nameless, /The declared fallback order did not run/);
+  assert.doesNotMatch(nameless, /declares “/);
+});
+
+test('the degrade banner and the chain agree about which strategy ran', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = tierPolicy();
+  api.state.clock = PEAK;
+  // `random` that degraded DID run in declared order, so the chain keeps its
+  // ordinals — the banner and the numbered hops are two readings of one field
+  // (`strategy`), and this pins that they cannot come apart.
+  api.renderChainPlan(chainPlan({
+    strategy: 'sequential', strategy_declared: 'random', strategy_degraded: true,
+    strategy_degraded_reason: 'no rng was injected, so the tail was not shuffled',
+  }));
+  assert.deepEqual(findAll(dom.get('chainPlan'), 'hop-ord').map((n) => n.textContent), ['1', '2'],
+    'the order that ran is an order, so it is numbered');
+  // A `random` that DID run has no first hop and no ordinals, and no banner.
+  api.renderChainPlan(chainPlan({
+    strategy: 'random', strategy_declared: 'random', strategy_degraded: false, pin_primary: false,
+  }));
+  assert.equal(findAll(dom.get('chainPlan'), 'hop-ord').length, 0);
+  assert.doesNotMatch(flat(dom.get('chainPlan')), /Fallback order degraded/);
 });
 
 test('a task whose eligible chain collapsed to one rail is told it has no fallback', () => {
@@ -2153,12 +2381,19 @@ test('a task whose eligible chain collapsed to one rail is told it has no fallba
 test('an elo the time cap refused says the two numbers that make it fixable', () => {
   const { api, dom } = loadConsole();
   api.state.policy = tierPolicy();
-  api.state.capabilities = { 'deepseek-v4-pro': { provider: 'deepseek', price_in: 0.66, price_out: 1.98 } };
+  api.state.capabilities = api.capabilityRegistry(catalogue('deepseek-v4-pro'));
+  // The cap's OWN numbers: capabilities.apply_time_cap returns
+  // capped: [{model, multiplier}] and rules._multipliers_for seeds `multipliers`
+  // from exactly those entries, so 2.0 here is the value the refusal was decided
+  // on. The old fixture carried neither and the row still printed "2× now" — from
+  // the console's rail-window guess, which is the same number by luck and a
+  // different number as soon as the elo is not the rail.
   api.renderChainPlan(chainPlan({
     utc_hour: 7, utc_weekday: 0,
     time_cap: { max_multiplier: 1.5 },
     chain: [{ model: 'gpt-5.6-luna', provider: 'openai-codex' }],
-    capped: [{ model: 'deepseek-v4-pro', provider: 'deepseek' }],
+    capped: [{ model: 'deepseek-v4-pro', multiplier: 2 }],
+    multipliers: { 'deepseek-v4-pro': 2 },
   }));
   const text = flat(dom.get('chainPlan'));
   assert.match(text, /Dropped \(1\)/, 'a cost refusal and a capability refusal answer the same question');
@@ -2166,6 +2401,18 @@ test('an elo the time cap refused says the two numbers that make it fixable', ()
   assert.match(text, /costs more this hour than the tier’s price cap allows/);
   assert.match(text, /2× now, cap 1\.5×/, 'the price and the ceiling, not an enum');
   assert.doesNotMatch(text, /time_cap allows|reject_reason/, 'the enum never reaches the screen');
+
+  // The capped ENTRY's own multiplier is enough on its own: a plan whose
+  // `multipliers` map is empty (no clock reached _multipliers_for) still carries the
+  // number apply_time_cap decided with, and the row must read it rather than
+  // recompute one.
+  api.renderChainPlan(chainPlan({
+    utc_hour: 7, utc_weekday: 0,
+    time_cap: { max_multiplier: 1.5 },
+    chain: [{ model: 'gpt-5.6-luna', provider: 'openai-codex' }],
+    capped: [{ model: 'deepseek-v4-pro', multiplier: 2 }],
+  }));
+  assert.match(flat(dom.get('chainPlan')), /2× now, cap 1\.5×/);
 });
 
 test('a capped elo is listed once, even when the filter also reported it', () => {
@@ -2296,4 +2543,495 @@ test('a bypass that reports no reasons says so, instead of reading as "nothing d
     rejected: [{ model: 'glm-4.7', provider: 'zai', reject_reason: 'no_vision' }],
   }));
   assert.doesNotMatch(flat(dom.get('chainPlan')), /no per-elo reasons/);
+});
+
+// ── a bypass drops nothing, and the panel must say nothing was dropped ────
+// The invariant both stages hold: a filter, a cap or a policy that would empty the
+// chain BYPASSES ITSELF and keeps its per-elo reasons as diagnostics
+// (capabilities.filter_chain: "a consumer that renders `rejected` as 'dropped'
+// must therefore check `bypassed` first"; apply_time_cap says the same of
+// `capped`). So on a bypass every named elo is still in the chain, and a "Dropped"
+// heading over it is the console contradicting itself half a screen apart.
+
+test('a bypassed filter drops nothing, so no elo is rendered twice', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = tierPolicy();
+  // The shape apply/filter really produce on the shipped policy: a turn around
+  // 840,000 est_input_tokens matches huge-context-read → T3, the derived
+  // min_context exceeds every hop's window, all three are rejected, and the filter
+  // bypasses — so `chain` is the ORIGINAL three hops and `rejected` names all three.
+  const plan = chainPlan({
+    bypassed: true,
+    // The derived floor, not the raw turn: capabilities.derive_requirements sets
+    // min_context = ceil(est_input_tokens × 1.25), so 840,001 tokens asks for
+    // 1,050,002 — two more than gpt-5.6-terra's 1,050,000 window, and above all three.
+    requirements: { min_context: 1050002 },
+    unsatisfiable: ['min_context'],
+    chain: [
+      { model: 'gpt-5.6-terra', provider: 'openai-codex' },
+      { model: 'deepseek-v4-pro', provider: 'deepseek' },
+      { model: 'glm-5.3', provider: 'zai' },
+    ],
+    rejected: [
+      { model: 'gpt-5.6-terra', provider: 'openai-codex', reject_reason: 'context_too_small' },
+      { model: 'deepseek-v4-pro', provider: 'deepseek', reject_reason: 'context_too_small' },
+      { model: 'glm-5.3', provider: 'zai', reject_reason: 'context_too_small' },
+    ],
+  });
+  // The split is the plan's own two flags, not a re-derivation.
+  const outcome = plain(api.droppedElos(plan));
+  assert.deepEqual(outcome.dropped, [], 'a bypass removes nothing');
+  assert.deepEqual(outcome.retained.map((hop) => hop.model),
+    ['gpt-5.6-terra', 'deepseek-v4-pro', 'glm-5.3'], 'and keeps every reason');
+  assert.equal(outcome.gaveWay, 'capability filter');
+
+  api.renderChainPlan(plan);
+  const text = flat(dom.get('chainPlan'));
+  assert.doesNotMatch(text, /Dropped/, 'nothing was dropped, so nothing says it was');
+  assert.match(text, /Still in the chain \(3\)/);
+  assert.match(text, /Nothing was dropped — the capability filter gave way/);
+  assert.match(text, /objections, not exclusions/);
+  // What the router will do and what the operator can do are said ONCE, in the
+  // bypass line at the top; this section does not repeat either.
+  assert.match(text, /try them all anyway/);
+  // Every elo appears as an eligible hop AND in the retained list — which is
+  // correct, and is exactly why the second list may not be headed "Dropped".
+  assert.deepEqual(findAll(dom.get('chainPlan'), 'hop-ord').map((n) => n.textContent), ['1', '2', '3']);
+  assert.match(text, /context window is smaller than this task needs/);
+});
+
+test('a bypassed time cap drops nothing either, and the two bypasses are independent', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = tierPolicy();
+  // apply_time_cap's bypass: every elo was over the ceiling, so `chain` is the
+  // original and `capped` is retained as diagnostics.
+  api.renderChainPlan(chainPlan({
+    utc_hour: 7, utc_weekday: 0,
+    time_cap: { max_multiplier: 1.5 },
+    time_cap_bypassed: true,
+    chain: [
+      { model: 'deepseek-v4-pro', provider: 'deepseek' },
+      { model: 'glm-4.7', provider: 'zai' },
+    ],
+    capped: [{ model: 'deepseek-v4-pro', multiplier: 2 }, { model: 'glm-4.7', multiplier: 2 }],
+    multipliers: { 'deepseek-v4-pro': 2, 'glm-4.7': 2 },
+  }));
+  const text = flat(dom.get('chainPlan'));
+  assert.match(text, /Time cap bypassed/, 'the loud line still fires');
+  assert.doesNotMatch(text, /Dropped/, 'but nothing was dropped');
+  assert.match(text, /Still in the chain \(2\)/);
+  assert.match(text, /time cap gave way/);
+  assert.match(text, /2× now, cap 1\.5×/, 'and the numbers behind the objection survive');
+
+  // INDEPENDENT: the filter can bypass — restoring everything it rejected — and the
+  // cap can then remove a hop from the restored chain for real. The elo the cap
+  // actually took out is dropped; the filter's diagnostics are not.
+  const both = plain(api.droppedElos(chainPlan({
+    bypassed: true,
+    time_cap_bypassed: false,
+    chain: [{ model: 'gpt-5.6-terra', provider: 'openai-codex' }],
+    rejected: [{ model: 'gpt-5.6-terra', reject_reason: 'no_vision' }],
+    capped: [{ model: 'deepseek-v4-pro', multiplier: 2 }],
+  })));
+  assert.deepEqual(both.dropped.map((hop) => hop.model), ['deepseek-v4-pro'],
+    'the cap really removed this one');
+  assert.deepEqual(both.retained.map((hop) => hop.model), ['gpt-5.6-terra'],
+    'and the filter only objected to that one');
+
+  // A real removal outranks a diagnostic naming the SAME elo: its absence from the
+  // chain is the fact being read, and it must not be listed as "still in the chain".
+  const clash = plain(api.droppedElos(chainPlan({
+    bypassed: true,
+    chain: [{ model: 'glm-5.3', provider: 'zai' }],
+    rejected: [{ model: 'deepseek-v4-pro', reject_reason: 'context_too_small' }],
+    capped: [{ model: 'deepseek-v4-pro', multiplier: 2 }],
+  })));
+  assert.deepEqual(clash.dropped.map((hop) => hop.model), ['deepseek-v4-pro']);
+  assert.deepEqual(clash.retained, [], 'one elo, one row, and the row that is true');
+
+  // No bypass at all: both lists are real exclusions and nothing is retained.
+  const ordinary = plain(api.droppedElos(chainPlan({
+    rejected: [{ model: 'glm-5.3', reject_reason: 'no_vision' }],
+    capped: [{ model: 'deepseek-v4-pro', multiplier: 2 }],
+  })));
+  assert.deepEqual(ordinary.dropped.map((hop) => hop.model), ['glm-5.3', 'deepseek-v4-pro']);
+  assert.deepEqual(ordinary.retained, []);
+  assert.equal(ordinary.gaveWay, '');
+  assert.deepEqual(plain(api.droppedElos(null)), { dropped: [], retained: [], filterBypassed: false, capBypassed: false, gaveWay: '' });
+});
+
+// ── the headline verdict answers from the plan, not from the declared route ──
+// The verdict is this console's primary answer to "where does this task go", and it
+// was built from decision.output — the DECLARED tier route — while the Chain-plan
+// panel directly below it was built from the plan the executor iterates. Two panels,
+// one screen, opposite answers, and the operator acts on the one at the top.
+
+// The exact case the review measured: a vision task lands on T2, whose declared
+// chain is glm-5.3 → gpt-5.6-luna → deepseek-v4-flash. Only gpt-5.6-luna can read an
+// image (registry: vision true), so the filter drops the other two for no_vision and
+// the eligible chain is one hop long.
+function visionExplain(extra) {
+  return {
+    mode: 'deterministic_dry_run', requires_classifier: false,
+    decision: {
+      matched_rule_id: 'image-attached',
+      matched_clauses: {},
+      output: {
+        model: 'glm-5.3', provider: 'zai',
+        fallback: [
+          { model: 'gpt-5.6-luna', provider: 'openai-codex' },
+          { model: 'deepseek-v4-flash', provider: 'deepseek' },
+        ],
+      },
+      chain_plan: chainPlan(Object.assign({
+        requirements: { vision: true },
+        chain: [{ model: 'gpt-5.6-luna', provider: 'openai-codex' }],
+        rejected: [
+          { model: 'glm-5.3', provider: 'zai', reject_reason: 'no_vision' },
+          { model: 'deepseek-v4-flash', provider: 'deepseek', reject_reason: 'no_vision' },
+        ],
+        independent_rails: 1,
+      }, extra || {})),
+    },
+  };
+}
+
+function probeWith(explain) {
+  return loadConsole({
+    fetch: () => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(explain)) }),
+  });
+}
+
+test('the verdict names the elo the executor will really try first', async () => {
+  const explain = visionExplain();
+  const { api, dom } = probeWith(explain);
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  await api.probe('describe this screenshot');
+
+  const sentence = flat(dom.get('probeResult'));
+  // What the plan says, and only that.
+  assert.match(sentence, /routed to gpt-5\.6-luna/);
+  assert.match(sentence, /on openai-codex/);
+  assert.doesNotMatch(sentence, /routed to glm-5\.3/,
+    'the declared primary cannot read an image and is not where this task goes');
+  assert.doesNotMatch(sentence, /Falls back to/,
+    'one eligible hop is no fallback, and claiming two would be the declared route again');
+
+  // The declared route survives as SECONDARY context, labelled for what it is.
+  assert.match(sentence, /declared route/);
+  assert.match(sentence, /glm-5\.3 → gpt-5\.6-luna → deepseek-v4-flash/);
+
+  // AGREEMENT, which is the whole point: the model the verdict names is the model
+  // the chain-plan panel numbers as hop 1, and every model the verdict does NOT name
+  // is one the panel reports as rejected.
+  const plan = explain.decision.chain_plan;
+  assert.equal(api.verdictRoute(plan, explain.decision.output).first, plan.chain[0].model);
+  const eligible = findAll(dom.get('chainPlan'), 'hops')[0];
+  assert.deepEqual(findAll(eligible, 'hop-model').map((n) => n.textContent), [plan.chain[0].model]);
+  assert.match(flat(dom.get('chainPlan')), /cannot read images/);
+});
+
+test('verdictRoute reads the plan, and reports what it cannot know', () => {
+  const { api } = loadConsole();
+  const declared = {
+    model: 'glm-5.3', provider: 'zai',
+    fallback: [{ model: 'gpt-5.6-luna', provider: 'openai-codex' }, { model: 'deepseek-v4-flash', provider: 'deepseek' }],
+  };
+
+  // A sequential plan: first is first, and the rest are a real order.
+  const sequential = plain(api.verdictRoute(chainPlan({
+    chain: [
+      { model: 'gpt-5.6-luna', provider: 'openai-codex' },
+      { model: 'deepseek-v4-flash', provider: 'deepseek' },
+    ],
+  }), declared));
+  assert.equal(sequential.source, 'plan');
+  assert.equal(sequential.first, 'gpt-5.6-luna');
+  assert.equal(sequential.provider, 'openai-codex');
+  assert.deepEqual(sequential.rest, ['deepseek-v4-flash']);
+  assert.equal(sequential.ordered, true);
+  assert.equal(sequential.differs, true, 'the declared route has three hops and this one has two');
+
+  // cheapest_now reordered the same set: nothing was dropped, and where the task
+  // goes still changed. Length comparison alone would have called these identical.
+  const reordered = plain(api.verdictRoute(chainPlan({
+    strategy: 'cheapest_now', strategy_declared: 'cheapest_now',
+    chain: [
+      { model: 'deepseek-v4-flash', provider: 'deepseek' },
+      { model: 'gpt-5.6-luna', provider: 'openai-codex' },
+      { model: 'glm-5.3', provider: 'zai' },
+    ],
+  }), declared));
+  assert.equal(reordered.first, 'deepseek-v4-flash');
+  assert.equal(reordered.differs, true, 'a reorder changes the answer without dropping a hop');
+
+  // An unshuffled `random` chain has NO first hop, and saying one would be the same
+  // false claim the chain list already refuses to draw as an ordinal.
+  const shuffled = plain(api.verdictRoute(chainPlan({
+    strategy: 'random', strategy_declared: 'random', pin_primary: false,
+    chain: [{ model: 'gpt-5.6-luna', provider: 'openai-codex' }, { model: 'mimo-v2.5', provider: 'xiaomi' }],
+  }), declared));
+  assert.equal(shuffled.first, '', 'nothing runs first until the request is made');
+  assert.equal(shuffled.ordered, false);
+  assert.equal(shuffled.pinPrimary, false);
+  assert.deepEqual(shuffled.rest, ['gpt-5.6-luna', 'mimo-v2.5']);
+
+  // pin_primary UNREPORTED is a third answer, not the same as false: the plan did not
+  // say, so "drawn at random" would be inventing the field's value.
+  const unreported = plain(api.verdictRoute(chainPlan({
+    strategy: 'random', strategy_declared: 'random', pin_primary: undefined,
+    chain: [{ model: 'gpt-5.6-luna', provider: 'openai-codex' }, { model: 'mimo-v2.5', provider: 'xiaomi' }],
+  }), declared));
+  assert.equal(unreported.first, '');
+  assert.equal(unreported.pinPrimary, null);
+
+  // pin_primary true is the honest middle: hop 1 IS first, the tail is not ordered.
+  const pinned = plain(api.verdictRoute(chainPlan({
+    strategy: 'random', strategy_declared: 'random', pin_primary: true,
+    chain: [
+      { model: 'glm-5.3', provider: 'zai' },
+      { model: 'gpt-5.6-luna', provider: 'openai-codex' },
+      { model: 'deepseek-v4-flash', provider: 'deepseek' },
+    ],
+  }), declared));
+  assert.equal(pinned.first, 'glm-5.3');
+  assert.equal(pinned.ordered, false, 'the tail is a set');
+  assert.equal(pinned.differs, false, 'and this one IS the declared route');
+
+  // A `random` that DEGRADED ran in declared order, so hop 1 is genuinely first —
+  // the same reading the chain list uses to restore its ordinals.
+  const degraded = plain(api.verdictRoute(chainPlan({
+    strategy: 'sequential', strategy_declared: 'random', strategy_degraded: true, pin_primary: false,
+    chain: [{ model: 'gpt-5.6-luna', provider: 'openai-codex' }, { model: 'mimo-v2.5', provider: 'xiaomi' }],
+  }), declared));
+  assert.equal(degraded.first, 'gpt-5.6-luna');
+  assert.equal(degraded.ordered, true);
+
+  // No plan at all: the declared route is the only answer there is, and it is
+  // returned marked as declared so the caller can label it.
+  const none = plain(api.verdictRoute(null, declared));
+  assert.equal(none.source, 'declared');
+  assert.equal(none.first, 'glm-5.3');
+  assert.deepEqual(none.rest, ['gpt-5.6-luna', 'deepseek-v4-flash']);
+  assert.equal(none.differs, false, 'there is nothing to differ from');
+  assert.equal(plain(api.verdictRoute(null, {})).source, 'none');
+});
+
+test('a shuffled chain is not given a first hop by the verdict either', async () => {
+  const explain = visionExplain({
+    strategy: 'random', strategy_declared: 'random', pin_primary: false,
+    chain: [
+      { model: 'gpt-5.6-luna', provider: 'openai-codex' },
+      { model: 'mimo-v2.5', provider: 'xiaomi' },
+    ],
+    rejected: [{ model: 'glm-5.3', provider: 'zai', reject_reason: 'no_vision' }],
+  });
+  const { api, dom } = probeWith(explain);
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  await api.probe('describe this screenshot');
+  const sentence = flat(dom.get('probeResult'));
+  assert.match(sentence, /routed to any of/);
+  assert.match(sentence, /drawn at random per request/);
+  assert.doesNotMatch(sentence, /routed to gpt-5\.6-luna/, 'no elo is named as first');
+  // And the panel below draws no ordinals, which is the same fact reached the same
+  // way — one field, `strategy`, read once.
+  assert.equal(findAll(dom.get('chainPlan'), 'hop-ord').length, 0);
+});
+
+test('the declared route is silent when it is the route that runs', async () => {
+  // DESIGN.md §2.2: two authorities for one fact is worse than none. When the plan
+  // IS the declared chain there is nothing to contrast, so the secondary line does
+  // not ship — and neither does an empty one.
+  const explain = visionExplain({
+    requirements: {},
+    chain: [
+      { model: 'glm-5.3', provider: 'zai' },
+      { model: 'gpt-5.6-luna', provider: 'openai-codex' },
+      { model: 'deepseek-v4-flash', provider: 'deepseek' },
+    ],
+    rejected: [],
+    independent_rails: 3,
+  });
+  const { api, dom } = probeWith(explain);
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  await api.probe('write a docstring');
+  const sentence = flat(dom.get('probeResult'));
+  assert.match(sentence, /routed to glm-5\.3 on zai/);
+  assert.match(sentence, /Falls back to gpt-5\.6-luna → deepseek-v4-flash/);
+  assert.doesNotMatch(sentence, /declared route/, 'the same fact twice is not context');
+});
+
+// ── the price audit: an unread catalogue is not a missing price ────────────
+// GET /capabilities is the read behind the audit, and while the route did not exist
+// the call 404'd and the panel did not go blank — it went FALSE. Every elo rendered
+// as capability-unverified, and deepseek-v4-flash, which publishes 0.22 in / 0.66
+// out, rendered "no per-token price published".
+
+test('an unanswered price question renders as silence, never as "no price"', () => {
+  const { api } = loadConsole();
+  const flash = registryFacts('deepseek-v4-flash');
+  assert.equal(flash.price_in, 0.22, 'the rail this line was wrong about does publish a rate');
+  assert.equal(flash.price_out, 0.66);
+
+  // NO CATALOGUE. The console knows nothing about this elo's price, and a peak
+  // multiplier does not license it to claim there is none.
+  assert.equal(api.pricePublished({}, null), null, 'three-valued: null is "nobody answered"');
+  assert.equal(api.priceWords({}, 2, 'metered', null), '2× peak',
+    'the multiplier is the router\'s and survives; the invented absence does not');
+  assert.doesNotMatch(api.priceWords({}, 2, 'metered', null), /no per-token price/);
+
+  // THE CATALOGUE ANSWERED, and it says this elo bills in credits. That is a
+  // reported fact and it earns words — an operator has to know a plan rail is not
+  // free. `price_published` is service.py's, computed by asking the running path.
+  const plan = catalogueEntry('glm-5.3');
+  assert.equal(plan.price_published, false, 'glm-5.3 publishes no dollar rate');
+  assert.equal(api.pricePublished(plan, plan), false);
+  const words = api.priceWords(plan, 2, 'plan', api.pricePublished(plan, plan));
+  assert.match(words, /2× peak/);
+  assert.match(words, /billed in plan credits/);
+  assert.doesNotMatch(words, /\$0/, 'a plan rail rendered as $0 would win every comparison on screen');
+
+  // THE CATALOGUE ANSWERED WITH A RATE: it is rendered, at the multiplier applied.
+  const metered = catalogueEntry('deepseek-v4-flash');
+  assert.equal(metered.price_published, true);
+  assert.equal(api.pricePublished(metered, metered), true);
+  assert.equal(api.priceWords(metered, 1, 'metered', true), '$0.22 in / $0.66 out per 1M');
+  assert.equal(api.priceWords(metered, 2, 'metered', true), '2× peak · $0.44 in / $1.32 out per 1M');
+
+  // A rate declared on the elo in router.yaml still wins over the catalogue's answer,
+  // the same precedence capabilities.capabilities_for applies everywhere else.
+  assert.equal(api.pricePublished({ price_in: 0.5, price_out: 1 }, { price_published: false }), true);
+});
+
+test('the chain plan shows the catalogue\'s prices instead of reporting it has none', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = tierPolicy();
+  api.state.clock = PEAK;
+  // With the endpoint answering, the audit reads the registry's own numbers.
+  api.state.capabilities = api.capabilityRegistry(catalogue('deepseek-v4-flash', 'gpt-5.6-luna'));
+  const plan = chainPlan({
+    utc_hour: 7, utc_weekday: 0,
+    requirements: {},
+    chain: [
+      { model: 'gpt-5.6-luna', provider: 'openai-codex' },
+      { model: 'deepseek-v4-flash', provider: 'deepseek' },
+    ],
+    multipliers: { 'gpt-5.6-luna': 1, 'deepseek-v4-flash': 2 },
+  });
+  api.renderChainPlan(plan);
+  const text = flat(dom.get('chainPlan'));
+  assert.doesNotMatch(text, /no per-token price published/,
+    'both of these elos publish one; the panel said otherwise while /capabilities 404\'d');
+  assert.match(text, /2× peak · \$0\.44 in \/ \$1\.32 out per 1M/, 'the peak rate, from the plan\'s own multiplier');
+  assert.match(text, /\$0\.20 in \/ \$1\.20 out per 1M/, 'and the flat rail\'s, undoubled');
+  assert.doesNotMatch(text, /unverified/, 'the catalogue verified them, so nothing routes unchecked');
+
+  // WITHOUT the endpoint the same plan says less, and nothing false: the multipliers
+  // are the router's, and no price is claimed either to exist or not to.
+  api.state.capabilities = api.capabilityRegistry({ missing: true });
+  api.renderChainPlan(plan);
+  const blind = flat(dom.get('chainPlan'));
+  assert.doesNotMatch(blind, /no per-token price published/, 'silence, not a false absence');
+  assert.doesNotMatch(blind, /per 1M/, 'and no price it cannot source');
+  assert.match(blind, /2× peak/, 'while the router\'s own multiplier is still reported');
+});
+
+test('the catalogue envelope is read by name, and an empty one is not a model', () => {
+  const { api } = loadConsole();
+  // The endpoint's real shape.
+  const table = plain(api.capabilityRegistry(catalogue('glm-4.6')));
+  assert.deepEqual(Object.keys(table), ['glm-4.6']);
+  assert.equal(table['glm-4.6'].price_published, true);
+  // `{models: {}}` is a real answer — the endpoint replied and the registry knows
+  // nothing. Read positionally it fell through to the envelope itself, which yielded
+  // a registry holding one entry called "models": a model id that does not exist,
+  // presented as verified capability data.
+  assert.equal(api.capabilityRegistry({ data: { models: {}, unknown_models: [], warnings: [] } }), null);
+  assert.equal(api.capabilityRegistry({ data: { registry_available: false, models: {} } }), null);
+});
+
+// ── liveness already priced every elo, and the console read none of it ────
+// service.py's liveness entries carry price_multiplier, in_expensive_window and
+// next_window_change per elo, evaluated at an hour it names. Where the server has
+// answered, the server's number is the one on screen.
+
+function livenessPayload(models, at) {
+  return {
+    models, worst: 'alive',
+    evaluated_at: { at: at.iso, at_source: 'now', utc_hour: at.hour, utc_weekday: at.weekday },
+  };
+}
+
+test('liveness\'s own multipliers are preferred, and only for the hour it named', () => {
+  const { api } = loadConsole();
+  const payload = livenessPayload([
+    { model_key: 'glm-4.7@zai', model: 'glm-4.7', provider: 'zai', state: 'alive',
+      capabilities_known: true, in_expensive_window: true, price_multiplier: 2.0,
+      next_window_change: { hour: 10, weekday: 0, hours_ahead: 3, multiplier: 1.0 } },
+    { model_key: 'mimo-v2.5@xiaomi', model: 'mimo-v2.5', provider: 'xiaomi', state: 'alive',
+      capabilities_known: true, in_expensive_window: false, price_multiplier: 0.8,
+      next_window_change: { hour: 0, weekday: 1, hours_ahead: 17, multiplier: 1.0 } },
+  ], { iso: '2026-08-17T07:14:00+00:00', hour: 7, weekday: 0 });
+
+  const index = plain(api.liveMultipliers(payload, { hour: 7, weekday: 0 }));
+  assert.deepEqual(index['glm-4.7'], { multiplier: 2, expensive: true, changesAt: 10 });
+  // A CHEAP window is not an expensive one, and the server is the one that decides:
+  // in_expensive_window is False at 0.8×, so nothing here takes the amber.
+  assert.deepEqual(index['mimo-v2.5'], { multiplier: 0.8, expensive: false, changesAt: 0 });
+
+  // THE HOUR IS THE GATE. A payload read at 07:00 says nothing about 08:00, and a
+  // stale peak is exactly as wrong as an invented one.
+  assert.deepEqual(plain(api.liveMultipliers(payload, { hour: 8, weekday: 0 })), {},
+    'another hour is not an answer');
+  assert.deepEqual(plain(api.liveMultipliers(payload, { hour: 7, weekday: 5 })), {},
+    'and neither is another day — zai peaks Mon-Fri only');
+  assert.deepEqual(plain(api.liveMultipliers(payload, null)), {}, 'no clock, no claim');
+  assert.deepEqual(plain(api.liveMultipliers(null, { hour: 7, weekday: 0 })), {});
+  // A multiplier that is not a positive number is not an answer either: reporting 1.0
+  // for it would claim the base rate had been checked.
+  const junk = livenessPayload([
+    { model: 'a', price_multiplier: 0 }, { model: 'b', price_multiplier: null },
+    { model: 'c', price_multiplier: 'two' }, { model: 'd', price_multiplier: 1.5 },
+  ], { iso: '', hour: 7, weekday: 0 });
+  assert.deepEqual(Object.keys(plain(api.liveMultipliers(junk, { hour: 7, weekday: 0 }))), ['d']);
+});
+
+test('the tier chains price an elo with liveness\'s number, not their own arithmetic', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.clock = PEAK;                 // Monday 07:14 UTC
+  api.state.policy = tierPolicy();
+  // The catalogue publishes glm-4.7's rate; liveness publishes what it costs NOW.
+  api.state.capabilities = api.capabilityRegistry(catalogue('glm-4.7', 'gpt-5.6-luna', 'mimo-v2.5'));
+  api.state.liveness = livenessPayload([
+    { model: 'glm-4.7', provider: 'zai', state: 'alive', in_expensive_window: true, price_multiplier: 2.0,
+      next_window_change: { hour: 10, weekday: 0, hours_ahead: 3, multiplier: 1.0 } },
+  ], { iso: '2026-08-17T07:14:00+00:00', hour: 7, weekday: 0 });
+  api.renderLadder();
+  const text = flat(dom.get('ladder'));
+  assert.match(text, /2× peak · \$1\.20 in \/ \$4\.40 out per 1M/,
+    'the server\'s multiplier against the catalogue\'s base rate');
+
+  // WITH NO CATALOGUE the console can read no window at all, and liveness is then the
+  // only answer to "what does this cost now". It is read, and it is the router's own:
+  // the multiplier appears with no price beside it, because no rate was published to
+  // this console and none is invented.
+  api.state.capabilities = null;
+  api.renderLadder();
+  const blind = flat(dom.get('ladder'));
+  assert.match(blind, /2× peak/, 'liveness answered, so the peak is still reported');
+  assert.doesNotMatch(blind, /per 1M/, 'and no rate is claimed that nothing published');
+
+  // A liveness read from ANOTHER hour is not used. With no catalogue and no usable
+  // read there is nothing to say about price, and nothing is said — a 07:00 peak
+  // asserted from an 18:00 measurement is exactly as wrong as an invented one.
+  api.state.liveness = livenessPayload([
+    { model: 'glm-4.7', provider: 'zai', state: 'alive', in_expensive_window: false, price_multiplier: 1.0 },
+  ], { iso: '2026-08-17T18:00:00+00:00', hour: 18, weekday: 0 });
+  api.renderLadder();
+  assert.doesNotMatch(flat(dom.get('ladder')), /peak|cheap window/,
+    'a stale read is discarded rather than believed against the current hour');
 });

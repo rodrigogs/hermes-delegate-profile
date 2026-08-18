@@ -796,15 +796,67 @@ def _route_task(
         os.environ.pop(_ROUTER_SENTINEL, None)
 
 
+def _provider_of_declared_model(model: str, config: Dict[str, Any]) -> str:
+    """Best-effort provider for ``model`` from the policy, or "" if unknown.
+
+    A LAST RESORT, used only when the caller could not name the provider it
+    actually attempted (see :func:`_record_breaker_outcome`). Tier PRIMARIES are
+    scanned first — they are the unambiguous declaration — and the per-tier
+    ``fallback`` hops after them, because an elo that is only ever a fallback hop
+    (``gpt-5.6-luna`` in the shipped tiers) is invisible to a primaries-only scan
+    and would leave every outcome for it keyed without a provider.
+
+    Defensive rather than raising: the config is HOT and may be half-edited, so a
+    non-mapping tier, a missing ``model`` or a non-list ``fallback`` is skipped and
+    the scan continues. Ambiguity resolves to the FIRST declaration, matching the
+    historical behaviour; the derivation is a fallback, and the attempted provider
+    is what should reach this function.
+    """
+    if not isinstance(config, dict):
+        return ""
+    tiers = config.get("tiers", {})
+    if not isinstance(tiers, dict):
+        return ""
+    ordered = [tcfg for tcfg in tiers.values() if isinstance(tcfg, dict)]
+    for tcfg in ordered:
+        if tcfg.get("model") == model:
+            return str(tcfg.get("provider") or "")
+    for tcfg in ordered:
+        hops = tcfg.get("fallback")
+        if not isinstance(hops, list):
+            continue
+        for hop in hops:
+            if isinstance(hop, dict) and hop.get("model") == model:
+                return str(hop.get("provider") or "")
+    return ""
+
+
 def _record_breaker_outcome(
     profile: str,
     model: str,
     failure_kind: Optional[str],
+    provider: str = "",
 ) -> None:
     """Record delegate_profile outcome in the capability router's auto-breaker.
 
     Fire-and-forget — errors are logged but never propagated. The breaker
     lives in router/blocklist.py and uses router.yaml config.
+
+    ``provider`` IS THE ONE THAT WAS ATTEMPTED, and it is passed in rather than
+    re-derived, because the breaker key and the key the router reads must be the
+    same string. ``Blocklist`` keys breaker state as ``model@provider`` and the
+    running path asks ``is_blocked(model, provider)``; an outcome recorded under a
+    bare ``model`` therefore lands in a cell nothing on the routing path ever
+    reads. The rail keeps being attempted after it has exhausted its quota while
+    ``breaker_status()`` displays a tripped breaker — the running path and the
+    reporting surface disagreeing about one decision. Every fallback hop hit that
+    case, since the derivation below only ever saw tier primaries.
+
+    It is the LAST parameter and it has a default, so the historical
+    three-argument call shape keeps working; when it is absent the policy scan is
+    the best guess available, and "" (breaker keyed by bare model) remains the
+    last resort rather than a dropped outcome — a breaker that records nothing
+    would be strictly worse than one keyed coarsely.
     """
     if not model:
         return
@@ -817,13 +869,8 @@ def _record_breaker_outcome(
         config = _load_router_config()
         blocklist = Blocklist(config)
 
-        # Determine provider from the router config tiers
-        provider = ""
-        tiers = config.get("tiers", {})
-        for _tier, tcfg in tiers.items():
-            if tcfg.get("model") == model:
-                provider = tcfg.get("provider", "")
-                break
+        # The attempted provider wins; the policy scan only fills a caller's gap.
+        provider = str(provider or "") or _provider_of_declared_model(model, config)
 
         if failure_kind is not None:
             blocklist.record_failure(model, provider, failure_kind)
@@ -1107,7 +1154,13 @@ def _make_handler(
                 failure_kind, retryable = "quota_exhausted", True
             elif failure_kind is None and _reported_agent_failure(stdout, stderr):
                 failure_kind, retryable = "agent_error", True
-            _record_breaker_outcome(profile, attempt_model, failure_kind)
+            # The provider is passed POSITIONALLY and is the one this attempt
+            # actually used: the breaker key has to be the ``model@provider`` the
+            # blocklist reads back, or a failing fallback hop's breaker never
+            # binds. Positional keeps the seam a host (or a test) may patch with
+            # a ``*args`` stand-in working.
+            _record_breaker_outcome(profile, attempt_model, failure_kind,
+                                    attempt_provider)
             base = {"subagent_id": subagent_id, "profile": profile,
                     "model": attempt_model, "provider": attempt_provider, "elapsed_s": elapsed}
             if failure_kind == "hard_timeout":

@@ -31,6 +31,27 @@ Time-varying pricing is encoded per entry as ``price_windows``; the stored
 ``price_in``/``price_out`` are always the BASE rate, i.e. the rate OUTSIDE
 every declared window (see :func:`price_multiplier`).
 
+A MULTIPLIER IS DIMENSIONLESS — it scales whatever unit the rail bills in: USD
+for ``metered``/``subscription``, plan CREDITS for ``plan``, and nothing at all
+for ``free``. glm-4.7's weekday 2.0x doubles the CREDITS drawn off an allowance
+already bought; deepseek-v4-pro's 2.0x doubles a dollar invoice. The three
+time-dependent stages therefore read the same number differently, on purpose,
+and each says which in its own docstring:
+
+  * :func:`apply_time_policy` is UNIT-AGNOSTIC. It only reorders, which spends
+    nothing and removes nothing, and a doubled credit draw is worth stepping
+    around exactly as much as a doubled dollar one.
+  * :func:`order_chain`'s ``cheapest_now`` buckets by UNIT first and only
+    compares numbers inside a bucket (:data:`_BILLING_RANK`).
+  * :func:`apply_time_cap` is a DOLLAR ceiling. It is the one stage that
+    REMOVES a rail — and so can push traffic onto a different one — which makes
+    the unit decisive: it applies to the dollar-billed rails only and steps
+    aside for any rail whose multiplier is not denominated in dollars, saying
+    so in ``cap_exempt`` rather than keeping it silently.
+
+One model of the unit, three consistent readings; :data:`_BILLING_RANK` carries
+the argument for all of them.
+
 Vendor context that does not fit a registry field, kept here so it is not lost:
 
   zai (GLM) — the Coding Plan covers ONLY glm-5.3, glm-5-turbo and glm-4.7
@@ -196,6 +217,16 @@ FALLBACK_STRATEGIES: frozenset = frozenset({_SEQUENTIAL, _RANDOM, _CHEAPEST_NOW}
 # come next; an elo whose billing mode nothing can describe sorts last, because
 # claiming it is the cheapest would be inventing the very number this layer
 # refuses to invent.
+#
+# THE SAME TABLE ANSWERS THE PRICE CEILING'S UNIT QUESTION, because it is the
+# same question. A `time_cap`'s `max_multiplier` is a DOLLAR ceiling, so
+# :func:`apply_time_cap` can only remove an elo out of the DOLLARS bucket.
+# Capping plan-covered glm-4.7 at 06:00-10:00 UTC because its CREDIT multiplier
+# is 2.0 would evict the rail with zero marginal dollars and push the request
+# onto a metered one — the very trade the paragraph above refuses, run by a
+# different function. The cap therefore steps aside for the plan-credit, free and
+# undescribable buckets and REPORTS the multiplier it declined to act on
+# (``cap_exempt``) instead of silently keeping the elo.
 _BUCKET_PLAN_CREDITS = 0   # billing_mode plan: credits, off an allowance bought
 _BUCKET_FREE = 1           # billing_mode free
 _BUCKET_DOLLARS = 2        # billing_mode subscription / metered
@@ -212,6 +243,12 @@ _BILLING_RANK: Dict[str, int] = {
     "metered": _BUCKET_DOLLARS,
 }
 _BILLING_RANK_UNKNOWN = _BUCKET_UNKNOWN
+
+#: What a diagnostic calls a billing mode nothing can describe. Deliberately
+#: OUTSIDE :data:`BILLING_MODES` — it is this module's word, not an operator's —
+#: and a string rather than None, because a consumer rendering "billing_mode:
+#: null" next to a multiplier reads it as a mode it failed to fetch.
+_BILLING_MODE_UNKNOWN = "unknown"
 
 # Rank WITHIN a bucket. Elos that publish a dollar price are compared in dollars,
 # ascending effective output price; an elo with no published price cannot be
@@ -912,6 +949,14 @@ def price_multiplier(
 ) -> float:
     """Return the price multiplier in force for ``model`` at ``when``.
 
+    DIMENSIONLESS: it scales whatever unit that rail bills in — dollars for a
+    ``metered``/``subscription`` elo, plan CREDITS for a ``plan`` one, nothing at
+    all for a ``free`` one. 2.0 here is "twice the base rate in its own unit",
+    never "twice the dollars"; only the caller knows which question it asked, so
+    only the caller can decide whether the number is commensurable with a
+    dollar-denominated threshold (see the module docstring and
+    :data:`_BILLING_RANK`).
+
     1.0 — the neutral, base-rate answer — when ``when`` is None (time-agnostic:
     the clock is injected, never read here), when ``model`` is unknown to both
     the registry and ``declared``, or when no declared window matches. So a
@@ -977,6 +1022,12 @@ def in_expensive_window(
     True only for a matching window with ``multiplier > 1.0``. xiaomi's 0.8x
     night discount is a window too, and it must never be read as "avoid this
     now" — hence "expensive" rather than "in a window".
+
+    "More" IN THE RAIL'S OWN UNIT: True for a doubled plan-credit draw exactly as
+    for a doubled dollar rate. That is the right reading for its caller
+    (:func:`apply_time_policy` reorders, which spends nothing in either unit) and
+    the WRONG one for a dollar threshold — :func:`apply_time_cap` therefore checks
+    the billing mode before it acts on this number, never after.
     """
     multiplier = price_multiplier(model, when, declared)
     return multiplier - _FLAT_MULTIPLIER > _MULTIPLIER_EPSILON
@@ -1184,6 +1235,14 @@ def order_chain(
        inventing an exchange rate, so it sorts behind its priced bucket-mates in
        declared order — never as 0.0.
 
+    The bucket-first shape is what makes the hour's multiplier safe to use here:
+    a multiplier scales the rail's OWN unit (dollars for metered/subscription,
+    plan CREDITS for plan, nothing for free), so it is only ever applied to a
+    price inside a single-unit bucket and never compared across two. That is the
+    same rule :func:`apply_time_cap` follows for a dollar ceiling and the same
+    rule :func:`apply_time_policy` deliberately does NOT need, because reordering
+    spends nothing in any unit. One model, three readings — module docstring.
+
     LIMIT, and it is a real one: a ``plan`` or ``subscription`` rail is free at
     the margin only until its QUOTA is exhausted, and quota state is nowhere in
     the registry — nothing here can see how many plan credits or seat messages
@@ -1221,7 +1280,34 @@ def apply_time_policy(
     """Reorder ``chain`` for a tier's ``time_policy`` at ``when``.
 
     ``policy`` is ``{"avoid_peak": [provider, ...], "prefer": [model, ...]}``.
-    Returns ``{"chain": [...], "demoted": [model, ...], "promoted": [model, ...]}``.
+    Returns::
+
+        {"chain": [...], "demoted": [model, ...], "promoted": [model, ...],
+         "peak_priced": [model, ...]}
+
+    THREE FIELDS, TWO DIFFERENT FACTS, and the split is the point:
+
+      ``peak_priced`` — PRICE. Every elo ``avoid_peak`` named that is inside a
+        ``multiplier > 1.0`` window at ``when``, i.e. every elo this policy
+        matched, whether or not moving it changed anything. It is a statement
+        about the bill, not about the order.
+      ``demoted`` — POSITION. Only the elos this call actually MOVED LATER in
+        the chain. When the matched elos are already the trailing hops the
+        permutation is the identity and ``demoted`` is EMPTY while
+        ``peak_priced`` still names them.
+      ``promoted`` — POSITION, the mirror image: only the elos ``prefer``
+        actually moved EARLIER. A preferred model already sitting at the head is
+        not reported, because nothing happened to it.
+
+    That is exactly the shipped T3/T4 case: ``avoid_peak: [deepseek, zai]`` over
+    [gpt-5.6-terra, deepseek-v4-pro, glm-5.3] leaves the chain byte-identical at
+    07:00 UTC, so it reports ``peak_priced: [deepseek-v4-pro, glm-5.3]`` and
+    ``demoted: []``. One field could not carry both readings honestly: a console
+    that renders ``demoted`` as "moved to the end" was making a claim about an
+    order that had not changed, and a field named ``demoted`` cannot mean
+    "charging more" without lying to whoever reads the word.
+    ``demoted``/``promoted`` are derived from the RETURNED chain, not from the
+    match, so the report and the permutation cannot drift apart.
 
     ``avoid_peak`` DEMOTES every elo of a named provider to the end of the chain
     while that elo is inside a ``multiplier > 1.0`` window, preserving relative
@@ -1234,8 +1320,14 @@ def apply_time_policy(
     same-provider elo with flat pricing costs no more at that hour, so demoting
     it would degrade the route and save nothing. ``avoid_peak: [zai]`` during
     zai's plan-credit peak therefore demotes glm-5.3 and leaves metered glm-4.6
-    exactly where the operator put it, and ``demoted`` names precisely the elos
-    that are actually charging more right now.
+    exactly where the operator put it.
+
+    UNIT-AGNOSTIC on purpose, unlike :func:`apply_time_cap`: this stage only
+    reorders, so it spends nothing in any unit and cannot push a request onto
+    another rail. A doubled plan-CREDIT draw is worth stepping around exactly as
+    much as a doubled dollar one, and the demoted rail is still attemptable if
+    everything ahead of it fails. ``peak_priced`` therefore names credit peaks
+    and dollar peaks alike (module docstring; :data:`_BILLING_RANK`).
 
     ``prefer`` PROMOTES named models to the front, but only when they are not
     themselves in an expensive window — promoting an elo into its own peak would
@@ -1243,7 +1335,7 @@ def apply_time_policy(
     over the same elo, since "expensive" is exactly the condition that demotes.
 
     ``when`` None is a NO-OP: the chain comes back as a fresh list in declared
-    order with both diagnostic lists empty, because with no clock there is no
+    order with every diagnostic list empty, because with no clock there is no
     peak to avoid and guessing at one is worse than doing nothing. A ``policy``
     that is not a mapping is the same no-op rather than an exception.
 
@@ -1252,15 +1344,22 @@ def apply_time_policy(
     """
     entries = list(chain or [])
     if when is None or not isinstance(policy, dict) or not entries:
-        return {"chain": entries, "demoted": [], "promoted": []}
+        return {
+            "chain": entries,
+            "demoted": [],
+            "promoted": [],
+            "peak_priced": [],
+        }
 
     avoid = _provider_names(policy.get("avoid_peak"))
     prefer = _model_names(policy.get("prefer"))
 
-    kept: List[Dict[str, Any]] = []
-    demoted_entries: List[Dict[str, Any]] = []
-    demoted: List[str] = []
-    for entry in entries:
+    # Positions, not entries: the same dict may legally appear twice in a chain,
+    # and "did this hop move" is a question about a slot rather than a value.
+    kept: List[int] = []
+    demote_matched: List[int] = []
+    peak_priced: List[str] = []
+    for index, entry in enumerate(entries):
         model = _model_of(entry)
         provider = _provider_of(entry)
         if (
@@ -1268,32 +1367,53 @@ def apply_time_policy(
             and provider in avoid
             and in_expensive_window(model, when, entry)
         ):
-            demoted_entries.append(entry)
-            if model not in demoted:
-                demoted.append(model)
+            demote_matched.append(index)
+            if model not in peak_priced:
+                peak_priced.append(model)
         else:
-            kept.append(entry)
+            kept.append(index)
 
-    promoted_entries: List[Dict[str, Any]] = []
-    rest: List[Dict[str, Any]] = []
-    promoted: List[str] = []
-    for entry in kept + demoted_entries:
+    promote_matched: List[int] = []
+    rest: List[int] = []
+    for index in kept + demote_matched:
+        entry = entries[index]
         model = _model_of(entry)
         if (
             model
             and model in prefer
             and not in_expensive_window(model, when, entry)
         ):
-            promoted_entries.append(entry)
-            if model not in promoted:
-                promoted.append(model)
+            promote_matched.append(index)
         else:
-            rest.append(entry)
+            rest.append(index)
+
+    order = promote_matched + rest
+    final_of = {original: final for final, original in enumerate(order)}
+
+    # Reported in DECLARED order, so the lists read like the policy that produced
+    # them; membership is decided by the permutation that actually came out.
+    demoted: List[str] = []
+    promoted: List[str] = []
+    demote_at = set(demote_matched)
+    promote_at = set(promote_matched)
+    for index, entry in enumerate(entries):
+        model = _model_of(entry)
+        if not model:
+            continue
+        moved = final_of[index] - index
+        # Two independent questions, not a branch: an elo can only be in one of
+        # the two matched sets today ("expensive" is exactly what separates
+        # them), and an `elif` would quietly drop one report if that ever changed.
+        if index in demote_at and moved > 0 and model not in demoted:
+            demoted.append(model)
+        if index in promote_at and moved < 0 and model not in promoted:
+            promoted.append(model)
 
     return {
-        "chain": promoted_entries + rest,
+        "chain": [entries[index] for index in order],
         "demoted": demoted,
         "promoted": promoted,
+        "peak_priced": peak_priced,
     }
 
 
@@ -1302,12 +1422,63 @@ def apply_time_cap(
     max_multiplier: Any,
     when: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """Drop elos priced above ``max_multiplier`` at ``when``.
+    """Drop DOLLAR-BILLED elos priced above ``max_multiplier`` at ``when``.
 
-    Returns ``{"chain": [...], "capped": [{"model", "multiplier"}, ...],
-    "bypassed": bool}``. An elo is capped when its multiplier EXCEEDS the cap,
-    so ``max_multiplier: 2.0`` still permits a 2.0x window; the cap is a
-    ceiling, not a strict bound.
+    Returns::
+
+        {"chain": [...],
+         "capped":     [{"model", "multiplier"}, ...],
+         "cap_exempt": [{"model", "multiplier", "billing_mode"}, ...],
+         "bypassed":   bool}
+
+    An elo is capped when its multiplier EXCEEDS the cap, so
+    ``max_multiplier: 2.0`` still permits a 2.0x window; the cap is a ceiling,
+    not a strict bound.
+
+    ``capped`` names the elos this call REMOVED (or, on the bypass path below,
+    the elos it objected to and then restored). ``cap_exempt`` names the elos
+    that are over the ceiling and were kept anyway because the ceiling is not
+    denominated in their unit — the diagnostic that makes the exemption visible
+    instead of silent. The two lists never name the same elo, and every
+    ``cap_exempt`` elo is still in ``chain``.
+
+    A ``max_multiplier`` IS A DOLLAR CEILING, and the cap is the only stage that
+    REMOVES a rail, so the unit is decisive here in a way it is not for
+    :func:`apply_time_policy` (which just reorders). It therefore applies ONLY to
+    an elo the shared :data:`_BILLING_RANK` table puts in the dollars bucket —
+    ``metered`` and ``subscription``, the modes whose registry price IS what the
+    next token adds to an invoice.
+
+    WHAT A ``time_cap`` STILL DOES FOR A PLAN RAIL — read this before declaring
+    one, because the answer is "not what the number looks like it says". A
+    ``plan`` elo spends CREDITS off an allowance already bought, so its window
+    multiplier doubles a credit draw and adds no dollars at all; a dollar ceiling
+    has nothing to say about it and CANNOT remove it, whatever ``max_multiplier``
+    is set to. Concretely, T1's ``max_multiplier: 1.5`` does NOT evict
+    plan-covered glm-4.7 at 06:00-10:00 UTC Mon-Fri even though its multiplier is
+    2.0: it reports ``cap_exempt: [{glm-4.7, 2.0, plan}]`` and leaves it first in
+    the chain. Capping it would spend metered dollars to dodge a cost that is
+    already sunk, and on the busiest trivial-work tier that is the opposite of
+    what a cost control is for. What the cap still does there is exactly what its
+    name says: it removes any ``metered``/``subscription`` hop over 1.5x, so the
+    ceiling still governs every rail that can actually bill money, and it still
+    REPORTS the credit peak it declined to act on.
+
+    Predicting T1 specifically, since an operator reading ``max_multiplier: 1.5``
+    deserves the whole answer: behind glm-4.7 that tier holds flat-rate
+    gpt-5.6-luna and mimo-v2.5, whose only window is xiaomi's 0.8x DISCOUNT, so
+    after the exemption nothing on that roster can exceed 1.5 at any hour. The
+    cap removes nothing today; it is insurance against a future dollar-priced hop
+    plus a standing report of glm-4.7's weekday credit peak. An operator who wants
+    that credit peak stepped around wants ``time_policy``'s ``avoid_peak``, which
+    is unit-agnostic because it demotes instead of removing — or a tier whose
+    primary is not plan-covered.
+
+    ``free`` is exempt for the same reason (a multiple of zero dollars is zero
+    dollars), and an elo whose billing mode nothing can describe is exempt
+    because guessing its unit in order to DROP it is the one direction this
+    module never fails in: unknown fails OPEN and is flagged, here as a
+    ``cap_exempt`` entry with ``billing_mode: "unknown"``.
 
     This reuses the capability filter's bypass invariant exactly: if the cap
     would empty the chain, the cap is BYPASSED — ``chain`` is the ORIGINAL,
@@ -1315,20 +1486,28 @@ def apply_time_cap(
     can say which elos the cap objected to and why it gave way. A cost control
     must never be able to cause an outage: paying double for one request is a
     strictly better failure than having no route. This never returns an empty
-    chain for a non-empty input.
+    chain for a non-empty input. (Unit-awareness makes that bypass RARER, never
+    more common: exempting a rail can only add survivors.)
 
     ``when`` None, or a ``max_multiplier`` that is not a usable number, means NO
-    CAP. A cap below 1.0 is honoured literally (it would exclude every
-    flat-priced elo, and the bypass then restores them); lint rejects such a
-    value at the write gate rather than this module second-guessing the operator.
+    CAP. A cap below 1.0 is honoured literally for the dollar rails (it would
+    exclude every flat-priced one of them, and the bypass then restores them);
+    lint rejects such a value at the write gate rather than this module
+    second-guessing the operator.
     """
     entries = list(chain or [])
     cap = _as_float(max_multiplier)
     if when is None or cap is None or not entries:
-        return {"chain": entries, "capped": [], "bypassed": False}
+        return {
+            "chain": entries,
+            "capped": [],
+            "cap_exempt": [],
+            "bypassed": False,
+        }
 
     eligible: List[Dict[str, Any]] = []
     capped: List[Dict[str, Any]] = []
+    exempt: List[Dict[str, Any]] = []
     survivors = 0
     for entry in entries:
         model = _model_of(entry)
@@ -1338,17 +1517,43 @@ def apply_time_cap(
             eligible.append(entry)
             continue
         multiplier = price_multiplier(model, when, entry)
-        if multiplier - cap > _MULTIPLIER_EPSILON:
-            capped.append({"model": model, "multiplier": multiplier})
-        else:
+        if multiplier - cap <= _MULTIPLIER_EPSILON:
             eligible.append(entry)
             survivors += 1
+            continue
+
+        # The cap would act, so now the unit matters — and only now.
+        mode = _billing_mode_of(model, entry)
+        if _BILLING_RANK.get(mode) == _BUCKET_DOLLARS:
+            capped.append({"model": model, "multiplier": multiplier})
+            continue
+
+        # Over the ceiling, but the ceiling is in dollars and this rail is not:
+        # keep it, and SAY SO, so the exemption is not mistaken for a cap that
+        # simply did not fire.
+        exempt.append({
+            "model": model,
+            "multiplier": multiplier,
+            "billing_mode": mode,
+        })
+        eligible.append(entry)
+        survivors += 1
 
     # "Emptied" means no NAMED elo survived: a chain of unattributable hops is
     # not a route, so the cap gives way there too rather than claiming success.
     if capped and not survivors:
-        return {"chain": entries, "capped": capped, "bypassed": True}
-    return {"chain": eligible, "capped": capped, "bypassed": False}
+        return {
+            "chain": entries,
+            "capped": capped,
+            "cap_exempt": exempt,
+            "bypassed": True,
+        }
+    return {
+        "chain": eligible,
+        "capped": capped,
+        "cap_exempt": exempt,
+        "bypassed": False,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1492,6 +1697,14 @@ def price_window_diagnostics(model: str, windows: Any) -> List[str]:
     window with ``start >= end`` is an error too, which is what keeps
     wrap-around arithmetic out of every consumer — cross midnight with two
     entries instead.
+
+    So is a FRACTIONAL hour or weekday. Every other malformed shape here is a
+    diagnostic, and ``[16.5, 24]`` used to be the one exception: it linted clean
+    and then ran as ``[16, 24)``, a window starting half an hour before the one
+    that was written. The check and :func:`_multiplier_at` share
+    :func:`_hour_bounds`, so a window this function reports is exactly a window
+    the running path treats as absent — one reading, never a lint that passes
+    what the router then reinterprets.
     """
     if windows is None:
         return []
@@ -1509,9 +1722,10 @@ def price_window_diagnostics(model: str, windows: Any) -> List[str]:
         bounds = _hour_bounds(window.get("hours_utc"))
         if bounds is None:
             problems.append(
-                f"{label} 'hours_utc' must be a [start, end) pair of ints "
-                f"with 0 <= start < end <= {_HOURS_IN_DAY} "
-                f"(cross midnight with two entries, never start > end)"
+                f"{label} 'hours_utc' must be a [start, end) pair of WHOLE "
+                f"hours with 0 <= start < end <= {_HOURS_IN_DAY} "
+                f"(cross midnight with two entries, never start > end; "
+                f"16.5 is not an hour boundary)"
             )
 
         weekdays = window.get("weekdays")
@@ -1519,7 +1733,7 @@ def price_window_diagnostics(model: str, windows: Any) -> List[str]:
         gate_ok = weekdays is None or days is not None
         if not gate_ok:
             problems.append(
-                f"{label} 'weekdays' must be a non-empty list of ints "
+                f"{label} 'weekdays' must be a non-empty list of whole ints "
                 f"0..{_DAYS_IN_WEEK - 1} (0 = Monday)"
             )
 
@@ -1710,17 +1924,25 @@ def _multiplier_at(
 def _hour_bounds(hours: Any) -> Optional[Tuple[int, int]]:
     """Validate ``hours_utc`` and return ``(start, end)`` for [start, end).
 
-    None when the pair is missing, not a 2-sequence of ints, out of 0..24, or
-    not strictly increasing. ``start > end`` is refused rather than interpreted
-    as wrapping midnight — that is the invariant that keeps wrap-around
-    arithmetic out of every consumer.
+    None when the pair is missing, not a 2-sequence of WHOLE hours, out of 0..24,
+    or not strictly increasing. ``start > end`` is refused rather than
+    interpreted as wrapping midnight — that is the invariant that keeps
+    wrap-around arithmetic out of every consumer.
+
+    A FRACTIONAL hour is None, i.e. a diagnostic, like every other malformed
+    window shape: windows begin and end on the hour (the whole module counts in
+    whole hours — see :func:`next_window_change`), so ``[16.5, 24]`` cannot be
+    honoured. Truncating it to ``[16, 24)`` would start the window 30 minutes
+    before the operator wrote it and lint CLEAN while doing so, which is the one
+    outcome worse than refusing it. ``16.0`` names hour 16 exactly and is
+    accepted — YAML's number parsing, not the operator, decided it was a float.
     """
     if isinstance(hours, (str, bytes)) or not isinstance(hours, (list, tuple)):
         return None
     if len(hours) != 2:
         return None
-    start = _as_int(hours[0])
-    end = _as_int(hours[1])
+    start = _as_whole_number(hours[0])
+    end = _as_whole_number(hours[1])
     if start is None or end is None:
         return None
     if not 0 <= start < end <= _HOURS_IN_DAY:
@@ -1734,6 +1956,10 @@ def _weekday_set(weekdays: Any) -> Optional[frozenset]:
     Absent means every day, which the callers express by keeping the raw value
     around: None here with ``weekdays`` present means MALFORMED, and a malformed
     gate must not silently become "every day".
+
+    A weekday is a WHOLE number for the same reason an hour is: ``[0, 1.5]`` is
+    not "Monday and Tuesday", it is a typo, and truncating it would gate the
+    window on a day nobody declared.
     """
     if weekdays is None:
         return None
@@ -1743,7 +1969,7 @@ def _weekday_set(weekdays: Any) -> Optional[frozenset]:
         return None
     days = set()
     for day in weekdays:
-        value = _as_int(day)
+        value = _as_whole_number(day)
         if value is None or not 0 <= value < _DAYS_IN_WEEK:
             return None
         days.add(value)
@@ -1817,17 +2043,71 @@ def _billing_rank(model: str, declared: Optional[Dict[str, Any]]) -> int:
     would be inventing the very number this whole layer refuses to invent. It is
     still never dropped — ordering is not eligibility.
     """
+    return _BILLING_RANK.get(
+        _billing_mode_of(model, declared), _BILLING_RANK_UNKNOWN
+    )
+
+
+def _billing_mode_of(model: str, declared: Optional[Dict[str, Any]]) -> str:
+    """Return an elo's normalized billing mode, or :data:`_BILLING_MODE_UNKNOWN`.
+
+    The single reading of "what unit does this rail bill in", shared by
+    :func:`_billing_rank` (which turns it into a `cheapest_now` bucket) and by
+    :func:`apply_time_cap` (which asks whether a dollar ceiling can speak about
+    it at all). Two readings of the same question would be two answers, which is
+    how a chain gets ordered on one model of cost and filtered on another.
+
+    Case and surrounding whitespace are forgiven — an operator types this — but
+    an unrecognized string is NOT mapped onto a mode: it comes back as the
+    unknown marker, so the mode is either one this module argued about or one it
+    admits it cannot describe. A mode nothing can describe never bills a dollar
+    as far as this module knows, and the cap fails OPEN for it.
+    """
     caps = capabilities_for(model, declared) if model else None
     mode = caps.get("billing_mode") if isinstance(caps, dict) else None
     if not isinstance(mode, str):
-        return _BILLING_RANK_UNKNOWN
-    return _BILLING_RANK.get(mode.strip().lower(), _BILLING_RANK_UNKNOWN)
+        return _BILLING_MODE_UNKNOWN
+    normalized = mode.strip().lower()
+    return normalized if normalized in BILLING_MODES else _BILLING_MODE_UNKNOWN
+
+
+def _as_whole_number(value: Any) -> Optional[int]:
+    """Coerce ``value`` to an int WITHOUT losing anything, else None.
+
+    The clock-shape counterpart of :func:`_as_int`, which is deliberately
+    lossy: truncating a token ESTIMATE toward zero is harmless and wanted, while
+    truncating an HOUR silently rewrites the window an operator declared. So the
+    two coercions stay separate — ``hours_utc``/``weekdays`` (whole positions on
+    a clock and a calendar) go through this one, token counts through
+    :func:`_as_int`.
+
+    Accepts an int, a float that is exactly an integer (``16.0`` — YAML decides
+    that, not the operator) and a string naming one (``"16"``). Returns None for
+    a fractional value, for ``inf``/``nan`` (which ``int()`` raises on rather
+    than coercing — a validator must not be able to throw), and for anything
+    :func:`_as_int` already refuses, including bools.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
 
 
 def _as_int(value: Any) -> Optional[int]:
     """Coerce ``value`` to int, or None when it is not a usable number.
 
-    Bools are rejected on purpose — ``True`` is not a context size.
+    Bools are rejected on purpose — ``True`` is not a context size. Lossy BY
+    DESIGN for floats (a 1.5-token estimate truncates), which is why the window
+    shape uses :func:`_as_whole_number` instead: there, losing the fraction would
+    move a price window off the hour it was written on.
     """
     if isinstance(value, bool) or value is None:
         return None

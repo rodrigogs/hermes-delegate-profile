@@ -942,6 +942,15 @@
     .verdict-why { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-top: 6px; }
     .verdict-why-label { color: var(--muted); font-size: var(--t-label); }
     .verdict-why .whens { margin: 0; }
+
+    /* The DECLARED route, beside the one that will actually run. The verdict above
+       is built from the chain plan — the list the executor iterates — so this line
+       exists only to answer "then what does router.yaml say?", and only when the
+       two differ. Secondary by construction: it borrows the "because" row's shape
+       and label, and the ids stay muted mono so the running route above keeps the
+       only `--text` weight in the block. No hue: this is not a condition. */
+    .verdict-declared { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-top: 6px; }
+    .verdict-route { color: var(--muted); font: var(--t-small) var(--mono); overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
@@ -1439,10 +1448,24 @@
       }
       // The two numbers that make a context rejection actionable: what the elo
       // holds against what the task asked for.
+      //
+      // WHEN THE COMPARISON IS TIGHTER THAN THE ROUNDING, THE EXACT FIGURES ARE USED.
+      // ctxWindow spends four characters on 1,050,000 deliberately, but two values one
+      // rounding step apart then print the same string — and "its context window is
+      // smaller than this task needs · holds 1.1M, needs 1.1M" is the row denying its
+      // own reason. It is reachable on the shipped policy: min_context is
+      // ceil(est_input_tokens × 1.25), so a turn of 840,001 tokens needs 1,050,002
+      // against gpt-5.6-terra's 1,050,000. A near-miss is exactly when the operator
+      // needs the digits, so that is when they are shown.
       function contextShortfall(windowTokens, neededTokens) {
         const have = ctxWindow(windowTokens);
         const need = ctxWindow(neededTokens);
         if (!have || !need) return '';
+        if (have === need) {
+          const exactHave = Number(windowTokens);
+          const exactNeed = Number(neededTokens);
+          if (exactHave !== exactNeed) return `holds ${fmt(exactHave)}, needs ${fmt(exactNeed)}`;
+        }
         return `holds ${have}, needs ${need}`;
       }
 
@@ -1502,13 +1525,24 @@
         };
       }
 
-      // The declared windows, per RAIL. Two entries short of the registry's, and
-      // deliberately here rather than fetched: /capabilities is an OPTIONAL read
-      // (DESIGN.md §7), so a sidecar that does not publish it would leave the
-      // clock line blank — and "no window declared" is indistinguishable on
-      // screen from "off-peak right now", which is the one confusion this line
-      // exists to remove. A registry entry that DOES declare price_windows wins
-      // over this table, exactly as `declared` wins over the registry.
+      // The declared windows, per RAIL — and PER RAIL IS THE WHOLE SCOPE OF THIS
+      // TABLE. It answers one question, on one line: which vendor is expensive at
+      // this hour. It is deliberately here rather than fetched because
+      // /capabilities is an OPTIONAL read (DESIGN.md §3c, §7), so a sidecar that
+      // does not publish it would leave the clock line blank — and "no window
+      // declared" is indistinguishable on screen from "off-peak right now", which
+      // is the one confusion that line exists to remove. A registry entry that DOES
+      // declare price_windows wins over this table, exactly as `declared` wins over
+      // the registry.
+      //
+      // WHAT IT IS NOT: an elo's price. It used to stand in for one — eloWindows()
+      // handed a rail's window to every elo on that rail — and that is how the
+      // console came to render flat-priced glm-4.6 as "2× peak" at Monday 07:00
+      // while capabilities.price_multiplier('glm-4.6', ...) returned 1.0 and its
+      // effective price never moved off (0.60, 2.20). A vendor's peak is a fact
+      // about the vendor's windowed models, not about every id it serves, so an
+      // ELO's multiplier now comes from what the elo itself declares, from the
+      // plan, or from liveness — never from here (see eloWindows).
       // Verified against each vendor's own wording:
       //   deepseek 2.0× at 01:00-04:00 and 06:00-10:00 UTC, every day
       //   zai      2.0× at 06:00-10:00 UTC, Mon-Fri only (14:00-18:00 UTC+8)
@@ -1555,33 +1589,82 @@
         }
         return out;
       }
-      // One elo's windows: what it declares itself, else what its rail declares.
+      // ONE ELO'S OWN WINDOWS, and nothing else's. This is exactly what
+      // capabilities._windows_of reads off the merged capability dict — the elo's
+      // declared `price_windows` (or the registry's, which `declared` overrides) —
+      // so the console prices an elo off the same declaration the router prices it
+      // off, and an elo that declares no window is priced flat by both.
+      //
+      // THERE IS NO RAIL FALLBACK HERE, and its absence is the fix. Falling back to
+      // RAIL_WINDOWS[provider] made this function state a price the running path
+      // contradicts: glm-4.6 declares no window and bills a flat (0.60, 2.20), yet
+      // it rendered "2× peak · $1.20 in / $4.40 out per 1M" at Monday 07:00 UTC
+      // because zai — the rail — has a peak there. An empty list is the honest
+      // answer for "this elo declares no window", and it is what makes the elo's
+      // multiplier agree with capabilities.price_multiplier for every model in the
+      // registry. Which vendor is expensive right now is still said, once, on the
+      // clock line, where the claim is about the vendor and is therefore true.
       function eloWindows(caps) {
-        const own = entryWindows(caps);
-        if (own.length) return own;
-        const rail = String((caps && caps.provider) || '').trim().toLowerCase();
-        return RAIL_WINDOWS[rail] ? RAIL_WINDOWS[rail].slice() : [];
+        return entryWindows(caps);
       }
 
       // 1.0 when no window matches, when the clock is not supplied, and when
       // nothing declares a window — the same three answers capabilities.
-      // price_multiplier gives. Overlapping windows are a lint error upstream, so
-      // the last match wins here rather than inventing a resolution order.
+      // price_multiplier gives.
+      //
+      // THE FIRST MATCH WINS, because capabilities._multiplier_at returns on its
+      // first match. Overlaps are a lint error upstream, so neither side is a
+      // resolution POLICY — both are determinism guarantees for a malformed
+      // registry, and two deterministic fallbacks that disagree are worse than
+      // either. This function used to accumulate (last match wins), so for the
+      // overlapping pair [{[6,10]: 2.0}, {[8,12]: 3.0}] the router priced hour 9 at
+      // 2.0 and this console displayed 3.0 — the display contradicting the run on
+      // the one input where the resolution order is observable at all.
+      //
+      // Preferred over this arithmetic wherever a number exists: the plan's own
+      // `multipliers` (what the ordering decision ran on) and liveness's per-elo
+      // `price_multiplier`. This is the answer for a view that has neither.
+      // THE WEEKDAY, OR NaN FOR "NOBODY SAID". `Number(null)` is 0, and 0 is Monday —
+      // so reading `when.weekday` with a bare Number() turns "the plan reported no
+      // weekday" into "Monday" and matches zai's Mon-Fri peak on a day nobody named.
+      // planWhen produces exactly that shape (`{hour, weekday: null}`) for a plan
+      // carrying utc_hour without utc_weekday, so the coercion has to be explicit.
+      const weekdayOf = (when) => {
+        const value = when && typeof when === 'object' ? when.weekday : null;
+        return value === null || value === undefined ? NaN : Number(value);
+      };
+
+      // A multiplier SOMEBODY ELSE reported — the plan's, liveness's, the cap's own —
+      // or null when they reported nothing usable. null and undefined are both "not
+      // reported", and a non-positive number is not a multiplier: capabilities
+      // ._multiplier_at skips `multiplier <= 0` for the same reason, and the console
+      // must skip it for a louder one. `plan.multipliers` is a mapping the router
+      // always emits, so a lookup miss yields undefined — but a plan that omitted the
+      // key entirely left this a `null`, which Number() reads as 0, and every elo in
+      // the chain then rendered "0× cheap window": a free peak hour, invented by a
+      // missing field.
+      function reportedMultiplier(value) {
+        if (value === undefined || value === null) return null;
+        const number = Number(value);
+        return Number.isFinite(number) && number > 0 ? number : null;
+      }
+
       function priceMultiplier(windows, when) {
         if (!when || typeof when !== 'object') return 1;
         const hour = Number(when.hour);
         if (!Number.isFinite(hour)) return 1;
-        const weekday = Number(when.weekday);
-        let multiplier = 1;
-        (Array.isArray(windows) ? windows : []).forEach((w) => {
-          if (!w || !Array.isArray(w.hours)) return;
-          if (hour < w.hours[0] || hour >= w.hours[1]) return;
+        const weekday = weekdayOf(when);
+        const list = Array.isArray(windows) ? windows : [];
+        for (let i = 0; i < list.length; i += 1) {
+          const w = list[i];
+          if (!w || !Array.isArray(w.hours)) continue;
+          if (hour < w.hours[0] || hour >= w.hours[1]) continue;
           // A weekday-restricted window with no weekday to check against does not
           // match: claiming a peak on an unknown day would overstate the price.
-          if (w.weekdays && !(Number.isFinite(weekday) && w.weekdays.indexOf(weekday) >= 0)) return;
-          multiplier = w.multiplier;
-        });
-        return multiplier;
+          if (w.weekdays && !(Number.isFinite(weekday) && w.weekdays.indexOf(weekday) >= 0)) continue;
+          return w.multiplier;
+        }
+        return 1;
       }
 
       // The UTC hour at which this multiplier next changes — what powers "2×
@@ -1593,7 +1676,13 @@
         if (!list.length || !when || !Number.isFinite(Number(when.hour))) return null;
         const from = priceMultiplier(list, when);
         const hour0 = Math.floor(Number(when.hour));
-        const weekday0 = Number.isFinite(Number(when.weekday)) ? Number(when.weekday) : null;
+        // Same rule as priceMultiplier's: an absent or null weekday is unknown, never
+        // Monday. It walks the week with `weekday: null`, so a weekday-gated window
+        // matches at no hour and the honest answer comes back — null, "cannot say when
+        // this changes without knowing the day" — rather than a countdown to a peak
+        // that may be two days off.
+        const day0 = weekdayOf(when);
+        const weekday0 = Number.isFinite(day0) ? day0 : null;
         for (let ahead = 1; ahead <= 24 * 7; ahead += 1) {
           const hour = (hour0 + ahead) % 24;
           const weekday = weekday0 === null ? null : (weekday0 + Math.floor((hour0 + ahead) / 24)) % 7;
@@ -1648,6 +1737,62 @@
         }).sort((a, b) => (b.multiplier - a.multiplier) || (a.rail < b.rail ? -1 : 1));
       }
 
+      // ── the multipliers THE SERVER ALREADY COMPUTED ──────────────────
+      // GET /liveness reports, per elo, `price_multiplier`, `in_expensive_window`
+      // and `next_window_change` — service.py asks capabilities for all three, so
+      // they are the running path's own numbers rather than a second opinion. This
+      // console computed its own instead and read none of them; where both exist
+      // the server's wins, which is the only arrangement in which the two cannot
+      // disagree.
+      //
+      // THE HOUR IS THE GATE. liveness names the hour it evaluated at
+      // (`evaluated_at.utc_hour` / `utc_weekday`), and a payload read at 09:59 and
+      // rendered at 10:00 describes the PREVIOUS hour — a stale peak is exactly as
+      // wrong as an invented one, and this line repaints every minute. So the index
+      // is EMPTY unless the server's hour (and, when both report one, weekday) is
+      // the hour being rendered. Empty means "no server answer for this hour", and
+      // the caller then falls back to the declared windows; it never means 1.0.
+      function liveMultipliers(liveness, when) {
+        const source = liveness && typeof liveness === 'object' ? liveness : {};
+        const at = source.evaluated_at && typeof source.evaluated_at === 'object'
+          ? source.evaluated_at : {};
+        const target = when && typeof when === 'object' ? Number(when.hour) : NaN;
+        const hour = Number(at.utc_hour);
+        if (!Number.isFinite(hour) || !Number.isFinite(target)) return {};
+        if (Math.floor(hour) !== Math.floor(target)) return {};
+        const day = at.utc_weekday === null || at.utc_weekday === undefined ? NaN : Number(at.utc_weekday);
+        const targetDay = weekdayOf(when);
+        // A weekday-gated window (zai's Mon-Fri peak) makes the same hour cost
+        // double or nothing depending on the day, so a reported day that disagrees
+        // disqualifies the whole read. A read that reports no day is not
+        // contradicted by one, so it still counts — and an ABSENT day is absent, not
+        // Monday, which is what Number(null) would have made it.
+        if (Number.isFinite(day) && Number.isFinite(targetDay) && day !== targetDay) return {};
+        const index = {};
+        (Array.isArray(source.models) ? source.models : []).forEach((entry) => {
+          if (!entry || typeof entry !== 'object') return;
+          const model = String(entry.model || '');
+          const multiplier = Number(entry.price_multiplier);
+          if (!model || index[model]) return;
+          // A multiplier that is not a positive number is not an answer. Reporting
+          // 1.0 for it would claim the base rate was checked.
+          if (!Number.isFinite(multiplier) || multiplier <= 0) return;
+          const change = entry.next_window_change && typeof entry.next_window_change === 'object'
+            ? entry.next_window_change : null;
+          const changesAt = change ? Number(change.hour) : NaN;
+          index[model] = {
+            multiplier,
+            // The SERVER decides what counts as expensive: in_expensive_window is
+            // True only above 1.0, so xiaomi's 0.8× discount never reads as
+            // "avoid this now". A recomputed `multiplier > 1` would be a second
+            // definition of the same word.
+            expensive: entry.in_expensive_window === true,
+            changesAt: Number.isFinite(changesAt) ? Math.floor(changesAt) : null,
+          };
+        });
+        return index;
+      }
+
       // The price the comparison actually used. null — never (0, 0) — when nothing
       // publishes a per-token rate: a plan model is not free, its cost is
       // denominated in credits, and a rendered $0 would make it look like the
@@ -1678,13 +1823,44 @@
         if (v === 0) return '$0';
         return `$${v < 0.01 ? v.toFixed(3) : v.toFixed(2)}`;
       }
+      // DOES THIS ELO PUBLISH A PER-TOKEN RATE? THREE-VALUED, like pin_primary and
+      // for the same reason: `true` and `false` are answers somebody gave, and null
+      // means NOBODY ANSWERED. Collapsing null into false is how the panel came to
+      // print "no per-token price published" against deepseek-v4-flash, which
+      // publishes 0.22 in / 0.66 out — a confident false statement about the busiest
+      // metered rail, produced by an unread catalogue rather than by any missing
+      // price. An unanswered question renders as silence.
+      //
+      // `price_published` is the catalogue's own field, and service.py computes it by
+      // asking capabilities.effective_price — the function cheapest_now RANKS on —
+      // so this surface cannot disagree with the ordering it is auditing. A rate
+      // declared on the elo in router.yaml still wins over it, exactly as `declared`
+      // wins over the registry everywhere else.
+      function pricePublished(caps, entry) {
+        const e = caps && typeof caps === 'object' ? caps : {};
+        // A usable pair IS a published price, whoever published it.
+        if (effectivePrices(e, 1)) return true;
+        const record = entry && typeof entry === 'object' ? entry : null;
+        if (record && typeof record.price_published === 'boolean') return record.price_published;
+        // The key is present and explicitly empty: that is a publisher saying "no
+        // dollar rate for this one", which is a fact and not a gap.
+        if (e.price_in === null || e.price_out === null) return false;
+        return null;
+      }
+
       // One elo's cost at the hour it was planned for: the multiplier that was
-      // applied — the ROUTER'S whenever the plan reports one — and the two prices
-      // the comparison ran on. Empty when there is nothing to say: a flat rail with
-      // no published rate spends no line on saying so twice. Where a rate is
-      // missing but the elo is plan- or subscription-covered, the words name the
-      // credits it is billed in, because an absent price is not a zero one.
-      function priceWords(caps, multiplier, billingMode) {
+      // applied — the ROUTER'S whenever the plan or liveness reports one — and the
+      // two prices the comparison ran on. Empty when there is nothing to say: a flat
+      // rail with no published rate spends no line on saying so twice.
+      //
+      // `published` is pricePublished()'s three-valued answer. false is a REPORTED
+      // absence and earns words — the credits an elo is billed in are what it costs,
+      // and an operator has to know a plan rail is not free. null is an unanswered
+      // question and earns none: nothing here may state that a price does not exist
+      // on the strength of not having read one. A missing rate is NEVER $0 either
+      // way (see effectivePrices), because a plan rail billed in credits rendered as
+      // zero would look like the cheapest thing on the screen.
+      function priceWords(caps, multiplier, billingMode, published) {
         const m = Number.isFinite(Number(multiplier)) ? Number(multiplier) : 1;
         const prices = effectivePrices(caps, m);
         const parts = [];
@@ -1692,9 +1868,12 @@
         else if (m < 1) parts.push(`${times(m)} cheap window`);
         if (prices) parts.push(`${money(prices.in)} in / ${money(prices.out)} out per 1M`);
         else {
+          // Three arguments is the old call shape and it carried no answer, so the
+          // caps themselves are asked. Nothing here invents one.
+          const known = published === undefined ? pricePublished(caps, null) : published;
           const mode = String(billingMode == null ? '' : billingMode).trim().toLowerCase();
           const covered = mode === 'plan' || mode === 'subscription';
-          if (m !== 1 || covered) {
+          if (known === false && (m !== 1 || covered)) {
             parts.push(covered
               ? `billed in ${mode} credits — no per-token price published`
               : 'no per-token price published');
@@ -1837,21 +2016,43 @@
         const entry = model && table[model] && typeof table[model] === 'object' ? table[model] : null;
         const caps = Object.assign({}, entry);
         CAP_FIELDS.forEach((key) => { if (elo[key] !== undefined) caps[key] = elo[key]; });
-        return { caps, verified: !!entry || caps.context_window !== undefined };
+        // `published` travels WITH the caps, because the question "is there a rate?"
+        // is only answerable next to the catalogue entry that answered it: an elo the
+        // catalogue never described has no answer at all, and priceWords must then
+        // say nothing rather than assert an absence.
+        return {
+          caps,
+          verified: !!entry || caps.context_window !== undefined,
+          published: pricePublished(caps, entry),
+        };
       }
 
       // The registry as this console needs it: {model: {context_window, ...}}. The
       // payload is read defensively rather than trusted — a sidecar that answers
       // 404, or answers with a shape nobody agreed on, must leave the chain view
       // saying "unverified" instead of throwing on the first tier.
+      //
+      // GET /capabilities now exists and serves `{models: {...}, unknown_models,
+      // warnings, registry_available, time_agnostic}` — the catalogue behind the
+      // price audit, carrying `price_in`/`price_out`/`price_windows` and the
+      // `price_published` flag service.py asks the running path for. So the envelope
+      // is read by NAME first: `{models: {}}` is a real answer ("the endpoint
+      // answered and the registry knows nothing"), and letting it fall through to
+      // reading the envelope itself as a model table produced a registry holding one
+      // entry called "models" — a model id that does not exist, presented as
+      // verified capability data.
       function capabilityRegistry(result) {
         const res = result && typeof result === 'object' ? result : {};
         if (res.missing || res.error) return null;
-        const data = res.data && typeof res.data === 'object' ? res.data : {};
-        const table = [data.models, data.capabilities, data].find(
-          (candidate) => candidate && typeof candidate === 'object' && !Array.isArray(candidate)
-            && Object.keys(candidate).some((key) => candidate[key] && typeof candidate[key] === 'object'),
+        const data = res.data && typeof res.data === 'object' && !Array.isArray(res.data) ? res.data : {};
+        const named = [data.models, data.capabilities].find(
+          (candidate) => candidate && typeof candidate === 'object' && !Array.isArray(candidate),
         );
+        // A flat map is accepted too, for a sidecar that publishes no envelope: the
+        // console must not need a shape negotiation to show a context window.
+        const table = named || (Object.keys(data).some(
+          (key) => data[key] && typeof data[key] === 'object' && !Array.isArray(data[key]),
+        ) ? data : null);
         if (!table) return null;
         const clean = {};
         Object.keys(table).forEach((model) => {
@@ -2195,7 +2396,7 @@
       function eloRow(hop, opts) {
         const o = opts || {};
         const elo = hop && typeof hop === 'object' ? hop : {};
-        const { caps, verified } = hopCaps(elo, o.registry);
+        const { caps, verified, published } = hopCaps(elo, o.registry);
         const row = el('li', 'hop');
         if (o.ord) row.append(el('span', 'hop-ord', String(o.ord)));
         row.append(el('span', 'hop-model', elo.model || '—'));
@@ -2212,19 +2413,30 @@
         // cannot vouch for it either, and that is the operator's problem to know.
         if (window) row.append(el('span', 'hop-ctx', `${window} context`));
         else row.append(el('span', 'hop-ctx unverified', verified ? 'context unpublished' : 'unverified'));
-        // What it costs at the injected hour. The multiplier the PLANNER used wins
-        // when the plan reports one, because that is the number the ordering
-        // decision was made on; otherwise it is read off the declared windows.
+        // What it costs at the injected hour, in ONE order of precedence and never
+        // the console's own arithmetic where a server number exists:
+        //   1. the plan's `multipliers` — the number the ordering decision RAN on;
+        //   2. liveness's per-elo `price_multiplier`, when it was evaluated at this
+        //      same hour (see liveMultipliers);
+        //   3. the windows the elo itself declares, which is what capabilities
+        //      .price_multiplier reads too.
         // Rendered when it is news — inside a window, or when the order itself is
         // price-relative and the operator has to be able to check it.
-        if (o.when || o.multiplier !== undefined) {
-          const multiplier = o.multiplier !== undefined && Number.isFinite(Number(o.multiplier))
-            ? Number(o.multiplier)
-            : priceMultiplier(eloWindows(caps), o.when || null);
+        const live = o.live && typeof o.live === 'object' ? o.live : null;
+        const fromPlan = reportedMultiplier(o.multiplier);
+        const planned = fromPlan !== null;
+        if (o.when || planned || live) {
+          const multiplier = planned ? fromPlan
+            : (live ? live.multiplier : priceMultiplier(eloWindows(caps), o.when || null));
+          // "Expensive" is the server's own word wherever the server supplied the
+          // number: in_expensive_window is True only above 1.0, so a cheap window
+          // never takes the amber that means "this needs your attention".
+          const expensive = (!planned && live) ? live.expensive : multiplier > 1;
           const words = priceWords(caps, multiplier,
-            elo.billing_mode !== undefined ? elo.billing_mode : (caps.billing_mode !== undefined ? caps.billing_mode : o.billing));
+            elo.billing_mode !== undefined ? elo.billing_mode : (caps.billing_mode !== undefined ? caps.billing_mode : o.billing),
+            published);
           if (words && (multiplier !== 1 || o.showPrice)) {
-            row.append(el('span', `hop-price${multiplier > 1 ? ' peak' : ''}`, words));
+            row.append(el('span', `hop-price${expensive ? ' peak' : ''}`, words));
           }
         }
         // Why it sits where it sits: the tier's time policy moved it, and a
@@ -2296,6 +2508,7 @@
               when: o.when,
               showPrice: o.showPrice,
               multiplier: o.multipliers && o.multipliers[model],
+              live: o.live && o.live[model],
               flags: o.flags && o.flags[model],
             }));
           });
@@ -2332,11 +2545,18 @@
           if (numbers) row.append(el('span', 'reject-num', numbers));
         }
         // A price refusal is only fixable next to the two numbers behind it: what
-        // this hour multiplies the rate by, and what the tier is willing to pay.
+        // this hour multiplies the rate by, and what the tier is willing to pay. The
+        // multiplier is THE CAP'S OWN, in this order: plan.multipliers, then the
+        // number apply_time_cap reported on the capped entry itself
+        // ({model, multiplier}), then liveness, then the declared windows. Every one
+        // of the first three is the value the refusal was actually decided on; the
+        // last is the only one this console derives, and it is a fallback.
         const capped = /time_cap/.test(String(elo.reject_reason || '')) || (o.flags && o.flags.capped === true);
         if (capped) {
-          const multiplier = o.multiplier !== undefined && Number.isFinite(Number(o.multiplier))
-            ? Number(o.multiplier)
+          const live = o.live && typeof o.live === 'object' ? o.live : null;
+          const reported = [o.multiplier, elo.multiplier, live ? live.multiplier : null]
+            .map(reportedMultiplier).find((value) => value !== null);
+          const multiplier = reported !== undefined && reported !== null ? reported
             : priceMultiplier(eloWindows(caps), o.when || null);
           const cap = Number.isFinite(Number(o.cap)) ? Number(o.cap) : null;
           row.append(el('span', 'reject-num',
@@ -2584,6 +2804,11 @@
         // hour: there is no plan here to carry one, and a tier using cheapest_now
         // has to show that the order on screen is only true of this hour.
         const when = whenOf(nowUtc());
+        // No plan means no plan.multipliers, so THIS is the screen where the server's
+        // other price answer earns its keep: liveness already priced every routable
+        // elo at the hour it names, and where that hour is this one its number is
+        // preferred over anything computed here.
+        const live = liveMultipliers(state.liveness, when);
         let unverified = 0;
 
         names.forEach((name) => {
@@ -2618,7 +2843,7 @@
           // said in the same chips a rule's own conditions use.
           if (floorChips.length) block.append(chipList(floorChips));
           block.append(chainList(hops, {
-            strategy, registry, billing, when,
+            strategy, registry, billing, when, live,
             // A price-ordered chain must show the prices it was ordered by; an
             // ordinary tier shows one only where a window is actually moving it.
             showPrice: strategy.timeRelative,
@@ -2698,6 +2923,57 @@
         return out;
       }
 
+      // WHICH ELOS ARE ACTUALLY OUT OF THE CHAIN, and which are only complained
+      // about. The two are different facts and the plan reports both in the same two
+      // lists, so the flag that separates them has to be read.
+      //
+      // Both bypasses RETAIN their diagnostics and RESTORE the chain:
+      // capabilities.filter_chain sets `eligible` to the original chain and keeps
+      // every `rejected` reason ("a consumer that renders `rejected` as 'dropped'
+      // must therefore check `bypassed` first"), and apply_time_cap does the same
+      // with `capped`. Rendering those entries under "Dropped" therefore printed the
+      // SAME elo twice in one viewport — once as a numbered eligible hop, once as
+      // excluded — and the second was false. It is reachable on the shipped policy:
+      // a turn around 840,000 est_input_tokens matches huge-context-read → T3, the
+      // derived min_context exceeds every hop's window, all three are rejected and
+      // the filter bypasses itself to keep the task routable.
+      //
+      // The two flags are independent: the filter can bypass (restoring everything
+      // it rejected) and the cap can then remove a hop from the restored chain for
+      // real. So each list is placed by its OWN flag, and a real removal outranks a
+      // diagnostic naming the same elo — the elo's absence from the chain is the
+      // fact an operator is reading. Truthy, not `=== true`: a bypass claim fails
+      // toward "a control gave way", which is the loud direction.
+      function droppedElos(plan) {
+        const p = plan && typeof plan === 'object' ? plan : {};
+        const filterBypassed = !!p.bypassed;
+        const capBypassed = !!p.time_cap_bypassed;
+        const rejected = (Array.isArray(p.rejected) ? p.rejected : [])
+          .filter((hop) => hop && typeof hop === 'object');
+        // Deduped only against itself here; naming each elo once across BOTH lists is
+        // this function's job, below.
+        const capped = cappedEntries(p, []);
+        const dropped = [];
+        const retained = [];
+        const seen = {};
+        const take = (hop, removed) => {
+          const model = String((hop && hop.model) || '');
+          if (model && seen[model]) return;
+          if (model) seen[model] = true;
+          (removed ? dropped : retained).push(hop);
+        };
+        if (!filterBypassed) rejected.forEach((hop) => take(hop, true));
+        if (!capBypassed) capped.forEach((hop) => take(hop, true));
+        if (filterBypassed) rejected.forEach((hop) => take(hop, false));
+        if (capBypassed) capped.forEach((hop) => take(hop, false));
+        // Which control gave way, in the operator's words, so the retained list can
+        // name it instead of leaving "why is this here?" to be inferred.
+        const gaveWay = filterBypassed && capBypassed ? 'capability filter and the time cap'
+          : filterBypassed ? 'capability filter'
+          : capBypassed ? 'time cap' : '';
+        return { dropped, retained, filterBypassed, capBypassed, gaveWay };
+      }
+
       function renderChainPlan(plan) {
         const box = $('chainPlan');
         clear(box);
@@ -2725,6 +3001,8 @@
         const consoleWhen = whenOf(nowUtc());
         const elsewhere = clock.source === 'plan' && when
           && (!consoleWhen || consoleWhen.hour !== when.hour);
+        // `plan.strategy` is the strategy that RAN, and it is the one that decides
+        // whether the chain below gets ordinals — so it is the one asked here.
         const strategy = strategyWords(plan.strategy, {
           pinPrimary: plan.pin_primary,
           when,
@@ -2734,12 +3012,17 @@
         const billing = billingIndex(state.policy);
         const flags = timeFlagIndex(plan);
         const multipliers = plan.multipliers && typeof plan.multipliers === 'object' ? plan.multipliers : null;
+        // liveness fills in an elo the plan priced no multiplier for, but only when it
+        // was evaluated at the hour this plan was made at — never as a substitute for
+        // the plan's own number.
+        const live = liveMultipliers(state.liveness, when);
         const cap = timeCapOf(plan);
+        const outcome = droppedElos(plan);
 
         // BYPASSED FIRST, and as loud as this console gets. It means the filter
         // disqualified every elo and was overridden to keep routing alive: the task
         // will run on a model that cannot meet its stated requirements.
-        if (plan.bypassed) {
+        if (outcome.filterBypassed) {
           const line = el('div', 'warn-line bad');
           line.append(el('strong', '', 'Capability filter bypassed.'),
                       el('span', '', 'No elo in this chain can meet these requirements, so the router will try them all anyway rather than refuse the task. '
@@ -2751,20 +3034,42 @@
         // would have left the task with no route. The request pays peak price, and
         // an operator who finds that out from an invoice instead of this line has
         // been failed by the console.
-        if (plan.time_cap_bypassed === true) {
+        if (outcome.capBypassed) {
           const line = el('div', 'warn-line bad');
           line.append(el('strong', '', 'Time cap bypassed.'),
                       el('span', '', `Every elo was over the tier’s price cap${cap !== null ? ` of ${times(cap)}` : ''} at ${when ? hourLabel(when.hour) : 'this hour'}, so the cap was dropped rather than leave the task with no rail. `
                                    + 'This request pays peak price. Add a rail that is off-peak at this hour, raise the cap, or move the work to an off-peak hour.'));
           box.append(line);
         }
-        // A strategy that did not run is not a strategy. The plan reports the
-        // DECLARED word either way, so the console has to say which one happened.
+        // A strategy that did not run is not a strategy — and the two words are BOTH
+        // in the plan: `strategy_declared` is what the tier asked for and `strategy`
+        // is what ran. This line used to read the effective one, so after a degrade
+        // it rendered "The tier declares “sequential”, but it did not run" — a
+        // sentence that contradicts itself, about the one field that was correct.
+        //
+        // The REASON is the router's too. rules._effective_strategy computes it on the
+        // same conditions order_chain degrades on and reports it as
+        // `strategy_degraded_reason` ("no rng was injected, so the tail was not
+        // shuffled"), which beats a guess at which input the caller forgot. The guess
+        // is kept only for a plan that reports no reason at all, and it is derived
+        // from the DECLARED word rather than from the effective one — asking
+        // strategyWords about "sequential" is what returned an empty note and made the
+        // guess unconditional.
         if (plan.strategy_degraded === true) {
+          const declaredWord = String(plan.strategy_declared == null ? '' : plan.strategy_declared).trim();
+          const reported = String(plan.strategy_degraded_reason == null ? '' : plan.strategy_degraded_reason).trim();
+          const guess = declaredWord && declaredWord !== strategy.key
+            ? strategyWords(declaredWord, { pinPrimary: plan.pin_primary, when, degraded: true }).note
+            : '';
+          const why = reported || guess || 'the caller supplied neither a clock nor a random source';
           const line = el('div', 'warn-line');
           line.append(el('strong', '', 'Fallback order degraded.'),
-                      el('span', '', `The tier declares “${strategy.declared}”, but it did not run: ${strategy.note || 'the caller supplied neither a clock nor a random source'}. `
-                                   + 'The order below is the declared one.'));
+                      // A declared word the plan did not report is not invented: the
+                      // degrade is still stated, without naming a strategy nobody sent.
+                      el('span', '', (declaredWord && declaredWord !== strategy.key
+                                        ? `The tier declares “${declaredWord}”, and it did not run: ${why}. `
+                                        : `The declared fallback order did not run: ${why}. `)
+                                   + `The chain below is the order that DID run — ${strategy.label}.`));
           box.append(line);
         }
 
@@ -2788,14 +3093,14 @@
         // ones as an empty list, so the reasons exist nowhere. Saying that is the
         // honest answer — an absent Dropped section beside "bypassed" otherwise
         // reads as "nothing was dropped", which is the opposite of what happened.
-        if (plan.bypassed && !rejected.length) {
+        if (outcome.filterBypassed && !rejected.length) {
           group.append(el('div', 'tier-note',
             'The router reported no per-elo reasons for this bypass, so compare the requirements above against each elo below yourself.'));
         }
 
         if (chain.length) {
           group.append(chainList(chain, {
-            strategy, registry, billing, when, flags, multipliers,
+            strategy, registry, billing, when, flags, multipliers, live,
             // The Explain panel is where the cost comparison is audited, so every
             // eligible elo shows the prices it was compared on — not only the ones
             // that happen to be inside a window.
@@ -2825,25 +3130,46 @@
             + 'Nothing published their capabilities — declare the window and flags on the elo in router.yaml to have them checked.'));
         }
 
-        // Elos the time cap refused but the filter did not: a cost refusal, listed
-        // with the capability rejections because both answer "why is it not in the
-        // chain?" — and kept in one list so an operator does not have to know which
-        // subsystem said no in order to find the elo.
-        const cappedElos = cappedEntries(plan, rejected);
-        const dropped = rejected.concat(cappedElos);
-        if (dropped.length) {
+        // Elos that are OUT: a capability rejection and a cost refusal answer the
+        // same question — "why is it not in the chain?" — so they share one list and
+        // an operator does not have to know which subsystem said no in order to find
+        // the elo. Every entry here is genuinely absent from the chain above; the ones
+        // a bypass put back are below, under their own heading, because a heading that
+        // said "Dropped" over an elo still in the chain was the console contradicting
+        // itself half a screen apart.
+        const rows = (list) => list.forEach((hop) => group.append(rejectRow(hop, {
+          registry,
+          needed: req.min_context,
+          when,
+          cap,
+          flags: flags[String(hop && hop.model || '')],
+          multiplier: multipliers ? multipliers[String(hop && hop.model || '')] : undefined,
+          live: live[String(hop && hop.model || '')],
+        })));
+        if (outcome.dropped.length) {
           const rejectHead = el('div', 'group-head later');
-          rejectHead.append(el('h2', '', `Dropped (${dropped.length})`));
+          rejectHead.append(el('h2', '', `Dropped (${outcome.dropped.length})`));
           rejectHead.append(el('span', 'screen-note', 'Ineligible for this task — not banned, not down.'));
           group.append(rejectHead);
-          dropped.forEach((hop) => group.append(rejectRow(hop, {
-            registry,
-            needed: req.min_context,
-            when,
-            cap,
-            flags: flags[String(hop && hop.model || '')],
-            multiplier: multipliers ? multipliers[String(hop && hop.model || '')] : undefined,
-          })));
+          rows(outcome.dropped);
+        }
+        // The bypass's retained diagnostics. NOTHING HERE WAS DROPPED — the control
+        // gave way rather than leave the task with no route, so each of these elos is
+        // one of the numbered hops above and will be tried. The reasons are still
+        // worth the space: "nothing can meet this requirement" is only actionable
+        // beside WHICH requirement each elo failed.
+        if (outcome.retained.length) {
+          const keptHead = el('div', 'group-head later');
+          keptHead.append(el('h2', '', `Still in the chain (${outcome.retained.length})`));
+          // ONE sentence, carrying the three facts the heading cannot imply: that
+          // nothing was dropped, WHICH control gave way, and that a reason here is not
+          // an exclusion. What the router will do about it and what the operator can
+          // do are already said, once, in the bypass line at the top of the panel —
+          // repeating either here would be the same fact twice (DESIGN.md §2.3).
+          keptHead.append(el('span', 'screen-note',
+                             `Nothing was dropped — the ${outcome.gaveWay || 'control'} gave way, so these are objections, not exclusions.`));
+          group.append(keptHead);
+          rows(outcome.retained);
         }
 
         box.append(group);
@@ -2853,6 +3179,84 @@
         state.selected = node.id;
         renderSheet();
         renderInspector(node);
+      }
+
+      // ── WHERE THIS TASK ACTUALLY GOES ───────────────────────────────
+      // The headline verdict is this console's primary answer, so it is built from
+      // the CHAIN PLAN — the list the executor iterates — and not from the decision
+      // output's declared tier route. The two are different answers whenever the
+      // capability filter, the time cap or the strategy did anything at all, and the
+      // verdict was reading the one that does not run: for a vision task on T2 it
+      // rendered "routed to glm-5.3 on zai, falls back to gpt-5.6-luna →
+      // deepseek-v4-flash" while the Chain-plan panel directly below it correctly
+      // reported gpt-5.6-luna as the only eligible hop and the other two rejected
+      // for no_vision. Two panels, one screen, opposite answers.
+      //
+      // WHAT IS FIRST IS NOT ALWAYS KNOWABLE, and that is reported rather than
+      // rounded off. `random` with pin_primary false has no first hop until the
+      // request is made, so `first` is empty and the verdict says so — the same rule
+      // that keeps the chain list from drawing an ordinal on a shuffled chain. A
+      // degraded strategy DID run in declared order, so it counts as ordered; the
+      // clock plays no part here, because whether an order exists does not depend on
+      // the hour, only what the order is, and the plan has already applied it.
+      //
+      // With no plan the declared route is all there is, and it is returned marked
+      // `source: 'declared'` so the caller can label it for what it is.
+      function verdictRoute(plan, output) {
+        const out = output && typeof output === 'object' ? output : {};
+        const declaredFallback = (Array.isArray(out.fallback) ? out.fallback : [])
+          .map((hop) => String((hop && hop.model) || '')).filter(Boolean);
+        const declaredModel = String(out.model || '');
+        const declared = {
+          model: declaredModel,
+          provider: String(out.provider || ''),
+          fallback: declaredFallback,
+          route: (declaredModel ? [declaredModel] : []).concat(declaredFallback),
+        };
+        const p = plan && typeof plan === 'object' ? plan : {};
+        const hops = (Array.isArray(p.chain) ? p.chain : []).filter((h) => h && typeof h === 'object');
+        const models = hops.map((hop) => String(hop.model || '')).filter(Boolean);
+        if (!models.length) {
+          return {
+            source: declared.route.length ? 'declared' : 'none',
+            first: declared.model,
+            provider: declared.provider,
+            rest: declared.fallback,
+            ordered: true,
+            pinPrimary: null,
+            models: declared.route,
+            declared,
+            differs: false,
+          };
+        }
+        const strategy = strategyWords(p.strategy, {
+          pinPrimary: p.pin_primary,
+          degraded: p.strategy_degraded === true,
+        });
+        const pinned = strategy.pinPrimary === true;
+        const leads = strategy.ordered || pinned;
+        // Same key the chain list draws its ordinals from, so the sentence and the
+        // numbered hops beneath it can never disagree about which elo runs first.
+        const providerOf = (model) => {
+          const hop = hops.find((h) => String(h.model || '') === model);
+          return String((hop && hop.provider) || '');
+        };
+        return {
+          source: 'plan',
+          first: leads ? models[0] : '',
+          provider: leads ? providerOf(models[0]) : '',
+          rest: leads ? models.slice(1) : models.slice(),
+          ordered: strategy.ordered,
+          // Three-valued, straight off the plan: false means the tier says nothing is
+          // pinned, null means the plan did not report it — and "unreported" must not
+          // be described as "shuffled", which is a claim about a field nobody sent.
+          pinPrimary: strategy.pinPrimary,
+          models,
+          declared,
+          // Comparison by the whole sequence, not by length: a time policy that
+          // reordered two hops changed where the task goes without dropping anything.
+          differs: declared.route.join(' ') !== models.join(' '),
+        };
       }
 
       async function probe(task) {
@@ -2878,6 +3282,14 @@
         const d = res.data || {};
         const dec = d.decision || {};
         const out = dec.output || {};
+        // The chain plan rides on the decision (rules.explain), with the envelope
+        // accepted too so a sidecar that hoists it does not silently show nothing. It
+        // is read HERE, before the verdict, because the verdict is built from it — it
+        // used to be read thirty lines further down, which is how the headline came to
+        // answer from the declared route while the panel below answered from the plan.
+        state.chainPlan = (dec.chain_plan && typeof dec.chain_plan === 'object') ? dec.chain_plan
+          : (d.chain_plan && typeof d.chain_plan === 'object') ? d.chain_plan : null;
+        const route = verdictRoute(state.chainPlan, out);
         const verdict = el('div', 'verdict');
         // A deny rule refuses the task; it has no model to report. Verified against
         // rules.match: {'then': {'deny': true}} yields output {deny: true} with no
@@ -2917,12 +3329,43 @@
           // string is read aloud as well as looked at.
           verdict.append(el('span', '', 'Caught by '));
           verdict.append(el('span', 'verdict-model', dec.matched_rule_id || 'default'));
-          verdict.append(el('span', '', ', routed to '));
-          verdict.append(el('span', 'verdict-model', out.model || '—'));
-          if (out.provider) verdict.append(el('span', '', ` on ${out.provider}`));
-          const fb = Array.isArray(out.fallback) ? out.fallback : [];
-          if (fb.length) verdict.append(el('span', '', `. Falls back to ${fb.map((f) => f.model).join(' → ')}`));
-          else verdict.append(el('span', '', '.'));
+          // A list of model ids, each in mono as its own span: they are machine facts
+          // an operator copies, and the separators are real characters rather than a
+          // layout gap standing in for them.
+          const names = (list, separator) => list.forEach((model, i) => {
+            if (i) verdict.append(el('span', '', separator));
+            verdict.append(el('span', 'verdict-model', model));
+          });
+          if (route.first) {
+            verdict.append(el('span', '', ', routed to '));
+            verdict.append(el('span', 'verdict-model', route.first));
+            if (route.provider) verdict.append(el('span', '', ` on ${route.provider}`));
+            if (route.rest.length && route.ordered) {
+              verdict.append(el('span', '', '. Falls back to '));
+              names(route.rest, ' → ');
+            } else if (route.rest.length) {
+              // A pinned random tail: hop 1 genuinely runs first and the rest
+              // genuinely have no order, so neither half is written as the other.
+              verdict.append(el('span', '', '. Then, in a random order, '));
+              names(route.rest, ', ');
+            }
+            verdict.append(el('span', '', '.'));
+          } else if (route.rest.length) {
+            // Nothing is first: `random` with pin_primary false or unreported. Naming
+            // one anyway is the claim the chain list already refuses to draw as an
+            // ordinal — and the two cases are not the same claim. false is the tier
+            // saying "shuffle everything"; null is the plan not saying, and describing
+            // that as shuffled would be inventing the field's value.
+            verdict.append(el('span', '', ', routed to any of '));
+            names(route.rest, ', ');
+            verdict.append(el('span', '', route.pinPrimary === false
+              ? ' — drawn at random per request, so which runs first is not decided until then.'
+              : ' — the plan does not report whether the primary is pinned, so which runs first cannot be said here.'));
+          } else {
+            // No plan and no declared model: the decision named no route at all, which
+            // is a finding rather than an em dash.
+            verdict.append(el('span', '', ', which names no model — nothing here can say where this task would go.'));
+          }
         }
         box.append(verdict);
         // WHICH clause did the work. /explain has always returned matched_clauses
@@ -2945,10 +3388,16 @@
           });
           box.append(why);
         }
-        // The chain plan rides on the decision (rules.explain), with the envelope
-        // accepted too so a sidecar that hoists it does not silently show nothing.
-        state.chainPlan = (dec.chain_plan && typeof dec.chain_plan === 'object') ? dec.chain_plan
-          : (d.chain_plan && typeof d.chain_plan === 'object') ? d.chain_plan : null;
+        // The DECLARED route, secondary and labelled as such — the tier as router.yaml
+        // writes it, beside the chain that will actually be walked. It earns a line
+        // only where the two DIFFER: identical, it is the same fact twice (DESIGN.md
+        // §2.2), and it names no reasons because the Dropped list below owns those.
+        if (route.source === 'plan' && route.differs && route.declared.route.length) {
+          const line = el('div', 'verdict-declared');
+          line.append(el('span', 'verdict-why-label', 'declared route '));
+          line.append(el('span', 'verdict-route', route.declared.route.join(' → ')));
+          box.append(line);
+        }
         renderChainPlan(state.chainPlan);
         // Mark the winning line on the sheet itself.
         // The rule the evaluation actually stopped at. Was hardcoded to 'default'
@@ -3626,8 +4075,12 @@
         // prevent in the router itself.
         whenOf, timeFace, hourLabel, entryWindows, eloWindows, priceMultiplier,
         nextWindowChange, windowWords, railWindowRows, effectivePrices, money,
-        priceWords, declaredPin, timePolicyMove, timeFlagIndex, timeKnobWords,
-        planWhen, timeCapOf, cappedEntries, renderClock, nowUtc,
+        priceWords, pricePublished, declaredPin, timePolicyMove, timeFlagIndex,
+        timeKnobWords, planWhen, timeCapOf, cappedEntries, renderClock, nowUtc,
+        // The server's own numbers, and the two questions the console must answer
+        // from the RUNNING path rather than from the declared config: which elos are
+        // really out of the chain, and where this task actually goes.
+        liveMultipliers, droppedElos, verdictRoute,
         say, ago, fmt, isNarrow, csrf, writable, call, load, absence, matchesQuery,
         syncKeyboard,
         // The write spine: the only code here that changes how the agent routes

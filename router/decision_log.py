@@ -23,7 +23,8 @@ Chain-plan persistence (additive, backward compatible):
 
   The read-back whitelist covers the PHASE-2 plan too — the time layer's
   ``multipliers``/``capped``/``demoted``/``promoted``/``time_cap*`` keys, the
-  strategy-degrade triple, ``pin_primary``, ``unsatisfiable`` and the clock keys.
+  strategy-degrade triple, ``pin_primary``, ``unsatisfiable``, the clock keys and
+  the blocklist veto's ``blocked``/``blocklist_widened``/``blocklist_bypassed``.
   It has to: :func:`bound_chain_plan` persists whatever the planner produced, so
   a narrower whitelist silently dropped every one of those fields on the way back
   out and the console rendered a phase-1 plan for a phase-2 decision. Anything
@@ -33,18 +34,23 @@ Chain-plan persistence (additive, backward compatible):
 Attempted head (additive, and the reason it exists):
   ``output["model"]`` is the DECLARED tier primary — the tier identity the rule
   or the classifier settled on. The model production actually attempts FIRST is
-  the head of the planned chain, and after a capability filter or a shuffle the
-  two differ. A reader of routes.jsonl had no way to tell: a vision decision was
-  labelled ``glm-5.3`` while ``gpt-5.6-luna`` is what ran. :func:`record`
-  therefore records the planned head alongside it as ``output.attempted_model`` /
-  ``output.attempted_provider`` (see :func:`attempted_head_of`) rather than
+  the head of the planned chain, and after a capability filter, a shuffle or a
+  blocklist veto the two differ. A reader of routes.jsonl had no way to tell: a
+  vision decision was labelled ``glm-5.3`` while ``gpt-5.6-luna`` is what ran.
+  :func:`record` therefore records the planned head alongside it as
+  ``output.attempted_model`` / ``output.attempted_provider`` rather than
   redefining ``model``, because other consumers read ``model`` as the tier.
+
+  Writer and reader share ONE definition of "head" — :func:`plan_head_of` — and
+  the read side is :func:`attempted_head_of`. That is deliberate: the defect this
+  key exists to fix was two surfaces disagreeing about which model ran, so it
+  would be absurd to fix it with two implementations of which hop is first.
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Closed set — the only valid cause values
 VALID_CAUSES: set[str] = {
@@ -86,13 +92,24 @@ CHAIN_PLAN_KEYS: frozenset = frozenset({
     "strategy_degraded_reason", "pin_primary",
     # phase 2 — the time layer
     "time_agnostic", "time_cap_bypassed", "capped", "demoted", "promoted",
+    "peak_priced",
     "multipliers", "time_cap", "utc_hour", "utc_weekday",
+    # the blocklist veto (adapter._veto_blocked), which runs AFTER the planner
+    # and edits the chain the planner produced. Absent unless the veto acted.
+    "blocked", "blocklist_widened", "blocklist_bypassed",
 })
 
-# Keys omitted from the empty default on purpose (see above). Present in a read
-# plan only when the persisted entry carried a usable value.
+# Keys omitted from the empty default on purpose. Two different reasons:
+#   * the clock/cap trio, because a JSON consumer reads Number(null) as 0, so a
+#     defaulted hour renders as midnight and a defaulted cap as a ceiling of 0x;
+#   * the blocklist-veto trio, because the veto is a NO-OP on almost every turn
+#     and defaulting its keys would rewrite the shape of every historical entry
+#     and every clean trace. Absent means "the veto removed nothing", which for a
+#     list and two booleans is unambiguous — undefined and [] / false read the
+#     same way, unlike a null hour.
 _OPTIONAL_CHAIN_PLAN_KEYS: frozenset = frozenset({
     "time_cap", "utc_hour", "utc_weekday",
+    "blocked", "blocklist_widened", "blocklist_bypassed",
 })
 
 
@@ -124,6 +141,7 @@ def empty_chain_plan() -> Dict[str, Any]:
         "capped": [],
         "demoted": [],
         "promoted": [],
+        "peak_priced": [],
         "multipliers": {},
         "rejected_truncated": 0,
     }
@@ -162,12 +180,12 @@ def bound_chain_plan(plan: Any) -> Optional[Dict[str, Any]]:
 # the phase-2 defect this table exists to make structurally impossible.
 _PLAN_LIST_KEYS = (
     "chain", "rejected", "unknown", "unsatisfiable",
-    "capped", "demoted", "promoted",
+    "capped", "demoted", "promoted", "peak_priced", "blocked",
 )
 _PLAN_DICT_KEYS = ("requirements", "multipliers", "time_cap")
 _PLAN_BOOL_KEYS = (
     "bypassed", "strategy_degraded", "time_agnostic", "time_cap_bypassed",
-    "pin_primary",
+    "pin_primary", "blocklist_widened", "blocklist_bypassed",
 )
 # Non-empty strings: an empty strategy name is corrupt, not a choice.
 _PLAN_NAME_KEYS = ("strategy", "strategy_declared")
@@ -192,11 +210,13 @@ def chain_plan_of(entry: Any) -> Dict[str, Any]:
     back with the documented defaults, which is why widening the whitelist is
     backward compatible: the tolerance is per field, not per entry version.
 
-    ``utc_hour``/``utc_weekday``/``time_cap`` are the three keys that stay ABSENT
-    when the persisted plan has no usable value, rather than being defaulted —
-    see :data:`CHAIN_PLAN_KEYS`. An out-of-range hour is treated as corrupt for
-    the same reason: a consumer prices a plan by its hour, so a plausible-looking
-    wrong hour is worse than no hour.
+    ``utc_hour``/``utc_weekday``/``time_cap`` and the blocklist veto's
+    ``blocked``/``blocklist_widened``/``blocklist_bypassed`` are the keys that
+    stay ABSENT when the persisted plan has no usable value, rather than being
+    defaulted — see :data:`_OPTIONAL_CHAIN_PLAN_KEYS` for the two different
+    reasons. An out-of-range hour is treated as corrupt for the same reason: a
+    consumer prices a plan by its hour, so a plausible-looking wrong hour is
+    worse than no hour.
 
     Never raises.
     """
@@ -239,6 +259,29 @@ def chain_plan_of(entry: Any) -> Dict[str, Any]:
     return plan
 
 
+def plan_head_of(plan: Any) -> Optional[Tuple[str, str]]:
+    """(model, provider) of a chain plan's FIRST hop, or None when it has none.
+
+    The one definition of "head", shared by the writer
+    (:meth:`DecisionLog.record`, which persists it) and the reader
+    (:func:`attempted_head_of`, which reads it back). Two implementations of
+    "which hop runs first" is how a trace comes to disagree with the executor.
+
+    None — not ``("", "")`` — for a plan that is absent, corrupt, or has an empty
+    chain, so the writer can tell "no head to record" from "a head whose provider
+    is blank" and record nothing rather than an empty attempted_model.
+    """
+    if not isinstance(plan, dict):
+        return None
+    chain = plan.get("chain")
+    if not isinstance(chain, list):
+        return None
+    for hop in chain:
+        if isinstance(hop, dict) and hop.get("model"):
+            return str(hop["model"]), str(hop.get("provider") or "")
+    return None
+
+
 def attempted_head_of(entry: Any) -> Tuple[str, str]:
     """(model, provider) production attempted FIRST for a recorded decision.
 
@@ -249,6 +292,12 @@ def attempted_head_of(entry: Any) -> Tuple[str, str]:
     falls back to ``output.model``, which is the honest answer for a decision
     with no plan — every entry written before this feature, and every path with
     nothing to attempt.
+
+    The one case this does NOT describe: a caller that named ``model`` explicitly
+    overrides the routing decision downstream, so the executor tries the caller's
+    model before the plan. That is not a property of the recorded decision and
+    the router never sees it as its own choice; this function answers "what the
+    ROUTER chose to attempt first".
 
     Never raises: an entry of the wrong shape yields ``("", "")``.
     """
@@ -289,27 +338,56 @@ class DecisionLog:
         existing consumers and persisted logs are unchanged.
 
         ``chain_plan`` is the ``rules.plan_chain`` result (eligible order,
-        rejected+reasons, derived requirements, strategy, independent_rails).
-        Also purely additive and bounded: omitted -> no key; a non-mapping value
-        is skipped rather than raised; ``rejected`` is truncated to
+        rejected+reasons, derived requirements, strategy, independent_rails),
+        after the blocklist veto has removed what must not be attempted. Also
+        purely additive and bounded: omitted -> no key; a non-mapping value is
+        skipped rather than raised; ``rejected`` is truncated to
         :data:`MAX_REJECTED_ENTRIES` with a ``rejected_truncated`` count.
+
+        THE ATTEMPTED HEAD. Whenever ``chain_plan`` supplies a head, it is
+        recorded on the entry's own copy of ``output`` as ``attempted_model`` /
+        ``attempted_provider`` — the pair the executor dispatches FIRST. This is
+        the whole point of the key: ``output["model"]`` is the declared TIER
+        primary, and after a capability filter, a time cap, a shuffle or a
+        blocklist veto the two differ. Measured before this was populated: a
+        vision turn persisted ``output.model == 'glm-5.3'`` — a model that cannot
+        see and was never attempted — while ``chain_plan.chain[0]`` was
+        ``gpt-5.6-luna``, which is what ran. ``model`` is deliberately NOT
+        redefined, because other consumers read it as the tier identity.
+
+        Written UNCONDITIONALLY when a head exists, not only when it differs from
+        ``model``: a reader must not have to know whether the writer thought the
+        difference was interesting, and "the key is present iff a plan named a
+        head" is the only rule :func:`attempted_head_of` can rely on. It is
+        recorded on a COPY, so the caller's decision dict is not mutated by
+        having been logged.
         """
         if cause not in VALID_CAUSES:
             cause = "fail_safe_strong"
 
+        recorded_output = dict(output)
+        bounded = bound_chain_plan(chain_plan) if chain_plan is not None else None
+        head = plan_head_of(bounded)
+        if head is not None:
+            recorded_output["attempted_model"] = head[0]
+            # A blank provider is omitted rather than recorded as "": the pair is
+            # read back through attempted_head_of, which already answers "" for a
+            # missing provider, and a null-ish value in a persisted trace is the
+            # shape this module works hardest to avoid.
+            if head[1]:
+                recorded_output["attempted_provider"] = head[1]
+
         entry: Dict[str, Any] = {
             "ts": time.time(),
             "cause": cause,
-            "output": dict(output),
+            "output": recorded_output,
             "rule_id": matched_rule_id,
             "task": task_preview[:120],
         }
         if steps is not None:
             entry["steps"] = steps
-        if chain_plan is not None:
-            bounded = bound_chain_plan(chain_plan)
-            if bounded is not None:
-                entry["chain_plan"] = bounded
+        if bounded is not None:
+            entry["chain_plan"] = bounded
         self._entries.append(entry)
 
     def tail(self, n: int = 20) -> List[Dict[str, Any]]:
@@ -321,6 +399,15 @@ class DecisionLog:
 
         Entries WITHOUT a chain plan (every historical entry) format exactly as
         before — the chain segment is only appended when a plan is present.
+
+        ``model=`` keeps its historical meaning, the DECLARED tier primary, because
+        that is what every existing grep and dashboard column reads it as. When the
+        head the executor actually dispatches is a different elo, the line names it
+        too as ``attempted=model@provider`` inside the chain segment. Emitting it
+        only on a difference is what makes it useful: a line with no ``attempted=``
+        states that the declared model IS the one that ran, so the greppable
+        surface can no longer say ``model=glm-5.3`` about a turn ``gpt-5.6-luna``
+        served without also saying which.
         """
         ts = entry.get("ts", 0)
         cause = entry.get("cause", "?")
@@ -337,6 +424,13 @@ class DecisionLog:
                 f"chain={len(plan['chain'])} rejected={rejected_total} "
                 f"strategy={plan['strategy']} rails={plan['independent_rails']} "
             )
+            attempted_model, attempted_provider = attempted_head_of(entry)
+            if attempted_model and attempted_model != model:
+                target = (
+                    f"{attempted_model}@{attempted_provider}"
+                    if attempted_provider else attempted_model
+                )
+                chain_seg += f"attempted={target} "
         return (
             f"cause={cause} rule={rule} profile={profile} "
             f"model={model} {chain_seg}task=\"{task}\""

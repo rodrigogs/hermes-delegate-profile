@@ -86,43 +86,6 @@ except (TypeError, ValueError):  # pragma: no cover - absent/unintrospectable
     _PLAN_CHAIN_ACCEPTS_WHEN = False
 
 
-# ---------------------------------------------------------------------------
-# Tier route vs tier policy
-# ---------------------------------------------------------------------------
-#
-# A resolved output carries two different things from its tier. `model`,
-# `provider` and `fallback` are the ROUTE — where the request goes. Everything
-# else a tier materialises is the PLANNING POLICY that rules.plan_chain reads.
-# Both halves must always come from the SAME tier: a session-pin floor or a
-# classifier answer that replaced the route but kept the previous tier's policy
-# would plan the new chain under the old chain's rules (its requirements floor,
-# its fallback strategy, its time policy).
-
-_TIER_ROUTE_KEYS: frozenset = frozenset({"model", "provider", "fallback"})
-
-# The policy keys known to this module, used ONLY to evict a previous tier's
-# stale value. Carrying is done by copying whatever rules.resolve_tiers
-# materialised, so a knob added there needs no change here — only a knob that
-# must also be *evicted* on a tier switch belongs in this set.
-_TIER_POLICY_KEYS: frozenset = frozenset({
-    "fallback_strategy", "pin_primary", "billing_mode", "requirements",
-    "declared_capabilities", "time_policy", "time_cap",
-})
-
-# Placeholder tier name used to materialise a single tier mapping through
-# rules.resolve_tiers (see _resolve_tier_cfg). Never leaves this module.
-_POLICY_ALIAS = "__tier__"
-
-# Whether the installed rules.plan_chain accepts an injected clock. Resolved
-# once by signature — not by catching TypeError — so a genuine TypeError raised
-# INSIDE the planner is never masked by a silent second call. A checkout whose
-# rules.py predates the time layer still routes; it just routes time-agnostic.
-try:
-    _PLAN_CHAIN_ACCEPTS_WHEN = "when" in inspect.signature(plan_chain).parameters
-except (TypeError, ValueError):  # pragma: no cover - unintrospectable callable
-    _PLAN_CHAIN_ACCEPTS_WHEN = False
-
-
 def _copy_fallbacks(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
     """Copy validated cross-rail targets without sharing mutable config rows."""
     fallback = source.get("fallback")
@@ -181,7 +144,7 @@ def route(
     rng: Optional[random.Random] = None,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """Route a task, and hold the CHOSEN target to the blocklist.
+    """Route a task, and hold the CHOSEN CHAIN to the blocklist.
 
     Stage 0 vets ``requested_model`` - what the caller asked for. That is the one
     model the router usually does not use: the whole point of auto-routing is that
@@ -189,28 +152,43 @@ def route(
     Everything the pipeline then selects itself - from a rule, a tier, the
     classifier, or the fail-safe - reached the caller unvetted.
 
-    Measured on the live router.yaml before this wrapper existed: with
+    Measured on the live router.yaml before the veto existed: with
     ``deepseek-v3.2`` in ``manual_ban``, is_blocked() answered True for it and
     route() still returned ``deepseek-v3.2 @ deepseek``. A ban and a tripped
     circuit breaker were both advisory over the router's own choices, which is
     the opposite of what a breaker is for - it exists precisely to steer traffic
     off a target that is failing, and the router is what picks the target.
 
-    The chosen model is now vetted once, here, after every path has returned. A
-    blocked choice is replaced from the fallback chain when one is available;
-    when none is, the decision is denied rather than dispatched to a target known
-    to be down. This is the only place that can enforce it: the pipeline below
-    exits through seven separate returns.
+    WHAT THE VETO BINDS, and why it moved. The veto used to wrap this function
+    and test ``decision["model"]`` — the DECLARED tier primary. Then the plan
+    redefined which model the router actually chose: the executor iterates
+    ``chain``, and after a capability filter, a time cap or a shuffle its head is
+    not the declared primary. Measured on the shipped policy with
+    ``gpt-5.6-luna`` in ``manual_ban``, routing "Look at this screenshot..." at
+    07:00Z: the declared primary is glm-5.3 (clean, and dropped by the filter for
+    ``no_vision``), so the veto passed the decision — and handed the executor a
+    one-hop chain whose only hop was the BANNED elo. A safety control that vets
+    the model a surface DISPLAYS while the executor runs a different one is not a
+    safety control.
+
+    So the veto now binds the PLAN, at :func:`_veto_blocked`, and it runs inside
+    the single terminal funnel below — after the plan exists (it has to; there is
+    nothing to vet before that) and BEFORE ``record()``, so the trace and the
+    returned decision are the same vetted decision. The order inside the veto is
+    primary first, then chain, and :func:`_veto_blocked` explains why that
+    ordering is what makes "the head is never blocked" and "the chain is never
+    empty" hold at the same time.
 
     ``chain`` in the returned decision is the PLANNED attempt order: the tier's
     elos with the ones that cannot meet this turn's capability requirements
-    dropped, ordered by the tier's fallback strategy. The executor MUST iterate
-    it. Rebuilding [primary] + declared fallbacks downstream is what kept the
-    capability filter, ``fallback_strategy`` and ``pin_primary`` inert on real
-    traffic while the console showed the filtered chain. It is absent when there
-    is nothing to attempt (a blocklist veto, or an output with no model at all)
-    and when the plan is the declared order, so those results keep their exact
-    historical shape.
+    dropped, ordered by the tier's fallback strategy, minus any hop the blocklist
+    refuses. The executor MUST iterate it. Rebuilding [primary] + declared
+    fallbacks downstream is what kept the capability filter,
+    ``fallback_strategy`` and ``pin_primary`` inert on real traffic while the
+    console showed the filtered chain. It is absent when there is nothing to
+    attempt (a blocklist veto, or an output with no model at all) and when the
+    plan is the declared order, so those results keep their exact historical
+    shape.
 
     ``task`` is the goal. ``prompt_text`` is the full text the model will
     actually receive (context + goal) and defaults to ``task``. Signals are read
@@ -225,89 +203,12 @@ def route(
     replayable from the trace, and different per turn so traffic really spreads
     across the tail), ``now`` to the current UTC time — the ONLY wall-clock read
     on the decision path. Tests pass both to pin the outcome.
-    """
-    decision = _route_unchecked(
-        task,
-        config,
-        requested_model=requested_model,
-        requested_provider=requested_provider,
-        classify_fn=classify_fn,
-        blocklist=blocklist,
-        cache=cache,
-        session_pin=session_pin,
-        decision_log=decision_log,
-        prompt_text=prompt_text,
-        rng=rng,
-        now=now,
-    )
-    if not isinstance(decision, dict) or decision.get("deny"):
-        return decision
 
-    chosen = str(decision.get("model") or "")
-    if not chosen:
-        return decision
-
-    bl = blocklist or Blocklist(config)
-    if not bl.is_blocked(chosen, str(decision.get("provider") or "")):
-        return decision
-
-    replacement = bl.fallback_for(chosen)
-    # A replacement that is itself blocked is no replacement: walk the chain
-    # rather than swapping one dead target for another.
-    seen = {chosen}
-    while replacement and replacement not in seen:
-        if not bl.is_blocked(replacement, ""):
-            vetted = dict(decision)
-            vetted["model"] = replacement
-            # The provider belonged to the model we just rejected; the chain does
-            # not carry one, so drop it rather than pair a new model with a stale
-            # provider and produce a target that exists nowhere.
-            vetted.pop("provider", None)
-            vetted["blocked_model"] = chosen
-            vetted["cause"] = "blocklist_substituted"
-            # The plan was built around the primary this wrapper just rejected,
-            # and the executor prefers ``chain`` over the declared order — so a
-            # stale plan would send the substituted decision straight back to
-            # the banned target and undo the substitution silently.
-            _revet_chain(vetted, bl)
-            return vetted
-        seen.add(replacement)
-        replacement = bl.fallback_for(replacement)
-
-    return {
-        "deny": True,
-        "blocked_model": chosen,
-        "cause": "blocklist_veto",
-        "reason": (
-            f"routed model {chosen!r} is blocked and the fallback chain offers no "
-            "reachable replacement"
-        ),
-    }
-
-
-
-def _route_unchecked(
-    task: str,
-    config: Dict[str, Any],
-    *,
-    requested_model: str = "",
-    requested_provider: str = "",
-    classify_fn: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None,
-    blocklist: Optional[Blocklist] = None,
-    cache: Optional[Cache] = None,
-    session_pin: Optional[SessionPin] = None,
-    decision_log: Optional[DecisionLog] = None,
-    prompt_text: str = "",
-    rng: Optional[random.Random] = None,
-    now: Optional[datetime] = None,
-) -> Dict[str, Any]:
-    """Run the full routing pipeline, without vetting the chosen target.
-
-    Returns {profile, model?, provider?, chain?, cause, ...}. Callers want
-    :func:`route`, which additionally holds the CHOSEN model to the blocklist -
-    this function exits through seven separate returns and cannot enforce that
-    itself. See :func:`route` for ``chain``, ``prompt_text``, ``rng`` and
-    ``now``.
+    Returns {profile, model?, provider?, chain?, cause?, ...}, or
+    {deny: True, ...}. There is deliberately no unvetted entry point: the veto
+    lives at the one site every terminal path already funnels through, so a new
+    ``return`` cannot skip it the way the eight returns below once skipped the
+    plan.
     """
     bl = blocklist or Blocklist(config)
     cch = cache or Cache()
@@ -336,7 +237,7 @@ def _route_unchecked(
         *,
         matched_rule_id: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        """Plan the chain, record the decision, return the routable target.
+        """Plan the chain, vet it, record the decision, return the target.
 
         Every terminal site goes through here so no path can quietly skip the
         plan: the plan is what production attempts and the trace is what an
@@ -345,13 +246,27 @@ def _route_unchecked(
         pass chain_plan= is the arrangement that produced that defect, so there
         is one site. It runs LAST on purpose — after the session-pin floor,
         whose tier lookup reads ``output["model"]``.
+
+        The three steps are ordered, and the order is the fix for the veto that
+        used to sit OUTSIDE this function:
+          1. plan  — there is nothing to vet until the plan names the hops;
+          2. vet   — the blocklist removes what must not be attempted;
+          3. record — so the persisted trace is the decision that ran, not the
+             one that would have run. Recording before the veto is how a banned
+             target ended up in the trace as the chosen model while the caller
+             got a substitution, and how the substitution's own ``cause`` never
+             reached the log at all.
+        ``_with_chain`` runs last on the VETTED plan, so the ``chain`` the
+        executor iterates and the ``chain_plan`` the console renders are the same
+        list.
         """
         plan = _plan_chain_for(output, features, rng=turn_rng, when=when)
+        decided, plan, cause = _veto_blocked(output, plan, bl, cause)
         dlog.record(
-            cause, output, matched_rule_id=matched_rule_id,
+            cause, decided, matched_rule_id=matched_rule_id,
             task_preview=task[:120], steps=steps, chain_plan=plan,
         )
-        return _with_chain(output, plan)
+        return _with_chain(decided, plan)
 
     # --- Stage 0: blocklist pre-filter ---
     blocked = bl.is_blocked(requested_model, requested_provider)
@@ -628,35 +543,271 @@ def _hops_of(chain: List[Dict[str, Any]]) -> List[Tuple[Any, Any]]:
     return [(hop.get("model"), hop.get("provider")) for hop in chain]
 
 
-def _revet_chain(vetted: Dict[str, Any], bl: Blocklist) -> None:
-    """Re-point a substituted decision's planned chain at its new head.
+# ---------------------------------------------------------------------------
+# The blocklist veto — it binds the PLAN, because the plan is what runs
+# ---------------------------------------------------------------------------
+#
+# Reason string stamped on every hop the veto removes. `Blocklist.is_blocked`
+# unions operator manual bans with auto-breaker cooldowns into ONE boolean
+# (blocklist.py's stated contract), so it cannot tell the two apart and this
+# module must not invent a distinction it did not measure. The operator reads
+# `manual_ban` / `hermes-router breaker` for which of the two fired.
+_BLOCKED_REASON = "blocked"
 
-    Mutates ``vetted`` in place. :func:`route` substitutes a blocked primary
-    AFTER the pipeline has already planned around it, and the executor prefers
-    ``chain`` over the declared order — so an untouched plan would hand the
-    banned target back as the first attempt and the substitution would be
-    cosmetic, which is the same class of defect as showing a filtered chain and
-    attempting an unfiltered one.
 
-    The substituted model leads (the wrapper, not the planner, owns that
-    decision) and the planner's surviving order becomes the tail, minus any hop
-    that is itself blocked. The chain therefore always has at least one hop:
-    a cost or safety control must not be able to cause an outage.
+def _veto_blocked(
+    output: Dict[str, Any],
+    plan: Optional[Dict[str, Any]],
+    bl: Blocklist,
+    cause: str,
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], str]:
+    """Hold what will ACTUALLY be attempted to the blocklist.
+
+    Pure apart from the ``bl`` lookups; returns NEW dicts and never mutates
+    ``output`` or ``plan`` (a caller keeps the pre-veto plan for comparison, and
+    plan hops can be config rows). Returns ``(decision, plan, log_cause)``.
+
+    Two things are attemptable and both are vetted, in this order:
+
+      1. ``output["model"]`` — the declared tier primary. It is what the executor
+         attempts when there is no plan, and what every display surface calls
+         "the model". A blocked primary is substituted from
+         ``blocklist.fallback_chain``; when that chain offers no reachable
+         replacement the decision is DENIED rather than dispatched to a target
+         known to be down (an operator who bans the primary and every link of
+         its escape hatch meant to refuse the turn).
+      2. ``plan["chain"]`` — the hops the executor iterates. Blocked hops are
+         dropped.
+
+    The ordering is not cosmetic; it is what lets both invariants hold at once:
+
+      * THE HEAD IS NEVER BLOCKED. On the substitution path the head is the
+         replacement, verified unblocked. On the ordinary path the primary is
+         verified unblocked, so it is always available as a head.
+      * THE CHAIN IS NEVER EMPTY. If dropping the blocked hops would empty the
+         planned chain, the veto falls back to the DECLARED chain's unblocked
+         hops and flags ``blocklist_widened``. That set is provably non-empty
+         here, precisely because step 1 already established the primary is
+         unblocked and the primary is a member of the declared chain. The plan
+         gives way, never the ban: this lands in exactly the state the capability
+         filter reaches on its own bypass ("routing beats correctness"), with the
+         trace naming every hop the ban list removed.
+
+    Both facts are reported in the plan rather than left to be reconstructed:
+    ``blocked`` lists the removed hops, ``blocklist_widened`` says the planner's
+    order gave way, and ``blocklist_bypassed`` says a blocked hop is STILL in the
+    chain — the defensive last resort, unreachable while step 1 holds, kept
+    because "unreachable" is how safety holes are built.
     """
-    planned = vetted.get("chain")
+    if not isinstance(output, dict) or output.get("deny"):
+        # A Stage-0 veto (or any denial) attempts nothing. Nothing to vet.
+        return output, plan, cause
+
+    chosen = str(output.get("model") or "")
+    if not chosen or not bl.is_blocked(chosen, str(output.get("provider") or "")):
+        return output, _vet_plan_chain(plan, output, bl, head=None), cause
+
+    replacement = _reachable_replacement(chosen, bl)
+    if replacement is None:
+        denied = {
+            "deny": True,
+            "blocked_model": chosen,
+            "cause": "blocklist_veto",
+            "reason": (
+                f"routed model {chosen!r} is blocked and the fallback chain "
+                "offers no reachable replacement"
+            ),
+        }
+        return denied, _plan_with_no_attempt(plan, chosen), "blocklist_veto"
+
+    # NOTE, deliberately not changed here: the replacement comes from the flat
+    # ``blocklist.fallback_chain``, which is capability-blind. With glm-5.3 banned
+    # the shipped chain hands back deepseek-v4-flash — which cannot see — for a
+    # VISION turn, while the plan had gpt-5.6-luna (which can) sitting in its
+    # chain. Substituting from the vetted plan head instead would be strictly
+    # better, but it also changes when a fully-banned fallback_chain still denies,
+    # so it is reported rather than smuggled in with this fix.
+    vetted = dict(output)
+    vetted["model"] = replacement
+    # The provider belonged to the model we just rejected; the fallback chain
+    # does not carry one, so drop it rather than pair a new model with a stale
+    # provider and produce a target that exists nowhere.
+    vetted.pop("provider", None)
+    vetted["blocked_model"] = chosen
+    vetted["cause"] = "blocklist_substituted"
+    # `blocklist_substituted` is NOT a member of decision_log.VALID_CAUSES (it
+    # would be coerced to fail_safe_strong), so the LOG keeps the cause the
+    # pipeline decided and the substitution travels in output["cause"].
+    return vetted, _vet_plan_chain(plan, output, bl, head=vetted), cause
+
+
+def _reachable_replacement(chosen: str, bl: Blocklist) -> Optional[str]:
+    """Walk ``blocklist.fallback_chain`` to the first UNBLOCKED model.
+
+    A replacement that is itself blocked is no replacement, so the walk
+    continues rather than swapping one dead target for another. ``seen`` guards a
+    fallback_chain an operator made cyclic. None means "no reachable
+    replacement", which is the caller's cue to deny.
+    """
+    replacement = bl.fallback_for(chosen)
+    seen = {chosen}
+    while replacement and replacement not in seen:
+        if not bl.is_blocked(replacement, ""):
+            return replacement
+        seen.add(replacement)
+        replacement = bl.fallback_for(replacement)
+    return None
+
+
+def _vet_plan_chain(
+    plan: Optional[Dict[str, Any]],
+    output: Dict[str, Any],
+    bl: Blocklist,
+    *,
+    head: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Remove the blocked hops from a planned chain, never emptying it.
+
+    ``head``, when given, is the substituted decision: its model LEADS the chain
+    (the veto, not the planner, owns that hop) and the surviving planned hops
+    become the tail. The executor prefers ``chain`` over the declared order, so a
+    plan left pointing at the model the veto just rejected would hand that model
+    straight back as the first attempt and make the substitution cosmetic.
+
+    ``output`` is the pre-veto decision, read ONLY for its declared chain when the
+    widening fallback below fires.
+
+    Returns ``plan`` UNCHANGED (same object) when there was nothing to do, so a
+    clean turn's trace stays byte-identical. A non-mapping plan or a plan with no
+    chain list is passed through: there is nothing to vet, and a missing plan
+    already means "the executor rebuilds the declared order", whose head is the
+    primary that step 1 of :func:`_veto_blocked` vetted.
+
+    ``bl`` is queried with each hop's OWN provider, so a cooldown recorded
+    against ``model@provider`` binds on a fallback hop and not just on a tier
+    primary. NOTE for whoever owns the executor in __init__.py: that only pays
+    off if the write side agrees — ``_record_breaker_outcome`` is called with
+    ``attempt_model`` alone and re-derives the provider by scanning TIER
+    PRIMARIES, so a fallback hop is recorded under a bare model key that this
+    lookup can never match. Working around it HERE by also querying
+    ``is_blocked(model, "")`` is not an option: that call is strictly MORE
+    blocking for a provider-scoped manual ban, so it would ban a model on rails
+    the operator did not name.
+    """
+    if not isinstance(plan, dict):
+        return plan
+    planned = plan.get("chain")
     if not isinstance(planned, list):
-        return
-    head_model = vetted.get("model")
-    head: Dict[str, Any] = {"model": head_model}
-    if vetted.get("provider"):
-        head["provider"] = vetted["provider"]
-    tail = [
-        dict(hop) for hop in planned
-        if isinstance(hop, dict) and hop.get("model")
-        and hop.get("model") != head_model
-        and not bl.is_blocked(str(hop["model"]), str(hop.get("provider") or ""))
+        return plan
+
+    kept: List[Dict[str, Any]] = []
+    blocked: List[Dict[str, Any]] = []
+    for hop in planned:
+        model = hop.get("model") if isinstance(hop, dict) else None
+        if not model:
+            # An unattributable hop has nothing to vet and nobody to blame, so
+            # it passes through — exactly as capabilities.apply_time_cap does.
+            kept.append(dict(hop) if isinstance(hop, dict) else hop)
+            continue
+        if bl.is_blocked(str(model), str(hop.get("provider") or "")):
+            row = dict(hop)
+            row["reject_reason"] = _BLOCKED_REASON
+            blocked.append(row)
+        else:
+            kept.append(dict(hop))
+
+    if head is None and not blocked:
+        return plan  # nothing to do — keep the trace byte-identical
+
+    vetted = dict(plan)
+    if blocked:
+        vetted["blocked"] = blocked
+
+    if head is not None:
+        vetted["chain"] = _headed_chain(head, kept)
+        # The head is the verified-unblocked replacement, so neither degraded
+        # outcome applies however the tail turned out.
+        vetted["blocklist_widened"] = False
+        vetted["blocklist_bypassed"] = False
+        return vetted
+
+    if _has_named_hop(kept):
+        vetted["chain"] = kept
+        vetted["blocklist_widened"] = False
+        vetted["blocklist_bypassed"] = False
+        return vetted
+
+    # Dropping the blocked hops emptied the plan. Widen to the DECLARED chain's
+    # unblocked hops — provably non-empty, see _veto_blocked — so the ban holds
+    # and the turn still has a route. The declared chain is read off ``output``
+    # (the same helper the executor's own fallback mirrors) rather than
+    # reassembled from the plan's chain+rejected+capped lists: ``capped`` rows
+    # carry a model and a multiplier but NO provider, so a hop recovered from
+    # there would name a model on no rail at all.
+    widened = [
+        dict(hop) for hop in _declared_chain(output)
+        if not bl.is_blocked(str(hop.get("model")), str(hop.get("provider") or ""))
     ]
-    vetted["chain"] = [head] + tail
+    if _has_named_hop(widened):
+        vetted["chain"] = widened
+        vetted["blocklist_widened"] = True
+        vetted["blocklist_bypassed"] = False
+        return vetted
+
+    # Last resort: every hop anyone declared is blocked. Keep the planned chain
+    # rather than return an empty one — an empty chain is an outage — and say so
+    # loudly. Reaching here means the primary was blocked too, which
+    # _veto_blocked handles before calling this, so it is defence in depth.
+    vetted["chain"] = [dict(hop) for hop in planned if isinstance(hop, dict)]
+    vetted["blocklist_widened"] = False
+    vetted["blocklist_bypassed"] = True
+    return vetted
+
+
+def _plan_with_no_attempt(
+    plan: Optional[Dict[str, Any]],
+    chosen: str,
+) -> Optional[Dict[str, Any]]:
+    """The plan for a DENIED decision: nothing is attempted, and it says so.
+
+    ``chain`` is emptied because a denial dispatches nothing — the same shape the
+    Stage-0 veto records — while the planner's diagnostics (requirements,
+    rejected, strategy) are kept so an operator can still see what the router
+    had picked before the ban list refused it. An empty chain is legitimate
+    HERE and only here: it sits next to ``deny: True`` and a named cause, which
+    is a loud refusal rather than a filter silently leaving nothing to run.
+    """
+    if not isinstance(plan, dict):
+        return plan
+    denied = dict(plan)
+    denied["chain"] = []
+    denied["blocked"] = [{"model": chosen, "reject_reason": _BLOCKED_REASON}]
+    denied["blocklist_widened"] = False
+    denied["blocklist_bypassed"] = False
+    return denied
+
+
+def _headed_chain(
+    head: Dict[str, Any],
+    tail: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """``head``'s (model, provider) first, then ``tail`` minus that model."""
+    hop: Dict[str, Any] = {"model": head.get("model")}
+    if head.get("provider"):
+        hop["provider"] = head["provider"]
+    return [hop] + [
+        item for item in tail
+        if not isinstance(item, dict) or item.get("model") != head.get("model")
+    ]
+
+
+def _has_named_hop(chain: List[Any]) -> bool:
+    """True when ``chain`` holds at least one hop that names a model.
+
+    "Emptied" means no NAMED elo survived: a chain of unattributable hops is not
+    a route. Same reading capabilities.apply_time_cap uses for its own bypass.
+    """
+    return any(isinstance(hop, dict) and hop.get("model") for hop in chain)
 
 
 # ---------------------------------------------------------------------------

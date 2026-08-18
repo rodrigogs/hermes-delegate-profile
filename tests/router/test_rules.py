@@ -550,7 +550,11 @@ class TestPlanChain:
             "unsatisfiable", "strategy", "strategy_declared", "strategy_degraded",
             "strategy_degraded_reason", "pin_primary", "independent_rails",
             "time_agnostic", "time_cap_bypassed", "capped", "demoted",
-            "promoted", "multipliers",
+            # POSITION vs PRICE: `demoted` names only what actually moved,
+            # `peak_priced` names everything avoid_peak matched in a dearer
+            # window. Both are in the contract because one field cannot carry
+            # both readings without lying about one of them.
+            "promoted", "peak_priced", "multipliers",
         }
 
     def test_clock_keys_appear_only_with_a_clock(self):
@@ -910,7 +914,7 @@ class TestExplainChainPlan:
             "strategy_degraded_reason": "", "pin_primary": True,
             "independent_rails": 0, "time_agnostic": True,
             "time_cap_bypassed": False, "capped": [], "demoted": [],
-            "promoted": [], "multipliers": {},
+            "promoted": [], "peak_priced": [], "multipliers": {},
         }
 
     def test_explain_keeps_legacy_keys(self):
@@ -993,6 +997,77 @@ class TestLintTierKnobs:
             errors = lint(_cfg({"T1": {"model": "m1", "provider": "p1",
                                        "billing_mode": mode}}))
             assert not any("billing_mode" in e for e in errors)
+
+    def test_bad_hop_billing_mode(self):
+        """A FALLBACK HOP's billing_mode is checked, because it is not inert.
+
+        The hop loop used to check only that `model` and `provider` were present.
+        resolve_tiers hands every other key on a hop to
+        capabilities._declared_overrides, where a declared mode OVERRIDES the
+        registry's correct one, so `meterd` sends that elo to _billing_rank's
+        unknown bucket and `cheapest_now` sorts it LAST. Priced demonstration:
+        TestHopBillingModeIsACheapestNowKey.
+        """
+        errors = lint(_cfg({"T2": {
+            "model": "m2", "provider": "p2",
+            "fallback_strategy": "cheapest_now", "pin_primary": False,
+            "fallback": [{"model": "f1", "provider": "q1",
+                          "billing_mode": "meterd"}],
+        }}))
+        expected = (
+            f"tier 'T2': fallback[0]: 'billing_mode' must be one of "
+            f"{sorted(rules_mod._billing_modes())}"
+        )
+        assert expected in errors
+
+    def test_good_hop_billing_mode_does_not_fire(self):
+        for mode in sorted(rules_mod._billing_modes()):
+            errors = lint(_cfg({"T2": {"model": "m2", "provider": "p2", "fallback": [
+                {"model": "f1", "provider": "q1", "billing_mode": mode},
+            ]}}))
+            assert not any("billing_mode" in e for e in errors)
+
+    @pytest.mark.parametrize(
+        "mode",
+        ["metered", "plan", "meterd", "subscribtion", "", "gift-card",
+         ["metered"], {"metered": True}, 7, None, True],
+    )
+    def test_a_hop_is_held_to_the_tiers_billing_standard(self, mode):
+        """Symmetry, asserted AS symmetry — the same value, the same verdict.
+
+        Not "a hop rejects meterd": that passes again the moment the two checks
+        drift a second time, which is how this gap opened. The claim under test is
+        that neither elo can declare a mode the other could not, whatever the
+        closed set becomes and whichever shape YAML produces — and it holds in
+        both directions, so a good mode must stay clean in both places too.
+        """
+        on_tier = lint(_cfg({"T2": {"model": "m2", "provider": "p2",
+                                    "billing_mode": mode}}))
+        on_hop = lint(_cfg({"T2": {"model": "m2", "provider": "p2", "fallback": [
+            {"model": "f1", "provider": "q1", "billing_mode": mode},
+        ]}}))
+        assert (
+            any("billing_mode" in e for e in on_tier)
+            == any("billing_mode" in e for e in on_hop)
+        ), f"billing_mode {mode!r}: tier={on_tier} hop={on_hop}"
+
+    def test_a_hops_shape_and_its_knob_are_reported_together(self):
+        """One diagnostic must not hide another: the gate reports both defects."""
+        errors = lint(_cfg({"T2": {"model": "m2", "provider": "p2", "fallback": [
+            {"model": "f1", "billing_mode": "meterd"},
+        ]}}))
+        assert (
+            "tier 'T2': fallback[0] must be a mapping with 'model' and 'provider'"
+            in errors
+        )
+        assert any("fallback[0]: 'billing_mode'" in e for e in errors)
+
+    def test_a_non_mapping_hop_is_reported_not_raised(self):
+        """`'billing_mode' in 7` raises TypeError, and lint() is the write gate."""
+        errors = lint(_cfg({"T2": {"model": "m2", "provider": "p2",
+                                   "fallback": ["nope", 7, None]}}))
+        assert len([e for e in errors if "must be a mapping with" in e]) == 3
+        assert not any("billing_mode" in e for e in errors)
 
     def test_requirement_key_outside_closed_set(self):
         errors = lint(_cfg({"T4": {"model": "m4", "provider": "p4",
@@ -1905,14 +1980,26 @@ class _NeedsRegistry:
 
 
 class TestTimeCap(_NeedsRegistry):
-    def test_cap_drops_the_rails_that_are_peaking(self):
+    def test_cap_drops_the_dollar_rails_that_are_peaking(self):
+        """A dollar cap drops a dollar rail over it, and only a dollar rail.
+
+        Both halves matter, so both are asserted. deepseek-v4-pro (metered) and
+        glm-5.3 (plan) carry the SAME 2.0 multiplier at this hour, and only the
+        metered one is capped: a plan rail spends credits off an allowance
+        already bought, so `max_multiplier` — a statement about dollars — has
+        nothing to say about it. Capping it would evict the one rail costing no
+        marginal dollars and push the request onto a metered one, which is the
+        opposite of what a cost cap is for.
+        """
         plan = plan_chain(resolve_tiers({"model": "T1"}, TIME_TIERS), _mkf(),
                           when=PEAK_MONDAY)
-        assert _models(plan) == ["gpt-5.6-terra"]
+        assert _models(plan) == ["gpt-5.6-terra", "glm-5.3"]
         assert plan["capped"] == [
             {"model": "deepseek-v4-pro", "multiplier": 2.0},
-            {"model": "glm-5.3", "multiplier": 2.0},
         ]
+        # Non-vacuity: the survivor is peaking just as hard as the casualty, so
+        # this cannot pass by glm-5.3 simply being cheap at this hour.
+        assert plan["multipliers"]["glm-5.3"] == 2.0
         assert plan["time_cap_bypassed"] is False
         assert plan["time_cap"] == {"max_multiplier": 1.5}
 
@@ -1931,16 +2018,26 @@ class TestTimeCap(_NeedsRegistry):
         assert [c["model"] for c in plan["capped"]] == ["deepseek-v4-pro"]
 
     def test_bypass_restores_the_chain_and_keeps_the_diagnostics(self):
-        """A cost control must never be able to cause an outage."""
-        plan = plan_chain(resolve_tiers({"model": "T3"}, TIME_TIERS), _mkf(),
+        """A cost control must never be able to cause an outage.
+
+        Every hop here is dollar-billed and over the cap, which is what it takes
+        to reach the bypass now that a plan rail is immune: with a plan hop in
+        the tier the cap can never empty the chain, so it would never bypass and
+        this test would silently stop exercising the invariant it names.
+        """
+        tiers = {"T3": {
+            "model": "deepseek-v4-pro", "provider": "deepseek",
+            "time_cap": {"max_multiplier": 1.5},
+            "fallback": [{"model": "deepseek-v4-flash", "provider": "deepseek"}],
+        }}
+        plan = plan_chain(resolve_tiers({"model": "T3"}, tiers), _mkf(),
                           when=PEAK_MONDAY)
-        assert _models(plan) == ["deepseek-v4-pro", "glm-5.3"]
+        assert _models(plan) == ["deepseek-v4-pro", "deepseek-v4-flash"]
         assert plan["time_cap_bypassed"] is True
         assert plan["capped"] == [
             {"model": "deepseek-v4-pro", "multiplier": 2.0},
-            {"model": "glm-5.3", "multiplier": 2.0},
+            {"model": "deepseek-v4-flash", "multiplier": 2.0},
         ]
-        assert plan["multipliers"] == {"deepseek-v4-pro": 2.0, "glm-5.3": 2.0}
 
     def test_cap_is_a_ceiling_not_a_strict_bound(self):
         tiers = {"T1": dict(TIME_TIERS["T1"], time_cap={"max_multiplier": 2.0})}
@@ -2044,14 +2141,25 @@ class TestOrderOfOperations(_NeedsRegistry):
                             time_policy={"avoid_peak": ["deepseek", "zai"]})}
         plan = plan_chain(resolve_tiers({"model": "T1"}, tiers), _mkf(),
                           when=PEAK_MONDAY)
-        assert _models(plan) == ["gpt-5.6-terra"]
-        assert [c["model"] for c in plan["capped"]] == [
-            "deepseek-v4-pro", "glm-5.3",
-        ]
+        assert _models(plan) == ["gpt-5.6-terra", "glm-5.3"]
+        assert [c["model"] for c in plan["capped"]] == ["deepseek-v4-pro"]
         assert plan["demoted"] == []
+        # The sharp proof of the ordering: deepseek-v4-pro is a `deepseek` elo in
+        # a dearer window, so an avoid_peak that ran FIRST would have named it.
+        # It is absent because the cap had already removed it — the policy only
+        # ever sees the set that survived.
+        assert plan["peak_priced"] == ["glm-5.3"]
 
-    def test_policy_still_demotes_what_the_cap_allowed(self):
-        """Same tier, cap raised: now the policy is the stage that moves them."""
+    def test_policy_reports_the_price_even_when_it_moves_nothing(self):
+        """Same tier, cap raised so the policy sees every hop.
+
+        The matched elos are ALREADY the trailing hops, so demoting them is the
+        identity permutation and `demoted` is empty — while `peak_priced` still
+        names both, because they really are charging double at this hour. One
+        field could not carry both readings honestly: a console rendering
+        `demoted` as "moved to the end" was asserting an order that never
+        changed.
+        """
         tiers = {"T1": dict(TIME_TIERS["T1"],
                             time_cap={"max_multiplier": 2.0},
                             time_policy={"avoid_peak": ["deepseek", "zai"]})}
@@ -2059,7 +2167,8 @@ class TestOrderOfOperations(_NeedsRegistry):
                           when=PEAK_MONDAY)
         assert _models(plan) == ["gpt-5.6-terra", "deepseek-v4-pro", "glm-5.3"]
         assert plan["capped"] == []
-        assert plan["demoted"] == ["deepseek-v4-pro", "glm-5.3"]
+        assert plan["demoted"] == []
+        assert plan["peak_priced"] == ["deepseek-v4-pro", "glm-5.3"]
 
     def test_capability_filter_runs_before_the_policy(self):
         """A promotion of an elo the filter removed never took effect."""
@@ -2080,15 +2189,21 @@ class TestOrderOfOperations(_NeedsRegistry):
             "model": "gpt-5.6-terra", "provider": "openai-codex",
             "time_cap": {"max_multiplier": 1.5},
             "fallback": [
-                {"model": "deepseek-v4-pro", "provider": "deepseek"},
+                # Text-only: the FILTER removes it, so the cap never sees it.
+                {"model": "deepseek-v4-flash", "provider": "deepseek"},
+                # Declared vision, so it survives the filter and reaches the cap
+                # — which drops it, being dollar-billed at 2.0 this hour.
+                {"model": "deepseek-v4-pro", "provider": "deepseek",
+                 "vision": True},
                 {"model": "glm-4.6v", "provider": "zai"},
             ],
         }}
         plan = plan_chain(resolve_tiers({"model": "T1"}, tiers),
                           _vision_features(), when=PEAK_MONDAY)
-        assert [h["model"] for h in plan["rejected"]] == ["deepseek-v4-pro"]
-        assert [c["model"] for c in plan["capped"]] == ["glm-4.6v"]
-        assert _models(plan) == ["gpt-5.6-terra"]
+        # Two stages, two casualties, each named by the stage that removed it.
+        assert [h["model"] for h in plan["rejected"]] == ["deepseek-v4-flash"]
+        assert [c["model"] for c in plan["capped"]] == ["deepseek-v4-pro"]
+        assert _models(plan) == ["gpt-5.6-terra", "glm-4.6v"]
 
     def test_ordering_runs_last_over_the_surviving_set(self):
         """cheapest_now orders what the cap and the policy left behind."""
@@ -2146,6 +2261,53 @@ class TestCheapestNowThroughPlanChain(_NeedsRegistry):
         assert plan["pin_primary"] is True
 
 
+class TestHopBillingModeIsACheapestNowKey(_NeedsRegistry):
+    """A hop's declared billing_mode is the OUTER `cheapest_now` sort key.
+
+    Which is why lint() has to validate it, and why validating it only on the
+    tier's own elo was a money defect rather than a tidiness one. The tier below
+    is the reproduction: `cheapest_now`, `pin_primary: false`, primary gpt-5.5
+    (subscription, $30.00/1M out) and one hop glm-4.7-flashx (metered, $0.40/1M
+    out) — 75x cheaper on output, and both flat-priced, so nothing here depends
+    on the hour.
+    """
+
+    HOP = {"model": "glm-4.7-flashx", "provider": "zai"}
+    TIER = {
+        "model": "gpt-5.5", "provider": "openai-codex",
+        "fallback_strategy": "cheapest_now", "pin_primary": False,
+    }
+
+    def _tiers(self, mode):
+        return {"T1": dict(self.TIER,
+                           fallback=[dict(self.HOP, billing_mode=mode)])}
+
+    def _order(self, mode):
+        return _models(plan_chain(
+            resolve_tiers({"model": "T1"}, self._tiers(mode)), _mkf(),
+            rng=random.Random(0), when=OFF_PEAK,
+        ))
+
+    def test_the_declared_mode_puts_the_cheap_rail_first(self):
+        assert self._order("metered") == ["glm-4.7-flashx", "gpt-5.5"]
+
+    def test_a_typo_demotes_the_cheap_rail_behind_the_expensive_one(self):
+        """The behaviour the gate now refuses to let ship, pinned as behaviour.
+
+        plan_chain is right to do this: an elo whose billing mode nothing can
+        describe cannot be claimed to be the cheapest. The defect was never here —
+        it was lint() letting `meterd` reach it, so this case exists to show the
+        cost of that and to fail loudly if the ranking itself is ever "fixed"
+        instead.
+        """
+        assert self._order("meterd") == ["gpt-5.5", "glm-4.7-flashx"]
+
+    def test_the_gate_refuses_the_typo_and_passes_the_real_mode(self):
+        assert any("fallback[0]: 'billing_mode'" in e
+                   for e in lint(_cfg(self._tiers("meterd"))))
+        assert lint(_cfg(self._tiers("metered"))) == []
+
+
 class TestMultipliersReported(_NeedsRegistry):
     def test_every_chain_model_is_priced_at_the_injected_hour(self):
         plan = plan_chain(resolve_tiers({"model": "T2"}, TIME_TIERS), _mkf(),
@@ -2175,7 +2337,7 @@ class TestClockTolerance(_NeedsRegistry):
         plan = plan_chain(resolve_tiers({"model": "T1"}, TIME_TIERS), _mkf(),
                           when=datetime(2026, 8, 17, 7, 0))
         assert (plan["utc_hour"], plan["utc_weekday"]) == (7, 0)
-        assert _models(plan) == ["gpt-5.6-terra"]
+        assert _models(plan) == ["gpt-5.6-terra", "glm-5.3"]
 
     def test_an_aware_datetime_is_converted(self):
         """The operator's UTC-03 03:00 is the 06:00 UTC peak."""
@@ -2183,9 +2345,7 @@ class TestClockTolerance(_NeedsRegistry):
         plan = plan_chain(resolve_tiers({"model": "T1"}, TIME_TIERS), _mkf(),
                           when=local)
         assert plan["utc_hour"] == 6
-        assert [c["model"] for c in plan["capped"]] == [
-            "deepseek-v4-pro", "glm-5.3",
-        ]
+        assert [c["model"] for c in plan["capped"]] == ["deepseek-v4-pro"]
 
     def test_junk_is_treated_as_no_clock_not_an_exception(self):
         for junk in ("2026-08-17T07:00:00Z", 7, object()):
@@ -2532,7 +2692,7 @@ class TestExplainClock(_NeedsRegistry):
                          {"action": "classify"}, TIME_TIERS, when=PEAK_MONDAY)
         plan = traced["chain_plan"]
         assert plan["utc_hour"] == 7
-        assert [h["model"] for h in plan["chain"]] == ["gpt-5.6-terra"]
+        assert [h["model"] for h in plan["chain"]] == ["gpt-5.6-terra", "glm-5.3"]
 
     def test_explain_without_a_clock_is_time_agnostic(self):
         rules = [{"id": "any-code", "when": {"has_code": {"eq": True}},
@@ -2613,3 +2773,228 @@ def test_the_matcher_and_the_chips_never_disagree(condition, blocked):
     matched = _all_clauses_match(when, feats, blocked)
     chips = bool(_matching_clauses(when, feats, blocked))
     assert chips == matched, f"{condition} at blocked={blocked}: engine={matched} chips={chips}"
+
+
+# ---------------------------------------------------------------------------
+# ONE cause table: the path that RUNS a decision and the surfaces that DISPLAY
+# it must label it the same
+# ---------------------------------------------------------------------------
+
+
+def _live_policy():
+    """The shipped router.yaml — the rule ids an operator actually sees labelled."""
+    import yaml
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    return yaml.safe_load((root / "router.yaml").read_text(encoding="utf-8"))
+
+
+class _NoBans:
+    """A blocklist that bans nothing, injected so these cases measure the CAUSE.
+
+    With the real Blocklist a ban the operator happens to be carrying on a T2
+    rail would turn the recorded cause into blocklist_veto, and the agreement
+    assertion would fail for a reason that has nothing to do with the label.
+    """
+
+    def is_blocked(self, model="", provider=""):
+        return False
+
+    def fallback_for(self, model):
+        return None
+
+
+class TestOneCauseTable:
+    """`rules._determine_cause` DISPLAYS a decision, `adapter._cause_from_rule` RUNS it.
+
+    Both label the same rule match, on two surfaces an operator compares side by
+    side: the trace and /routes come from the running path, /explain and the
+    console from this module. Each used to own a copy of the rule-id table, and
+    the copies drifted — measured on the shipped policy, four of eight rows
+    (`vision-required`, `huge-context-read`, `cross-file-or-protocol`,
+    `standard-implementation`) ran under one cause and explained themselves with
+    another.
+
+    Every case below asserts the two AGREE rather than asserting one side's
+    value. A label both surfaces show is a label an operator can act on; two
+    plausible labels that disagree is the defect this codebase has shipped four
+    times.
+    """
+
+    def test_both_producers_label_every_shipped_rule_id_the_same(self):
+        from router.adapter import _cause_from_rule
+        from router.decision_log import VALID_CAUSES
+
+        for rule in _live_policy()["rules"]:
+            rid = rule["id"]
+            display = rules_mod._determine_cause(rid, {})
+            running = _cause_from_rule(rid, {})
+            assert display == running, (
+                f"rule {rid!r}: /explain says {display!r}, "
+                f"the running path says {running!r}"
+            )
+            # The set is CLOSED, and that matters twice over: decision_log.record
+            # coerces an unknown cause to fail_safe_strong, so a cause string
+            # invented on either side would relabel healthy routes as fail-safe.
+            assert display in VALID_CAUSES
+
+    def test_both_producers_agree_on_the_fully_resolved_output(self):
+        """The same comparison against what match() actually returns.
+
+        The case above feeds an empty output; this one feeds the resolved `then` —
+        a real model, provider and tier policy through resolve_tiers — because
+        that is the pair the adapter labels at its rules stage and hands to
+        record(). A branch keyed on the output rather than the id would show up
+        here and nowhere else.
+        """
+        from router.adapter import _cause_from_rule
+
+        policy = _live_policy()
+        for rule in policy["rules"]:
+            rid = rule["id"]
+            output = resolve_tiers(rule.get("then", {}), policy["tiers"])
+            if output.get("action") == "classify":
+                continue  # a delegating row: see the dedicated case below
+            assert (
+                rules_mod._determine_cause(rid, output)
+                == _cause_from_rule(rid, output)
+            ), f"rule {rid!r} disagrees on its resolved output"
+
+    def test_no_shipped_row_is_labelled_nothing_matched(self):
+        """A row that DID match must not be labelled `default_fallthrough`.
+
+        That is exactly what both producers said about `vision-required` and
+        `huge-context-read` before the table existed: a live vision route recorded
+        as "nothing matched", and an operator counting hits per cause seeing the
+        two conditional-routing rows never fire.
+        """
+        for rule in _live_policy()["rules"]:
+            rid = rule["id"]
+            assert rules_mod._determine_cause(rid, {}) != "default_fallthrough", (
+                f"rule {rid!r} carries no cause: add it to adapter._RULE_ID_CAUSES "
+                f"rather than relying on the substring heuristic"
+            )
+
+    def test_the_vision_route_reports_one_cause_on_both_surfaces(self):
+        """The verified symptom, end to end: recorded cause == /explain cause.
+
+        Asserted as an equality between the two surfaces rather than against the
+        string "keyword_match", so that if the honest label for a capability-keyed
+        row is ever reargued (the closed set has no capability member, which is why
+        keyword_match is the one it maps onto) this case keeps holding while
+        test_both_producers_label_every_shipped_rule_id_the_same pins the value.
+        """
+        from router.adapter import route
+        from router.decision_log import DecisionLog
+        from router.signals import extract
+
+        policy = _live_policy()
+        task = ("Look at this screenshot of the dashboard and tell me what the "
+                "chart image gets wrong")
+        features = extract(task)
+        assert features.get("needs_vision") is True
+
+        dlog = DecisionLog()
+        route(task, policy, blocklist=_NoBans(), decision_log=dlog, now=OFF_PEAK,
+              classify_fn=lambda _task, _features: {"tier": "T2",
+                                                    "confidence": "high"})
+        recorded = dlog.tail(1)[0]
+
+        traced = explain(task, features, False, policy["rules"],
+                         policy.get("default", {}), policy["tiers"], when=OFF_PEAK)
+        assert traced["matched_rule_id"] == "vision-required"
+        assert traced["cause"] == recorded["cause"]
+
+    def test_a_delegating_row_is_labelled_the_way_the_running_path_records_it(self):
+        """The one row where the two functions differ, and why they have to.
+
+        `review-request` fixes the ROLE and hands the MODEL choice to Stage 1. The
+        rules STEP of the trace labels the hand-off from the rule id (keyword_match
+        — the keyword is what got us here), but the DECISION the running path
+        records for that route is `classifier`, because the classifier is what
+        picked the model. _determine_cause reports the decision, so /explain and
+        the log agree on the route; labelling it from the rule id instead would put
+        the console at odds with the recorded cause of every review route.
+        """
+        from router.adapter import route
+        from router.decision_log import DecisionLog
+        from router.signals import extract
+
+        policy = _live_policy()
+        task = "Please review this PR for correctness"
+        features = extract(task)
+
+        dlog = DecisionLog()
+        route(task, policy, blocklist=_NoBans(), decision_log=dlog, now=OFF_PEAK,
+              classify_fn=lambda _task, _features: {"tier": "T2",
+                                                    "confidence": "high"})
+        recorded = dlog.tail(1)[0]
+
+        traced = explain(task, features, False, policy["rules"],
+                         policy.get("default", {}), policy["tiers"], when=OFF_PEAK)
+        assert traced["matched_rule_id"] == "review-request"
+        assert traced["cause"] == recorded["cause"] == "classifier"
+
+    def test_there_is_exactly_one_rule_id_table(self):
+        """Structural: this module consults the adapter's table, never a copy.
+
+        The copy is what drifted, so its absence is asserted rather than assumed,
+        and the delegation is asserted by IDENTITY — a future "small local
+        shortcut" inside _determine_cause fails here instead of six months later
+        on one shipped row.
+        """
+        from router import adapter
+
+        assert not hasattr(rules_mod, "_RULE_ID_CAUSES")
+        assert rules_mod._cause_labeller() is adapter._cause_from_rule
+
+    def test_the_labeller_is_not_bound_at_module_scope(self):
+        """The cycle is real: adapter imports this module at ITS module scope.
+
+        So the labeller is fetched at call time. Asserted because the tempting
+        cleanup — hoisting that import to the top of rules.py — builds whichever
+        of the two modules is imported second against a half-initialised first.
+        """
+        assert not hasattr(rules_mod, "adapter")
+        assert not hasattr(rules_mod, "_cause_from_rule")
+
+    def test_no_labeller_degrades_to_a_closed_set_member(self, monkeypatch):
+        """An unreachable adapter must not raise through /explain, or invent a cause.
+
+        Without the labeller the rule id cannot be labelled at all, so the answer
+        is `default_fallthrough`, the closed-set member for "no rule-keyed cause".
+        Nothing disagrees in that state — the module that records the other half of
+        the pair is the module that failed to import. The two OUTPUT-keyed labels
+        still answer, because they are decided before the delegation.
+        """
+        import sys
+
+        monkeypatch.setitem(sys.modules, "router.adapter", None)
+
+        assert rules_mod._cause_labeller() is None
+        assert rules_mod._determine_cause("hard-verbs", {"model": "m"}) == (
+            "default_fallthrough"
+        )
+        assert rules_mod._determine_cause("hard-verbs", {"deny": True}) == (
+            "blocklist_veto"
+        )
+        assert rules_mod._determine_cause("anything", {"action": "classify"}) == (
+            "classifier"
+        )
+
+    def test_a_numbered_rule_id_is_labelled_not_raised(self, monkeypatch):
+        """YAML yields an int for `id: 7`; .lower() on that used to raise.
+
+        service.explain catches ValueError, not AttributeError, so /explain died
+        uncaught inside the code whose only job is to explain a route. The
+        coercion lives in the labeller now, which is the point: one owner, so the
+        two surfaces cannot disagree about a numbered row either.
+        """
+        from router.adapter import _cause_from_rule
+
+        for rid in (7, None, 1.5, ("t",)):
+            assert (
+                rules_mod._determine_cause(rid, {"model": "m"})
+                == _cause_from_rule(rid, {"model": "m"})
+            )

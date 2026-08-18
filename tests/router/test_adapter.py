@@ -1,7 +1,9 @@
 """Unit tests for route adapter (router/adapter.py)."""
 
 import copy
+import json
 import random
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,7 +17,7 @@ from router import signals
 from router.adapter import route
 from router.blocklist import Blocklist
 from router.cache import Cache, SessionPin
-from router.decision_log import DecisionLog
+from router.decision_log import DecisionLog, attempted_head_of
 
 # A clock inside no declared price window (Monday 12:00 UTC), so a test that is
 # not ABOUT time never depends on which window the wall clock happens to be in.
@@ -1120,3 +1122,377 @@ class TestDefensiveShapes:
             {"fallback": [{"model": "hop", "provider": "p"}, {"provider": "no-model"}]}
         ) == [{"model": "hop", "provider": "p"}]
         assert adapter._declared_chain({"fallback": "not a list"}) == []
+
+
+# ---------------------------------------------------------------------------
+# The blocklist must bind the chain, because the chain is what runs
+# ---------------------------------------------------------------------------
+#
+# The regression these guard: route()'s veto vetted `decision["model"]` — the
+# DECLARED tier primary — while the executor iterates `decision["chain"]`. The
+# plan redefined which model the router actually chose and the vetting was never
+# moved with it, so a manually banned or breaker-cooled elo could become the
+# executor's FIRST attempt while the model the veto approved was one the
+# capability filter had already dropped.
+
+# The screenshot turn from the finding: on the shipped policy this matches
+# `vision-required` -> T2, whose declared primary glm-5.3 cannot see, so the
+# capability filter promotes gpt-5.6-luna to the head of the chain. That makes it
+# the one task where "what was vetted" and "what runs" are guaranteed to differ.
+SHIPPED_VISION_TASK = "Look at this screenshot and tell me why the layout breaks"
+
+# 07:00 UTC on Monday 2026-08-17 — inside the overlapping deepseek/zai peak, so
+# the time layer is live for this turn rather than a no-op.
+PEAK_CLOCK = datetime(2026, 8, 17, 7, 0, tzinfo=timezone.utc)
+
+# The elo the shipped T2 chain promotes for a vision turn, i.e. the one that
+# actually runs. Banning THIS is what the old veto could not see.
+SHIPPED_VISION_HEAD = "gpt-5.6-luna"
+SHIPPED_VISION_HEAD_PROVIDER = "openai-codex"
+
+
+def _banned_live_config(model, provider=""):
+    """The shipped policy with ``model`` added to blocklist.manual_ban.
+
+    Built as a dict rather than by editing router.yaml: the file is the operator's
+    and a test must not need to touch it to state a safety property.
+    """
+    cfg = copy.deepcopy(_live_config())
+    cfg["blocklist"]["manual_ban"].append(
+        {"model": model, "provider": provider, "reason": "test-ban"}
+    )
+    return cfg
+
+
+def _open_breaker_config(model, provider, tmp_path, monkeypatch, *, now=None):
+    """The shipped policy plus an OPEN breaker for ``model@provider``.
+
+    Writes the state file Blocklist loads at construction, in the temp HERMES_HOME
+    so nothing touches the real box. The cooldown is far in the future so the
+    OPEN -> HALF_OPEN transition cannot fire mid-test and make this flaky.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    state_dir = tmp_path / "delegate-profile" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    stamp = (now or time.time())
+    (state_dir / "breaker-state.json").write_text(json.dumps({
+        "version": 1,
+        "entries": {
+            f"{model}@{provider}": {
+                "state": "OPEN",
+                "failure_events": [
+                    {"kind": "ttfb_stall", "ts": stamp, "weight": 3},
+                    {"kind": "ttfb_stall", "ts": stamp, "weight": 3},
+                ],
+                "cooldown_until": stamp + 86_400,
+                "backoff_seconds": 60.0,
+                "last_failure_kind": "ttfb_stall",
+            },
+        },
+    }), encoding="utf-8")
+    cfg = copy.deepcopy(_live_config())
+    cfg["blocklist"]["auto_breaker"]["enabled"] = True
+    return cfg
+
+
+class TestTheVetoBindsWhatRuns:
+    """The executor's FIRST attempt is never a banned or breaker-open elo."""
+
+    def test_the_shipped_vision_turn_really_does_promote_a_fallback_hop(self):
+        """The premise of every test below, asserted so they cannot go vacuous.
+
+        If an operator edits the tier table so the declared primary can see, the
+        head stops differing from `model` and the tests after this one would pass
+        for the wrong reason. This one fails first and says why.
+        """
+        cfg = _live_config()
+        dlog = DecisionLog()
+        result = route(SHIPPED_VISION_TASK, cfg, decision_log=dlog, now=PEAK_CLOCK)
+
+        assert result["model"] == "glm-5.3", "the rule still only picks a TIER"
+        assert _targets(result)[0] == (SHIPPED_VISION_HEAD,
+                                      SHIPPED_VISION_HEAD_PROVIDER)
+        assert _targets(result)[0][0] != result["model"], (
+            "this task no longer promotes a fallback hop, so the veto tests below "
+            "would no longer exercise the gap between declared and attempted"
+        )
+        assert dlog.tail(1)[0]["chain_plan"]["bypassed"] is False
+
+    def test_a_manual_ban_is_removed_from_the_planned_chain(self):
+        """FINDING 1's exact reproduction: ban the elo the PLAN promotes.
+
+        Before the fix: the veto tested glm-5.3 (clean, and dropped by the filter
+        for no_vision), passed the decision, and returned a one-hop chain whose
+        only hop was the banned gpt-5.6-luna — which is what the executor runs.
+        """
+        cfg = _banned_live_config(SHIPPED_VISION_HEAD)
+        bl = Blocklist(cfg)
+        assert bl.is_blocked(SHIPPED_VISION_HEAD,
+                            SHIPPED_VISION_HEAD_PROVIDER) is True
+
+        dlog = DecisionLog()
+        result = route(SHIPPED_VISION_TASK, cfg, blocklist=bl,
+                       decision_log=dlog, now=PEAK_CLOCK)
+
+        targets = _targets(result)
+        assert targets, "a ban must not leave the turn with nothing to attempt"
+        assert SHIPPED_VISION_HEAD not in [model for model, _p in targets]
+        assert not any(bl.is_blocked(model, provider or "")
+                       for model, provider in targets)
+
+        # ...and the plan says what it did rather than leaving it to be inferred.
+        plan = dlog.tail(1)[0]["chain_plan"]
+        assert [hop["model"] for hop in plan["blocked"]] == [SHIPPED_VISION_HEAD]
+        assert plan["blocked"][0]["reject_reason"] == "blocked"
+        assert plan["blocklist_widened"] is True, (
+            "the ban emptied the capability-filtered chain, so the veto fell back "
+            "to the declared chain's unbanned hops and must say so"
+        )
+        assert plan["blocklist_bypassed"] is False, "no banned hop may remain"
+
+    @pytest.mark.parametrize("banned_model", [
+        # The plan's head: the case the old veto was blind to.
+        SHIPPED_VISION_HEAD,
+        # The DECLARED primary: the case the old veto already covered. It must
+        # keep working, and it must not be the only case that does.
+        "glm-5.3",
+        # The tail hop: banned, present in the declared chain, and dropped by the
+        # capability filter anyway — so the veto must not depend on the filter.
+        "deepseek-v4-flash",
+    ])
+    def test_the_first_attempt_is_never_a_manually_banned_elo(self, banned_model):
+        cfg = _banned_live_config(banned_model)
+        bl = Blocklist(cfg)
+        # Non-vacuous by construction: the banned elo really is a member of the
+        # tier this turn routes to, so a veto that removed nothing would have to
+        # leave it in the attempt order somewhere.
+        tier = cfg["tiers"]["T2"]
+        declared = {tier["model"]} | {hop["model"] for hop in tier["fallback"]}
+        assert banned_model in declared, "this ban would not touch the T2 chain"
+
+        result = route(SHIPPED_VISION_TASK, cfg, blocklist=bl, now=PEAK_CLOCK)
+
+        if result.get("deny"):
+            pytest.fail(f"a single ban must not deny the turn: {result}")
+        targets = _targets(result)
+        assert banned_model not in {model for model, _p in targets}
+        assert not any(bl.is_blocked(model, provider or "")
+                       for model, provider in targets)
+
+    def test_the_first_attempt_is_never_a_breaker_open_elo(
+        self, tmp_path, monkeypatch,
+    ):
+        """An OPEN breaker must steer the chain, not just the declared primary.
+
+        A breaker exists to move traffic OFF a rail that is failing, and the
+        router is what picks the rail — so an advisory breaker is no breaker.
+        Same elo as the manual-ban case, reached through the other half of
+        Blocklist.is_blocked (a persisted cooldown, not a config deny row).
+        """
+        cfg = _open_breaker_config(
+            SHIPPED_VISION_HEAD, SHIPPED_VISION_HEAD_PROVIDER,
+            tmp_path, monkeypatch,
+        )
+        bl = Blocklist(cfg)
+        assert bl.breaker_enabled() is True
+        assert bl.is_blocked(SHIPPED_VISION_HEAD,
+                            SHIPPED_VISION_HEAD_PROVIDER) is True, \
+            "the OPEN cooldown must load, or this test proves nothing"
+
+        dlog = DecisionLog()
+        result = route(SHIPPED_VISION_TASK, cfg, blocklist=bl,
+                       decision_log=dlog, now=PEAK_CLOCK)
+
+        targets = _targets(result)
+        assert targets, "a cooldown must not leave the turn with nothing to attempt"
+        first_model, first_provider = targets[0]
+        assert bl.is_blocked(first_model, first_provider or "") is False
+        assert first_model != SHIPPED_VISION_HEAD
+        assert [hop["model"] for hop in
+                dlog.tail(1)[0]["chain_plan"]["blocked"]] == [SHIPPED_VISION_HEAD]
+
+    def test_a_clean_turn_is_untouched_and_records_no_veto_keys(self):
+        """The veto must be invisible when it has nothing to do.
+
+        Its three plan keys are absent, not defaulted, so every clean trace stays
+        byte-identical to one written before the veto vetted chains at all.
+        """
+        cfg = _live_config()
+        dlog = DecisionLog()
+        result = route(SHIPPED_VISION_TASK, cfg, decision_log=dlog, now=PEAK_CLOCK)
+
+        assert result.get("deny") is not True
+        assert result.get("cause") != "blocklist_substituted"
+        plan = dlog.tail(1)[0]["chain_plan"]
+        for key in ("blocked", "blocklist_widened", "blocklist_bypassed"):
+            assert key not in plan, f"{key} leaked into a clean plan"
+
+    def test_the_veto_never_returns_an_empty_chain(self):
+        """Both invariants at once: nothing banned runs, and something runs.
+
+        Every hop of the T2 vision chain is banned EXCEPT the declared primary.
+        The capability-filtered chain therefore empties, and the veto must widen
+        rather than hand the executor an empty list — a safety control that can
+        cause an outage is a worse failure than a blind hop, which is the same
+        trade the capability filter's own bypass makes.
+        """
+        cfg = copy.deepcopy(_live_config())
+        cfg["blocklist"]["manual_ban"].extend(
+            {"model": model, "provider": "", "reason": "test-ban"}
+            for model in (SHIPPED_VISION_HEAD, "deepseek-v4-flash")
+        )
+        bl = Blocklist(cfg)
+        dlog = DecisionLog()
+        result = route(SHIPPED_VISION_TASK, cfg, blocklist=bl,
+                       decision_log=dlog, now=PEAK_CLOCK)
+
+        targets = _targets(result)
+        assert targets == [("glm-5.3", "zai")]
+        assert dlog.tail(1)[0]["chain_plan"]["chain"], \
+            "the recorded plan must not be an empty chain either"
+        assert dlog.tail(1)[0]["chain_plan"]["blocklist_bypassed"] is False
+
+    def test_a_substituted_primary_leads_the_chain_it_was_planned_around(self):
+        """The substitution must not be cosmetic.
+
+        The plan was built around the primary the veto rejected, and the executor
+        prefers `chain` over the declared order — so a stale plan would hand the
+        banned target straight back as the first attempt.
+        """
+        cfg = copy.deepcopy(_live_config())
+        task = "Rename getCwd in src/utils.py"
+        chosen = route(task, cfg, now=PEAK_CLOCK)["model"]
+        cfg["blocklist"]["manual_ban"].append(
+            {"model": chosen, "provider": "", "reason": "test-ban"})
+        bl = Blocklist(cfg)
+
+        dlog = DecisionLog()
+        result = route(task, cfg, blocklist=bl, decision_log=dlog, now=PEAK_CLOCK)
+
+        assert result["cause"] == "blocklist_substituted"
+        assert result["blocked_model"] == chosen
+        assert result["model"] != chosen
+        assert _targets(result)[0][0] == result["model"]
+        assert not any(bl.is_blocked(model, provider or "")
+                       for model, provider in _targets(result))
+        # The veto's result is what got recorded — recording BEFORE the veto is
+        # how the trace came to name a target the caller never received.
+        entry = dlog.tail(1)[0]
+        assert entry["output"]["model"] == result["model"]
+        assert entry["output"]["blocked_model"] == chosen
+
+    def test_a_fully_blocked_fallback_chain_still_denies_and_records_the_denial(self):
+        """The pre-existing denial survives, and now reaches the trace.
+
+        An operator who bans the primary AND every link of its escape hatch meant
+        to refuse the turn. What is new is that the recorded entry is the DENIAL
+        rather than the decision that would have run.
+        """
+        cfg = copy.deepcopy(_live_config())
+        task = "rename a variable in utils.py"
+        chosen = route(task, cfg, now=PEAK_CLOCK)["model"]
+        chain = [chosen, "fallback-a", "fallback-b"]
+        cfg["blocklist"]["fallback_chain"] = chain
+        cfg["blocklist"]["manual_ban"] = [
+            {"model": model, "provider": "", "reason": "test-ban"} for model in chain
+        ]
+        bl = Blocklist(cfg)
+
+        dlog = DecisionLog()
+        result = route(task, cfg, blocklist=bl, decision_log=dlog, now=PEAK_CLOCK)
+
+        assert result == {
+            "deny": True,
+            "blocked_model": chosen,
+            "cause": "blocklist_veto",
+            "reason": (
+                f"routed model {chosen!r} is blocked and the fallback chain "
+                "offers no reachable replacement"
+            ),
+        }
+        entry = dlog.tail(1)[0]
+        assert entry["cause"] == "blocklist_veto"
+        assert entry["output"]["deny"] is True
+        assert entry["chain_plan"]["chain"] == [], "a denial attempts nothing"
+        assert attempted_head_of(entry) == ("", "")
+
+
+class TestTheTraceNamesTheModelThatRuns:
+    """The running path and every reporting surface must agree on one elo."""
+
+    def test_the_recorded_attempted_head_is_the_executors_first_target(self):
+        """The agreement itself, asserted on both sides at once.
+
+        Not "record() was called with a head" and not "the plan has a head": the
+        target list the executor derives, and the accessor a console reads, for
+        the same turn.
+        """
+        cfg = _live_config()
+        dlog = DecisionLog()
+        result = route(SHIPPED_VISION_TASK, cfg, decision_log=dlog, now=PEAK_CLOCK)
+        entry = dlog.tail(1)[0]
+
+        assert attempted_head_of(entry) == _targets(result)[0]
+        # ...and the declared tier primary is still recorded, unredefined, next to
+        # it — this is the fact that made the disagreement possible.
+        assert entry["output"]["model"] == "glm-5.3"
+        assert entry["output"]["attempted_model"] == SHIPPED_VISION_HEAD
+
+    def test_the_attempted_head_is_the_head_the_veto_left(self):
+        """A vetoed chain must move the reported head too, not just the run one."""
+        cfg = _banned_live_config(SHIPPED_VISION_HEAD)
+        bl = Blocklist(cfg)
+        dlog = DecisionLog()
+        result = route(SHIPPED_VISION_TASK, cfg, blocklist=bl,
+                       decision_log=dlog, now=PEAK_CLOCK)
+        entry = dlog.tail(1)[0]
+
+        assert attempted_head_of(entry) == _targets(result)[0]
+        assert entry["output"]["attempted_model"] != SHIPPED_VISION_HEAD
+
+    @pytest.mark.parametrize("task", [
+        SHIPPED_VISION_TASK,
+        "Rename getCwd in src/utils.py",
+        "Debug a race condition in the user cache",
+        "an entirely ambiguous request",
+    ])
+    def test_every_recorded_decision_agrees_with_what_the_executor_would_run(
+        self, task,
+    ):
+        """One property over four routing paths, rather than four literals."""
+        cfg = _live_config()
+        dlog = DecisionLog()
+        result = route(task, cfg, decision_log=dlog, now=PEAK_CLOCK,
+                       classify_fn=lambda _t, _f: {"tier": "T3",
+                                                   "confidence": "high"})
+        entry = dlog.tail(1)[0]
+        assert attempted_head_of(entry) == _targets(result)[0], (
+            f"trace and executor disagree for {task!r}"
+        )
+
+
+def test_the_installed_planner_is_wired_into_production():
+    """adapter.py resolved a real rules.plan_chain — the guard its docstring names.
+
+    This plugin is deployed by FILE COPY, which is why adapter.py resolves the
+    planner behind ``try/except ImportError`` and degrades to the DECLARED chain
+    rather than failing to import. That degrade is silent by construction:
+    routing keeps working, it just works pre-capability, with the filter,
+    ``fallback_strategy``, ``pin_primary`` and the whole time layer inert. The
+    feature was inert exactly that way for a full phase, so the wiring itself is
+    what needs an assertion — no other test asserts the production adapter has a
+    planner at all, and every one of them still passes with it set to None.
+    """
+    assert adapter.plan_chain is not None, (
+        "router/adapter.py imported NO planner: router/rules.py is a version "
+        "behind this file, so every chain is the declared order and the "
+        "capability filter, fallback_strategy and the time layer are all inert"
+    )
+    assert adapter.plan_chain is rules_mod.plan_chain, (
+        "the adapter is planning with something other than the installed "
+        "rules.plan_chain"
+    )
+    assert adapter._PLAN_CHAIN_ACCEPTS_WHEN is True, (
+        "the installed planner takes no `when`, so time_cap/time_policy/"
+        "cheapest_now are inert in production while /explain can still show them"
+    )

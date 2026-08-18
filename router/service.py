@@ -10,9 +10,11 @@ Capability-router material rides the same read paths: :meth:`explain` previews
 the effective attempt chain (``chain_plan``) with a FIXED-seed rng so a polled
 preview does not reshuffle, :meth:`policy` carries the per-tier fallback/
 capability/time knobs through to the console, :meth:`status` reports advisory
-``warnings`` strictly separately from blocking ``validation_errors``, and
+``warnings`` strictly separately from blocking ``validation_errors``,
 :meth:`liveness` marks elos the capability registry cannot describe and reports
-each elo's price-window state.
+each elo's price-window state, and :meth:`capabilities` serves the model
+catalogue an operator audits a decision against — the capability facts, the
+billing mode, the published prices and the price windows, per model.
 
 THIS MODULE IS THE EDGE THAT READS THE CLOCK. ``signals``, ``rules`` and
 ``capabilities`` are pure, deterministic and IO-free: the clock is a PARAMETER
@@ -154,6 +156,68 @@ _NON_CAPABILITY_KEYS = frozenset(
      "requirements", "time_cap", "time_policy"}
 )
 
+# ------------------------------------------------------------------
+# The capability catalogue view — an ALLOWLIST, never a passthrough
+# ------------------------------------------------------------------
+# :meth:`RouterService.capabilities` publishes registry material to a browser, so
+# WHICH fields it serves is a security decision and is written down here rather
+# than inherited. The commercial/identity half is an explicit tuple: handing out
+# ``capabilities._REGISTRY_FIELDS`` (or the merged entry whole) would publish
+# whatever field the registry grows next, and the day one of those carries a
+# credential this read path leaks it with no edit and no review. ``notes`` is
+# excluded for the same reason — it is free text, which is exactly where a pasted
+# key lands.
+#
+# The CAPABILITY half is taken from the registry's own
+# :data:`capabilities.CAPABILITY_ASSERTION_KEYS`, because that set is closed by
+# definition to claims about what a model can do: a new capability the registry
+# learns should reach the audit panel without a second edit here, and no
+# credential can ever be a capability assertion.
+_CATALOGUE_COMMERCIAL_FIELDS: Tuple[str, ...] = (
+    "provider",
+    "billing_mode",
+    "price_in",
+    "price_out",
+    "price_windows",
+)
+
+# Used only when the installed capabilities.py predates
+# CAPABILITY_ASSERTION_KEYS: this file is deployed by copy (see the import guard
+# above), and a catalogue that served no capability facts at all would render
+# every elo unverified — the false panel this endpoint exists to remove.
+_CATALOGUE_CAPABILITY_FALLBACK: Tuple[str, ...] = (
+    "context_window",
+    "max_input_tokens",
+    "max_output",
+    "vision",
+    "tool_calling",
+    "structured_output",
+)
+
+
+def _catalogue_fields() -> frozenset:
+    """The exact field allowlist :meth:`RouterService.capabilities` may serve.
+
+    Fail-safe: an unintrospectable or older registry degrades to the local
+    capability tuple instead of raising inside a read path.
+    """
+    capability_keys: Any = getattr(_caps, "CAPABILITY_ASSERTION_KEYS", None)
+    if not isinstance(capability_keys, (set, frozenset)):
+        capability_keys = set(_CATALOGUE_CAPABILITY_FALLBACK)
+    return frozenset(
+        {str(key) for key in capability_keys} | set(_CATALOGUE_COMMERCIAL_FIELDS)
+    )
+
+
+def _is_number(value: Any) -> bool:
+    """Whether ``value`` is a real number — ``bool`` is NOT one.
+
+    ``True`` is an ``int`` in Python, and a price of ``True`` would otherwise read
+    as a published 1.0. Used to answer "is a price published?" locally when the
+    registry cannot be asked.
+    """
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
 # The only top-level ``router.yaml`` keys an operator may edit through the write
 # path. ``fail_safe`` is included (last-resort routing must be editable); every
 # other top-level key in a change set is ignored. ``router.yaml`` is HOT
@@ -264,6 +328,7 @@ def _empty_chain_plan() -> Dict[str, Any]:
         "capped": [],
         "demoted": [],
         "promoted": [],
+        "peak_priced": [],
         "multipliers": {},
     }
 
@@ -842,6 +907,215 @@ class RouterService:
         return {"alive": 0, "degraded": 1, "quota_exhausted": 2, "dead": 3}.get(
             state, 1
         )
+
+    # ------------------------------------------------------------------
+    # The capability catalogue — what an operator audits a decision against
+    # ------------------------------------------------------------------
+
+    def capabilities(self) -> Dict[str, Any]:
+        """Return the model catalogue: capability facts, billing, prices, windows.
+
+        This is the read path behind the console's price audit. Without it the
+        panel does not merely render empty, it renders FALSE: with no catalogue
+        every elo shows as capability-unverified and every rail shows as
+        publishing no per-token price, including the metered ones that publish
+        one. A panel that states the opposite of the truth is worse than an absent
+        panel, which is why the shape below is fixed by what the audit has to
+        answer rather than by what was convenient to serialize.
+
+        Shape::
+
+            {"models": {"<model>": {<capability facts>, <commercial fields>,
+                                    "price_published": bool,
+                                    "in_registry": bool,
+                                    "declared_overrides": ["billing_mode", ...]}},
+             "unknown_models": ["<model>", ...],
+             "warnings": ["model '<id>' is declared in policy but ..."],
+             "registry_available": bool,
+             "time_agnostic": True}
+
+        NO PRICE PUBLISHED IS NOT A PRICE OF ZERO, and keeping those two apart is
+        the whole point of the panel. ``price_in``/``price_out`` are served
+        VERBATIM — ``None`` when the vendor publishes no per-token rate, ``0.0``
+        when the rail is genuinely free — and ``price_published`` states which of
+        the two an operator is looking at. A plan rail bills in credits off an
+        allowance already bought; rendering that as ``$0`` would make it look like
+        the cheapest thing on the screen when it is merely the least priced.
+
+        ``price_published`` IS ASKED OF THE RUNNING PATH
+        (``capabilities.effective_price``), not recomputed from the served fields.
+        ``effective_price`` is what ``cheapest_now`` ranks on, so asking it is what
+        makes this surface incapable of disagreeing with the ordering it is
+        auditing — the failure mode where a decision is verified through the
+        surface that displays it rather than the path that runs it. Only when the
+        registry cannot be asked at all does the local ``price_in``/``price_out``
+        test stand in.
+
+        TIME-AGNOSTIC BY CONSTRUCTION. No clock is read here and none is applied:
+        the prices are the BASE rates, i.e. what the model costs OUTSIDE every
+        declared window, and ``price_windows`` is served as declared so the
+        consumer can price any hour it likes. ``liveness`` is the surface that
+        reports what an elo costs right NOW, evaluated at an hour it names.
+        ``time_agnostic: True`` says so in the payload rather than leaving a
+        consumer to assume which of the two it received.
+
+        NOTHING IS INVENTED. Every fact is whatever ``capabilities.capabilities_for``
+        returns for that model merged with the per-elo ``declared`` overrides
+        policy declares — the same merge, with the same precedence, that the filter
+        runs on — so a stale rate an operator corrected in router.yaml shows up as
+        THEIR number, named in ``declared_overrides``. A field the registry does
+        not hold is absent, never defaulted.
+
+        AN UNKNOWN MODEL IS FLAGGED, NEVER FABRICATED. A model policy names that
+        the registry cannot describe is listed in ``unknown_models`` with a loud
+        ``warnings`` string and is deliberately ABSENT from ``models``: a console
+        reads the presence of an entry as "this elo's capabilities are verified",
+        so serving a hollow one would silence the unknown-model flag on exactly the
+        elos that route unchecked. Dropping such an elo from a chain could empty
+        it, so it still routes — it just routes visibly unverified.
+
+        SERVES NO SECRET. Fields are ALLOWLISTED (see
+        :func:`_catalogue_fields`), not passed through, so a registry that later
+        grows a field carrying a credential does not publish it here by default.
+
+        Fail-safe like every other read path: never raises. A missing registry, a
+        corrupt config or a registry that raises degrades to an empty catalogue
+        with the reason attached, which a console renders as "unverified" — the
+        honest answer for "the catalogue could not be read".
+        """
+        result: Dict[str, Any] = {
+            "models": {},
+            "unknown_models": [],
+            "warnings": [],
+            "registry_available": _caps is not None,
+            "time_agnostic": True,
+        }
+        try:
+            config, _errors = self._load()
+            declared_index = self._declared_capability_index(config)
+            providers = self._policy_provider_index(config)
+            fields = _catalogue_fields()
+
+            registry = getattr(_caps, "MODEL_CAPABILITIES", None) if _caps else None
+            if not isinstance(registry, dict):
+                registry = {}
+
+            models: Dict[str, Any] = {}
+            unknown: List[str] = []
+            warnings: List[str] = []
+            # Every model the registry holds, every model policy DESCRIBES, and
+            # every model policy merely NAMES. The third set is what makes the
+            # unknown-model flag complete: an elo that declares no capability at
+            # all appears in neither of the first two, and it is exactly the elo
+            # that routes unchecked and has to be reported for it.
+            #
+            # Sorted so two reads in a row are byte-identical: this endpoint is
+            # polled, and a response whose key order churns is indistinguishable
+            # from one whose content changed.
+            candidates = set(registry) | set(declared_index) | set(providers)
+            for model in sorted(candidates):
+                declared = declared_index.get(model) or None
+                caps = self._merged_capabilities(model, declared)
+                if caps is None:
+                    unknown.append(model)
+                    warnings.append(
+                        f"model '{model}' is declared in policy but unknown to the "
+                        f"capability registry; it routes UNCHECKED"
+                    )
+                    continue
+                entry = {
+                    key: value for key, value in caps.items() if key in fields
+                }
+                # Identity, not capability: the registry's own provider wins, and
+                # policy's fills the gap only for an elo the registry has never
+                # heard of but the YAML describes. It is never passed to
+                # ``capabilities_for`` (see :data:`_NON_CAPABILITY_KEYS`), so it
+                # cannot make a model look known.
+                if not entry.get("provider") and model in providers:
+                    entry["provider"] = providers[model]
+                entry["price_published"] = self._price_published(
+                    model, declared, caps
+                )
+                entry["in_registry"] = model in registry
+                entry["declared_overrides"] = sorted(
+                    key for key in (declared or {}) if key in fields
+                )
+                models[model] = entry
+
+            result["models"] = models
+            result["unknown_models"] = unknown
+            result["warnings"] = warnings
+            return result
+        except Exception as exc:  # noqa: BLE001 - a read path must not raise
+            result["error"] = f"could not compose capabilities: {exc}"
+            return result
+
+    @staticmethod
+    def _merged_capabilities(
+        model: str, declared: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """The registry entry for ``model`` merged with policy's ``declared``.
+
+        Exactly ``capabilities.capabilities_for`` — the same call, the same
+        precedence, the same "declared wins" rule the capability filter runs on —
+        so the catalogue cannot describe an elo differently from the path that
+        decides with it. None means the model is unknown to both.
+
+        Degrades to None on an absent or raising registry rather than propagating,
+        which the caller reports as unknown-and-flagged instead of as an entry
+        nobody can vouch for.
+        """
+        if _caps is None:
+            return None
+        try:
+            caps = _caps.capabilities_for(model, declared or None)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        return caps if isinstance(caps, dict) else None
+
+    @staticmethod
+    def _price_published(
+        model: str, declared: Optional[Dict[str, Any]], caps: Dict[str, Any]
+    ) -> bool:
+        """Whether ``model`` publishes a per-token price — asked of the RUNNING path.
+
+        ``capabilities.effective_price`` is what ``cheapest_now`` ranks on, and it
+        already owns every edge of this question: a plan rail's ``None``, a
+        genuinely free rail's published ``0.0``, and a half-published pair whose
+        missing half would have to be invented. Asking it with ``when=None``
+        (time-agnostic: no clock is read on this path) answers precisely "is there
+        a base rate to scale?", so the audit panel and the cost comparison can
+        never disagree about which elos are priced.
+
+        The local test is a FALLBACK for an install whose capabilities.py has no
+        ``effective_price``, and it mirrors that function's rule: both halves must
+        be real numbers, and a ``bool`` is not one.
+        """
+        if _caps is not None:
+            try:
+                return _caps.effective_price(model, None, declared or None) is not None
+            except (AttributeError, TypeError, ValueError):
+                pass
+        return _is_number(caps.get("price_in")) and _is_number(caps.get("price_out"))
+
+    @classmethod
+    def _policy_provider_index(cls, config: Dict[str, Any]) -> Dict[str, str]:
+        """Map model id -> the provider policy declares for it (first wins).
+
+        Read off :meth:`_policy_references`, which already walks every tier,
+        fallback hop, classifier hop and ``fail_safe`` and returns sorted unique
+        pairs — so "first wins" is deterministic rather than YAML-order-dependent.
+        Used only to fill a provider the registry does not hold; see
+        :meth:`capabilities`.
+        """
+        index: Dict[str, str] = {}
+        try:
+            references = cls._policy_references(config, [])
+        except Exception:  # noqa: BLE001 - a read path must not raise
+            return index
+        for model, provider in references:
+            index.setdefault(model, provider)
+        return index
 
     def explain(
         self,

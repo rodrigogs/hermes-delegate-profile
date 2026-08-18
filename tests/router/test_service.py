@@ -856,7 +856,8 @@ def test_explain_chain_plan_shape_survives_a_planless_rules(
         "strategy_degraded": False, "strategy_degraded_reason": "",
         "pin_primary": True, "independent_rails": 0,
         "time_agnostic": True, "time_cap_bypassed": False,
-        "capped": [], "demoted": [], "promoted": [], "multipliers": {},
+        "capped": [], "demoted": [], "promoted": [], "peak_priced": [],
+        "multipliers": {},
     }
     # time_agnostic is the key the console needs: it says "no clock", which is a
     # state planWhen renders, instead of leaving it to guess.
@@ -1947,3 +1948,337 @@ def test_read_paths_survive_a_loadable_but_wrong_config(tmp_path):
     assert service.lint()["valid"] is False
     assert service.blocklist()["manual_bans"] == []
     assert service.liveness()["models"] == []
+
+
+# ---------------------------------------------------------------------------
+# The capability catalogue: the read path behind the console's price audit
+# ---------------------------------------------------------------------------
+
+
+def _multiplier_from_served_windows(entry, hour, weekday):
+    """Price one hour from the ``price_windows`` the catalogue SERVED.
+
+    A deliberate SECOND implementation of the reading a consumer has to make —
+    half-open ``[start, end)`` hours, absent ``weekdays`` meaning every day, 1.0
+    when nothing matches — so the assertions below compare the audit surface with
+    the running planner through a third computation instead of trusting either
+    one's word. It is the console's own rule, written out in the test, because a
+    helper shared with the code under test would agree with it by construction.
+    """
+    multiplier = 1.0
+    for window in entry.get("price_windows") or []:
+        start, end = window["hours_utc"]
+        if not start <= hour < end:
+            continue
+        weekdays = window.get("weekdays")
+        if weekdays is not None and weekday not in weekdays:
+            continue
+        multiplier = window["multiplier"]
+    return multiplier
+
+
+def test_capabilities_serves_the_facts_the_price_audit_needs(capability_config_path):
+    """Per model: the capability facts, the billing mode, the prices, the windows."""
+    catalogue = RouterService(capability_config_path).capabilities()
+
+    assert catalogue["registry_available"] is True
+    # Base rates with no hour applied — `liveness` is the surface that prices NOW.
+    assert catalogue["time_agnostic"] is True
+    assert catalogue["unknown_models"] == []
+    assert catalogue["warnings"] == []
+
+    flash = catalogue["models"]["deepseek-v4-flash"]
+    # The finding's own case: with no /capabilities route the console rendered
+    # this rail as publishing no per-token price. It publishes two.
+    assert (flash["price_in"], flash["price_out"]) == (0.22, 0.66)
+    assert flash["price_published"] is True
+    # The capability facts the filter decides on, so a rejection is checkable.
+    assert flash["context_window"] == 1_048_576
+    assert flash["vision"] is False
+    assert flash["tool_calling"] is True
+    assert flash["structured_output"] is True
+    assert flash["billing_mode"] == "metered"
+    assert flash["provider"] == "deepseek"
+    assert flash["in_registry"] is True
+    # Windows verbatim, so a consumer can price ANY hour instead of one.
+    assert flash["price_windows"] == [
+        {"hours_utc": [1, 4], "multiplier": 2.0},
+        {"hours_utc": [6, 10], "multiplier": 2.0},
+    ]
+    # A catalogue, not a credential store — and no free-text `notes` either,
+    # which is the field a pasted key would land in.
+    assert "notes" not in flash
+    body = json.dumps(catalogue).lower()
+    assert "api_key" not in body
+    assert "secret" not in body
+
+
+def test_capabilities_tells_an_unpublished_price_apart_from_a_price_of_zero(
+    capability_config_path,
+):
+    """The distinction the panel exists for: None is not 0.0.
+
+    A plan rail bills in credits off an allowance already bought. Rendered as $0
+    it would look like the cheapest thing on the screen when it is merely the
+    least priced — the opposite of the truth.
+    """
+    models = RouterService(capability_config_path).capabilities()["models"]
+
+    plan_rail = models["glm-5.3"]
+    assert plan_rail["billing_mode"] == "plan"
+    assert plan_rail["price_in"] is None
+    assert plan_rail["price_out"] is None
+    assert plan_rail["price_published"] is False
+    # It still declares a window, so "no dollar price" is not "no cost variation".
+    assert plan_rail["price_windows"]
+
+    # A genuinely free rail publishes 0.0, which IS a price and survives as one.
+    free_rail = models["glm-4.7-flash"]
+    assert free_rail["billing_mode"] == "free"
+    assert (free_rail["price_in"], free_rail["price_out"]) == (0.0, 0.0)
+    assert free_rail["price_published"] is True
+
+
+def test_capabilities_price_publication_agrees_with_the_running_cost_path(
+    capability_config_path,
+):
+    """The audit surface and the path that RANKS on cost may not disagree.
+
+    ``cheapest_now`` buckets an elo on whether ``capabilities.effective_price``
+    answers at all, so a catalogue calling a rail priced where the ordering calls
+    it unpriced would explain a decision the router never made. Asserted as an
+    AGREEMENT between the two surfaces plus the fields actually served, never as a
+    claim about one of them.
+    """
+    from router import capabilities as caps
+
+    service = RouterService(capability_config_path)
+    catalogue = service.capabilities()
+    declared = RouterService._declared_capability_index(
+        yaml.safe_load(capability_config_path.read_text(encoding="utf-8"))
+    )
+
+    assert catalogue["models"]
+    for model, entry in catalogue["models"].items():
+        overrides = declared.get(model) or None
+        priced = caps.effective_price(model, None, overrides)
+
+        # The flag agrees with the cost path...
+        assert entry["price_published"] is (priced is not None), model
+        # ...and with the two fields a console reads instead of the flag.
+        both_real = all(
+            isinstance(entry.get(key), (int, float))
+            and not isinstance(entry.get(key), bool)
+            for key in ("price_in", "price_out")
+        )
+        assert entry["price_published"] is both_real, model
+        # A served price is the BASE rate: no hour has been folded into it.
+        if priced is not None:
+            assert (entry["price_in"], entry["price_out"]) == priced, model
+
+        # And the capability half agrees with the filter's own verdict.
+        assert RouterService._capabilities_known(model, overrides) is True, model
+
+
+def test_capabilities_windows_reprice_the_hour_the_plan_was_made_at(time_config_path):
+    """The served windows must reproduce the multipliers the planner used.
+
+    The plan is the path that RUNS; the catalogue is the surface that DISPLAYS.
+    If pricing the plan's own hour from the served windows gave a different
+    number, the panel would be explaining a cost the router never applied.
+    """
+    service = RouterService(time_config_path)
+    plan = service.explain(_HARD_TASK, at=_PEAK_0700)["chain_plan"]
+    models = service.capabilities()["models"]
+
+    # Both a windowed and a flat elo, so the agreement is not vacuous.
+    assert plan["multipliers"] == {"deepseek-v4-pro": 2.0, "glm-4.6": 1.0}
+    for model, multiplier in plan["multipliers"].items():
+        assert model in models, model
+        assert _multiplier_from_served_windows(
+            models[model], plan["utc_hour"], plan["utc_weekday"]
+        ) == multiplier, model
+
+    # Every elo the plan could not describe is exactly one the catalogue omits.
+    assert set(plan["unknown"]) & set(models) == set()
+
+
+def test_capabilities_reads_no_clock(capability_config_path, monkeypatch):
+    """Same catalogue at 07:00 and at 15:00 — this surface is time-agnostic.
+
+    The prices are base rates and the windows are declared data; folding an hour
+    in here would give the console a second, competing answer to a question
+    ``liveness`` already answers at an hour it names.
+    """
+    import router.service as service_mod
+
+    service = RouterService(capability_config_path)
+    monkeypatch.setattr(service_mod, "_utc_now", lambda: _PEAK_0700)
+    peak = service.capabilities()
+    monkeypatch.setattr(service_mod, "_utc_now", lambda: _OFFPEAK_1500)
+
+    assert service.capabilities() == peak
+
+
+def test_capabilities_declared_overrides_win_and_are_named(tmp_path):
+    """An operator's corrected number is served, and attributed to them.
+
+    ``declared`` WINS over the registry on the filter's path, so it has to win
+    here too; ``declared_overrides`` names which fields came from router.yaml so
+    an operator can tell their own correction from the registry's data.
+    """
+    path = tmp_path / "router.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "enabled": True,
+                "classifier": {"model": "glm-4.7", "provider": "zai"},
+                "fail_safe": {"profile": "coder", "model": "glm-4.7",
+                              "provider": "zai"},
+                "blocklist": {"manual_ban": [], "fallback_chain": [],
+                              "auto_breaker": {"enabled": False}},
+                "rules": [],
+                "default": {"action": "classify"},
+                "tiers": {
+                    "T1": {
+                        # A stale registry rate and window, corrected in YAML.
+                        "model": "deepseek-v4-flash", "provider": "deepseek",
+                        "billing_mode": "metered",
+                        "price_in": 0.11, "price_out": 0.33,
+                        "price_windows": [
+                            {"hours_utc": [6, 10], "multiplier": 3.0},
+                        ],
+                    },
+                    "T2": {"model": "glm-4.7", "provider": "zai",
+                           "billing_mode": "plan"},
+                    "T3": {"model": "glm-4.6", "provider": "zai"},
+                    "T4": {"model": "gpt-5.5", "provider": "openai-codex"},
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    corrected = RouterService(path).capabilities()["models"]["deepseek-v4-flash"]
+
+    assert (corrected["price_in"], corrected["price_out"]) == (0.11, 0.33)
+    assert corrected["price_published"] is True
+    assert corrected["price_windows"] == [{"hours_utc": [6, 10], "multiplier": 3.0}]
+    assert corrected["declared_overrides"] == [
+        "billing_mode", "price_in", "price_out", "price_windows",
+    ]
+    # Still the registry's model, so the untouched facts are still the registry's.
+    assert corrected["in_registry"] is True
+    assert corrected["context_window"] == 1_048_576
+    # A copy, never a live view: a consumer mutating this cannot edit the registry.
+    from router import capabilities as caps
+
+    assert caps.MODEL_CAPABILITIES["deepseek-v4-flash"]["price_in"] == 0.22
+
+
+def test_capabilities_flags_an_unknown_elo_instead_of_vouching_for_it(
+    warned_config_path,
+):
+    """An unknown model fails OPEN with a loud flag — and stays OUT of `models`.
+
+    A console reads the PRESENCE of an entry as "these capabilities are verified",
+    so a hollow entry would silence the unverified badge on the one elo that
+    routes unchecked. Dropping such an elo from a chain could empty it, so it
+    still routes; it just routes visibly unverified.
+    """
+    service = RouterService(warned_config_path)
+    catalogue = service.capabilities()
+
+    # Unknown to the registry AND describing nothing: absent, listed, loud.
+    assert "ghost-model" not in catalogue["models"]
+    assert "ghost-model" in catalogue["unknown_models"]
+    assert any(
+        "ghost-model" in warning and "UNCHECKED" in warning
+        for warning in catalogue["warnings"]
+    )
+
+    # Unknown to the registry but DESCRIBED in yaml: declared wins, so it is
+    # auditable — with the operator's numbers and the provider policy names it by.
+    house = catalogue["models"]["house-model"]
+    assert house["context_window"] == 500_000
+    assert house["vision"] is True
+    assert house["provider"] == "local-rail"
+    assert house["in_registry"] is False
+    assert house["declared_overrides"] == ["context_window", "vision"]
+    # It publishes no price, which is not a price of zero here either.
+    assert house["price_published"] is False
+    assert "price_in" not in house
+
+    # The catalogue and the running filter agree, elo by elo, about which are
+    # verifiable: presence here means exactly `capabilities_known` there.
+    for entry in service.liveness()["models"]:
+        assert (entry["model"] in catalogue["models"]) is entry[
+            "capabilities_known"
+        ], entry["model"]
+
+
+def test_capabilities_serves_an_allowlist_not_whatever_the_registry_grows(
+    capability_config_path, monkeypatch
+):
+    """A field the registry gains later is NOT published by default.
+
+    This read path hands registry material to a browser. The day an entry grows a
+    field carrying a credential, a passthrough would publish it with no edit and
+    no review — ``capabilities_for`` merges an entry WHOLE, unknown fields
+    included, so the allowlist here is the only thing standing between the two.
+    """
+    from router import capabilities as caps
+
+    entry = dict(caps.MODEL_CAPABILITIES["glm-4.7"])
+    entry["api_key"] = "sk-must-never-be-served"
+    entry["notes"] = "an operator pasted sk-live-0000 in here"
+    monkeypatch.setitem(caps.MODEL_CAPABILITIES, "glm-4.7", entry)
+
+    catalogue = RouterService(capability_config_path).capabilities()
+    served = catalogue["models"]["glm-4.7"]
+
+    assert "api_key" not in served
+    assert "notes" not in served
+    assert "sk-" not in json.dumps(catalogue)
+    # The facts it does serve still arrive intact.
+    assert served["context_window"] == 200_000
+    assert served["price_published"] is True
+
+
+def test_capabilities_never_raises_and_degrades_out_loud(tmp_path, monkeypatch):
+    """Read-path contract: a broken config or registry degrades, never 500s."""
+    import router.service as service_mod
+
+    # A config that parses but is nonsense: the registry does not depend on it,
+    # so the catalogue is still served in full.
+    path = tmp_path / "router.yaml"
+    path.write_text("enabled: true\nrules: 5\ntiers: nope\n", encoding="utf-8")
+    catalogue = RouterService(path).capabilities()
+    assert catalogue["models"]
+    assert "error" not in catalogue
+
+    # No registry importable at all: an empty catalogue, said out loud. A console
+    # renders that as "unverified", which is the honest answer for "unreadable".
+    monkeypatch.setattr(service_mod, "_caps", None)
+    assert RouterService(path).capabilities() == {
+        "models": {},
+        "unknown_models": [],
+        "warnings": [],
+        "registry_available": False,
+        "time_agnostic": True,
+    }
+
+    # A registry that raises is the same answer, not a traceback — and the model
+    # it could not describe is flagged rather than served hollow.
+    class Exploding:
+        MODEL_CAPABILITIES = {"boom": {"context_window": 1}}
+
+        @staticmethod
+        def capabilities_for(*_a, **_kw):
+            raise TypeError("stale registry")
+
+    monkeypatch.setattr(service_mod, "_caps", Exploding)
+    exploding = RouterService(path).capabilities()
+    assert exploding["models"] == {}
+    assert exploding["unknown_models"] == ["boom"]
+    assert exploding["warnings"]

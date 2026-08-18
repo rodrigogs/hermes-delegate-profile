@@ -7,12 +7,14 @@ Hermes CLI or spawn an OS process; process-tree behaviour itself lives in
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -927,3 +929,135 @@ def test_record_breaker_outcome_dispatches_success_and_failure(monkeypatch):
     _dp._record_breaker_outcome("child", "m", "ttfb_stall")
     _dp._record_breaker_outcome("child", "m", None)
     assert calls == [("failure", ("m", "p", "ttfb_stall")), ("success", ("m", "p"))]
+
+    # The ATTEMPTED provider wins over the policy scan: the hop that ran is the
+    # one the breaker must be keyed against, even when policy declares the same
+    # model elsewhere under a different provider.
+    calls.clear()
+    _dp._record_breaker_outcome("child", "m", "quota_exhausted", "attempted")
+    assert calls == [("failure", ("m", "attempted", "quota_exhausted"))]
+
+    # And a hop that is ONLY ever a fallback (never a tier primary) is still
+    # resolvable when a caller cannot name it — a primaries-only scan returned ""
+    # for exactly the elos that only appear in a chain tail.
+    calls.clear()
+    monkeypatch.setattr(
+        _dp,
+        "_load_router_config",
+        lambda: {"tiers": {"T2": {"model": "m", "provider": "p",
+                                 "fallback": [{"model": "hop", "provider": "hp"}]}}},
+    )
+    _dp._record_breaker_outcome("child", "hop", "quota_exhausted")
+    assert calls == [("failure", ("hop", "hp", "quota_exhausted"))]
+
+
+# ---------------------------------------------------------------------------
+# The breaker must bind under the key the routing path actually reads
+# ---------------------------------------------------------------------------
+#
+# Blocklist keys breaker state as ``model@provider`` and routing asks
+# ``is_blocked(model, provider)``; the console's liveness panel looks the same key
+# up. The executor recorded outcomes with the attempted MODEL only, and the
+# provider was re-derived by scanning tier PRIMARIES — so every fallback hop was
+# recorded under a bare model key that neither surface reads. A quota-exhausted
+# rail therefore kept being attempted while its breaker sat tripped in a cell
+# nothing consulted: the recurring defect, with the DISPLAY (a tripped breaker in
+# `hermes router blocklist`) disagreeing with the path that RUNS.
+
+# gpt-5.6-luna is reachable on TWO rails: as T2's fallback hop on openai-codex
+# (the one the executor attempts) and as T4's primary on openai-direct. No scan of
+# the policy can tell which one just failed — only the attempt knows — so this
+# shape is what forces the attempted provider to be passed through rather than
+# re-derived, and it also pins that one rail's breaker never takes out its twin.
+_TWO_RAIL_POLICY = {
+    "enabled": True,
+    "blocklist": {
+        "auto_breaker": {
+            "enabled": True,
+            "threshold": 5,
+            "window_seconds": 600,
+            "base_cooldown_seconds": 60,
+            "max_cooldown_seconds": 900,
+            "backoff_multiplier": 2.0,
+        }
+    },
+    "tiers": {
+        "T1": {"model": "glm-4.7", "provider": "zai"},
+        "T2": {"model": "glm-5.3", "provider": "zai",
+               "fallback": [{"model": "gpt-5.6-luna", "provider": "openai-codex"}]},
+        "T3": {"model": "mimo-v2.5", "provider": "xiaomi"},
+        "T4": {"model": "gpt-5.6-luna", "provider": "openai-direct"},
+    },
+}
+
+_QUOTA_OUTPUT = "API call failed after 3 retries: HTTP 429 rate limited\n"
+
+
+def test_a_failing_fallback_hop_binds_the_breaker_every_surface_reads(
+    monkeypatch, tmp_path
+):
+    """One failed hop, three surfaces, one key — the agreement IS the assertion.
+
+    The executor records the outcome, the routing path asks
+    ``is_blocked(model, provider)``, and ``RouterService.liveness`` renders the
+    same ``model@provider``. Asserting only that the breaker "tripped" would have
+    passed while the trip was filed under a key neither reads; asserting only the
+    display would have passed too. So all three are read back for the hop that
+    actually ran.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    real_record = _dp._record_breaker_outcome
+    handler, _pool = _cross_handler(monkeypatch, ("exited", 0, _QUOTA_OUTPUT, ""))
+    # _cross_handler stubs the breaker seam out; this test is about it.
+    monkeypatch.setattr(_dp, "_record_breaker_outcome", real_record)
+    monkeypatch.setattr(_dp, "_load_router_config",
+                        lambda: copy.deepcopy(_TWO_RAIL_POLICY))
+    monkeypatch.setattr(_dp, "_route_task", lambda *_args: {
+        "profile": "child", **_BLIND_PRIMARY,
+        # A vision turn: the blind primary is filtered out, so the ONLY eligible
+        # target is the fallback hop — precisely the elo whose breaker never bound.
+        "chain": [{"model": "gpt-5.6-luna", "provider": "openai-codex"}],
+    })
+
+    result = json.loads(handler({"goal": "look at this screenshot"}))
+    assert result["model"] == "gpt-5.6-luna" and result["provider"] == "openai-codex"
+    assert result["failure_kind"] == "quota_exhausted"
+
+    from router.blocklist import Blocklist
+    blocklist = Blocklist(copy.deepcopy(_TWO_RAIL_POLICY))
+
+    # 1. The RUNNING path: what routing asks before attempting a target.
+    assert blocklist.is_blocked("gpt-5.6-luna", "openai-codex") is True, (
+        "the breaker must bind for the (model, provider) that actually failed"
+    )
+    # 2. The recorded key is the one both surfaces read — and it is the rail that
+    #    failed, not the other rail serving the same elo, whose quota is intact.
+    assert [entry["model_key"] for entry in blocklist.breaker_status()] == [
+        "gpt-5.6-luna@openai-codex"
+    ]
+    assert blocklist.is_blocked("gpt-5.6-luna", "openai-direct") is False, (
+        "one rail's breaker must not take out a healthy rail for the same elo"
+    )
+    # 3. The REPORTING surface: the console's liveness panel resolves the same key.
+    policy_path = tmp_path / "router.yaml"
+    policy_path.write_text(
+        yaml.safe_dump(_TWO_RAIL_POLICY, sort_keys=False), encoding="utf-8"
+    )
+    from router.service import RouterService
+    panel = {
+        entry["model_key"]: entry
+        for entry in RouterService(policy_path).liveness()["models"]
+    }
+    hop = panel["gpt-5.6-luna@openai-codex"]
+    # The panel must land on the SAME breaker entry the routing path binds on.
+    # Which non-alive label it picks (``degraded`` vs ``quota_exhausted``) is the
+    # breaker module's own reporting, so the agreement asserted here is the key
+    # and the OPEN state — not the wording.
+    assert hop["breaker"].get("state") == "OPEN", (
+        "the panel and the routing path must describe one breaker, not two"
+    )
+    assert hop["state"] != "alive"
+    for healthy in ("glm-5.3@zai", "gpt-5.6-luna@openai-direct"):
+        assert panel[healthy]["state"] == "alive", (
+            "only the rail that actually ran may be marked"
+        )

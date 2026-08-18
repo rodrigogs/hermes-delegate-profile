@@ -3,14 +3,17 @@
 Mounted at /api/plugins/hermes-one-capability-router/ by the dashboard plugin
 system. Imports the pure-core router from the delegate-profile plugin.
 
-Contract: every route here is a READ path. It reloads ``router.yaml`` per
-request (the file is HOT), exposes only non-secret operational state, runs
-deterministic Stage-0 simulations only — never the LLM classifier — and never
-mutates breaker state. No route may raise over the ROUTER's state: a missing or
-corrupt config degrades to an empty default carried alongside a diagnostic,
-because a dashboard panel that 500s tells the operator nothing about *why*. The
-single refusal on this surface is over the CALLER's own input — an unusable
-``at`` on /explain — and it is a 400, not a 500 (see :func:`api_explain`).
+Contract: every route here is a READ path — including the two POSTs, where the
+method is transport (a body is the only pipe wide enough for a composed prompt, and
+/lint takes none), never a write. It reloads ``router.yaml`` per request (the file
+is HOT), exposes only non-secret operational state, runs deterministic Stage-0
+simulations only — never the LLM classifier — and never mutates breaker state. No
+route may raise over the ROUTER's state: a missing or corrupt config degrades to an
+empty default carried alongside a diagnostic, because a dashboard panel that 500s
+tells the operator nothing about *why*. The only refusals on this surface are over
+the CALLER's own input — an unusable ``at`` or ``prompt_text`` on /explain, or a
+body that is not a JSON object — and each is a 400, not a 500 (see
+:func:`api_explain`).
 
 Shape parity with :class:`router.service.RouterService` is load-bearing, not
 cosmetic. The dashboard plugin and the Hermes One console are two views of ONE
@@ -39,6 +42,19 @@ to the current UTC hour), ``at`` may override it for the "what would this route 
 at 07:00 UTC?" question the 4am cron raises, and ``evaluated_at`` reports which
 clock was used and whether it actually reached the planner — a time-relative
 answer that does not name its hour is indistinguishable from a wrong one.
+
+THE SIZE IS THE SAME CLASS OF OMISSION, and it was the second one on this
+endpoint. ``task`` is the goal line; ``prompt_text`` is the text the child would
+really receive, and ``est_input_tokens`` has to measure THAT. /explain used to
+accept only ``task``, so a context-heavy turn — one that in production reaches
+``huge-context-read`` and a tier with a ``min_context`` floor — previewed as about
+six estimated tokens, matched no rule and derived no requirement. Both surfaces
+returned a valid-looking plan for a turn nobody was going to send. So the
+parameter is accepted here, spelled and validated exactly as ``RouterService`` and
+the sidecar spell and validate it, and ``preview.sized_from`` /
+``preview.prompt_chars`` say which text the answer came from — a preview sized
+from the goal is byte-shaped like one sized from the real turn and answers a
+different question.
 """
 
 from __future__ import annotations
@@ -56,7 +72,7 @@ if str(_PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_DIR))
 
 import yaml
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 
 from router import service as _service_mod
 from router.decision_log import DecisionLog, empty_chain_plan
@@ -194,7 +210,47 @@ def _clock_features(when: datetime) -> Dict[str, Any]:
     return {"utc_hour": when.hour, "utc_weekday": when.weekday()}
 
 
-def _explain_features(task: str, when: datetime) -> Dict[str, Any]:
+# ── The size (the other half of the question production asks) ────────
+
+def _resolve_prompt(task: str, prompt_text: Optional[str]) -> Tuple[str, str]:
+    """Return ``(text_to_size_from, sized_from)`` for this preview.
+
+    Delegated to ``RouterService._resolve_prompt`` — the one validator both
+    surfaces share, holding the one prompt bound and the one ``sized_from``
+    vocabulary. A second copy of that rule is how two surfaces end up disagreeing
+    about what "no prompt" or "too big" means, which on this endpoint is the
+    difference between measuring 120k chars of context and measuring six tokens
+    of goal.
+
+    ``None`` — an in-process caller omitting the parameter — is normalised to ""
+    ("same as task") before delegating, exactly as the sidecar's query-string form
+    and its JSON-null form both are. Anything else non-string, and any prompt over
+    the bound, is refused by the service with a ``ValueError`` the route renders as
+    a 400: a truncated or coerced prompt would produce a smaller
+    ``est_input_tokens`` and therefore a confidently wrong plan — the precise
+    failure this parameter exists to fix.
+    """
+    supplied = "" if prompt_text is None else prompt_text
+    delegate = getattr(_service(), "_resolve_prompt", None)
+    if callable(delegate):
+        resolved = delegate(task, supplied)
+        if (
+            isinstance(resolved, tuple)
+            and len(resolved) == 2
+            and isinstance(resolved[0], str)
+        ):
+            return resolved[0], str(resolved[1])
+    # Local mirror for a router/ deployed before the parameter: the SAME falsy
+    # test ``adapter.route`` uses, so a caller supplying no context is measured
+    # exactly as production measures it.
+    if not isinstance(supplied, str):
+        raise ValueError("prompt_text must be a string")
+    if not supplied:
+        return task, "task"
+    return supplied, "prompt_text"
+
+
+def _explain_features(prompt: str, when: datetime) -> Dict[str, Any]:
     """The feature vector for a preview: extracted signals plus the clock.
 
     Delegated to ``RouterService._explain_features`` so both surfaces measure one
@@ -202,19 +258,26 @@ def _explain_features(task: str, when: datetime) -> Dict[str, Any]:
     ``signals.extract()`` is pure and must never read a wall clock, and because a
     rule keyed on ``utc_hour`` has to fire on this endpoint or the operator's
     preview answers a question production does not ask.
+
+    ``prompt`` is the text production would SIZE THE TURN FROM — context + goal,
+    not the goal line (see :func:`_resolve_prompt`). Measuring the goal alone is
+    what made a context-heavy turn preview as ``est_input_tokens`` 6, matching no
+    ``min_context`` rule and deriving no requirement, while production routed it
+    to a long-context tier.
     """
     delegate = getattr(RouterService, "_explain_features", None)
     if callable(delegate):
-        features = delegate(task, when)
+        features = delegate(prompt, when)
         if isinstance(features, dict):
             return dict(features)
-    features = extract(task)
+    features = extract(prompt)
     features.update(_clock_features(when))
     return features
 
 
 def _explain_decision(
-    task: str, config: Dict[str, Any], when: datetime
+    task: str, config: Dict[str, Any], when: datetime,
+    prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Compose the Stage-0 decision trace at ``when``, via the service when it can.
 
@@ -242,8 +305,13 @@ def _explain_decision(
     such addition into a TypeError inside a read path. The local mirror below is
     behaviourally equivalent and exists only for a router/ deployed before that
     helper.
+
+    ``task`` stays the GOAL while the features are measured from ``prompt`` (the
+    composed context + goal, defaulting to the task) — the same split production
+    makes, where the classifier keys on the goal alone and only the signals see the
+    context.
     """
-    features = _explain_features(task, when)
+    features = _explain_features(task if prompt is None else prompt, when)
     delegate = getattr(RouterService, "_explain_decision", None)
     if callable(delegate):
         try:
@@ -324,6 +392,84 @@ def _evaluated_at(
     }
 
 
+def _preview_note(
+    decision: Dict[str, Any],
+    plan: Dict[str, Any],
+    sized_from: str,
+    prompt_chars: int,
+) -> Dict[str, Any]:
+    """What this preview is reproducible within, and what text it measured.
+
+    Delegated to ``RouterService._preview_note`` for the same reason
+    ``evaluated_at`` is delegated: the console renders one shape from either
+    surface, and the disclaimers are the load-bearing part. ``sized_from`` and
+    ``prompt_chars`` are the ones this endpoint was missing entirely — a preview
+    sized from the goal line looks EXACTLY like a preview sized from the real turn
+    and answers a different question, so naming the text is what lets an operator
+    see that a chain "requiring nothing" was filtered against six tokens of goal
+    rather than against the context production sent.
+
+    The fallback is deliberately narrow: on a router/ predating the note, the two
+    keys this route knows for certain are still reported rather than an empty
+    object, because an absent ``sized_from`` renders as "undefined" and reads as a
+    preview that measured nothing at all.
+    """
+    delegate = getattr(RouterService, "_preview_note", None)
+    if callable(delegate):
+        try:
+            declared = frozenset(inspect.signature(delegate).parameters)
+        except (TypeError, ValueError):  # pragma: no cover - unintrospectable
+            declared = frozenset()
+        args: Tuple[Any, ...] = (decision, plan)
+        if {"sized_from", "prompt_chars"} <= declared:
+            args = (decision, plan, sized_from, prompt_chars)
+        note = delegate(*args)
+        if isinstance(note, dict):
+            note = dict(note)
+            # A note that predates the two size keys still owes them: this route
+            # resolved both, and the operator's question is which text was measured.
+            note.setdefault("sized_from", sized_from)
+            note.setdefault("prompt_chars", prompt_chars)
+            return note
+    return {"sized_from": sized_from, "prompt_chars": prompt_chars}
+
+
+def _explain_payload(
+    task: str, at: Optional[str], prompt_text: Optional[str]
+) -> Dict[str, Any]:
+    """The one /explain body both forms return — see :func:`api_explain`.
+
+    Shared rather than duplicated for the reason this whole module keeps
+    delegating: two implementations of one preview is how a surface ends up
+    answering a different question than the one production asks, and a GET and a
+    POST of one route that disagreed would be that failure inside a single file.
+    """
+    try:
+        when, at_source = _resolve_at(at)
+        # Both caller-input resolutions happen BEFORE the config is read, so an
+        # unusable clock or an over-bound prompt is never reported as a policy
+        # problem and never sends an operator to the wrong file.
+        prompt, sized_from = _resolve_prompt(task, prompt_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    c = _load_config()
+    result = _explain_decision(task, c, when, prompt)
+    plan = _chain_plan_of(result)
+    # The recorded task_preview stays the GOAL, matching what production records:
+    # the prompt is measured, not logged, and a context dump would blow the
+    # DecisionLog's per-entry bound.
+    _log.record(str(result.get("cause", "")), result.get("output", {}) or {},
+                matched_rule_id=result.get("matched_rule_id"),
+                task_preview=task[:120],
+                chain_plan=plan)
+    return {
+        **result,
+        "chain_plan": plan,
+        "evaluated_at": _evaluated_at(when, at_source, plan),
+        "preview": _preview_note(result, plan, sized_from, len(prompt)),
+    }
+
+
 # ── API ──────────────────────────────────────────────────────────────
 
 @router.get("/status")
@@ -372,6 +518,20 @@ async def api_explain(
             ),
         ),
     ] = None,
+    # Same spelling, same meaning and same Annotated-with-a-real-None reasoning as
+    # ``at``: ``RouterService.explain`` and the sidecar's GET and POST /explain all
+    # call this ``prompt_text``, and a per-surface translation table is how one
+    # router grows two vocabularies.
+    prompt_text: Annotated[
+        Optional[str],
+        Query(
+            description=(
+                "The composed prompt (context + goal) the turn would really "
+                "send, so est_input_tokens and the capability filter reproduce "
+                "the production decision. Defaults to the task."
+            ),
+        ),
+    ] = None,
 ):
     """Deterministic Stage-0 dry run: the decision trace plus its ``chain_plan``.
 
@@ -381,6 +541,16 @@ async def api_explain(
     really does compare prices. ``evaluated_at`` names the hour that produced the
     answer.
 
+    Sized from the real turn. ``task`` is the GOAL; ``prompt_text`` is the full
+    text the model would receive and is what the signals are read from, exactly as
+    ``adapter.route`` reads them on the production path. Sizing the turn from the
+    goal line alone previewed a context-heavy turn — one that in production hits a
+    ``min_context`` rule and routes to a long-context tier — as
+    ``est_input_tokens`` of about 6, matching no rule and deriving no requirement:
+    a plan that never existed, rendered on the second operator surface, which is
+    the same defect the missing clock was. ``preview.sized_from`` and
+    ``preview.prompt_chars`` name which text produced the answer.
+
     ``chain_plan`` is lifted to the TOP LEVEL as well as staying inside the
     trace, so a console reads one key and gets a stable shape even from a
     rules.py that produced no plan.
@@ -388,25 +558,65 @@ async def api_explain(
     Unlike ``RouterService.explain``, this route deliberately does NOT refuse on
     an invalid policy: a broken config is exactly when an operator needs to see
     where a task would land, and /status already reports the errors. An unusable
-    ``at`` IS refused (400), because that is the caller's input and answering a
-    different hour than the one asked would be a silently wrong audit record.
+    ``at`` or ``prompt_text`` IS refused (400), because those are the caller's own
+    input and answering a different hour — or a different SIZE — than the one asked
+    would be a silently wrong audit record.
+
+    A POST form of this route exists for one reason only: a query string cannot
+    carry the prompt this parameter exists for. See :func:`api_explain_post`.
     """
-    try:
-        when, at_source = _resolve_at(at)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    c = _load_config()
-    result = _explain_decision(task, c, when)
-    plan = _chain_plan_of(result)
-    _log.record(str(result.get("cause", "")), result.get("output", {}) or {},
-                matched_rule_id=result.get("matched_rule_id"),
-                task_preview=task[:120],
-                chain_plan=plan)
-    return {
-        **result,
-        "chain_plan": plan,
-        "evaluated_at": _evaluated_at(when, at_source, plan),
-    }
+    return _explain_payload(task, at, prompt_text)
+
+
+@router.post("/explain")
+async def api_explain_post(
+    # ``Any``, not ``Dict[str, Any]``: with a mapping annotation fastapi refuses a
+    # non-object body ITSELF, as a 422 with its own error shape, and this surface's
+    # refusals are 400s naming the offending field — the same wording the sidecar's
+    # /explain returns. One router must not answer the same bad body two ways.
+    payload: Annotated[Any, Body()] = None,
+):
+    """The SAME answer as the GET, through a wider pipe.
+
+    Identical handler, identical parameter names, identical validation — the body
+    is only a wider pipe for ``prompt_text``, exactly as it is on the sidecar. It
+    is not a convenience: the composed prompt this endpoint has to be sized from is
+    routinely 100k+ characters, which no query string survives (clients and proxies
+    cap a URL long before that), so without a body the parameter could not carry
+    the payload it exists for and the dashboard would be stuck previewing the goal
+    line — the very defect it was added to fix.
+
+    Still a READ. Nothing here mutates policy or breaker state; POST is the
+    transport, not a write.
+
+    An explicit JSON ``null`` reads as "not supplied", which is the one thing the
+    query-string form cannot express. Anything else non-string is REFUSED rather
+    than coerced (the 0 that ``or ""`` would have quietly turned into "now"), and a
+    body that is not a JSON object is a 400 — the same fail-closed treatment the
+    caller's own input gets everywhere else on this surface.
+    """
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=400, detail="request body must be a JSON object"
+        )
+    values: Dict[str, Optional[str]] = {}
+    for name in ("task", "at", "prompt_text"):
+        value = payload.get(name)
+        if value is None:  # absent, or an explicit null
+            values[name] = None
+            continue
+        if not isinstance(value, str):
+            raise HTTPException(status_code=400, detail=f"{name} must be a string")
+        values[name] = value
+    if values["task"] is None:
+        # ``task`` is REQUIRED on both forms — the GET's own required-parameter
+        # machinery refuses it too. Only its ABSENCE is refused here; an explicitly
+        # empty string is passed through exactly as the query-string form passes it,
+        # so the two forms cannot answer one input two ways.
+        raise HTTPException(status_code=400, detail="task is required")
+    return _explain_payload(values["task"], values["at"], values["prompt_text"])
 
 
 @router.post("/lint")

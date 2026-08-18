@@ -428,6 +428,25 @@ def test_derive_requirements_ignores_zero_est_input_tokens():
     assert derive_requirements({"est_input_tokens": 0}) == {}
 
 
+def test_a_float_or_string_token_estimate_truncates_on_purpose():
+    """The other half of the whole-hour rule, stated where it is harmless.
+
+    A signal vector decoded from JSON can carry `est_input_tokens` as a float or
+    a string, and truncating a token ESTIMATE toward zero costs nothing — the
+    1.25 safety margin dwarfs the fraction. An HOUR is a position rather than an
+    estimate, which is why `hours_utc`/`weekdays` refuse the same coercion (see
+    test_a_fractional_hour_is_a_diagnostic_and_an_inert_window): two coercions,
+    because the two values fail differently.
+    """
+    assert derive_requirements({"est_input_tokens": 100.9}) == {"min_context": 125}
+    assert derive_requirements({"est_input_tokens": "100"}) == {"min_context": 125}
+    assert derive_requirements({"est_input_tokens": "loads"}) == {}
+    assert derive_requirements({"est_input_tokens": [100]}) == {}
+    assert derive_requirements({}, {"min_context": "200000"}) == {
+        "min_context": 200_000
+    }
+
+
 def test_derive_requirements_maps_the_boolean_signals():
     reqs = derive_requirements(
         {
@@ -1559,14 +1578,18 @@ def test_prefer_does_not_promote_a_model_inside_its_own_expensive_window():
 
 
 def test_prefer_matches_model_ids_exactly():
-    chain = [{"model": "MiniMax-M3", "provider": "minimax"},
-             {"model": "kimi-k3", "provider": "moonshot"}]
-    assert apply_time_policy(
-        chain, {"prefer": ["minimax-m3"]}, _at(WED, 7)
-    )["promoted"] == []
-    assert apply_time_policy(
-        chain, {"prefer": ["MiniMax-M3"]}, _at(WED, 7)
-    )["promoted"] == ["MiniMax-M3"]
+    # MiniMax-M3 second, so a match has somewhere to move to: `promoted` reports
+    # a MOVE, and a model that never left index 0 could not evidence the match.
+    chain = [{"model": "kimi-k3", "provider": "moonshot"},
+             {"model": "MiniMax-M3", "provider": "minimax"}]
+    wrong_case = apply_time_policy(chain, {"prefer": ["minimax-m3"]}, _at(WED, 7))
+    assert wrong_case["promoted"] == []
+    assert [hop["model"] for hop in wrong_case["chain"]] == [
+        "kimi-k3", "MiniMax-M3",
+    ]
+    exact = apply_time_policy(chain, {"prefer": ["MiniMax-M3"]}, _at(WED, 7))
+    assert exact["promoted"] == ["MiniMax-M3"]
+    assert [hop["model"] for hop in exact["chain"]] == ["MiniMax-M3", "kimi-k3"]
 
 
 def test_time_policy_without_a_clock_is_a_no_op():
@@ -1603,7 +1626,7 @@ def test_time_policy_never_mutates_its_input_list():
 
 def test_time_policy_on_an_empty_chain_is_empty():
     assert apply_time_policy([], {"avoid_peak": ["zai"]}, _at(WED, 7)) == {
-        "chain": [], "demoted": [], "promoted": [],
+        "chain": [], "demoted": [], "promoted": [], "peak_priced": [],
     }
 
 
@@ -1627,6 +1650,13 @@ def test_both_primary_rails_demoted_at_once_still_leaves_a_chain():
 
 
 def test_a_chain_of_nothing_but_peaking_rails_keeps_every_hop():
+    """Every hop matched, so demotion has nowhere to move anything.
+
+    The permutation is the identity, which the report says outright: `demoted` is
+    empty because no elo moved, and `peak_priced` still names both because both
+    ARE charging more. Reporting them as demoted would describe a reordering that
+    never happened.
+    """
     chain = [
         {"model": "deepseek-v4-pro", "provider": "deepseek"},
         {"model": "glm-5.3", "provider": "zai"},
@@ -1637,7 +1667,8 @@ def test_a_chain_of_nothing_but_peaking_rails_keeps_every_hop():
     assert [hop["model"] for hop in result["chain"]] == [
         "deepseek-v4-pro", "glm-5.3",
     ]
-    assert result["demoted"] == ["deepseek-v4-pro", "glm-5.3"]
+    assert result["demoted"] == []
+    assert result["peak_priced"] == ["deepseek-v4-pro", "glm-5.3"]
 
 
 # ---------------------------------------------------------------------------
@@ -1645,14 +1676,22 @@ def test_a_chain_of_nothing_but_peaking_rails_keeps_every_hop():
 # ---------------------------------------------------------------------------
 
 def test_time_cap_excludes_an_over_cap_elo():
+    """The DOLLAR rail over the ceiling goes; the plan rail beside it stays.
+
+    glm-5.3's 2.0x is a plan-CREDIT multiplier, so a dollar ceiling has nothing to
+    say about it — it is reported as exempt and keeps its slot (see
+    test_time_cap_does_not_evict_a_plan_credit_rail for the full argument).
+    """
     chain = _mixed_chain()
     result = apply_time_cap(chain, 1.5, _at(WED, 7))
     assert [hop["model"] for hop in result["chain"]] == [
-        "gpt-5.6-luna", "mimo-v2.5",
+        "glm-5.3", "gpt-5.6-luna", "mimo-v2.5",
     ]
     assert result["capped"] == [
         {"model": "deepseek-v4-pro", "multiplier": 2.0},
-        {"model": "glm-5.3", "multiplier": 2.0},
+    ]
+    assert result["cap_exempt"] == [
+        {"model": "glm-5.3", "multiplier": 2.0, "billing_mode": "plan"},
     ]
     assert result["bypassed"] is False
 
@@ -1663,24 +1702,28 @@ def test_time_cap_is_a_ceiling_not_a_strict_bound():
         "deepseek-v4-pro", "glm-5.3", "gpt-5.6-luna", "mimo-v2.5",
     ]
     assert result["capped"] == []
+    # Nothing is over the ceiling, so nothing needed exempting: `cap_exempt`
+    # reports an exemption that MATTERED, not every plan rail in the chain.
+    assert result["cap_exempt"] == []
 
 
 def test_time_cap_bypasses_rather_than_emptying_the_chain():
     """A cost control must never be able to cause an outage."""
     chain = [
         {"model": "deepseek-v4-pro", "provider": "deepseek"},
-        {"model": "glm-5.3", "provider": "zai"},
+        {"model": "deepseek-v4-flash", "provider": "deepseek"},
     ]
     result = apply_time_cap(chain, 1.5, _at(WED, 7))
     assert result["bypassed"] is True
     assert [hop["model"] for hop in result["chain"]] == [
-        "deepseek-v4-pro", "glm-5.3",
+        "deepseek-v4-pro", "deepseek-v4-flash",
     ]
     # Diagnostics are RETAINED on the bypass path, same as the capability filter.
     assert result["capped"] == [
         {"model": "deepseek-v4-pro", "multiplier": 2.0},
-        {"model": "glm-5.3", "multiplier": 2.0},
+        {"model": "deepseek-v4-flash", "multiplier": 2.0},
     ]
+    assert result["cap_exempt"] == []
 
 
 def test_time_cap_without_a_clock_is_no_cap():
@@ -1724,7 +1767,7 @@ def test_time_cap_never_mutates_its_input_list():
 
 def test_time_cap_on_an_empty_chain_is_empty():
     assert apply_time_cap([], 1.5, _at(WED, 7)) == {
-        "chain": [], "capped": [], "bypassed": False,
+        "chain": [], "capped": [], "cap_exempt": [], "bypassed": False,
     }
 
 
@@ -1856,6 +1899,105 @@ def test_a_weekday_gated_window_is_inert_when_the_gate_is_malformed():
     assert price_multiplier("kimi-k3", _at(MON, 7), declared) == 1.0
 
 
+# ---------------------------------------------------------------------------
+# whole-hour window shapes: lint and the running path read one rule
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("hours", ([16.5, 24], [6, 9.5], [0.25, 6], [6, 10.75]))
+def test_a_fractional_hour_is_a_diagnostic_and_an_inert_window(hours):
+    """A window that lints CLEAN and then runs as different hours is the worst
+    of the two outcomes, so a fractional hour is refused like every other
+    malformed shape.
+
+    Asserted on BOTH sides at once, and that is the point of the test: the same
+    window must be reported by lint AND absent from the price the router charges.
+    `[16.5, 24]` used to truncate to `[16, 24)`, starting half an hour early with
+    nothing said about it; `[6, 9.5]` used to end at 9, silently excluding the
+    hour the operator meant to include.
+    """
+    window = {"hours_utc": hours, "multiplier": 2.0}
+    problems = price_window_diagnostics("kimi-k3", [window])
+    assert len(problems) == 1
+    assert "'hours_utc'" in problems[0]
+
+    # ...and the running path agrees: the window is absent, not reinterpreted.
+    declared = {"price_windows": [window]}
+    for hour in range(24):
+        assert price_multiplier("kimi-k3", _at(WED, hour), declared) == 1.0, hour
+    assert next_window_change("kimi-k3", _at(WED, 7), declared) is None
+
+
+def test_a_whole_hour_written_as_a_float_is_still_that_hour():
+    """YAML decides `16.0` is a float; the operator still wrote hour 16.
+
+    Nothing is lost truncating it, so it is accepted — the rule is "whole hour",
+    not "int-typed".
+    """
+    window = {"hours_utc": [16.0, 24], "multiplier": 2.0}
+    assert price_window_diagnostics("kimi-k3", [window]) == []
+    declared = {"price_windows": [window]}
+    assert price_multiplier("kimi-k3", _at(WED, 15), declared) == 1.0
+    assert price_multiplier("kimi-k3", _at(WED, 16), declared) == 2.0
+
+
+@pytest.mark.parametrize("weekdays", ([0, 1.5], [True], [0, None]))
+def test_a_weekday_that_is_not_a_whole_number_is_a_diagnostic_and_an_inert_gate(
+    weekdays,
+):
+    """`[0, 1.5]` is a typo, not Monday and Tuesday — same rule as the hours."""
+    window = {"hours_utc": [6, 10], "weekdays": weekdays, "multiplier": 2.0}
+    problems = price_window_diagnostics("kimi-k3", [window])
+    assert len(problems) == 1
+    assert "'weekdays'" in problems[0]
+    declared = {"price_windows": [window]}
+    for day in (MON, WED, SAT):
+        assert price_multiplier("kimi-k3", _at(day, 7), declared) == 1.0, day
+
+
+@pytest.mark.parametrize(
+    "hours",
+    (
+        [float("inf"), 24],
+        [0, float("inf")],
+        [float("nan"), 6],
+        ["16.5", 24],
+        [True, 10],
+        [None, 10],
+        [[6], 10],
+    ),
+)
+def test_an_hour_that_is_not_a_whole_number_is_a_diagnostic_not_an_exception(hours):
+    """Whatever the shape, a diagnostic — and never an exception out of lint.
+
+    `int(float("inf"))` RAISES OverflowError, so the whole-hour rule closes a
+    crash as well as a silently rewritten window; `True` is not an hour, and the
+    other shapes are the ordinary junk a hand-edited YAML file produces.
+    """
+    window = {"hours_utc": hours, "multiplier": 2.0}
+    assert price_window_diagnostics("kimi-k3", [window])
+    assert price_multiplier("kimi-k3", _at(WED, 7), {"price_windows": [window]}) == 1.0
+
+
+@pytest.mark.parametrize(
+    "hours", ("6-10", [6], [6, 10, 14], (), {"start": 6, "end": 10})
+)
+def test_hours_utc_that_is_not_a_pair_is_a_diagnostic_and_an_inert_window(hours):
+    """The shape is a two-element sequence or it is nothing — same both sides."""
+    window = {"hours_utc": hours, "multiplier": 2.0}
+    assert price_window_diagnostics("kimi-k3", [window])
+    assert price_multiplier("kimi-k3", _at(WED, 7), {"price_windows": [window]}) == 1.0
+
+
+def test_a_window_with_an_unusable_multiplier_prices_at_the_base_rate():
+    """Lint reports it and the running path ignores it — one reading, again."""
+    for multiplier in (0, -1.0, "double", None):
+        windows = [{"hours_utc": [6, 10], "multiplier": multiplier}]
+        assert price_window_diagnostics("kimi-k3", windows), multiplier
+        assert price_multiplier(
+            "kimi-k3", _at(WED, 7), {"price_windows": windows}
+        ) == 1.0, multiplier
+
+
 def test_a_price_declared_without_any_capability_stays_unknown():
     """One gate, not two: F4's rule decides pricing visibility as well."""
     declared = {"price_in": 1.0, "price_out": 2.0, "billing_mode": "metered"}
@@ -1900,9 +2042,414 @@ def test_cheapest_now_sorts_an_undescribable_elo_last_without_dropping_it():
 def test_time_cap_bypasses_when_only_unnamed_hops_would_survive():
     """A chain of hops nothing can name is not a route, so the cap gives way."""
     result = apply_time_cap(
-        [{"model": "glm-5.3", "provider": "zai"}, {"provider": "zai"}],
+        [{"model": "deepseek-v4-pro", "provider": "deepseek"},
+         {"provider": "deepseek"}],
         1.0, _at(WED, 7),
     )
     assert result["bypassed"] is True
-    assert [hop.get("model") for hop in result["chain"]] == ["glm-5.3", None]
-    assert result["capped"] == [{"model": "glm-5.3", "multiplier": 2.0}]
+    assert [hop.get("model") for hop in result["chain"]] == [
+        "deepseek-v4-pro", None,
+    ]
+    assert result["capped"] == [{"model": "deepseek-v4-pro", "multiplier": 2.0}]
+    assert result["cap_exempt"] == []
+
+
+# ---------------------------------------------------------------------------
+# a `time_cap` is a DOLLAR ceiling: one model of the unit across the module
+# ---------------------------------------------------------------------------
+
+def _t1_chain():
+    """The shipped T1 chain: plan primary, subscription seat, metered third rail.
+
+    Kept inline rather than read out of router.yaml — this is a unit test of the
+    rule, and the tier is here only because it is the shape the rule got wrong.
+    """
+    return [
+        {"model": "glm-4.7", "provider": "zai", "billing_mode": "plan"},
+        {"model": "gpt-5.6-luna", "provider": "openai-codex",
+         "billing_mode": "subscription"},
+        {"model": "mimo-v2.5", "provider": "xiaomi", "billing_mode": "metered"},
+    ]
+
+
+def test_time_cap_does_not_evict_a_plan_credit_rail():
+    """T1's shipped shape at 07:00 UTC on a weekday — the case the cap got wrong.
+
+    glm-4.7's 2.0x is a PLAN-CREDIT multiplier: it doubles a draw against an
+    allowance already bought and adds nothing to any dollar invoice, so
+    `max_multiplier: 1.5` — a dollar ceiling — has nothing to say about it.
+    Evicting it pushed every trivial mechanical edit in that four-hour block onto
+    a metered rail to avoid a cost that is already sunk, which is the trade
+    `cheapest_now`'s billing buckets refuse one function over.
+    """
+    result = apply_time_cap(_t1_chain(), 1.5, _at(WED, 7))
+    assert [hop["model"] for hop in result["chain"]] == [
+        "glm-4.7", "gpt-5.6-luna", "mimo-v2.5",
+    ]
+    assert result["capped"] == []
+    assert result["bypassed"] is False
+    # Silence would be the other half of the bug: the exemption is REPORTED, with
+    # the multiplier the operator's 1.5 was compared against.
+    assert result["cap_exempt"] == [
+        {"model": "glm-4.7", "multiplier": 2.0, "billing_mode": "plan"},
+    ]
+
+
+def test_the_same_cap_still_removes_a_dollar_rail_beside_the_plan_one():
+    """What a `time_cap` still DOES on a plan-primary tier, in one assertion."""
+    chain = [
+        {"model": "glm-4.7", "provider": "zai", "billing_mode": "plan"},
+        {"model": "deepseek-v4-flash", "provider": "deepseek",
+         "billing_mode": "metered"},
+    ]
+    result = apply_time_cap(chain, 1.5, _at(WED, 7))
+    assert [hop["model"] for hop in result["chain"]] == ["glm-4.7"]
+    assert [c["model"] for c in result["capped"]] == ["deepseek-v4-flash"]
+    assert [e["model"] for e in result["cap_exempt"]] == ["glm-4.7"]
+    assert result["bypassed"] is False
+
+
+def test_the_shipped_t1_cap_removes_nothing_at_any_hour():
+    """`apply_time_cap`'s prediction for T1, pinned so the docstring cannot rot.
+
+    With glm-4.7 exempt on its unit, T1's roster has nothing left that can exceed
+    1.5 at any hour: gpt-5.6-luna is flat and mimo-v2.5's only window is xiaomi's
+    0.8x DISCOUNT. So the cap removes nothing today — it is insurance against a
+    future dollar-priced hop — and the one thing it shows an operator is glm-4.7's
+    weekday credit peak, in `cap_exempt`.
+    """
+    for day in (MON, WED, FRI, SAT, SUN):
+        for hour in range(24):
+            result = apply_time_cap(_t1_chain(), 1.5, _at(day, hour))
+            label = (day, hour)
+            assert result["capped"] == [], label
+            assert result["bypassed"] is False, label
+            assert [hop["model"] for hop in result["chain"]] == [
+                hop["model"] for hop in _t1_chain()
+            ], label
+            in_zai_peak = day in (MON, WED, FRI) and 6 <= hour < 10
+            assert [e["model"] for e in result["cap_exempt"]] == (
+                ["glm-4.7"] if in_zai_peak else []
+            ), label
+
+
+@pytest.mark.parametrize("mode", sorted(BILLING_MODES) + ["not-a-mode"])
+def test_the_cap_and_the_cheapest_now_bucket_share_one_model_of_the_unit(mode):
+    """`_BILLING_RANK` decides the bucket AND whether a dollar cap may speak.
+
+    Two readings of "what unit does this rail bill in" would be two answers, and
+    a chain ordered on one model of cost and filtered on another is the defect
+    this test exists to prevent. So the assertion is driven off the same table the
+    ordering uses, not off a list of modes copied into the test.
+    """
+    hop = {
+        "model": "house-model", "provider": "somewhere",
+        "context_window": 200_000, "billing_mode": mode,
+        "price_in": 1.0, "price_out": 2.0,
+        "price_windows": [{"hours_utc": [6, 10], "multiplier": 3.0}],
+    }
+    flat = {"model": "kimi-k3", "provider": "moonshot"}
+    result = apply_time_cap([hop, flat], 1.5, _at(WED, 7))
+
+    bills_dollars = (
+        caps_module._BILLING_RANK.get(mode) == caps_module._BUCKET_DOLLARS
+    )
+    if bills_dollars:
+        assert [c["model"] for c in result["capped"]] == ["house-model"]
+        assert result["cap_exempt"] == []
+        assert [h["model"] for h in result["chain"]] == ["kimi-k3"]
+    else:
+        assert result["capped"] == []
+        assert [h["model"] for h in result["chain"]] == [
+            "house-model", "kimi-k3",
+        ]
+        expected_mode = mode if mode in BILLING_MODES else "unknown"
+        assert result["cap_exempt"] == [
+            {"model": "house-model", "multiplier": 3.0,
+             "billing_mode": expected_mode},
+        ]
+    assert result["bypassed"] is False
+
+
+def test_an_all_plan_chain_at_peak_never_needs_the_bypass():
+    """Unit-awareness can only ADD survivors, so it makes the bypass rarer."""
+    chain = [
+        {"model": "glm-5.3", "provider": "zai"},
+        {"model": "glm-4.7", "provider": "zai"},
+    ]
+    result = apply_time_cap(chain, 1.0, _at(WED, 7))
+    assert result["bypassed"] is False
+    assert result["capped"] == []
+    assert [hop["model"] for hop in result["chain"]] == ["glm-5.3", "glm-4.7"]
+    assert [e["model"] for e in result["cap_exempt"]] == ["glm-5.3", "glm-4.7"]
+    assert all(e["billing_mode"] == "plan" for e in result["cap_exempt"])
+
+
+def test_a_cap_cannot_drop_an_elo_whose_billing_mode_nothing_can_describe():
+    """Unknown fails OPEN and says so: dropping it could empty a chain."""
+    result = apply_time_cap(
+        [{"model": "mystery-elo", "provider": "nowhere"},
+         {"model": "kimi-k3", "provider": "moonshot"}],
+        0.5, _at(WED, 12),
+    )
+    assert [hop["model"] for hop in result["chain"]] == ["mystery-elo"]
+    assert [c["model"] for c in result["capped"]] == ["kimi-k3"]
+    assert result["cap_exempt"] == [
+        {"model": "mystery-elo", "multiplier": 1.0, "billing_mode": "unknown"},
+    ]
+
+
+# The hours that matter on the shipped registry: both primary rails peaking,
+# deepseek alone, flat, xiaomi's discount, the weekend (zai off, deepseek on),
+# and no clock at all.
+_TIME_MATRIX = (
+    _at(WED, 7), _at(WED, 2), _at(WED, 12), _at(WED, 20), _at(SAT, 7), None,
+)
+
+
+def _cap_matrix_chains():
+    return (
+        _t1_chain(),
+        _mixed_chain(),
+        # every hop metered and peaking at once — the bypass path
+        [{"model": "deepseek-v4-pro", "provider": "deepseek"},
+         {"model": "deepseek-v4-flash", "provider": "deepseek"}],
+        # one dollar rail, one credit rail, both peaking
+        [{"model": "deepseek-v4-pro", "provider": "deepseek"},
+         {"model": "glm-5.3", "provider": "zai"}],
+        # a hop nothing can name beside one nothing can describe
+        [{"provider": "zai"}, {"model": "mystery-elo", "provider": "nowhere"}],
+    )
+
+
+def test_the_cap_report_and_the_chain_it_returns_never_disagree():
+    """The invariant, asserted as an AGREEMENT rather than from one side.
+
+    `capped` is what the console renders as removed and `cap_exempt` as kept, so
+    each has to match the chain that will actually be attempted — at every hour,
+    for every ceiling, including the bypass path where `capped` is retained as a
+    diagnostic and nothing is removed after all.
+    """
+    for chain in _cap_matrix_chains():
+        declared_of = {
+            hop["model"]: hop for hop in chain if hop.get("model")
+        }
+        named = set(declared_of)
+        for cap in (0.5, 1.0, 1.5, 2.0, 3.0, None, "junk"):
+            for when in _TIME_MATRIX:
+                result = apply_time_cap(chain, cap, when)
+                label = (cap, when, sorted(named))
+                kept = [
+                    hop["model"] for hop in result["chain"] if hop.get("model")
+                ]
+                capped = [entry["model"] for entry in result["capped"]]
+                exempt = [entry["model"] for entry in result["cap_exempt"]]
+
+                # A cost control must not be able to cause an outage.
+                assert result["chain"], label
+                # One elo, one verdict.
+                assert not set(capped) & set(exempt), label
+                # Nothing leaves the chain unaccounted for.
+                assert named == set(kept) | set(capped), label
+                # An exempt elo is still attemptable — that is what exempt means.
+                assert set(exempt) <= set(kept), label
+
+                if result["bypassed"]:
+                    assert result["chain"] == list(chain), label
+                    assert capped, label
+                else:
+                    # A capped elo is GONE from the chain that will run.
+                    assert not set(capped) & set(kept), label
+
+                ceiling = caps_module._as_float(cap)
+                if when is None or ceiling is None:
+                    assert (capped, exempt) == ([], []), label
+                    assert result["chain"] == list(chain), label
+                    continue
+
+                # Every reported multiplier is the one the registry answers with,
+                # every verdict is over the ceiling, and the unit decides which
+                # list it landed in.
+                for entry in result["capped"] + result["cap_exempt"]:
+                    model = entry["model"]
+                    assert entry["multiplier"] == price_multiplier(
+                        model, when, declared_of[model]
+                    ), (label, model)
+                    assert entry["multiplier"] > ceiling, (label, model)
+                for entry in result["capped"]:
+                    assert caps_module._billing_mode_of(
+                        entry["model"], declared_of[entry["model"]]
+                    ) in ("metered", "subscription"), (label, entry)
+                for entry in result["cap_exempt"]:
+                    assert entry["billing_mode"] not in (
+                        "metered", "subscription"
+                    ), (label, entry)
+
+
+# ---------------------------------------------------------------------------
+# `demoted` is a MOVE, `peak_priced` is a PRICE
+# ---------------------------------------------------------------------------
+
+def test_the_shipped_t3_shape_reports_the_price_and_not_a_move():
+    """T3/T4: both named providers are ALREADY the trailing hops.
+
+    Demotion preserves relative order, so the permutation is the identity. The
+    old report named both elos as demoted at 07:00 UTC while the chain was
+    byte-identical to 15:00 UTC — the console renders that as "moved to the end",
+    a claim about an order nothing changed. `peak_priced` says the true thing
+    (they are charging double) and `demoted` stays empty because nothing moved.
+    """
+    chain = [
+        {"model": "gpt-5.6-terra", "provider": "openai-codex"},
+        {"model": "deepseek-v4-pro", "provider": "deepseek"},
+        {"model": "glm-5.3", "provider": "zai"},
+    ]
+    result = apply_time_policy(
+        chain, {"avoid_peak": ["deepseek", "zai"]}, _at(WED, 7)
+    )
+    assert [hop["model"] for hop in result["chain"]] == [
+        hop["model"] for hop in chain
+    ]
+    assert result["demoted"] == []
+    assert result["promoted"] == []
+    assert result["peak_priced"] == ["deepseek-v4-pro", "glm-5.3"]
+
+    # ...and the fix router.yaml's own T3 note recommends — a flat-priced hop
+    # behind the pair — makes the same policy report a real move.
+    with_flat = chain + [{"model": "mimo-v2.5", "provider": "xiaomi"}]
+    moved = apply_time_policy(
+        with_flat, {"avoid_peak": ["deepseek", "zai"]}, _at(WED, 7)
+    )
+    assert [hop["model"] for hop in moved["chain"]] == [
+        "gpt-5.6-terra", "mimo-v2.5", "deepseek-v4-pro", "glm-5.3",
+    ]
+    assert moved["demoted"] == ["deepseek-v4-pro", "glm-5.3"]
+    assert moved["peak_priced"] == ["deepseek-v4-pro", "glm-5.3"]
+
+
+def test_peak_priced_names_only_the_providers_avoid_peak_named():
+    """It is this policy's match, not a survey of every peak in the chain."""
+    result = apply_time_policy(_mixed_chain(), {"avoid_peak": ["zai"]}, _at(WED, 7))
+    assert result["peak_priced"] == ["glm-5.3"]
+    assert result["demoted"] == ["glm-5.3"]
+    # deepseek-v4-pro is charging 2.0x at this hour too; this tier did not name it,
+    # so the policy has nothing to say about it and does not pretend otherwise.
+    assert in_expensive_window("deepseek-v4-pro", _at(WED, 7))
+
+
+def test_prefer_reports_nothing_when_the_preferred_elo_is_already_first():
+    """`promoted` is the mirror of `demoted`: a position, not a match."""
+    chain = _mixed_chain()
+    result = apply_time_policy(
+        chain, {"prefer": ["deepseek-v4-pro"]}, _at(WED, 12)
+    )
+    assert [hop["model"] for hop in result["chain"]] == [
+        hop["model"] for hop in chain
+    ]
+    assert result["promoted"] == []
+    assert result["demoted"] == []
+
+
+def test_time_policy_tolerates_a_junk_hop_in_the_chain():
+    """Positions are tracked, so an unusable hop keeps its slot and its silence."""
+    chain = [
+        "junk",
+        {"model": "deepseek-v4-pro", "provider": "deepseek"},
+        {"provider": "zai"},
+    ]
+    result = apply_time_policy(chain, {"avoid_peak": ["deepseek"]}, _at(WED, 7))
+    assert result["chain"] == [chain[0], chain[2], chain[1]]
+    assert result["demoted"] == ["deepseek-v4-pro"]
+    assert result["peak_priced"] == ["deepseek-v4-pro"]
+
+
+def test_time_policy_moves_every_instance_of_a_repeated_model():
+    """A model id is reported once; both of its hops still move."""
+    chain = [
+        {"model": "deepseek-v4-pro", "provider": "deepseek"},
+        {"model": "glm-4.6", "provider": "zai"},
+        {"model": "deepseek-v4-pro", "provider": "deepseek"},
+    ]
+    result = apply_time_policy(chain, {"avoid_peak": ["deepseek"]}, _at(WED, 7))
+    assert [hop["model"] for hop in result["chain"]] == [
+        "glm-4.6", "deepseek-v4-pro", "deepseek-v4-pro",
+    ]
+    assert result["demoted"] == ["deepseek-v4-pro"]
+
+
+def test_both_time_stages_return_exactly_their_documented_keys():
+    """Every branch, including the no-ops: a shape that drifts between the
+    working path and the degrade path is a key a consumer reads as absent."""
+    policy_shape = {"chain", "demoted", "promoted", "peak_priced"}
+    cap_shape = {"chain", "capped", "cap_exempt", "bypassed"}
+    peaking = [{"model": "deepseek-v4-pro", "provider": "deepseek"},
+               {"model": "deepseek-v4-flash", "provider": "deepseek"}]
+
+    for result in (
+        apply_time_policy(_mixed_chain(), {"avoid_peak": ["zai"]}, _at(WED, 7)),
+        apply_time_policy(_mixed_chain(), {"avoid_peak": ["zai"]}),   # no clock
+        apply_time_policy(_mixed_chain(), "not a mapping", _at(WED, 7)),
+        apply_time_policy([], {"avoid_peak": ["zai"]}, _at(WED, 7)),
+    ):
+        assert set(result) == policy_shape
+
+    for result in (
+        apply_time_cap(_mixed_chain(), 1.5, _at(WED, 7)),
+        apply_time_cap(_mixed_chain(), 1.5),                         # no clock
+        apply_time_cap(_mixed_chain(), "junk", _at(WED, 7)),
+        apply_time_cap([], 1.5, _at(WED, 7)),
+        apply_time_cap(peaking, 1.5, _at(WED, 7)),                   # bypass path
+    ):
+        assert set(result) == cap_shape
+
+
+def test_every_move_the_policy_reports_is_a_move_the_returned_chain_made():
+    """The agreement, asserted from the chain rather than from the match.
+
+    Whatever the policy matched, `demoted` may only name an elo that ended up
+    LATER than it started and `promoted` only one that ended up EARLIER — and an
+    identity permutation must report neither. `peak_priced` is checked the other
+    way round: it must be a superset of `demoted` (a move implies a price match)
+    and every elo in it must really be in an expensive window right now.
+    """
+    policies = (
+        {"avoid_peak": ["deepseek", "zai"]},
+        {"avoid_peak": ["zai"]},
+        {"avoid_peak": ["deepseek"], "prefer": ["mimo-v2.5"]},
+        {"avoid_peak": ["deepseek", "zai"], "prefer": ["glm-5.3"]},
+        {"prefer": ["deepseek-v4-pro"]},
+        {},
+    )
+    for chain in _cap_matrix_chains():
+        declared_of = {hop["model"]: hop for hop in chain if hop.get("model")}
+        source = [hop["model"] for hop in chain if hop.get("model")]
+        for policy in policies:
+            avoid = {
+                name.strip().lower() for name in policy.get("avoid_peak", [])
+            }
+            for when in _TIME_MATRIX:
+                result = apply_time_policy(chain, policy, when)
+                label = (policy, when, source)
+                ordered = [
+                    hop["model"] for hop in result["chain"] if hop.get("model")
+                ]
+
+                # Never a filter: the chain is always a permutation.
+                assert len(result["chain"]) == len(chain), label
+                assert sorted(ordered) == sorted(source), label
+
+                first_in = {model: source.index(model) for model in source}
+                first_out = {model: ordered.index(model) for model in ordered}
+                for model in result["demoted"]:
+                    assert first_out[model] > first_in[model], (label, model)
+                for model in result["promoted"]:
+                    assert first_out[model] < first_in[model], (label, model)
+                if ordered == source:
+                    assert result["demoted"] == [], label
+                    assert result["promoted"] == [], label
+
+                assert set(result["demoted"]) <= set(result["peak_priced"]), label
+                for model in result["peak_priced"]:
+                    entry = declared_of[model]
+                    assert in_expensive_window(model, when, entry), (label, model)
+                    assert entry.get("provider", "").lower() in avoid, (label, model)

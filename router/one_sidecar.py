@@ -55,7 +55,7 @@ _CONSOLE_PATH = (
 # Every other route stays single-method, so every historical 405 is unchanged.
 _GET_ROUTES = frozenset(
     {"/health", "/status", "/policy", "/blocklist", "/liveness",
-     "/compaction", "/lint", "/explain", "/routes"}
+     "/compaction", "/lint", "/explain", "/routes", "/capabilities"}
 )
 _POST_ROUTES = frozenset(
     {"/explain", "/plan", "/apply", "/apply/confirm", "/apply/revert"}
@@ -316,6 +316,21 @@ class SidecarApp:
             return 200, self._service.blocklist()
         if path == "/liveness":
             return 200, self._service.liveness()
+        if path == "/capabilities":
+            # The model catalogue the console's price audit reads: per model the
+            # capability facts, the billing mode, the published prices (``None``
+            # where nothing is published, which is NOT the same as 0.0) and the
+            # declared price windows. Token-gated like every other data route, and
+            # a catalogue — it carries no credential and serves an allowlisted set
+            # of registry fields, never the registry entry whole.
+            #
+            # The console calls this on EVERY load. While the route did not exist
+            # the call 404'd, and the panel did not go blank: it rendered every elo
+            # as capability-unverified and every rail as publishing no per-token
+            # price, which is the opposite of the truth for the metered ones. A
+            # read path this cheap is not optional when its absence is a false
+            # answer rather than a missing one.
+            return 200, self._service.capabilities()
         if path == "/compaction":
             try:
                 aggressiveness = int((query.get("aggr") or ["50"])[0])
