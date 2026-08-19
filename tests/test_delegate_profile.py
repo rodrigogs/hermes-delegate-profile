@@ -16,7 +16,10 @@ at register time, so these tests construct it the same way, passing a fake
 
 import json
 import os
+import sqlite3
 import sys
+import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -361,27 +364,180 @@ def test_hook_silent_for_delegate_task_without_profile(caplog):
 
 
 # ---------------------------------------------------------------------------
-# Opt-in E2E: real cross-profile spawn
+# Opt-in E2E: real cross-profile spawn, witnessed by the child's own state.db
 # ---------------------------------------------------------------------------
+# Rails come and go on the host; the *routing* claim of this plugin does not. So
+# the E2E splits its assertions in two:
+#
+#   1. Rail-INDEPENDENT (always asserted): the child hermes really ran, ran under
+#      the profile that was asked for, and left its transcript in THAT profile's
+#      state.db and in no other. That is the claim the plugin exists to make, and
+#      the session row is written before the first token is billed, so a 429
+#      cannot fake it in either direction.
+#   2. Rail-DEPENDENT: success is True and a result came back. When every
+#      fallback target is out of quota this is an `xfail`, not a `pass` — the
+#      plugin behaved and the provider did not, and reporting that as green
+#      would be reporting a rail test that never got a rail.
+#
+# The old version of this test took ONE profile (default 'tester') and asserted
+# only the handler's own echo (success/profile/elapsed_s), which the handler can
+# produce without the child ever having been the right profile. Both target
+# profiles are covered now, and the witness is the child's database.
+#
+# `_no_real_spawn` (autouse, see conftest) is asked to confirm it stood down for
+# this test and that argv actually reached the real `_spawn`, so a stubbed run
+# can never report itself as an E2E.
+
+_E2E_DEFAULT_TARGETS = "coder,reviewer"
+
+
+def _e2e_targets():
+    """Profiles to spawn into: DELEGATE_PROFILE_E2E_PROFILES, else coder+reviewer.
+
+    ``DELEGATE_PROFILE_E2E_PROFILE`` (singular) is still honoured, so an existing
+    one-off invocation keeps working.
+    """
+    raw = (
+        os.environ.get("DELEGATE_PROFILE_E2E_PROFILES")
+        or os.environ.get("DELEGATE_PROFILE_E2E_PROFILE")
+        or _E2E_DEFAULT_TARGETS
+    )
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def _hermes_home():
+    """The live Hermes home, resolved the way the plugin resolves it for a child."""
+    env_home = os.environ.get("HERMES_HOME")
+    if env_home:
+        return Path(env_home)
+    try:
+        from hermes_constants import get_hermes_home
+
+        return Path(get_hermes_home())
+    except Exception:
+        return Path.home() / ".hermes"
+
+
+def _profile_state_db(profile):
+    """Path of ``profile``'s state.db. ``default`` is implicit and lives at the root."""
+    home = _hermes_home()
+    if profile == "default":
+        return home / "state.db"
+    return home / "profiles" / profile / "state.db"
+
+
+def _marker_sessions(profile, marker, since):
+    """``(session_id, profile_name)`` for sessions started at/after ``since`` whose
+    transcript carries ``marker``.
+
+    Scoped to recent sessions deliberately: it keeps the lookup indexed on a live
+    box (the coder profile's state.db is ~160MB / ~20k messages) and it keeps the
+    answer about *this* spawn instead of some earlier one that used the same goal.
+    """
+    db = _profile_state_db(profile)
+    if not db.exists():
+        return []
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        recent = {
+            row[0]: row[1]
+            for row in conn.execute(
+                "SELECT id, profile_name FROM sessions WHERE started_at >= ?",
+                (since,),
+            )
+        }
+        if not recent:
+            return []
+        placeholders = ",".join("?" * len(recent))
+        rows = conn.execute(
+            "SELECT DISTINCT session_id FROM messages "
+            f"WHERE content LIKE ? AND session_id IN ({placeholders})",
+            [f"%{marker}%", *recent],
+        ).fetchall()
+    finally:
+        conn.close()
+    return [(sid, recent[sid]) for (sid,) in rows]
+
+
+def _let_child_write_live_state_db(monkeypatch):
+    """Let the spawned child persist to the real state.db this test then reads.
+
+    ``hermes_state._ensure_test_isolation`` refuses EVERY production state.db
+    opened from a pytest context, and it decides that from ``PYTEST_CURRENT_TEST``
+    / ``PYTEST_VERSION`` — which ``_spawn`` hands to the child along with the rest
+    of this process's environment. So without an opt-out the child spawns fine,
+    answers fine, and silently persists nothing: the run has no session, no title
+    and no transcript, and the witness this test depends on cannot exist. Measured
+    on the deployment box: the child echoed its marker and both profiles' state.db
+    gained no row.
+
+    ``HERMES_STATE_DB_GUARD_BYPASS`` is the opt-out that guard documents for this
+    exact shape ("for a spawned child process, export ...=1 in its environment").
+    It is injected into the CHILD's env only, by wrapping whatever ``_spawn`` is
+    live (the conftest guard's stub, so the dispatch is still recorded): the test
+    process keeps the guard armed, so a stray ``SessionDB`` here still fails loudly.
+    """
+    guarded_spawn = dp._spawn
+
+    def _spawn_with_live_state_db(cmd, env):
+        return guarded_spawn(cmd, {**env, "HERMES_STATE_DB_GUARD_BYPASS": "1"})
+
+    monkeypatch.setattr(dp, "_spawn", _spawn_with_live_state_db)
+
+
 @pytest.mark.skipif(
     os.environ.get("DELEGATE_PROFILE_E2E") != "1",
     reason="set DELEGATE_PROFILE_E2E=1 to run a real cross-profile spawn",
 )
-def test_e2e_cross_profile_spawn():
-    """Real spawn into a profile that exists. Requires the profile + a working
-    model for that profile. Skipped unless DELEGATE_PROFILE_E2E=1."""
-    target = os.environ.get("DELEGATE_PROFILE_E2E_PROFILE", "tester")
+@pytest.mark.parametrize("target", _e2e_targets())
+def test_e2e_cross_profile_spawn(target, _no_real_spawn, monkeypatch):
+    """Real spawn into ``target``, witnessed by that profile's own state.db.
+
+    Requires the profile to exist; skipped unless DELEGATE_PROFILE_E2E=1.
+    """
     if not dp._profile_exists(target):
         pytest.skip(f"profile {target!r} does not exist")
+    _let_child_write_live_state_db(monkeypatch)
+    marker = "DPE2E-" + uuid.uuid4().hex[:12].upper()
+    # The two places a mis-routed child could land instead: the caller's own
+    # state.db (that is where the inline delegate_task path writes) and a sibling
+    # target's. Both have to stay clean for "ran as `target`" to mean anything.
+    caller = "default"
+    bystanders = [p for p in (*_e2e_targets(), caller) if p != target]
+    since = time.time() - 1
+
     # current_profile intentionally differs from target to force the spawn path.
-    h = dp._make_handler("default", lambda a: json.dumps({}))
+    h = dp._make_handler(caller, lambda a: json.dumps({}))
     out = json.loads(
-        h({"goal": "Reply with exactly: PONG", "profile": target, "timeout": 120})
+        h({"goal": f"Reply with exactly: {marker}", "profile": target, "timeout": 240})
     )
+
+    # --- the dispatch was real, not the guard's stub ------------------------
+    assert _no_real_spawn.allow_real_dispatch is True
+    assert _no_real_spawn.blocked == [], _no_real_spawn.blocked
+    assert _no_real_spawn.dispatched, "no argv reached the real _spawn"
+    for argv in _no_real_spawn.dispatched:
+        assert argv[1:3] == ["-p", target], argv
+
+    # --- handler contract ---------------------------------------------------
+    assert out["profile"] == target, out
+    assert isinstance(out["elapsed_s"], (int, float)), out
+
+    # --- state.db: it ran as `target`, and nowhere else ---------------------
+    hits = _marker_sessions(target, marker, since)
+    assert hits, f"no session in {target}'s state.db carries {marker}: {out}"
+    assert {row[1] for row in hits} == {target}, hits
+    for bystander in bystanders:
+        assert _marker_sessions(bystander, marker, since) == [], bystander
+
+    # --- rail-dependent half ------------------------------------------------
+    if out.get("failure_kind") == "quota_exhausted":
+        pytest.xfail(
+            f"profile {target} routed correctly (session {hits[0][0]}) but every "
+            f"fallback target reported quota/credit exhaustion: {out.get('error')}"
+        )
     assert out.get("success") is True, out
-    assert out["profile"] == target
     assert "result" in out
-    assert isinstance(out["elapsed_s"], (int, float))
 
 
 # ===========================================================================
