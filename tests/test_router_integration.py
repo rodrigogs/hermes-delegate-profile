@@ -3,6 +3,12 @@
 Tests the _route_task() bridge function and the full delegation path
 when profile is omitted/auto. Uses mocks for ctx.llm (classifier) and
 the subprocess spawn (no real hermes process needed).
+
+The spawn mock is conftest's autouse ``_no_real_spawn``; it is named as a
+parameter wherever a test depends on it so the dependency is visible, and
+test_spawn_guard_applies_to_the_module_under_test asserts it actually landed on
+this file's ``dp`` — for a long time it did not, and the handler tests dispatched
+real agents while reading as if they were hermetic.
 """
 
 import json
@@ -100,6 +106,20 @@ def isolated_router_config(dp):
         yield
 
 
+def test_spawn_guard_applies_to_the_module_under_test(dp, _no_real_spawn):
+    """The guard must stub the copy these tests call, not a second copy of it.
+
+    ``dp`` is built with spec_from_file_location + exec_module and is never put in
+    sys.modules, so a guard that looks itself up by module name finds nothing (or
+    worse, finds one of the other registered copies) and is a no-op here while
+    still reporting green. Assert the property — the stub is on THIS object — so
+    that regressing the lookup fails a test instead of quietly resuming real
+    dispatches.
+    """
+    assert _no_real_spawn.stub_for(dp) is dp._spawn
+    assert _no_real_spawn.stub_for(dp) is not None
+
+
 def test_plugin_package_routes_without_checkout_on_sys_path(tmp_path):
     """The installed package must resolve its bundled router from any cwd."""
     code = f"""
@@ -153,6 +173,21 @@ def test_package_loader_executes_relative_router_import_paths(monkeypatch, tmp_p
     monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
     assert module._LOADED_AS_PACKAGE is True
+
+    # This copy is created inside the test body, after conftest's _no_real_spawn
+    # has already stubbed everything it could see, so it is the one plugin copy in
+    # the suite that still holds the real `_spawn`. Nothing below dispatches — only
+    # _make_classify_fn / _route_task / _record_breaker_outcome are exercised — so
+    # raising is stronger than faking: if this test ever grows a code path that
+    # dispatches, it fails here instead of SSHing to a billed rail.
+    def _no_dispatch(*args, **kwargs):
+        raise AssertionError(
+            "this test must not spawn; the setup-time guard cannot reach a copy "
+            "registered in the test body"
+        )
+
+    monkeypatch.setattr(module, "_spawn", _no_dispatch)
+    monkeypatch.setattr(module, "_run_watched", _no_dispatch)
 
     config = copy.deepcopy(_TEST_ROUTER_CONFIG)
     monkeypatch.setattr(module, "_load_router_config", lambda: config)
@@ -409,53 +444,83 @@ class TestHandlerIntegration:
         parsed = json.loads(result)
         assert parsed.get("failure_kind") == "unknown_profile"
 
-    def test_auto_profile_triggers_router(self, dp):
-        """profile='auto' triggers the router."""
+    def test_auto_profile_triggers_router(self, dp, _no_real_spawn, monkeypatch):
+        """profile='auto' routes to T4 and dispatches THAT target, hermetically.
+
+        Both this test and test_no_profile_triggers_router used to accept any of
+        ("unknown_profile", "quota_exhausted", "agent_error", "hard_timeout", None),
+        on the stated grounds that "the spawn itself is not stubbed here, so any
+        downstream provider verdict is acceptable". That premise was false in the
+        way that matters: the conftest guard meant to stub the spawn looked the
+        module up as ``sys.modules["delegate_profile_plugin"]``, a name the ``dp``
+        fixture never registers, so it silently stubbed nothing and these tests
+        dispatched real ``hermes -p coder chat`` subprocesses against a billed rail.
+
+        Each widening was therefore the wrong instinct twice over. It converted a
+        real signal — that rail returns no verdict on that box — into a pass, and
+        it did so for a value the router itself treats as a stall: breaker.py rates
+        ``hard_timeout`` at weight 1, "could be slow, could be broken". Nothing
+        else was watching either, because _TEST_ROUTER_CONFIG disables the
+        auto-breaker, so accepting the verdict here was the only place it could
+        have been noticed. A set of five accepted outcomes is not an assertion.
+
+        With the guard fixed the spawn is a stub, so the only remaining source of
+        variance is whether the routed profile exists on the host — the axis that
+        actually produced the old two-box split (``unknown_profile`` on a dev
+        machine without a ``coder`` profile, a live provider verdict on the WSL box
+        with one). It is a precondition of what this test claims, not a finding, so
+        it is pinned rather than tolerated. The profile-absent branch keeps its own
+        test in test_router_failure_falls_through, which asserts unknown_profile.
+        """
+        monkeypatch.setattr(dp, "_profile_exists", lambda profile: True)
+
         def mock_classify(task, features):
             return {"tier": "T4", "confidence": "high"}
 
         handler = self._make_handler(dp, classify_fn=mock_classify)
         result = handler({"goal": "Debug race condition", "profile": "auto"})
         parsed = json.loads(result)
-        # These tests assert only that the ROUTER ran and produced a target; the
-        # spawn itself is not stubbed here, so any downstream provider verdict is
-        # acceptable. "agent_error" joined the list when _reported_agent_failure
-        # learned to recognise a terminal provider failure that exits zero - the
-        # dispatch really does fail in this environment, and reporting that is the
-        # correct behaviour, not a regression.
-        # "hard_timeout" joined for the same reason "agent_error" did, and it was
-        # found the same way: by running this suite on the WSL box it deploys to
-        # rather than only on the dev machine, where the dispatched subprocess hit
-        # the watchdog instead of returning a provider verdict. A timeout is
-        # evidence the router ran — it chose a target and something downstream was
-        # dispatched — which is the only thing these tests claim to assert.
-        assert parsed.get("failure_kind") in (
-            "unknown_profile", "quota_exhausted", "agent_error", "hard_timeout", None
-        )
+        assert parsed["success"] is True
+        assert parsed.get("failure_kind") is None
+        # The router's chosen target, not just "a target": T4 -> claude-opus/anthropic.
+        assert parsed["profile"] == "coder"
+        assert parsed["model"] == "claude-opus"
+        assert parsed["provider"] == "anthropic"
+        # ...and that target is what the dispatch carried, intercepted by the guard
+        # rather than executed. An empty list here means the handler answered
+        # without dispatching; a real process would never appear in it at all.
+        assert _no_real_spawn.blocked == [[
+            dp._resolve_hermes_bin(), "-p", "coder", "chat",
+            "-q", "Debug race condition", "-m", "claude-opus",
+            "--provider", "anthropic",
+        ]]
 
-    def test_no_profile_triggers_router(self, dp):
-        """Omitting profile triggers the router (same as auto)."""
+    def test_no_profile_triggers_router(self, dp, _no_real_spawn, monkeypatch):
+        """Omitting profile triggers the router (same as auto), here routing to T1.
+
+        Same contract as test_auto_profile_triggers_router — see its docstring for
+        why the accepted-value list is gone — on the other tier, so the assertion
+        pins the classifier's tier through to the argv instead of merely observing
+        that something was dispatched.
+        """
+        monkeypatch.setattr(dp, "_profile_exists", lambda profile: True)
+
         def mock_classify(task, features):
             return {"tier": "T1", "confidence": "high"}
 
         handler = self._make_handler(dp, classify_fn=mock_classify)
         result = handler({"goal": "Rename getCwd in src/utils.py"})
         parsed = json.loads(result)
-        # These tests assert only that the ROUTER ran and produced a target; the
-        # spawn itself is not stubbed here, so any downstream provider verdict is
-        # acceptable. "agent_error" joined the list when _reported_agent_failure
-        # learned to recognise a terminal provider failure that exits zero - the
-        # dispatch really does fail in this environment, and reporting that is the
-        # correct behaviour, not a regression.
-        # "hard_timeout" joined for the same reason "agent_error" did, and it was
-        # found the same way: by running this suite on the WSL box it deploys to
-        # rather than only on the dev machine, where the dispatched subprocess hit
-        # the watchdog instead of returning a provider verdict. A timeout is
-        # evidence the router ran — it chose a target and something downstream was
-        # dispatched — which is the only thing these tests claim to assert.
-        assert parsed.get("failure_kind") in (
-            "unknown_profile", "quota_exhausted", "agent_error", "hard_timeout", None
-        )
+        assert parsed["success"] is True
+        assert parsed.get("failure_kind") is None
+        assert parsed["profile"] == "coder"
+        assert parsed["model"] == "glm-5.2-fast"   # T1
+        assert parsed["provider"] == "zai"
+        assert _no_real_spawn.blocked == [[
+            dp._resolve_hermes_bin(), "-p", "coder", "chat",
+            "-q", "Rename getCwd in src/utils.py", "-m", "glm-5.2-fast",
+            "--provider", "zai",
+        ]]
 
     def test_router_failure_falls_through(self, dp, monkeypatch):
         """If router fails, delegation proceeds without crashing.

@@ -1,13 +1,48 @@
 """Unit tests for auto-breaker (router/breaker.py and router/blocklist.py)."""
 
 import json
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from router.breaker import BreakerState, _Entry, _Event, FAILURE_WEIGHTS
-from router.blocklist import Blocklist
+from router.blocklist import Blocklist, _state_path
+
+
+# ---------------------------------------------------------------------------
+# State isolation — applies to every test in this module
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def hermetic_state(tmp_path, monkeypatch):
+    """Point breaker state at a throwaway HERMES_HOME and return its path.
+
+    The Blocklist tests build a real Blocklist with the auto-breaker enabled, so
+    each one loads and persists breaker-state.json at whatever `_state_path()`
+    resolves from HERMES_HOME — which defaults to the operator's own `~/.hermes`.
+    This module pinned nothing and each of those tests opened by *deleting* that
+    file: measured on a plain run, 26 write events against the live state (10
+    unlink, 8 mkdir, 8 atomic replaces), leaving OPEN cooldowns for models that do
+    not exist (`flaky@prov`) in the file that decides whether a billed rail gets
+    retried.
+
+    Autouse and module-wide rather than a call at the top of each test, so
+    isolation is a property of the file: a test added later is covered without
+    remembering to ask, and nothing has to delete anything to start clean. The pure
+    state-machine tests never touch disk and do not need it, but pinning costs
+    nothing and "no test here can resolve to the operator's home" is the rule worth
+    holding unconditionally.
+
+    The assert is the load-bearing part: it asks the module where it will write, so
+    an isolation that stopped redirecting — renamed env var, a test that re-points
+    HERMES_HOME itself — fails here instead of reporting green.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    path = _state_path()
+    assert tmp_path.resolve() in path.resolve().parents, (
+        f"breaker state escaped isolation: {path} is not under {tmp_path}"
+    )
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -258,20 +293,27 @@ BLOCKLIST_CONFIG = {
 class TestBlocklistWithBreaker:
     """Blocklist integration with BreakerState."""
 
-    @staticmethod
-    def _clean_state():
-        from router.blocklist import _state_path
-        sp = _state_path()
-        if sp.exists():
-            sp.unlink()
+    def test_state_write_lands_under_the_temp_home(self, hermetic_state):
+        """A real persist lands in the throwaway home, and only there.
+
+        The fixture asserts where a write is *aimed*; this asserts where one
+        *lands*, so the isolation cannot be vacuous — `record_failure` genuinely
+        writes (even below the threshold), and dropping the HERMES_HOME pin puts
+        this exact file back on top of the operator's cooldowns.
+        """
+        bl = Blocklist(BLOCKLIST_CONFIG)
+        assert bl.record_failure("canary", "temp-prov", "ttfb_stall") is False
+        assert hermetic_state.exists()
+        state = json.loads(hermetic_state.read_text(encoding="utf-8"))
+        assert "canary@temp-prov" in state["entries"]
+        # The one file this fixture exists to keep out of the way.
+        assert Path.home() / ".hermes" not in hermetic_state.parents
 
     def test_config_ban_still_fires(self):
-        self._clean_state()
         bl = Blocklist(BLOCKLIST_CONFIG)
         assert bl.is_blocked("gpt-5.6-sol", "openai-codex") is True
 
     def test_breaker_blocks_after_trip(self):
-        self._clean_state()
         bl = Blocklist(BLOCKLIST_CONFIG)
         model, provider = "some-flaky", "test-prov"
         tripped = bl.record_failure(model, provider, "ttfb_stall")
@@ -281,12 +323,10 @@ class TestBlocklistWithBreaker:
         assert bl.is_blocked(model, provider) is True
 
     def test_config_ban_fires_with_breaker_cooldown(self):
-        self._clean_state()
         bl = Blocklist(BLOCKLIST_CONFIG)
         assert bl.is_blocked("gpt-5.6-sol", "openai-codex") is True
 
     def test_breaker_disabled(self):
-        self._clean_state()
         config = {
             "blocklist": {
                 "manual_ban": [],
@@ -301,13 +341,11 @@ class TestBlocklistWithBreaker:
         assert not bl.is_blocked("m", "p")
 
     def test_fallback_chain_unchanged(self):
-        self._clean_state()
         bl = Blocklist(BLOCKLIST_CONFIG)
         assert bl.fallback_for("gpt-5.6-sol") == "glm-5.2"
         assert bl.fallback_for("glm-5.2") is None
 
     def test_record_success_resets_breaker(self):
-        self._clean_state()
         bl = Blocklist(BLOCKLIST_CONFIG)
         model, provider = "flaky", "prov"
         bl.record_failure(model, provider, "ttfb_stall")
@@ -316,19 +354,20 @@ class TestBlocklistWithBreaker:
         bl.record_success(model, provider)
 
     def test_breaker_status(self):
-        self._clean_state()
         bl = Blocklist(BLOCKLIST_CONFIG)
         model, provider = "flaky2", "prov2"
         bl.record_failure(model, provider, "ttfb_stall")
         bl.record_failure(model, provider, "ttfb_stall")
         status = bl.breaker_status()
-        assert len(status) >= 1
+        # Exactly one: `>= 1` was only ever needed because the shared real state
+        # could hold anything. A per-test HERMES_HOME means ours is the only entry,
+        # so a leak from elsewhere now shows up here instead of being tolerated.
+        assert len(status) == 1
         our_entry = [s for s in status if s["model_key"] == f"{model}@{provider}"]
         assert len(our_entry) == 1
         assert our_entry[0]["state"] == "OPEN"
 
     def test_breaker_state_serialization(self):
-        self._clean_state()
         bl = Blocklist(BLOCKLIST_CONFIG)
         model, provider = "flaky3", "prov3"
         bl.record_failure(model, provider, "ttfb_stall")
@@ -338,14 +377,16 @@ class TestBlocklistWithBreaker:
         assert f"{model}@{provider}" in state["entries"]
         assert state["entries"][f"{model}@{provider}"]["state"] == "OPEN"
 
-    def test_fail_closed_no_state_file(self):
-        self._clean_state()
+    def test_fail_closed_no_state_file(self, hermetic_state):
+        # A fresh HERMES_HOME per test is what makes the name true — assert it,
+        # since the whole point is that a read path never creates the file.
+        assert not hermetic_state.exists()
         bl = Blocklist(BLOCKLIST_CONFIG)
         assert bl.is_blocked("gpt-5.6-sol", "openai-codex") is True
         assert bl.is_blocked("claude-opus", "anthropic") is False
+        assert not hermetic_state.exists()
 
     def test_blocked_model_not_blocked_wrong_provider(self):
-        self._clean_state()
         bl = Blocklist(BLOCKLIST_CONFIG)
         assert bl.is_blocked("gpt-5.6-sol", "anthropic") is False
 

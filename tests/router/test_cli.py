@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import io
 import json
+import os
 import random
 import re
 import sys
@@ -488,6 +489,17 @@ def time_config_file(tmp_path):
 #: "today's weekday" cannot accidentally pass against ``_MON_PEAK``'s 0, and an
 #: odd minute/second so a truncating bug in the hour-only forms is visible.
 _FROZEN_NOW = datetime(2026, 8, 19, 13, 47, 31, tzinfo=timezone.utc)
+
+#: The genuine ``router.cli._utc_now``, bound at import time — before any fixture
+#: can pin it. The one test that must read a real clock calls THIS function
+#: instead of lifting the pin. It used to lift it with ``monkeypatch.undo()``, and
+#: because pytest's ``monkeypatch`` is function-scoped and SHARED with the autouse
+#: conftest fixtures, that undo also reverted THEIR patches: for the rest of that
+#: test the plugin's real ``_spawn``/``_run_watched`` were reachable and
+#: HERMES_ROUTE_TRACE_FILE was unset, i.e. a real agent dispatch to a billed rail
+#: and a write to the operator's live trace were both possible again. Holding the
+#: function itself keeps the undo blast radius at zero.
+_REAL_UTC_NOW = cli._utc_now
 
 
 @pytest.fixture(autouse=True)
@@ -1583,7 +1595,7 @@ class TestCLIParser:
 
 
 class TestCLIClockRead:
-    def test_the_single_clock_read_is_aware_and_utc(self, monkeypatch):
+    def test_the_single_clock_read_is_aware_and_utc(self, _no_real_spawn):
         """``_utc_now`` is the ONE clock read in the router, and it reads UTC.
 
         The only test in this file that touches the real clock, and it asserts
@@ -1591,11 +1603,33 @@ class TestCLIClockRead:
         being excluded, because every downstream reader (``_utc_parts``,
         ``capabilities.price_multiplier``) would then normalise a different hour
         than the operator's box is in and price the wrong window.
+
+        It reads the clock by calling ``_REAL_UTC_NOW`` — the function object,
+        bound before ``_frozen_clock`` could pin it — and so patches nothing and
+        undoes nothing. The previous ``monkeypatch.undo()`` reverted every patch on
+        the SHARED function-scoped fixture, the autouse conftest guards included,
+        which is why the closing assertions check that those guards are still in
+        force: an ``undo()`` creeping back in must fail here rather than silently
+        re-arm a real agent dispatch for the rest of this test.
         """
-        monkeypatch.undo()  # this one function is the clock; do not pin it
-        now = cli._utc_now()
+        # The captured object is the router's clock, not some fixture's lambda —
+        # a pin that landed before this binding would read `_frozen_clock.<locals>`.
+        assert _REAL_UTC_NOW.__module__ == "router.cli"
+        assert _REAL_UTC_NOW.__qualname__ == "_utc_now"
+
+        now = _REAL_UTC_NOW()
         assert now.tzinfo is not None
         assert now.utcoffset() == timedelta(0)
+
+        # Nothing was lifted: the file's pin still answers for the code under test,
+        assert cli._utc_now() == _FROZEN_NOW
+        # the spawn guard still holds the seam on every live plugin copy,
+        assert _no_real_spawn.modules, "the spawn guard stubbed no plugin copy"
+        for mod in _no_real_spawn.modules:
+            assert mod._spawn is _no_real_spawn.stub_for(mod)
+        assert _no_real_spawn.blocked == []
+        # and routing decisions still land in tmp_path, not the operator's trace.
+        assert os.environ.get("HERMES_ROUTE_TRACE_FILE")
 
 
 class TestCLIAtParsing:
