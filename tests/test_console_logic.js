@@ -26,6 +26,9 @@ function fakeDom() {
       id, className: '', textContent: '', value: '', title: '',
       hidden: false, readOnly: false, max: '0',
       style: {}, dataset: {}, attrs: {}, children: [],
+      // Listeners are recorded so a test can dispatch the exact click a user
+      // would — a button that exists but does nothing is the defect under test.
+      _listeners: {},
       classList: {
         _set: new Set(),
         add(c) { this._set.add(c); },
@@ -36,13 +39,14 @@ function fakeDom() {
       append(...k) { node.children.push(...k); },
       appendChild(k) { node.children.push(k); return k; },
       removeChild(k) { node.children = node.children.filter((x) => x !== k); },
-      addEventListener() {},
+      addEventListener(type, fn) { node._listeners[type] = fn; },
       setAttribute(n, v) { node.attrs[n] = String(v); },
       getAttribute(n) { return node.attrs[n]; },
       querySelector(sel) { return get(`${id}${sel}`); },
       querySelectorAll() { return []; },
       getBoundingClientRect() { return { width: 900, height: 300, left: 0, right: 900 }; },
       clientWidth: 900,
+      scrollIntoView(opts) { node._scrolledTo = opts || null; },
     };
     Object.defineProperty(node, 'firstChild', { get: () => node.children[0] || null });
     return node;
@@ -2097,6 +2101,182 @@ test('a probe refused by an invalid policy explains which of the two is broken',
   assert.match(text, /router policy is invalid/i);
   assert.match(text, /Fix the errors/, 'the next action, not a status code');
   assert.equal(dom.get('chainPlan').children.length, 0, 'and no stale plan survives a refused probe');
+});
+
+// ── LINT → FIX: the only actionable message becomes an action ──────────
+// The defect under test: the one message that asks the operator to DO
+// something was dead text, and the one friendly control stayed enabled while
+// knowing it would be refused. These tests pin the fix end to end — the
+// backend supplies error_targets beside validation_errors, and the console
+// must turn the first one into a jump.
+
+function shadowTarget(over) {
+  return Object.assign({
+    code: 'shadowed', later_index: 6, later_id: 'review-request',
+    earlier_index: 0, earlier_id: 'broad',
+    message: "rule 'review-request' is shadowed by earlier rule 'broad'",
+  }, over || {});
+}
+function shadowStatus(target) {
+  const t = shadowTarget(target);
+  return { validation_errors: [t.message], error_targets: [t] };
+}
+// wire() is stripped from the harness, so the tab machinery is driven through
+// its named function: give querySelectorAll a real table to act on.
+function tabWire(dom) {
+  const tabs = ['health', 'pipeline', 'routes'].map((name) => {
+    const t = dom.get(`tab-${name}`);
+    t.dataset.tab = name;
+    return t;
+  });
+  const screens = ['panel-health', 'panel-pipeline', 'panel-routes'].map((name) => dom.get(name));
+  dom.document.querySelectorAll = (sel) => sel === '.tab' ? tabs : (sel === '.screen' ? screens : []);
+  return { tabs, screens };
+}
+
+test('the invalid-policy line grows a jump button when the error names a rule', () => {
+  const { api, dom } = loadConsole();
+  api.state.status = shadowStatus();
+  api.renderWarnings();
+  const text = flat(dom.get('warnings'));
+  assert.match(text, /Policy invalid — 1 error\./);
+  assert.match(text, /Ver regra 7/, 'the button names the row by its sheet ordinal (index 6 + 1)');
+});
+
+test('a config-level error (no target) stays dead text — no invented button', () => {
+  const { api, dom } = loadConsole();
+  api.state.status = { validation_errors: ["missing mandatory 'default' routing"], error_targets: [null] };
+  api.renderWarnings();
+  assert.doesNotMatch(flat(dom.get('warnings')), /Ver regra/, 'no rule exists to jump to');
+});
+
+test('an invalid policy disables Route it, says why, and gates the result space', () => {
+  const { api, dom } = loadConsole();
+  api.state.status = shadowStatus();
+  api.renderWarnings();
+  const go = dom.get('routeGo');
+  assert.equal(go.disabled, true);
+  assert.match(go.title, /bloqueado pela política inválida/);
+  const gate = flat(dom.get('probeResult'));
+  assert.match(gate, /bloqueado pela política inválida — consertar/);
+  assert.match(gate, /Ver regra 7/, 'the fix path rides in the result space too');
+});
+
+test('a fixed policy re-enables Route it and clears the stale gate', () => {
+  const { api, dom } = loadConsole();
+  api.state.status = shadowStatus();
+  api.renderWarnings();
+  assert.equal(dom.get('routeGo').disabled, true);
+  assert.notEqual(flat(dom.get('probeResult')), '');
+
+  api.state.status = { validation_errors: [], error_targets: [] };
+  api.renderWarnings();
+  assert.equal(dom.get('routeGo').disabled, false);
+  assert.equal(dom.get('routeGo').title, '');
+  assert.equal(flat(dom.get('probeResult')), '', 'the refusal must not outlive the policy');
+});
+
+test('a probe refuses locally when the policy is invalid — no round-trip', async () => {
+  let called = false;
+  const { api, dom } = loadConsole({
+    fetch: () => { called = true; return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') }); },
+  });
+  api.state.loading = false;
+  api.state.status = shadowStatus();
+  await api.probe('anything at all');
+  assert.equal(called, false, 'the refusal is known before asking — Enter cannot bypass a disabled button');
+  assert.match(flat(dom.get('probeResult')), /bloqueado pela política inválida/);
+  assert.match(flat(dom.get('probeResult')), /Ver regra 7/);
+});
+
+test('selectTab flips the aria state and the visible screen', () => {
+  const { api, dom } = loadConsole();
+  const { tabs, screens } = tabWire(dom);
+  api.selectTab('pipeline');
+  assert.equal(tabs[1].getAttribute('aria-selected'), 'true');
+  assert.equal(tabs[0].getAttribute('aria-selected'), 'false');
+  assert.equal(screens[1].classList.contains('active'), true);
+  assert.equal(screens[0].classList.contains('active'), false);
+});
+
+test('the jump button drives the whole fix path: tab, hit row, inspector, scroll', () => {
+  const { api, dom } = loadConsole();
+  const { screens } = tabWire(dom);
+  // Seven rows so the sheet's ordinal for index 6 really is "regra 7".
+  api.state.policy = { rules: [
+    { id: 'broad', when: {}, then: { model: 'T2' } },
+    { id: 'r2', when: {}, then: { model: 'T2' } },
+    { id: 'r3', when: {}, then: { model: 'T2' } },
+    { id: 'r4', when: {}, then: { model: 'T2' } },
+    { id: 'r5', when: {}, then: { model: 'T2' } },
+    { id: 'r6', when: {}, then: { model: 'T2' } },
+    { id: 'review-request', when: {}, then: { model: 'T4' } },
+  ] };
+  api.state.status = shadowStatus();
+  api.renderWarnings();
+  const line = dom.get('warnings').children[0];
+  const btn = line.children.find((c) => c.textContent === 'Ver regra 7');
+  assert.ok(btn, 'the warn-line carries the button');
+  btn._listeners.click();
+
+  assert.equal(screens[1].classList.contains('active'), true, 'the Pipeline tab is now visible');
+  assert.equal(api.state.lintRule, 'review-request');
+  const row = dom.get('sheet').children.find((c) => c.dataset.ruleId === 'review-request');
+  assert.ok(row, 'the dead row exists on the re-rendered sheet');
+  assert.equal(row.classList.contains('hit'), true, 'marked like a probe winner');
+  assert.equal(row.getAttribute('aria-current'), 'true');
+  assert.equal(api.state.selected, 'rule:review-request', 'the inspector opened on the rule');
+  assert.match(flat(dom.get('inspector')), /review-request/);
+  assert.deepEqual(plain(row._scrolledTo), { block: 'center' }, 'and the row was scrolled into view');
+});
+
+test('a probe that follows clears the lint mark — one accent, one answer', async () => {
+  const { api, dom } = loadConsole({
+    fetch: () => Promise.resolve({
+      ok: true, status: 200,
+      text: () => Promise.resolve(JSON.stringify({
+        mode: 'deterministic_dry_run', requires_classifier: false,
+        decision: { matched_rule_id: 'r2', output: { model: 'gpt-5.6-terra' } },
+      })),
+    }),
+  });
+  api.state.loading = false;
+  api.state.policy = { rules: [
+    { id: 'broad', when: {}, then: { model: 'T2' } },
+    { id: 'r2', when: {}, then: { model: 'T2' } },
+    { id: 'review-request', when: {}, then: { model: 'T4' } },
+  ] };
+  // 1. The policy is broken; the operator jumps to the dead row.
+  api.state.status = shadowStatus({ later_index: 2 });
+  api.renderWarnings();
+  dom.get('warnings').children[0]
+    .children.find((c) => c.textContent === 'Ver regra 3')._listeners.click();
+  assert.equal(api.state.lintRule, 'review-request');
+
+  // 2. The policy is fixed and refreshed; the mark survives the re-render,
+  //    like the probe winner's does.
+  api.state.status = { validation_errors: [], error_targets: [] };
+  api.renderWarnings();
+  api.renderSheet();
+  assert.equal(
+    dom.get('sheet').children.find((c) => c.dataset.ruleId === 'review-request')
+      .classList.contains('hit'),
+    true, 'the lint answer survives a refresh');
+
+  // 3. A probe asks its own question; the old answer must not compete.
+  await api.probe('a new task');
+  assert.equal(api.state.lintRule, null);
+  const marked = dom.get('sheet').children.filter((c) => c.classList.contains('hit'));
+  assert.equal(marked.length, 1, 'exactly one row wears the accent');
+  assert.equal(marked[0].dataset.ruleId, 'r2', 'and it is the probe winner');
+});
+
+test('the warnings line is sticky, so the fix path cannot scroll out of view', () => {
+  const { style } = consoleStyle();
+  assert.match(style, /#warnings\s*\{[^}]*?position: sticky; top: 0/,
+    'the only actionable message pins to the scrollport top');
+  assert.match(style, /#warnings\s*\{[^}]*?background: var\(--bg\)/,
+    'and paints the plane, so scrolled content never reads through it');
 });
 
 test('a fresh probe clears the previous task\'s chain plan before asking', async () => {

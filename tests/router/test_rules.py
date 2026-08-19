@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from router import rules as rules_mod
-from router.rules import match, lint, lint_warnings, explain, plan_chain, resolve_tiers
+from router.rules import match, lint, lint_findings, lint_warnings, explain, plan_chain, resolve_tiers
 
 try:
     from router import signals as signals_mod
@@ -2237,6 +2237,91 @@ class TestShadowContainmentEdges:
             "rule 'not-hard' is shadowed by earlier rule 'neither'"
             in lint(_rules_cfg(*decidable))
         )
+
+
+# ---------------------------------------------------------------------------
+# lint_findings: structured jump targets beside the write gate
+# ---------------------------------------------------------------------------
+
+class TestLintFindings:
+    """lint_findings() must agree with lint() pair for pair.
+
+    The console's "Ver regra N" button is built FROM these findings. A finding
+    that named a pair lint() never reported would send the operator to a rule
+    that is not broken; a shadow lint() reports but findings miss would leave
+    the only actionable message dead again — the defect this surface exists to
+    close.
+    """
+
+    def test_finding_shape_for_the_shadowed_pair(self):
+        config = _rules_cfg(
+            {"id": "broad", "when": {"has_code": {"eq": True}}, "then": {"model": "T2"}},
+            {"id": "narrow", "when": {"has_code": {"eq": True}}, "then": {"model": "T1"}},
+        )
+        assert lint_findings(config) == [{
+            "code": "shadowed",
+            "later_index": 1,
+            "later_id": "narrow",
+            "earlier_index": 0,
+            "earlier_id": "broad",
+            "message": "rule 'narrow' is shadowed by earlier rule 'broad'",
+        }]
+
+    def test_message_is_the_exact_write_gate_string(self):
+        """The alignment contract: each finding's message IS the lint() error.
+
+        service.py pairs the two lists by this string; if they ever disagree,
+        the console's jump button points at nothing.
+        """
+        config = _rules_cfg(
+            {"id": "huge", "when": {"est_input_tokens": {"gt": 400000}},
+             "then": {"model": "T3"}},
+            {"id": "gigantic", "when": {"est_input_tokens": {"gt": 800000}},
+             "then": {"model": "T4"}},
+        )
+        errors = lint(config)
+        assert errors == ["rule 'gigantic' is shadowed by earlier rule 'huge'"]
+        assert [f["message"] for f in lint_findings(config)] == errors
+
+    def test_one_finding_per_shadowed_pair_in_report_order(self):
+        """Three identical rows: every later row shadows every earlier one."""
+        config = _rules_cfg(
+            {"id": "a", "when": {"has_code": {"eq": True}}, "then": {"model": "T2"}},
+            {"id": "b", "when": {"has_code": {"eq": True}}, "then": {"model": "T1"}},
+            {"id": "c", "when": {"has_code": {"eq": True}}, "then": {"model": "T4"}},
+        )
+        findings = lint_findings(config)
+        assert [(f["later_id"], f["earlier_id"]) for f in findings] == [
+            ("b", "a"), ("c", "a"), ("c", "b"),
+        ]
+
+    def test_clean_config_yields_no_findings(self):
+        config = _rules_cfg(
+            {"id": "gigantic", "when": {"est_input_tokens": {"gt": 800000}},
+             "then": {"model": "T4"}},
+            {"id": "huge", "when": {"est_input_tokens": {"gt": 400000}},
+             "then": {"model": "T3"}},
+        )
+        assert lint(config) == []
+        assert lint_findings(config) == []
+
+    def test_shipped_policy_yields_no_findings(self):
+        assert lint_findings(ROUTER_CONFIG) == []
+
+    def test_invalid_root_shapes_yield_no_findings(self):
+        assert lint_findings("just-a-string") == []
+        assert lint_findings({}) == []
+        assert lint_findings({"rules": 5}) == []
+
+    def test_malformed_rows_are_skipped_not_raised(self):
+        """A non-dict row is lint()'s own error; findings must skip it, not die."""
+        config = _rules_cfg(
+            {"id": "broad", "when": {"has_code": {"eq": True}}, "then": {"model": "T2"}},
+            "not-a-rule",
+            {"id": "narrow", "when": {"has_code": {"eq": True}}, "then": {"model": "T1"}},
+        )
+        findings = lint_findings(config)
+        assert [(f["later_id"], f["earlier_id"]) for f in findings] == [("narrow", "broad")]
 
 
 # ---------------------------------------------------------------------------

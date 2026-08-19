@@ -781,6 +781,22 @@
     .warn-line.bad { color: var(--text); }
     .warn-line.bad::before { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-bg); }
 
+    /* ── the warnings line stays where the operator can act on it ─────────
+       The invalid-policy warning is the only actionable message on the screen
+       and it sits at the TOP of the scrolling body, so the moment the operator
+       scrolls down to the rule the warning names, the warning itself is gone —
+       the exact dead end this console was rebuilt to remove. Sticky pins the
+       whole warnings stack to the scrollport top; the last warn-line's own
+       border-bottom is the cut, and the padding keeps a beat of plane below it
+       so content sliding under never touches the dot or the text. */
+    #warnings {
+      position: sticky; top: 0; z-index: 2;
+      background: var(--bg);
+      padding-bottom: 18px;
+    }
+    #warnings .warn-line { margin-bottom: 0; }
+    #warnings .warn-line + .warn-line { margin-top: 18px; }
+
     /* The window-stale disclosure on the Pipeline sheet: NOT a warning. Nothing
        is wrong — the recorded decisions just describe an older window than the
        current policy, so the per-rule counts do not exist for it. Same line
@@ -1104,7 +1120,12 @@
         <form class="probe" id="probeForm">
           <input id="probeTask" class="probe-input" autocomplete="off"
                  placeholder="Try a task — “Debug a race condition in the cache”" aria-label="Task to route">
-          <button class="btn" type="submit">Route it</button>
+          <!-- id=routeGo: the ONLY submit on the screen, and the one control
+               that must not promise a dry run a broken policy will refuse. Its
+               disabled state and the reason in its title are owned by
+               renderWarnings, which reads the same status cycle that draws the
+               invalid-policy banner. -->
+          <button class="btn" type="submit" id="routeGo">Route it</button>
         </form>
         <!-- THE OTHER HALF OF THE QUESTION: HOW BIG IS THE TURN. Production sizes a
              turn from the text the child really receives — context PLUS goal — and
@@ -1226,6 +1247,11 @@
         mode: 'reading',   // 'reading' or 'editing'
         health: null, status: null, policy: null, blocklist: null,
         liveness: null, compaction: null, routes: [],
+        // The rule a lint "Ver regra N" jump pointed at. Like probeRule, it is
+        // what renderSheet's line() marks .hit + aria-current from — but it is
+        // a SEPARATE answer to a SEPARATE question ("which row is broken?"),
+        // so a probe that follows must not erase it by claiming its own winner.
+        lintRule: null,
         // The model capability registry, when the sidecar publishes one, and the
         // chain plan for the last probed task. Both are optional — a task bound for
         // the classifier has no resolved chain, and an older sidecar reports neither
@@ -2416,6 +2442,78 @@
       }
 
       // ── warnings: only conditions that need an operator ─────────────
+      // The two read helpers are the ONE reading of the lint payload: the
+      // banner, the probe gate and the jump button all derive from the same
+      // validation_errors / error_targets pair, so a rename on the sidecar
+      // breaks here once and everywhere at once.
+      function lintErrors() {
+        const st = state.status || {};
+        return Array.isArray(st.validation_errors) ? st.validation_errors : [];
+      }
+      function lintTargets() {
+        const st = state.status || {};
+        return Array.isArray(st.error_targets) ? st.error_targets : [];
+      }
+
+      // The ONE fix path for a shadowed rule: jump to the Pipeline sheet, mark
+      // the dead row the way a probe marks its winner, open its inspector.
+      // pickBind works in reading mode too — the inspector shows the rule's
+      // current JSON — because navigation is not an edit.
+      function showLintTarget(target) {
+        if (!target || typeof target !== 'object') return;
+        const laterId = target.later_id == null ? '' : String(target.later_id);
+        const ruleIndex = Number.isInteger(target.later_index) ? target.later_index : -1;
+        if (!laterId || ruleIndex < 0) return;
+        state.lintRule = laterId;
+        selectTab('pipeline');
+        pickBind({ id: `rule:${laterId}`, name: laterId, bind: 'rule', ruleIndex });
+        // Scroll AFTER the tab is visible and the sheet re-rendered: a hidden
+        // panel scrolls nowhere, and pickBind rebuilds the rows it points at.
+        const row = findRuleRow(laterId);
+        if (row && typeof row.scrollIntoView === 'function') {
+          row.scrollIntoView({ block: 'center' });
+        }
+      }
+
+      // "Ver regra N": N is the row's ordinal on the sheet (1-based), which is
+      // what the operator reads down the Stage 0 column.
+      function verRuleButton(target) {
+        const btn = el('button', 'btn', `Ver regra ${target.later_index + 1}`);
+        btn.type = 'button';
+        btn.addEventListener('click', () => showLintTarget(target));
+        return btn;
+      }
+
+      // The sheet row for a rule id. Iterates children rather than querying, so
+      // the row is found by the identity the sheet itself stamped (dataset.ruleId),
+      // never by parsing a selector out of an id an operator may have typed.
+      function findRuleRow(ruleId) {
+        const box = $('sheet');
+        const wanted = String(ruleId);
+        const children = box.children || [];
+        for (const child of children) {
+          if (child.dataset && child.dataset.ruleId === wanted) return child;
+        }
+        return null;
+      }
+
+      // The probe's answer BEFORE it asks: a disabled submit button still lets
+      // Enter submit the form, so the result space carries the refusal and the
+      // fix path preemptively, in the same line language as the banner.
+      function renderProbeGate() {
+        const box = $('probeResult');
+        if (!box) return;
+        clear(box);
+        const gate = el('div', 'warn-line');
+        gate.dataset.gate = 'lint';
+        gate.append(el('strong', '', 'bloqueado pela política inválida — consertar'));
+        const target = lintTargets()[0];
+        if (target && typeof target.later_index === 'number') {
+          gate.append(verRuleButton(target));
+        }
+        box.append(gate);
+      }
+
       function renderWarnings() {
         const box = $('warnings');
         clear(box);
@@ -2430,13 +2528,36 @@
         // answering its own questions: RouterService.explain refuses outright, so
         // the probe and the chain plan are dead until it passes. The errors are
         // named here, where the operator is, rather than left in the lint endpoint.
-        const errors = Array.isArray(state.status && state.status.validation_errors)
-          ? state.status.validation_errors : [];
+        const errors = lintErrors();
+        const go = $('routeGo');
+        if (go) {
+          go.disabled = errors.length > 0;
+          // A disabled button still needs to say why, on hover.
+          go.title = errors.length > 0
+            ? 'bloqueado pela política inválida — consertar'
+            : '';
+        }
+        const probeResult = $('probeResult');
         if (errors.length) {
           const line = el('div', 'warn-line');
           line.append(el('strong', '', `Policy invalid — ${errors.length} error${errors.length === 1 ? '' : 's'}.`),
                       el('span', '', `Dry runs are refused until it passes lint. First: ${String(errors[0])}`));
+          // The error shown is errors[0], so its target is the one worth a
+          // button. Without a target (a config-level error) the line stays the
+          // dead text it always was — there is no row to jump to.
+          const target = lintTargets()[0];
+          if (target && typeof target.later_index === 'number') {
+            line.append(verRuleButton(target));
+          }
           box.append(line);
+          renderProbeGate();
+        } else if (probeResult && probeResult.firstChild
+                   && probeResult.firstChild.dataset
+                   && probeResult.firstChild.dataset.gate === 'lint') {
+          // The gate was ours; a policy that now passes must not leave it
+          // claiming otherwise. A probe's verdict never carries the marker, so
+          // it survives a refresh untouched.
+          clear(probeResult);
         }
         if (state.mode === 'editing' && !csrf()) {
           const line = el('div', 'warn-line');
@@ -2938,7 +3059,11 @@
           // in probe(), so clicking Edit or Refresh rebuilt the sheet with no .hit while
           // #probeResult still named the winning rule — the verdict and the list
           // disagreed until the operator probed again.
-          if (opts.id && !opts.synthetic && String(opts.id) === state.probeRule) {
+          // The lint target gets the SAME mark: it is the answer to a different
+          // question ("which row is broken?"), and the accent means "the row you
+          // asked about" either way.
+          if (opts.id && !opts.synthetic
+              && (String(opts.id) === state.probeRule || String(opts.id) === state.lintRule)) {
             step.classList.add('hit');
             step.setAttribute('aria-current', 'true');
           }
@@ -3955,10 +4080,17 @@
         const box = $('probeResult');
         clear(box);
         // A stale chain plan under a fresh verdict would describe the previous
-        // task, so the plan is dropped the moment a new probe starts.
+        // task, so the plan is dropped the moment a new probe starts. The lint
+        // mark answered its question; a probe asks its own.
         state.chainPlan = null;
+        state.lintRule = null;
         renderChainPlan(null);
         if (!task) return;
+        // The gate BEFORE 'Routing…': renderWarnings already disables the
+        // button, but Enter in the input submits the form no matter what a
+        // disabled button says, and the sidecar would refuse anyway — so the
+        // round-trip would only replace this message with the same refusal.
+        if (lintErrors().length) { renderProbeGate(); return; }
         const contextBox = $('probeContext');
         const req = explainRequest(task, contextBox ? contextBox.value : '');
         // A context has to be POSTed (see explainRequest), and a POST through the
@@ -4739,19 +4871,24 @@
         renderAll();
       }
 
+      // One tab switch, callable from anywhere: the lint jump (showLintTarget)
+      // and the tab clicks in wire() reach the same place, so a keyboard user
+      // and a button land on the same screen state.
+      function selectTab(name) {
+        document.querySelectorAll('.tab').forEach((t) => {
+          const on = t.dataset.tab === name;
+          t.setAttribute('aria-selected', String(on));
+          // Only the selected tab is in the tab order; arrows move between
+          // them. This is what role="tablist" promises a screen reader.
+          t.tabIndex = on ? 0 : -1;
+        });
+        document.querySelectorAll('.screen')
+          .forEach((s) => s.classList.toggle('active', s.id === `panel-${name}`));
+      }
+
       function wire() {
         const tabs = [...document.querySelectorAll('.tab')];
-        const select = (tab) => {
-          tabs.forEach((t) => {
-            const on = t === tab;
-            t.setAttribute('aria-selected', String(on));
-            // Only the selected tab is in the tab order; arrows move between
-            // them. This is what role="tablist" promises a screen reader.
-            t.tabIndex = on ? 0 : -1;
-          });
-          document.querySelectorAll('.screen')
-            .forEach((s) => s.classList.toggle('active', s.id === `panel-${tab.dataset.tab}`));
-        };
+        const select = (tab) => selectTab(tab.dataset.tab);
         tabs.forEach((tab, i) => {
           tab.tabIndex = tab.getAttribute('aria-selected') === 'true' ? 0 : -1;
           tab.addEventListener('click', () => select(tab));
@@ -4815,6 +4952,11 @@
       globalThis.__router = {
         state, setMode, renderRail, renderHealth, renderRoutes, renderStep, renderInspector,
         renderWarnings,
+        // The lint fix path, exported whole: the jump itself (showLintTarget)
+        // and the two payload readers it is built from. The button wiring is
+        // exercised by driving showLintTarget, because a test that only counted
+        // buttons would pass no matter what the button did.
+        showLintTarget, selectTab, lintErrors, lintTargets, findRuleRow,
         drawPath, pickRoute, stepNode, stepOutcome, causeColor, worstOf, modelState,
         phraseCondition, phraseWhen, renderSheet, renderLadder, ruleHits, probe,
         // The log window: named by its endpoints (never by the oldest's age) and

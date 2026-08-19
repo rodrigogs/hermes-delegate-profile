@@ -25,7 +25,7 @@ from __future__ import annotations
 import inspect
 import random
 import re
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 if TYPE_CHECKING:  # pragma: no cover - annotations only, never imported at run time
     # The clock is a PARAMETER, so ``datetime`` is needed for the annotation and
@@ -569,15 +569,32 @@ def lint(config: Dict[str, Any]) -> List[str]:
     # vectors ALSO matches an earlier rule, so first-match means it can never
     # fire. Decided from the conditions themselves; see _is_shadowed for why an
     # undecidable pair is silence rather than an error.
+    for finding in _shadowed_pairs(rules):
+        errors.append(finding["message"])
+
+    return errors
+
+
+def _shadowed_pairs(rules: List[Any]) -> Iterator[Dict[str, Any]]:
+    """Every shadowed (earlier, later) row pair, in report order, as findings.
+
+    SHARED by :func:`lint` and :func:`lint_findings` — the write gate and the
+    jump-target surface must agree about WHICH rows shadow WHICH, or the
+    console's "Ver regra N" button could point at a pair lint() never named.
+    The message string is built here, ONCE, so the two surfaces cannot drift.
+
+    The guards mirror lint()'s per-rule validation: a row that is not a mapping
+    or carries no id was already reported as its own error, and shadow analysis
+    skips it so one malformed row cannot mask other errors.
+
+    Yields the same findings :func:`lint_findings` returns; :func:`lint` keeps
+    only the ``message``.
+    """
     for i in range(len(rules)):
         for j in range(i + 1, len(rules)):
             ri, rj = rules[i], rules[j]
-            # Invalid rows were reported above; skip them during the derived
-            # shadow analysis so one malformed row cannot mask other errors.
             if not isinstance(ri, dict) or not isinstance(rj, dict):
                 continue
-            # Missing ids are already validation errors above; do not turn a
-            # useful lint report into a KeyError during shadow analysis.
             if not ri.get("id") or not rj.get("id"):
                 continue
             earlier_when = ri.get("when")
@@ -585,11 +602,45 @@ def lint(config: Dict[str, Any]) -> List[str]:
             if not isinstance(earlier_when, dict) or not isinstance(later_when, dict):
                 continue
             if _is_shadowed(earlier_when, later_when):
-                errors.append(
-                    f"rule '{rj['id']}' is shadowed by earlier rule '{ri['id']}'"
-                )
+                yield {
+                    "code": "shadowed",
+                    "later_index": j,
+                    "later_id": rj["id"],
+                    "earlier_index": i,
+                    "earlier_id": ri["id"],
+                    "message": (
+                        f"rule '{rj['id']}' is shadowed by earlier rule '{ri['id']}'"
+                    ),
+                }
 
-    return errors
+
+def lint_findings(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Structured findings next to :func:`lint` — never a second write gate.
+
+    lint() returns the strings that block an apply; this returns, for the
+    errors that NAME a rule, the coordinates an operator surface needs to jump
+    to it. Currently every finding is a shadowed pair, so the shape is:
+
+      {code: 'shadowed', later_index, later_id, earlier_index, earlier_id,
+       message}
+
+    ``later_*`` names the row that can never fire (the one an operator must
+    reorder or merge); ``earlier_*`` the row that shadows it. ``message`` is the
+    exact string :func:`lint` reports for the same pair — that is what lets
+    ``service.py`` align the findings list against lint()'s error list without
+    touching the write gate.
+
+    Same fail-closed guards as lint() for the same reason: a config that is not
+    a mapping, or whose rules are not a list, has no row to point at.
+    """
+    if not isinstance(config, dict):
+        return []
+    if not config:
+        return []
+    rules_raw = config.get("rules", [])
+    if not isinstance(rules_raw, list):
+        return []
+    return list(_shadowed_pairs(rules_raw))
 
 
 def lint_warnings(config: Dict[str, Any]) -> List[str]:

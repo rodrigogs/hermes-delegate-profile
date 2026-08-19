@@ -120,6 +120,18 @@ except ImportError:  # pragma: no cover - flat layout, or rules.py without warni
     except ImportError:  # pragma: no cover - rules.py without advisory warnings
         rules_lint_warnings = None  # type: ignore[assignment]
 
+# Structured jump targets for the errors lint() reports (shadowed pairs today).
+# Defensive for the same reason as lint_warnings: an older rules.py without
+# lint_findings degrades to all-None targets, which every consumer already
+# treats as "no rule to jump to".
+try:
+    from .rules import lint_findings as rules_lint_findings
+except ImportError:  # pragma: no cover - flat layout, or rules.py without findings
+    try:
+        from router.rules import lint_findings as rules_lint_findings
+    except ImportError:  # pragma: no cover - rules.py without structured findings
+        rules_lint_findings = None  # type: ignore[assignment]
+
 try:
     from . import capabilities as _caps
 except ImportError:  # pragma: no cover - flat layout, or registry absent
@@ -581,7 +593,10 @@ class RouterService:
         """Compact health snapshot suitable for an operator UI.
 
         ``validation_errors`` blocks — it is what ``valid`` is computed from and
-        what the write gate refuses on. ``warnings`` only informs (a tier whose
+        what the write gate refuses on. ``error_targets`` rides beside it,
+        aligned by index: for every error that NAMES a rule (a shadowed pair,
+        today), the structured coordinates a console jumps to; None where the
+        error names no rule. ``warnings`` only informs (a tier whose
         two first hops share an upstream still routes; a model missing from the
         capability registry is unverifiable, not wrong; a ``time_cap`` that will
         bypass at some hour is a cost control an operator may knowingly ship), so
@@ -635,6 +650,7 @@ class RouterService:
         result = {
             "valid": not errors,
             "validation_errors": errors,
+            "error_targets": self._error_targets(errors, config),
             "warnings": self._warnings(config),
             "enabled": config.get("enabled", False),
             "rules_count": len(_as_list(config.get("rules"))),
@@ -705,6 +721,38 @@ class RouterService:
         if not isinstance(found, list):
             return []
         return [str(warning) for warning in found]
+
+    @staticmethod
+    def _error_targets(errors: List[str], config: Any) -> List[Any]:
+        """One jump target per error, aligned by index; None where there is none.
+
+        ``error_targets[i]`` corresponds to ``errors[i]`` (on /status,
+        ``validation_errors[i]``): a dict like ``{code: 'shadowed',
+        later_index, later_id, earlier_index, earlier_id, message}`` the
+        console can navigate to, or None when the error names no rule. The
+        alignment is by the ``message`` lint_findings carries — the exact
+        string lint() already produced — so the two lists stay paired without
+        lint() itself changing: the write gate is untouched.
+
+        Fail-safe like every other read: an older rules.py without
+        lint_findings, or one that raises on a malformed config, yields all
+        None rather than breaking :meth:`status` / :meth:`lint`.
+        """
+        if rules_lint_findings is None:
+            return [None] * len(errors)
+        try:
+            findings = rules_lint_findings(config)
+        except Exception:  # noqa: BLE001 - a read path must not raise
+            return [None] * len(errors)
+        if not isinstance(findings, list):
+            return [None] * len(errors)
+        by_message = {
+            finding["message"]: finding
+            for finding in findings
+            if isinstance(finding, dict)
+            and isinstance(finding.get("message"), str)
+        }
+        return [by_message.get(error) for error in errors]
 
     @staticmethod
     def _policy_tiers(tiers: Any) -> Dict[str, Any]:
@@ -1560,9 +1608,18 @@ class RouterService:
         return reasons
 
     def lint(self) -> Dict[str, Any]:
-        """Expose the same validation data shown by :meth:`status`."""
+        """Expose the same validation data shown by :meth:`status`.
+
+        ``error_targets`` rides alongside ``errors``, aligned by index: the
+        structured jump target for the error at the same position, or None when
+        that error names no rule.
+        """
         _config, errors = self._load()
-        return {"valid": not errors, "errors": errors}
+        return {
+            "valid": not errors,
+            "errors": errors,
+            "error_targets": self._error_targets(errors, _config),
+        }
 
     # ------------------------------------------------------------------
     # Write path (router.yaml HOT edits only; lint-gated, atomic, revertable)

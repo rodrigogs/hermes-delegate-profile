@@ -119,7 +119,74 @@ def test_explain_requires_task_and_unknown_route_is_404(tmp_path):
 def test_lint_route(tmp_path):
     status, body = _app(tmp_path).dispatch("GET", "/lint", _auth())
     assert status == 200
-    assert body == {"valid": True, "errors": []}
+    assert body == {"valid": True, "errors": [], "error_targets": []}
+
+
+def test_lint_and_status_carry_the_shadowed_jump_target(tmp_path):
+    """A shadowed policy: /lint and /status both name the dead row's coordinates.
+
+    The console builds "Ver regra N" from ``error_targets``; if the two read
+    routes disagreed about the pairing, the button could point at a rule the
+    write gate never reported.
+    """
+    config = _config_path(tmp_path)
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "enabled": True,
+                "rules": [
+                    {
+                        "id": "broad",
+                        "when": {"has_code": {"eq": True}},
+                        "then": {"model": "T2"},
+                    },
+                    {
+                        "id": "narrow",
+                        "when": {"has_code": {"eq": True}},
+                        "then": {"model": "T1"},
+                    },
+                ],
+                "default": {"action": "classify"},
+                "tiers": {
+                    "T1": {"model": "tiny", "provider": "cheap"},
+                    "T2": {"model": "small", "provider": "cheap"},
+                    "T3": {"model": "medium", "provider": "strong"},
+                    "T4": {"model": "strong", "provider": "strong"},
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    app = SidecarApp(RouterService(config), token_path=lambda: tmp_path / "token")
+    (tmp_path / "token").write_text(_TOKEN, encoding="utf-8")
+
+    status, body = app.dispatch("GET", "/lint", _auth())
+    assert status == 200
+    assert body["valid"] is False
+    assert body["errors"] == ["rule 'narrow' is shadowed by earlier rule 'broad'"]
+    assert body["error_targets"] == [{
+        "code": "shadowed",
+        "later_index": 1,
+        "later_id": "narrow",
+        "earlier_index": 0,
+        "earlier_id": "broad",
+        "message": "rule 'narrow' is shadowed by earlier rule 'broad'",
+    }]
+
+    status, body = app.dispatch("GET", "/status", _auth())
+    assert status == 200
+    assert body["validation_errors"] == [
+        "rule 'narrow' is shadowed by earlier rule 'broad'"
+    ]
+    assert body["error_targets"] == [{
+        "code": "shadowed",
+        "later_index": 1,
+        "later_id": "narrow",
+        "earlier_index": 0,
+        "earlier_id": "broad",
+        "message": "rule 'narrow' is shadowed by earlier rule 'broad'",
+    }]
 
 
 def test_liveness_route_is_authenticated_and_returns_composed_states(tmp_path):

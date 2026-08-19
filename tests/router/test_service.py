@@ -94,6 +94,7 @@ def test_status_and_policy_are_read_only_snapshots(config_path):
     assert status == {
         "valid": True,
         "validation_errors": [],
+        "error_targets": [],
         "enabled": True,
         "rules_count": 1,
         "tiers": ["T1", "T2", "T3", "T4"],
@@ -1195,7 +1196,7 @@ def test_status_reports_warnings_without_flipping_valid(warned_config_path):
     assert service.apply(plan["base_hash"], plan["policy"])["ok"] is True
 
     # lint() stays the pure error gate — warnings are status()'s job alone.
-    assert service.lint() == {"valid": True, "errors": []}
+    assert service.lint() == {"valid": True, "errors": [], "error_targets": []}
 
 
 def test_status_warnings_degrade_when_rules_cannot_warn(config_path, monkeypatch):
@@ -1214,6 +1215,110 @@ def test_status_warnings_degrade_when_rules_cannot_warn(config_path, monkeypatch
     # A non-list return is ignored rather than passed through.
     monkeypatch.setattr(service_mod, "rules_lint_warnings", lambda _c: "nope")
     assert RouterService(config_path).status()["warnings"] == []
+
+
+def _shadowed_config(tmp_path):
+    """A router.yaml whose later rule can never fire: the console's jump target."""
+    path = tmp_path / "shadowed.yaml"
+    path.write_text(
+        "enabled: true\n"
+        "rules:\n"
+        "  - id: broad\n"
+        "    when:\n"
+        "      has_code: {eq: true}\n"
+        "    then: {model: T2}\n"
+        "  - id: narrow\n"
+        "    when:\n"
+        "      has_code: {eq: true}\n"
+        "    then: {model: T1}\n"
+        "default: {action: classify}\n"
+        "tiers:\n"
+        "  T1: {model: m1, provider: p1}\n"
+        "  T2: {model: m2, provider: p2}\n"
+        "  T3: {model: m3, provider: p3}\n"
+        "  T4: {model: m4, provider: p4}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_error_targets_align_with_validation_errors(tmp_path):
+    """A shadowed config reports the structured jump target beside each error.
+
+    The console's "Ver regra N" button is built from ``error_targets[0]`` — the
+    target of the error it actually shows. Both /status (validation_errors) and
+    /lint (errors) must carry the same pairing under their own field names.
+    """
+    service = RouterService(_shadowed_config(tmp_path))
+    status = service.status()
+
+    assert status["valid"] is False
+    assert status["validation_errors"] == [
+        "rule 'narrow' is shadowed by earlier rule 'broad'"
+    ]
+    assert status["error_targets"] == [{
+        "code": "shadowed",
+        "later_index": 1,
+        "later_id": "narrow",
+        "earlier_index": 0,
+        "earlier_id": "broad",
+        "message": "rule 'narrow' is shadowed by earlier rule 'broad'",
+    }]
+
+    lint = service.lint()
+    assert lint["errors"] == status["validation_errors"]
+    assert lint["error_targets"] == status["error_targets"]
+
+
+def test_error_targets_are_none_for_errors_that_name_no_rule(tmp_path):
+    """A missing default blocks the write but has no row to jump to.
+
+    Every error here is about the config as a whole, so every target is None —
+    and the two lists stay the same length, which is the alignment contract.
+    """
+    config = tmp_path / "no-default.yaml"
+    config.write_text("enabled: true\n", encoding="utf-8")
+    service = RouterService(config)
+    status = service.status()
+    assert status["valid"] is False
+    assert any("missing mandatory 'default'" in e for e in status["validation_errors"])
+    assert len(status["error_targets"]) == len(status["validation_errors"])
+    assert all(target is None for target in status["error_targets"])
+
+
+def test_error_targets_degrade_when_rules_cannot_find(tmp_path, monkeypatch):
+    """No lint_findings, a raising one, or a non-list return — never a broken read.
+
+    Mirror of the lint_warnings degrade: an older rules.py must cost the
+    operator the jump button, not the whole status surface.
+    """
+    import router.service as service_mod
+
+    service = RouterService(_shadowed_config(tmp_path))
+    assert service.status()["error_targets"] == [{
+        "code": "shadowed", "later_index": 1, "later_id": "narrow",
+        "earlier_index": 0, "earlier_id": "broad",
+        "message": "rule 'narrow' is shadowed by earlier rule 'broad'",
+    }], "the degrade below is only meaningful against a real finding"
+
+    monkeypatch.setattr(service_mod, "rules_lint_findings", None)
+    assert service.status()["error_targets"] == [None]
+
+    monkeypatch.setattr(
+        service_mod, "rules_lint_findings",
+        lambda _c: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    assert service.status()["error_targets"] == [None]
+
+    monkeypatch.setattr(service_mod, "rules_lint_findings", lambda _c: "nope")
+    assert service.status()["error_targets"] == [None]
+
+    # A finding that cannot pair with an error string is ignored, not a crash.
+    monkeypatch.setattr(
+        service_mod, "rules_lint_findings",
+        lambda _c: [{"code": "shadowed", "later_index": 1}, "nope"],
+    )
+    assert service.status()["error_targets"] == [None]
 
 
 def test_hot_apply_round_trips_fallback_strategy_and_reordered_fallback(
@@ -1829,7 +1934,7 @@ def test_status_carries_time_warnings_without_flipping_valid(time_config_path):
     assert plan["valid"] is True
     assert service.apply(plan["base_hash"], plan["policy"])["ok"] is True
     # lint() stays the pure error gate.
-    assert service.lint() == {"valid": True, "errors": []}
+    assert service.lint() == {"valid": True, "errors": [], "error_targets": []}
 
 
 def test_status_passes_registry_diagnostics_through_verbatim(
