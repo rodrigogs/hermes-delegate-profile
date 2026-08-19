@@ -338,6 +338,29 @@ is not any one screen's subject: it changes what all three of them mean.
   cannot name it: `planned at 03:00 UTC` when the router reported one, `priced at
   03:00 UTC, the hour this decision was recorded` when only the trace did. Liveness
   is not consulted at all for a replay: a read taken after the fact measures now.
+- **On Routes a SELECTED decision reprices the strip itself.** The same rule that
+  prices the replayed chain plan at its own hour extends to the price line: while
+  a decision is picked on Routes, the strip shows that decision's hour (`clockLocal`
+  gains `· hora da decisão`), because the question the operator is answering is
+  "what did THIS cost", not "what does it cost now". Leaving Routes hands the
+  strip back to the present. Every row also stamps its own UTC hour beside the
+  age — `17d ago · 03:20 UTC` — so a peak-hour decision stays a peak-hour decision
+  no matter how long ago the operator looks at it.
+- **A decision row says where it went and against what policy.** The destination is
+  `model @ provider` — the rail is the fact that makes a retired destination
+  readable — and a model today's policy cannot dispatch carries a discreet warn
+  mark (`· fora da política`) whose one-line popover resolves BY ID AND BY SOURCE:
+  the registry may know the id (glm-5.2) while the policy forbids it, or know
+  nothing of it at all (us.anthropic.claude-opus-5). One fixed phrase cannot say
+  which, and the operator's next move depends on it. The top line reconciles the
+  log against the policy on screen — `N modelos no log · M entre os monitorados ·
+  K fora da política atual` — a check that sums, visible without arithmetic.
+- **Adjacent identical decisions collapse to one line with the count.** Identity
+  is what the row renders minus its age: same cause, same destination, same task.
+  The run keeps the MOST RECENT entry (routes arrive newest-first) and its id, so
+  replay stays clickable on the decision an operator would actually open. Measured
+  on the live log: 40 lines → 29, eleven adjacent pairs in thirty-nine
+  adjacencies.
 
 ## 4. Writing is a mode, and it is off by default
 

@@ -334,6 +334,10 @@
     }
     .lede-answer:empty { display: none; }
     .lede-answer.is-quiet { font: var(--t-body)/1.5 var(--sans); letter-spacing: 0; color: var(--muted); }
+    /* The log-versus-policy reconciliation: numbers an operator copies into a
+       comparison, so mono; muted because it is a fact and not a condition. */
+    .routes-recon { color: var(--muted); font: var(--t-small) var(--mono); margin: -8px 0 14px; }
+    .routes-recon[hidden] { display: none; }
     .screen-note { color: var(--muted); font-size: var(--t-body); }
 
     /* MORE space above a heading than below it. */
@@ -700,6 +704,15 @@
       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
       overflow: hidden; font-family: var(--sans); font-size: var(--t-body);
     }
+    /* A collapsed run's count, in the × idiom Política speaks: "4×" reads as
+       "this decision, four times", and stays mono because it is a number an
+       operator compares. */
+    .run-count { color: var(--muted); margin-right: 6px; }
+    /* The "fora da política atual" mark: discreet words in warn, whose popover
+       resolves by id AND by source. Warn is the condition colour (this model
+       cannot be dispatched today); the words say the condition, the title is
+       the resolution. Small mono: it sits beside a model id the operator copies. */
+    .route-flag { color: var(--warn-text); font: var(--t-small) var(--mono); margin-left: 4px; cursor: help; }
 
     .path { position: relative; padding-left: 30px; }
     .path::before { content: ""; position: absolute; left: 8px; top: 14px; bottom: 14px; width: 1px; background: var(--line); }
@@ -1206,6 +1219,13 @@
         <div class="lede">
           <p class="lede-answer is-quiet" id="routesNote"></p>
         </div>
+        <!-- One line that reconciles the LOG against the POLICY ON SCREEN: how
+             many distinct models the log names, how many of those the console
+             still monitors, and how many are outside today's policy. The log is
+             a record of what happened; this line says how much of it the current
+             router.yaml could dispatch. It is a check that sums, so a broken
+             sum is visible without arithmetic. -->
+        <p class="routes-recon" id="routesRecon" hidden></p>
         <div class="canvas-row routes waiting" id="routesRow">
           <div>
             <input id="routesFilter" class="probe-input filter" type="search" autocomplete="off" hidden
@@ -1272,6 +1292,10 @@
         routesTotal: 0,
         // Which subset of decisions is on screen. 'all' or 'off-rule'.
         scope: 'all',
+        // Which tab is active. renderClock reprices the strip at a SELECTED
+        // decision's hour only on Routes; every other screen's subject is now,
+        // so the clock needs to know which subject it is serving.
+        tab: 'health',
         // THE INJECTED CLOCK. null means "use the wall clock", which only nowUtc()
         // ever does. Everything downstream takes the instant as a parameter, so a
         // rendering test pins an hour instead of passing at 05:59 and failing at
@@ -1307,6 +1331,18 @@
         if (s < 3600) return `${Math.round(s / 60)}m ago`;
         if (s < 86400) return `${Math.round(s / 3600)}h ago`;
         return `${Math.round(s / 86400)}d ago`;
+      };
+      // The clock of a TIMESTAMP, in UTC — the unit every window is declared in.
+      // `ago` answers "how long since"; this answers "at what hour", which is the
+      // fact that decides what a decision COST. Both ride the same row-value
+      // column, so a peak-hour decision stays a peak-hour decision no matter how
+      // long ago the operator looks at it.
+      const utcClock = (ts) => {
+        if (!ts) return '';
+        const d = new Date(Number(ts) * 1000);
+        if (!Number.isFinite(d.getTime())) return '';
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
       };
       const clock = (d) => d.toTimeString().slice(0, 5);
       // The ONE place this console reads a wall clock. Everything time-dependent
@@ -2424,7 +2460,13 @@
       function renderClock() {
         const bar = $('clockbar');
         if (!bar) return;
-        const at = nowUtc();
+        // On Routes a SELECTED decision is the subject, and the strip must price
+        // the hour that decision happened — the same rule the chain plan already
+        // follows (recordedAt beats the browser clock). Everywhere else the
+        // subject is the present, so the strip keeps saying now.
+        const replayAt = state.tab === 'routes' && state.replay && state.replay.recordedAt
+          ? state.replay.recordedAt : null;
+        const at = replayAt || nowUtc();
         const face = timeFace(at, -at.getTimezoneOffset());
         const rows = railWindowRows(state.capabilities, whenOf(at));
         bar.hidden = !face || !rows.length;
@@ -2436,7 +2478,8 @@
         utc.setAttribute('datetime', at.toISOString());
         // The local reading names its own offset. "04:14 local" alone is the
         // ambiguity this line exists to remove, not a shorter way of saying it.
-        $('clockLocal').textContent = `${face.local} (${face.zone})`;
+        $('clockLocal').textContent = `${face.local} (${face.zone})`
+          + (replayAt ? ' · hora da decisão' : '');
         const list = $('clockRails');
         clear(list);
         rows.forEach((row) => {
@@ -4679,6 +4722,97 @@
         return state.scope === 'off-rule' ? isOffRulePath(route) : true;
       }
 
+      // ── the log versus today's policy ────────────────────────────────
+      // The ids TODAY's router.yaml can dispatch: fail_safe, every tier, the
+      // classifier, and all their fallback hops. A decision whose model is not
+      // here was made under a policy this file no longer declares — the exact
+      // misread the review surfaced (17 of 40 lines said "FAIL SAFE STRONG →
+      // us.anthropic.claude-opus-5" while today's fail_safe is glm-4.7 @ zai).
+      function policyModelSet(policy) {
+        const models = new Set();
+        const add = (entry) => {
+          if (!entry || typeof entry !== 'object') return;
+          if (entry.model) models.add(String(entry.model));
+          if (Array.isArray(entry.fallback)) {
+            entry.fallback.forEach((f) => f && f.model && models.add(String(f.model)));
+          }
+          if (Array.isArray(entry.chain)) {
+            entry.chain.forEach((c) => c && c.model && models.add(String(c.model)));
+          }
+        };
+        const p = policy && typeof policy === 'object' ? policy : {};
+        add(p.fail_safe);
+        add(p.classifier);
+        const tiers = p.tiers && typeof p.tiers === 'object' ? p.tiers : {};
+        Object.keys(tiers).forEach((name) => add(tiers[name]));
+        return models;
+      }
+
+      // One-line resolution of the "fora da política atual" mark, BY ID and BY
+      // SOURCE. The registry knows glm-5.2 (capabilities.py:422) while the
+      // policy forbids it; the registry knows nothing of us.anthropic.claude-opus-5
+      // either. A fixed phrase cannot say which — and the operator's next move
+      // depends on it — so the popover names the id and the source that
+      // resolved it. No policy loaded means no claim, not "everything is out".
+      function policyFlag(model, policy, registry) {
+        const id = String(model || '');
+        if (!id || !policy || typeof policy !== 'object') return null;
+        if (policyModelSet(policy).has(id)) return null;
+        const known = !!(registry && typeof registry === 'object' && registry[id]);
+        return known
+          ? `${id}: o registro o conhece, mas a política atual não o despacha`
+          : `${id}: fora da política atual — desconhecido do registro também`;
+      }
+
+      // The reconciliation: N distinct models appear in the log, M of them are
+      // still monitored (the Health tab's set — what the current policy can
+      // dispatch), K are outside it. N = M + K is the check the line exists to
+      // make visible; K is the number that needs the operator.
+      function routeRecon(routes, policy, liveness) {
+        if (!Array.isArray(routes) || !routes.length) return null;
+        if (!policy || typeof policy !== 'object') return null;
+        const logModels = new Set();
+        routes.forEach((r) => {
+          const m = String((r && r.model) || '');
+          if (m) logModels.add(m);
+        });
+        if (!logModels.size) return null;
+        const dispatch = policyModelSet(policy);
+        const monitored = new Set();
+        if (liveness && Array.isArray(liveness.models)) {
+          liveness.models.forEach((m) => {
+            const id = String((m && m.model) || '');
+            if (id) monitored.add(id);
+          });
+        }
+        const monitorSet = monitored.size ? monitored : dispatch;
+        let m = 0, k = 0;
+        logModels.forEach((id) => {
+          if (monitorSet.has(id)) m += 1;
+          if (!dispatch.has(id)) k += 1;
+        });
+        return { n: logModels.size, m, k };
+      }
+
+      // Consecutive decisions that are the SAME decision (same cause, same
+      // destination, same task) read as one line with the N× idiom Política
+      // already speaks. Identity is what the row renders minus its age; the
+      // run keeps the MOST RECENT entry (routes arrive newest-first), so its id
+      // stays clickable for replay. Measured on the retired corpus: 40 lines →
+      // 29, 11 adjacent pairs in 39 adjacencies.
+      function collapseRuns(routes) {
+        const runs = [];
+        const key = (r) => [r.cause, r.model, r.provider, r.task]
+          .map((f) => String(f || '')).join('\u0000');
+        routes.forEach((r) => {
+          const k = key(r);
+          const last = runs[runs.length - 1];
+          if (last && last.key === k) last.count += 1;
+          else runs.push({ key: k, count: 1, head: r });
+        });
+        return runs;
+      }
+
       function renderRoutes() {
         const box = $('routesTable');
         clear(box);
@@ -4739,6 +4873,19 @@
           // had not registered. Once a trace is open the note says what is open.
           : state.replay ? `Replaying one decision — pick another to switch.${windowNote}`
               : `Pick one to replay its path.${windowNote}`;
+
+        // The reconciliation line: what the log names against what the policy on
+        // screen can dispatch. Only when both exist — a log with no models, or a
+        // sidecar without /policy, says nothing a sum could be checked against.
+        const recon = routeRecon(all, state.policy, state.liveness);
+        const reconEl = $('routesRecon');
+        reconEl.hidden = !recon;
+        if (recon) {
+          reconEl.textContent = `${recon.n} modelo${recon.n === 1 ? '' : 's'} no log`
+            + ` · ${recon.m} entre os monitorados`
+            + ` · ${recon.k} fora da política atual`;
+        }
+
         if (!all.length) {
           box.append(el('p', 'nothing', absence('No decisions recorded yet.')));
           return;
@@ -4747,7 +4894,13 @@
           box.append(el('p', 'nothing', 'No decision matches that search.'));
           return;
         }
-        routes.forEach((r) => {
+        // Adjacent identical decisions collapse into one line with the count —
+        // the × idiom Política already speaks — so 17 fail-safe rows to the same
+        // retired rail read as one fact instead of seventeen. Each run keeps the
+        // MOST RECENT entry (routes arrive newest-first) and its id, so replay
+        // stays clickable on the decision an operator would actually open.
+        collapseRuns(routes).forEach((run) => {
+          const r = run.head;
           // A button, not a div: choosing a trace is an action, and an operator
           // on a keyboard must be able to reach and take it.
           const row = el('button', `row route${state.replay && state.replay.id === r.id ? ' picked' : ''}`);
@@ -4758,9 +4911,27 @@
           cause.style.color = causeColor(r.cause);
           row.append(cause);
           const mid = el('div');
-          mid.append(el('div', 'row-name', r.model || '—'));
+          const name = el('div', 'row-name');
+          if (run.count > 1) name.append(el('span', 'run-count', times(run.count)));
+          // The model AND the rail it ran on: "us.anthropic.claude-opus-5" alone
+          // hid that the rail was a retired ACP bridge; "@ copilot-acp" is the
+          // fact that makes "FAIL SAFE STRONG → us.anthropic.claude-opus-5" read
+          // as what it was.
+          const dest = r.provider ? `${r.model || '—'} @ ${r.provider}` : (r.model || '—');
+          name.append(el('span', '', dest));
+          const flag = policyFlag(r.model, state.policy, state.capabilities);
+          if (flag) {
+            // Discreet words, not a bare dot: a dot would need a legend, and
+            // this console translates values. The title is the one-line popover
+            // resolved by id and by source — política vs registro.
+            const mark = el('span', 'route-flag', '· fora da política');
+            mark.title = flag;
+            name.append(mark);
+          }
+          mid.append(name);
           if (r.task) mid.append(el('div', 'row-note', r.task));
-          row.append(mid, el('span', 'row-value', ago(r.ts)));
+          const when = [ago(r.ts), utcClock(r.ts)].filter(Boolean).join(' · ');
+          row.append(mid, el('span', 'row-value', when));
           row.addEventListener('click', () => pickRoute(r.id));
           box.append(row);
         });
@@ -4790,6 +4961,9 @@
         };
         renderRoutes();
         renderStep();
+        // The clock strip now serves THIS decision's hour; repaint it so the
+        // rails read the way they read when the decision was made.
+        renderClock();
       }
 
       function renderStep() {
@@ -4948,6 +5122,7 @@
       // and the tab clicks in wire() reach the same place, so a keyboard user
       // and a button land on the same screen state.
       function selectTab(name) {
+        state.tab = name;
         document.querySelectorAll('.tab').forEach((t) => {
           const on = t.dataset.tab === name;
           t.setAttribute('aria-selected', String(on));
@@ -4957,6 +5132,9 @@
         });
         document.querySelectorAll('.screen')
           .forEach((s) => s.classList.toggle('active', s.id === `panel-${name}`));
+        // The clock strip prices the selected decision's hour ONLY on Routes;
+        // leaving Routes hands the strip back to the present.
+        renderClock();
       }
 
       function wire() {
@@ -5069,7 +5247,12 @@
         // actually moved.
         contextCeiling, unsatisfiableWords, peakPricing, peakPriceWords, nameList,
         say, ago, fmt, isNarrow, csrf, writable, call, load, absence, matchesQuery,
-        syncKeyboard,
+        utcClock, syncKeyboard,
+        // The log-versus-policy crossing, pure: which ids the policy on screen
+        // can dispatch, the one-line "fora da política" resolution (by id and by
+        // source), the N/M/K reconciliation, and the adjacent-run collapse that
+        // keeps the most recent id for replay.
+        policyModelSet, policyFlag, routeRecon, collapseRuns,
         // The write spine: the only code here that changes how the agent routes
         // real work. It is exported so its refusals can be tested directly —
         // tests/test_router_nav_writespine.js used to pin an equivalent path in

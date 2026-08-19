@@ -881,6 +881,220 @@ test('the log is fetched wider than the sidecar default', () => {
   assert.ok(limit >= 200, `the limit must leave real headroom, got ${limit}`);
 });
 
+// ── the decision row: what it decided, when, and against what ─────────────
+// The review's defect in one sentence: the operator read "FAIL SAFE STRONG →
+// us.anthropic.claude-opus-5" on 17 of 40 lines and concluded the fail-safe
+// burns the most expensive model — when today's fail_safe is glm-4.7 @ zai.
+// The row now carries the RAIL, the HOUR, and the POLICY verdict, so that
+// reading has the facts it was missing.
+
+test('a decision row names the rail it ran on, not just the model', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.routes = [{
+    id: 'r1', cause: 'fail_safe_strong', model: 'us.anthropic.claude-opus-5',
+    provider: 'copilot-acp', task: 'debug the cache', ts: 1,
+  }];
+  api.renderRoutes();
+  const row = dom.get('routesTable').children[0];
+  const name = findAll(row, 'row-name')[0];
+  assert.match(flat(name), /us\.anthropic\.claude-opus-5 @ copilot-acp/,
+    'the rail is what makes a retired ACP destination readable');
+});
+
+test('a decision without a rail shows the model alone', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.routes = [{ id: 'r1', cause: 'hard_rule', model: 'gpt-5.6-terra', task: 't', ts: 1 }];
+  api.renderRoutes();
+  const name = findAll(dom.get('routesTable').children[0], 'row-name')[0];
+  assert.equal(flat(name), 'gpt-5.6-terra');
+});
+
+test('a decision row carries the hour it happened, in UTC', () => {
+  // The row used to say only "17d ago" — an age, never a clock. The hour is the
+  // fact that decides what the decision COST, and it survives however long ago
+  // the decision was: 03:20 UTC stays 03:20 UTC.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.routes = [{ id: 'r1', cause: 'hard_rule', model: 'gpt-5.6-terra', task: 't', ts: TRACE_AT }];
+  api.renderRoutes();
+  const value = dom.get('routesTable').children[0].children[2];
+  assert.match(value.textContent, /ago · 03:20 UTC$/,
+    'the age and the hour ride the same column, in the unit windows are declared in');
+});
+
+test('on Routes the price strip shows the selected decision hour, not now', () => {
+  // The chain plan already prices a replay at recordedAt (planWhen); the strip
+  // above the screens kept reporting NOW over a selected decision, so the rails
+  // described the wrong hour for the decision being inspected.
+  const { api, dom } = loadConsole();
+  api.state.clock = PEAK;                  // now is 07:14 UTC, four hours later
+  api.state.tab = 'routes';
+  api.state.replay = {
+    id: 'r1', at: 0, steps: [], plan: null,
+    recordedAt: new Date(TRACE_AT * 1000), // 03:20 UTC
+  };
+  api.renderClock();
+  assert.equal(dom.get('clockNow').textContent, '03:20 UTC');
+  assert.match(dom.get('clockLocal').textContent, /hora da decisão/,
+    'the repriced hour is named, with its source');
+  // Leaving Routes hands the strip back to the present.
+  api.state.tab = 'health';
+  api.renderClock();
+  assert.equal(dom.get('clockNow').textContent, '07:14 UTC');
+  assert.doesNotMatch(dom.get('clockLocal').textContent, /hora da decisão/);
+});
+
+test('a model the current policy cannot dispatch is marked, naming the source', () => {
+  // glm-5.2 IS known to the registry (capabilities.py) and only absent from the
+  // policy; us.anthropic.claude-opus-5 is known to neither. One fixed phrase
+  // would say the same thing about both — the popover must resolve by id AND
+  // by source.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.state.capabilities = null;
+  api.state.routes = [
+    { id: 'r1', cause: 'fail_safe_strong', model: 'us.anthropic.claude-opus-5', provider: 'copilot-acp', task: 't', ts: 1 },
+    { id: 'r2', cause: 'hard_rule', model: 'glm-4.7', provider: 'zai', task: 't', ts: 1 },
+  ];
+  api.renderRoutes();
+  const rows = dom.get('routesTable').children;
+  const flags = findAll(rows[0], 'route-flag');
+  assert.equal(flags.length, 1, 'the retired model is marked');
+  assert.match(flags[0].title, /us\.anthropic\.claude-opus-5/);
+  assert.match(flags[0].title, /desconhecido do registro/);
+  assert.equal(findAll(rows[1], 'route-flag').length, 0,
+    'a model the policy dispatches today carries no mark');
+});
+
+test('the mark says when the REGISTRY still knows the model', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.state.capabilities = { 'glm-5.2': { context_window: 128000 } };
+  api.state.routes = [{ id: 'r1', cause: 'fail_safe_strong', model: 'glm-5.2', provider: 'zai', task: 't', ts: 1 }];
+  api.renderRoutes();
+  const flag = findAll(dom.get('routesTable').children[0], 'route-flag')[0];
+  assert.match(flag.title, /glm-5\.2/);
+  assert.match(flag.title, /o registro o conhece/,
+    'known to the registry but not dispatched by the policy is a different fact');
+});
+
+test('the top line reconciles the log against the policy on screen', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.state.liveness = {
+    models: [{ model: 'glm-4.7', state: 'alive' }, { model: 'gpt-5.6-luna', state: 'alive' }],
+  };
+  api.state.routes = [
+    { id: 'r1', cause: 'hard_rule', model: 'glm-4.7', provider: 'zai', task: 't', ts: 1 },
+    { id: 'r2', cause: 'hard_rule', model: 'gpt-5.6-luna', provider: 'openai-codex', task: 't', ts: 1 },
+    { id: 'r3', cause: 'fail_safe_strong', model: 'us.anthropic.claude-opus-5', provider: 'copilot-acp', task: 't', ts: 1 },
+  ];
+  api.renderRoutes();
+  assert.equal(dom.get('routesRecon').hidden, false);
+  assert.equal(
+    dom.get('routesRecon').textContent,
+    '3 modelos no log · 2 entre os monitorados · 1 fora da política atual',
+  );
+});
+
+test('the reconciliation line stays quiet without a policy to check against', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = null;
+  api.state.routes = [{ id: 'r1', cause: 'hard_rule', model: 'glm-4.7', task: 't', ts: 1 }];
+  api.renderRoutes();
+  assert.equal(dom.get('routesRecon').hidden, true,
+    'no policy loaded means no claim, not "everything is out"');
+});
+
+test('adjacent identical decisions collapse to one line with the count', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  // Newest first, as /routes serves them: three identical fail-safe decisions
+  // to the same retired rail, then one unrelated hard-rule decision.
+  api.state.routes = [
+    { id: 'r4', cause: 'fail_safe_strong', model: 'opus', provider: 'acp', task: 'same task', ts: 4 },
+    { id: 'r3', cause: 'fail_safe_strong', model: 'opus', provider: 'acp', task: 'same task', ts: 3 },
+    { id: 'r2', cause: 'fail_safe_strong', model: 'opus', provider: 'acp', task: 'same task', ts: 2 },
+    { id: 'r1', cause: 'hard_rule', model: 'terra', provider: 'codex', task: 'other task', ts: 1 },
+  ];
+  api.renderRoutes();
+  const rows = dom.get('routesTable').children;
+  assert.equal(rows.length, 2, 'three identical + one different = two lines');
+  // The run keeps the MOST RECENT id — routes arrive newest-first, so r4.
+  assert.equal(rows[0].dataset.routeId, 'r4');
+  assert.match(findAll(rows[0], 'run-count')[0].textContent, /3×/);
+  assert.equal(rows[1].dataset.routeId, 'r1');
+  assert.equal(findAll(rows[1], 'run-count').length, 0,
+    'a single decision carries no count');
+});
+
+test('a different decision between them breaks the run', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.routes = [
+    { id: 'r3', cause: 'fail_safe_strong', model: 'opus', provider: 'acp', task: 'same', ts: 3 },
+    { id: 'r2', cause: 'hard_rule', model: 'terra', provider: 'codex', task: 'other', ts: 2 },
+    { id: 'r1', cause: 'fail_safe_strong', model: 'opus', provider: 'acp', task: 'same', ts: 1 },
+  ];
+  api.renderRoutes();
+  assert.equal(dom.get('routesTable').children.length, 3,
+    'only ADJACENT identical decisions collapse');
+});
+
+test('a different task breaks the run', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.routes = [
+    { id: 'r2', cause: 'fail_safe_strong', model: 'opus', provider: 'acp', task: 'task A', ts: 2 },
+    { id: 'r1', cause: 'fail_safe_strong', model: 'opus', provider: 'acp', task: 'task B', ts: 1 },
+  ];
+  api.renderRoutes();
+  assert.equal(dom.get('routesTable').children.length, 2,
+    'same destination, different task = different decision');
+});
+
+test('a different rail breaks the run', () => {
+  // The rail is the most useful fact a decision row carries (the review's
+  // finding: copilot-acp appears in no current provider:). Two adjacent rows
+  // with the same model on DIFFERENT rails are different destinations and must
+  // not collapse into one.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.routes = [
+    { id: 'r2', cause: 'fail_safe_strong', model: 'opus', provider: 'acp', task: 'same', ts: 2 },
+    { id: 'r1', cause: 'fail_safe_strong', model: 'opus', provider: 'anthropic', task: 'same', ts: 1 },
+  ];
+  api.renderRoutes();
+  assert.equal(dom.get('routesTable').children.length, 2,
+    'same model, different rail = different destination');
+});
+
+test('collapsing the measured corpus gives the measured reduction', () => {
+  // The review measured 40 lines → 29 (-27.5%) on the live log. The retired
+  // corpus collapses the same way under the same identity: cause, model,
+  // provider, task. Pin the PURE function on a compact stand-in for that
+  // distribution so a future identity change fails here before it confuses an
+  // operator.
+  const { api } = loadConsole();
+  const row = (cause, model, provider, task) => ({ cause, model, provider, task });
+  const routes = [
+    row('fail_safe_strong', 'opus', 'acp', 'a'), row('fail_safe_strong', 'opus', 'acp', 'a'),
+    row('fail_safe_strong', 'opus', 'acp', 'b'), row('fail_safe_strong', 'opus', 'acp', 'b'),
+    row('blocklist_veto', '', '', 'c'), row('blocklist_veto', '', '', 'c'),
+    row('hard_rule', 'terra', 'codex', 'd'),
+  ];
+  const runs = api.collapseRuns(routes);
+  assert.equal(runs.length, 4);
+  assert.deepEqual(plain(runs.map((run) => run.count)), [2, 2, 2, 1]);
+  assert.equal(runs[0].head, routes[0], 'the run keeps the most recent (first) entry');
+});
+
 // ── what one click must never do ─────────────────────────────────────────
 // Folding Validate into Apply removed three protections that the two-step ritual
 // had provided as side effects. Each is restored deliberately here, and each is
