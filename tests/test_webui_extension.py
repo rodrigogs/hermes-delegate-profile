@@ -193,6 +193,36 @@ def test_extension_css_only_dresses_the_nav_button():
         assert shared not in css, f"{shared} belongs to hermes-panel.css, not here"
 
 
+def test_embedded_console_hides_its_own_title_and_tabs():
+    """Inside the Hermes One panel the shell already names the surface twice —
+    the rail label and the sidebar's panel head — so the console's own masthead
+    and tab row must not be drawn a second time. The review counted "Capability
+    Router" three times on one screen (router-01-abertura.png). The
+    .is-embedded class is set by the init path (window.self !== window.top),
+    and the standalone page at /capability-router still draws both."""
+    html = (EXTENSION / "console.html").read_text(encoding="utf-8")
+    assert ".is-embedded nav.tabs { display: none; }" in html, "tabs stay in the DOM but are not drawn twice"
+    assert ".is-embedded .view-title { display: none; }" in html, "the shell names the surface; the title must not repeat it"
+
+
+def test_health_badge_counts_exceptions_and_wears_amber():
+    """The Health badge counts bans + breaker cooldowns (zero hides it) and
+    wears the amber attention colour. Counting elos made the badge FALL from
+    8 to 1 the moment a problem appeared; the elo total lives in the lede."""
+    html = (EXTENSION / "console.html").read_text(encoding="utf-8")
+    assert ".count.is-warn { color: var(--warn-text); }" in html
+    assert "bans.length + breakers.length, true" in html
+    assert "|| models.length" not in html, "the badge must not fall back to the elo inventory"
+
+
+def test_health_facts_are_only_the_two_that_exist_nowhere_else():
+    """The summary keeps ROUTING and CLASSIFIER — the rules count repeated the
+    sheet's numbered list and the invalid count repeated the lint banner."""
+    html = (EXTENSION / "console.html").read_text(encoding="utf-8")
+    assert "fact('routing'" in html and "fact('classifier'" in html
+    assert "fact('rules'" not in html and "fact('invalid'" not in html
+
+
 # ── Dashboard plugin API ↔ RouterService shape parity ────────────────
 #
 # fastapi is a Hermes-dashboard dependency, not one of this plugin's (pyyaml

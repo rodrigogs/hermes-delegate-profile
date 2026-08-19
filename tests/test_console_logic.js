@@ -300,10 +300,39 @@ test('the rail carries each destination\'s live state', () => {
   api.state.liveness = { models: [{ state: 'alive' }, { state: 'degraded' }] };
   api.renderRail();
 
-  assert.equal(dom.get('countPipeline').textContent, '3', 'pipeline counts rules');
+  // The Pipeline count is GONE: the sheet's numbered rule list is its own counter.
+  assert.equal(dom.get('countPipeline').hidden, true,
+    'pipeline shows no count — the numbered list is the counter');
   assert.equal(dom.get('countRoutes').textContent, '2', 'routes counts recorded decisions');
+  // The Health badge counts EXCEPTIONS, not elos: two models with no bans or
+  // breaker cooldowns show nothing, not "2".
+  assert.equal(dom.get('countHealth').hidden, true,
+    'no exceptions → no health count, however many elos');
   // One degraded target must surface, not be averaged into "fine".
   assert.match(dom.get('stateHealth').className, /is-degraded/);
+});
+
+test('the health badge counts bans and breaker cooldowns, in amber', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = { rules: [] };
+  api.state.liveness = { models: [{ state: 'alive' }, { state: 'alive' }, { state: 'alive' }] };
+  api.state.blocklist = {
+    manual_bans: [{ model: 'glm-5.3' }],
+    breaker_cooldowns: [{ model_key: 'deepseek-v4-pro', cooldown_remaining_s: 300 }],
+  };
+  api.renderRail();
+  // The badge is bans + breakers, NOT elos — the review's 8→1 was the badge
+  // counting inventory and the inventory shrinking at the moment of the problem.
+  assert.equal(dom.get('countHealth').textContent, '2', 'bans + breakers, not elos');
+  assert.equal(dom.get('countHealth').hidden, false);
+  assert.equal(dom.get('countHealth').classList.contains('is-warn'), true,
+    'an exception count wears amber, the attention colour');
+
+  // Exceptions cleared → hidden again (zero is not drawn, §2.1).
+  api.state.blocklist = { manual_bans: [], breaker_cooldowns: [] };
+  api.renderRail();
+  assert.equal(dom.get('countHealth').hidden, true);
+  assert.equal(dom.get('countHealth').classList.contains('is-warn'), false);
 });
 
 test('the rail survives being rendered before any data arrives', () => {
@@ -719,6 +748,78 @@ test('the model count names the exception, not the total, when something is wron
   assert.match(dom.get('modelsNote').textContent, /2 of 3 not routable/);
 });
 
+test('the summary facts exist nowhere else on the screen', () => {
+  // The review's four Health facts were two echoes: 'rules' repeated the
+  // sheet's numbered list (and its badge), 'invalid' repeated the lint banner's
+  // "Policy invalid — N errors" 72px above. Only ROUTING and the CLASSIFIER
+  // model say something no other surface says, so only they stay.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [{ id: 'a' }], classifier: { model: 'glm-4.7' } };
+  api.state.status = { enabled: true, validation_errors: ['rule a: unknown field'] };
+  api.renderHealth();
+  const labels = findAll(dom.get('healthFacts'), 'fact-label').map((n) => n.textContent);
+  assert.deepEqual(labels, ['routing', 'classifier'],
+    `only the two facts that exist nowhere else, got ${JSON.stringify(labels)}`);
+  const text = flat(dom.get('healthFacts'));
+  assert.match(text, /glm-4\.7/);
+  assert.doesNotMatch(text, /error/, 'the lint banner owns the invalid count');
+  assert.doesNotMatch(text, /rules/, 'the sheet owns the rules count');
+});
+
+// ── the role an elo plays in the policy ──────────────────────────────────
+// Health answers "o que quebra se este elo morrer?" — which needs the POLICY,
+// not just liveness. The tiers arrive in the same Promise.all, so the role of
+// every elo is a local fact with zero extra reads.
+
+function rolePolicy() {
+  // The shipped router.yaml's chains, so the positions are the real ones:
+  // glm-5.3 is T2's primary AND the third hop of T3 and T4.
+  return {
+    rules: [], default: {},
+    tiers: {
+      T1: { model: 'glm-4.7', provider: 'zai', fallback: [{ model: 'gpt-5.6-luna', provider: 'openai-codex' }, { model: 'mimo-v2.5', provider: 'xiaomi' }] },
+      T2: { model: 'glm-5.3', provider: 'zai', fallback: [{ model: 'gpt-5.6-luna', provider: 'openai-codex' }, { model: 'deepseek-v4-flash', provider: 'deepseek' }] },
+      T3: { model: 'gpt-5.6-terra', provider: 'openai-codex', fallback: [{ model: 'deepseek-v4-pro', provider: 'deepseek' }, { model: 'glm-5.3', provider: 'zai' }] },
+      T4: { model: 'gpt-5.5', provider: 'openai-codex', fallback: [{ model: 'deepseek-v4-pro', provider: 'deepseek' }, { model: 'glm-5.3', provider: 'zai' }] },
+    },
+  };
+}
+
+test('tierRoles names every position an elo occupies in the policy', () => {
+  const { api } = loadConsole();
+  const roles = plain(api.tierRoles(rolePolicy()));
+  // The shipped fact that made the review: glm-5.3 looks like a one-tier elo
+  // but three tiers depend on it — T2 as primary, T3 and T4 as hop 3.
+  assert.deepEqual(roles['glm-5.3'], ['T2 primária', 'T3 hop 3', 'T4 hop 3']);
+  assert.deepEqual(roles['deepseek-v4-pro'], ['T3 hop 2', 'T4 hop 2']);
+  assert.deepEqual(roles['gpt-5.6-luna'], ['T1 hop 2', 'T2 hop 2']);
+  assert.deepEqual(roles['glm-4.7'], ['T1 primária']);
+  assert.deepEqual(roles['mimo-v2.5'], ['T1 hop 3']);
+  // A model in no tier gets no entry: nothing to say is not a finding.
+  assert.equal(roles['us.anthropic.claude-opus-5'], undefined);
+  assert.deepEqual(plain(api.tierRoles({})), {});
+  assert.deepEqual(plain(api.tierRoles(null)), {});
+});
+
+test('a Health row says which tiers depend on the elo, and where', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = rolePolicy();
+  api.state.liveness = { models: [
+    { model: 'glm-5.3', provider: 'zai', state: 'alive' },
+    { model: 'us.anthropic.claude-opus-5', provider: 'copilot-acp', state: 'alive' },
+  ] };
+  api.renderHealth();
+  const roleLines = findAll(dom.get('models'), 'row-role');
+  assert.equal(roleLines.length, 1,
+    'only an elo the policy uses gets the role line — a retired elo cannot break a tier');
+  assert.equal(roleLines[0].textContent, 'T2 primária, T3 hop 3, T4 hop 3');
+  const row = dom.get('models').children.find((c) => flat(c).includes('glm-5.3'));
+  assert.match(flat(row), /T2 primária, T3 hop 3, T4 hop 3/,
+    'the answer to THIS tab\'s question sits on the elo\'s own row');
+});
+
 test('the compaction sentence states when it fires, not where usage is', () => {
   // /compaction reports no current usage at all, so a sentence that reads as
   // progress would be inventing a number — on a screen whose action restarts the
@@ -729,12 +830,14 @@ test('the compaction sentence states when it fires, not where usage is', () => {
     aggressiveness: 50, summarizer_window: 272000,
     threshold_tokens: 208352, threshold_fraction: 0.766,
   };
-  api.renderHealth();
+  api.renderCompaction();
   const note = dom.get('compactionNote').textContent;
   assert.match(note, /fires once/, 'it must read as a trigger, not a level');
   assert.match(note, /77%/);
   assert.match(note, /272,000/, 'the window is separated for comparison');
   assert.doesNotMatch(note, /^at \d/, 'a bare "at 77%" reads as current usage');
+  assert.equal(dom.get('compactionGroup').hidden, false,
+    'the group is a PIPELINE fact now (DESIGN.md §1) — with data it is shown');
 });
 
 test('the aggressiveness dial says which way it points', () => {
@@ -747,10 +850,27 @@ test('the aggressiveness dial says which way it points', () => {
     aggressiveness: 50, summarizer_window: 272000,
     threshold_tokens: 208352, threshold_fraction: 0.766,
   };
-  api.renderHealth();
+  api.renderCompaction();
   const text = JSON.stringify(dom.get('compaction'));
   assert.match(text, /balanced/, 'the server has names for these presets');
   assert.match(text, /compacts sooner/, 'and the direction must be stated');
+});
+
+test('compaction is hidden when the sidecar reports no compaction data', () => {
+  // DESIGN.md §1: Compaction lives in Pipeline and, like the Blocked group,
+  // shows only when it carries an active condition. A sidecar without /compaction
+  // data gets no group at all — the old "not implemented by this sidecar" note
+  // was the console reporting on itself (§2.7) and is gone.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.compaction = null;
+  api.renderCompaction();
+  assert.equal(dom.get('compactionGroup').hidden, true,
+    'no data, no group — Render nothing for nothing (§2.1)');
+  assert.equal(dom.get('compactionNote').textContent, '',
+    'and no console-self-report note survives');
+  assert.equal(dom.get('compaction').children.length, 0,
+    'and no fact is painted for a state that does not exist');
 });
 
 // ── the decision log's own honesty ───────────────────────────────────────
@@ -804,6 +924,40 @@ test('the note distinguishes a refusal from a fail-safe catch', () => {
   assert.match(note, /4 refused/);
   assert.match(note, /17 caught by the fail-safe/);
   assert.match(note, /21 of 50/, 'and the subset is scoped to what is on screen');
+});
+
+test('the "Not by rule" pill defines the subset it offers, before it is chosen', () => {
+  // The pill names a subset the console knows how to define; the definition
+  // rides on the pill so it is answerable before the operator commits to the
+  // filter — the same hover idiom as the "fora da política" mark.
+  const { api, dom } = loadConsole();
+  decisionLog(api);
+  api.renderRoutes();
+  assert.match(dom.get('scopeOffRule').title,
+    /decisões que não vieram de uma regra — o blocklist recusou ou o fail-safe capturou/);
+});
+
+test('an off-rule cause carries the definition of what it names', () => {
+  const { api } = loadConsole();
+  assert.match(api.causeTitle('fail_safe_strong'), /rede de segurança/,
+    '"fail safe strong" is defined as a routing event, not a condition');
+  assert.match(api.causeTitle('blocklist_veto'), /recusou/);
+  assert.equal(api.causeTitle('has_code_rule'), '',
+    'a cause the console has not learned gets nothing invented');
+  assert.equal(api.causeTitle(''), '');
+  assert.equal(api.causeTitle(null), '');
+
+  // And the definition rides the row the term appears on.
+  const { api: api2, dom } = loadConsole();
+  decisionLog(api2);
+  api2.renderRoutes();
+  const rows = findAll(dom.get('routesTable'), 'cause');
+  const failSafe = rows.find((c) => /fail safe strong/.test(c.textContent));
+  assert.ok(failSafe, 'a fail-safe row is rendered');
+  assert.match(failSafe.title, /rede de segurança/);
+  const veto = rows.find((c) => /blocklist veto/.test(c.textContent));
+  assert.ok(veto, 'a veto row is rendered');
+  assert.match(veto.title, /recusou/);
 });
 
 test('a truncated log says so, and an untruncated one stays quiet', () => {
@@ -1363,7 +1517,11 @@ test('the decision sheet spends colour only where it is news', () => {
   const painted = [];
   const walk = (node) => {
     if (!node) return;
-    if (node.className === 'step-target' && node.style && node.style.color) {
+    // The tier chip and the plain span are the two destination renderings; both
+    // must obey the same budget — the walk names both so a painted chip cannot
+    // slip past the invariant as a "new" element.
+    if ((node.className === 'step-target' || /(^|\s)step-target(\s|$)/.test(node.className))
+        && node.style && node.style.color) {
       painted.push([node.textContent, node.style.color]);
     }
     (node.children || []).forEach(walk);
@@ -1606,6 +1764,110 @@ test('a rule with no clauses keeps its sentence instead of an empty chip', () =>
   api.renderSheet();
   assert.equal(findAll(dom.get('sheet'), 'chip').length, 0, 'nothing is rendered for nothing');
   assert.match(flat(dom.get('sheet')), /every task/, 'and "every task" is still said, as prose');
+});
+
+// ── a tier destination is a chip, not a mute span ────────────────────────
+// "T3" in the destination column read as a model id while meaning "try this
+// chain" — the vocabulary gap the review measured 6× above the fold with its
+// definition half a viewport below. The chip reveals the chain in place.
+
+function chipPolicy() {
+  return {
+    rules: [
+      { id: 'deep', when: {}, then: { model: 'T3' } },
+      { id: 'no', when: {}, then: { deny: true } },
+    ],
+    default: {},
+    tiers: {
+      T3: {
+        model: 'gpt-5.6-terra', provider: 'openai-codex', billing_mode: 'subscription',
+        fallback: [
+          { model: 'deepseek-v4-pro', provider: 'deepseek', billing_mode: 'metered' },
+          { model: 'glm-5.3', provider: 'zai', billing_mode: 'plan' },
+        ],
+        fallback_strategy: 'sequential',
+      },
+    },
+  };
+}
+
+test('a tier destination is a chip that reveals the chain it points at', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = chipPolicy();
+  api.renderSheet();
+
+  const chips = findAll(dom.get('sheet'), 'step-tier');
+  assert.equal(chips.length, 1, 'the tier destination is the chip; the deny row is not');
+  const chip = chips[0];
+  assert.equal(chip.textContent, 'T3');
+  assert.equal(chip.getAttribute('aria-expanded'), 'false');
+  // Hover carries the compact form, primary first — the elos of the chain.
+  assert.equal(chip.title, 'gpt-5.6-terra · deepseek-v4-pro · glm-5.3');
+  // Render nothing for nothing: the chain is not built until it is asked for —
+  // the expansion element exists (hidden) so the toggle has a target, but it
+  // holds no chain yet.
+  const before = findAll(dom.get('sheet'), 'step-chain');
+  assert.equal(before.length, 1);
+  assert.equal(before[0].hidden, true, 'collapsed by default');
+  assert.equal(before[0].children.length, 0, 'and nothing rendered inside');
+
+  chip._listeners.click();
+  assert.equal(chip.getAttribute('aria-expanded'), 'true');
+  const expansions = findAll(dom.get('sheet'), 'step-chain');
+  assert.equal(expansions.length, 1);
+  const text = flat(expansions[0]);
+  assert.match(text, /gpt-5\.6-terra/);
+  assert.match(text, /deepseek-v4-pro/);
+  assert.match(text, /glm-5\.3/);
+  assert.match(text, /tried in order/, 'the same strategy words the Tier chains group uses');
+
+  chip._listeners.click();
+  assert.equal(chip.getAttribute('aria-expanded'), 'false');
+  assert.equal(expansions[0].hidden, true, 'a second click collapses the chain again');
+});
+
+test('the tier chip expands a rule whose shared hops are the finding', () => {
+  // T3 and T4 share deepseek-v4-pro and glm-5.3 — the fact that changes the
+  // reading of "a regra manda pra T4": it is not a single model, and it is not
+  // independent of T3. The chip must expose the SHARED hops, not just a name.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [{ id: 'vision', when: {}, then: { model: 'T4' } }],
+    default: {},
+    tiers: {
+      T3: { model: 'gpt-5.6-terra', provider: 'openai-codex',
+        fallback: [{ model: 'deepseek-v4-pro', provider: 'deepseek' }, { model: 'glm-5.3', provider: 'zai' }] },
+      T4: { model: 'gpt-5.5', provider: 'openai-codex',
+        fallback: [{ model: 'deepseek-v4-pro', provider: 'deepseek' }, { model: 'glm-5.3', provider: 'zai' }] },
+    },
+  };
+  api.renderSheet();
+  const chip = findAll(dom.get('sheet'), 'step-tier')[0];
+  assert.equal(chip.textContent, 'T4');
+  chip._listeners.click();
+  const text = flat(findAll(dom.get('sheet'), 'step-chain')[0]);
+  assert.match(text, /gpt-5\.5/, 'T4\'s own primary');
+  assert.match(text, /deepseek-v4-pro/, 'the hop T4 shares with T3');
+  assert.match(text, /glm-5\.3/, 'and the hop it shares with T3 — the two hops T4 is not independent on');
+});
+
+test('the tier chip does not trigger the row\'s edit click', () => {
+  // In editing mode the row opens the inspector on click; the chip is inside
+  // the row, so its click must not navigate — an operator expanding a chain is
+  // not selecting the rule for editing.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = chipPolicy();
+  api.setMode('editing');
+  api.renderSheet();
+  const chip = findAll(dom.get('sheet'), 'step-tier')[0];
+  assert.ok(chip, 'the chip exists in editing mode too');
+  chip._listeners.click();
+  assert.equal(api.state.selected, null,
+    'expanding the chain did not open the inspector');
+  assert.equal(chip.getAttribute('aria-expanded'), 'true');
 });
 
 // ── the window a count is taken over ─────────────────────────────────────
@@ -2300,6 +2562,42 @@ test('an invalid policy is reported where the operator is, with the first error'
   assert.match(text, /Policy invalid — 1 error\./);
   assert.match(text, /Dry runs are refused/);
   assert.match(text, /fallback_strategy/, 'the first error itself, not a count of errors');
+});
+
+test('a shadowed finding carries its definition where the word sits', () => {
+  // "shadowed" is the finding whose WORD does not say what it means: the row
+  // looks alive, the counts say it never fired, and the fix is to understand
+  // that an earlier rule already covers everything it would. The definition
+  // rides the line that uses the term — the banner is where the operator
+  // decides, and the fix button alone names the shadower, not the condition.
+  const { api, dom } = loadConsole();
+  api.state.status = shadowStatus();  // validation_errors + error_targets
+  api.renderWarnings();
+  const text = flat(dom.get('warnings'));
+  assert.match(text, /is shadowed by earlier rule/);
+  assert.match(text, /nunca roda: uma regra anterior já cobre tudo o que esta cobriria/);
+});
+
+test('a non-shadowed error gets no invented definition', () => {
+  // A config-level error names no rule, so nothing is defined for it — a
+  // definition for a term that is not there is exactly the invented vocabulary
+  // DESIGN.md §2.6 forbids.
+  const { api, dom } = loadConsole();
+  api.state.status = {
+    validation_errors: ["tier 'T9': 'fallback_strategy' must be one of sequential, random"],
+    error_targets: [null],
+  };
+  api.renderWarnings();
+  assert.doesNotMatch(flat(dom.get('warnings')), /nunca roda/);
+});
+
+test('a shadowed finding from an older sidecar (no error_targets) is still defined', () => {
+  // The word appears in the message even when the structured target is absent;
+  // the definition must not depend on the newest field.
+  const { api, dom } = loadConsole();
+  api.state.status = { validation_errors: ["rule 'late' is shadowed by earlier rule 'broad'"], error_targets: [] };
+  api.renderWarnings();
+  assert.match(flat(dom.get('warnings')), /nunca roda/);
 });
 
 test('a probe refused by an invalid policy explains which of the two is broken', async () => {

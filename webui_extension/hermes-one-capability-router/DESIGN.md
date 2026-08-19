@@ -34,8 +34,9 @@ Applied in order. When two rules conflict, the earlier one wins.
 2. **One authority per fact.** Health is signalled by the Health tab's dot and the
    model list. Write mode is signalled by the Edit control. Never a second chip
    repeating a state something else already owns; two sources that can disagree
-   are worse than none. The header's "checked HH:MM" is not an exception: it
-   reports THIS CONSOLE'S last read, which nothing else on screen can say.
+   are worse than none. The header's reach chip is not an exception: its three
+   provenance ages (sidecar up / code loaded / router.yaml changed) report THIS
+   CONSOLE'S last read of the sidecar, which nothing else on screen can say.
 3. **A subtitle must carry a fact the title cannot imply.** "Circuit breaker /
    Cooldown state and last failure kind" is one fact written twice. Prose that
    explains the console's own internals ("metric cards below are the canonical
@@ -96,9 +97,12 @@ put five cyan destinations against a gold underline, an amber finding and two re
 in one viewport, which is what the host's guide forbids.
 
 - **Tab** = destination + its live state: a condition dot, plus a count when a
-  count is meaningful (rules, recorded decisions, active bans). The selected tab
-  additionally wears the accent, and those two signals never collide because one
-  is a dot and the other is an underline.
+  count is meaningful (recorded decisions; active bans). The Pipeline shows no
+  count — the sheet's numbered rule list is its own counter, and `rules.length`
+  undercounted the sheet (13 lines rendered, 8 counted: the fail-safe is not a
+  rule). The Health count counts EXCEPTIONS only (bans + breaker cooldowns) and
+  wears amber, because counting elos made the number FALL from 8 to 1 the
+  moment a problem appeared; the elo total lives in the lede.
 - **Cause colour** in a decision: deterministic rule `--ok-text`, classifier
   `--info-text`, refusal (veto / fail-safe) `--bad-text`.
 - **A count without its window is a lie.** Hit counts on the sheet are taken over
@@ -361,6 +365,72 @@ is not any one screen's subject: it changes what all three of them mean.
   replay stays clickable on the decision an operator would actually open. Measured
   on the live log: 40 lines → 29, eleven adjacent pairs in thirty-nine
   adjacencies.
+
+## 3d. The tier vocabulary is defined where it decides
+
+The sheet's destinations and the Health rows once used words that assumed the
+reader already knew the policy's shape: "T3" read as a model id while meaning
+"try this chain", and a Health row for glm-5.3 looked like a one-tier elo while
+three tiers depended on it. The definitions now ride with the terms, in damage
+order — the misreading that costs most is the one defined first:
+
+- **A destination that names a tier is a CHIP, not a mute span.** `→ T3` is a
+  button; hover carries the compact chain (`gpt-5.6-terra · deepseek-v4-pro ·
+  glm-5.3`, primary first) and the click reveals the full chain in place — the
+  same `chainList` the Tier chains group draws, with the strategy label
+  ("tried in order" / "tried in a random order"), because the HOW is part of
+  what the destination means. A refusal or a classifier hop never becomes a
+  chip: those are not chains. The revealed chain is the definition of the tier,
+  and it is what exposes a shared-hop fact like "T3 and T4 both carry
+  deepseek-v4-pro and glm-5.3" — the reading that changes what "a regra manda
+  pra T4" means.
+- **A Health row names the roles its elo plays in the policy.** "T2 primária,
+  T3 hop 3, T4 hop 3" answers the tab's question ("o que quebra se este elo
+  morrer?") from the policy already on screen — no extra read. Hop numbering
+  counts the full chain the router walks (primary = 1). An elo in no tier gets
+  no line.
+- **"shadowed" is defined on the line that uses the word.** The lint banner
+  appends "nunca roda: uma regra anterior já cobre tudo o que esta cobriria"
+  after a shadowed finding, because the word alone describes a state, not the
+  mechanism that makes the row dead.
+- **An off-rule cause carries the definition of what it names.** "fail safe
+  strong" and "blocklist veto" get hover resolutions on the row (the same idiom
+  as the "fora da política" mark), and the "Not by rule" pill defines the
+  subset it offers before it is chosen. A cause this console has not learned
+  gets nothing invented (§2.6).
+
+## 3e. First viewport: counters count exceptions, facts echo nothing
+
+The 2026-08-19 review read the first screen and found four things that should
+not have been there: the router's own error was the 4th item of the page, the
+Health badge FELL when the situation got worse, and two of the four summary
+facts echoed other surfaces. The rules the fixes encode:
+
+- **A badge counts exceptions, not inventory.** The Health badge counts bans +
+  breaker cooldowns and wears amber (the attention colour); zero exceptions
+  hides it. Counting elos made the number fall from 8 to 1 exactly when a
+  problem appeared — the number moved the wrong way in the moment it mattered
+  most. The elo total lives in the lede ("all 8 reachable" / "2 of 3 not
+  routable"), where the unit is named.
+- **A list is its own counter.** The Pipeline badge is gone: the numbered rule
+  sheet already counts rules — and its 13 lines include the fail-safe, which
+  `rules.length` (8) never counted, so the badge undercounted the very sheet it
+  sat on. The dot keeps the condition; the list keeps the count.
+- **A summary fact must exist nowhere else.** The Health facts keep exactly
+  two — ROUTING on/off and the CLASSIFIER model — because those two are the
+  only ones no other surface says. The rules count repeated the sheet, and the
+  invalid count repeated the lint banner's "Policy invalid — N errors", which
+  is also the actionable home (it carries the jump-to-the-rule button).
+- **Elapsed beats clocked.** Two wall-clock reads of the same minute, 60px
+  apart, are one fact written twice. The provenance header (sidecar up / code
+  loaded / router.yaml changed) says which source is stale, which a bare HH:MM
+  cannot — it is the "checked HH:MM" clock replaced by the three ages that
+  matter.
+- **A title is not drawn twice.** Inside the panel, the shell already names the
+  surface twice (rail label, sidebar head), so the console's own masthead is
+  hidden under `.is-embedded`; the standalone page at /capability-router still
+  draws it. The tabs hide for the same reason — the sidebar IS the tab strip —
+  but stay in the DOM because the sidebar drives them.
 
 ## 4. Writing is a mode, and it is off by default
 

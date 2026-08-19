@@ -253,6 +253,11 @@
     }
     .tab-state { display: inline-flex; align-items: center; gap: 6px; }
     .count { color: var(--muted); font: 500 var(--t-label) var(--mono); }
+    /* A count that names an EXCEPTION wears amber — the condition colour that
+       means "this needs your attention" — so the Health badge (bans + breaker
+       cooldowns) reads as a condition, the same way the dot beside it does.
+       A count that merely counts (recorded decisions) stays muted. */
+    .count.is-warn { color: var(--warn-text); }
     /* A dot keeps the RAW hue — that is what makes it identifiable as green or
        amber — but the raw hue against the plane measures as low as 1.38:1
        (neon-paint/light), under the 3:1 floor for a graphical object. The 1px
@@ -366,6 +371,11 @@
     .row:last-child { border-bottom: 0; }
     .row-name { font: 500 var(--t-body) var(--mono); overflow-wrap: anywhere; }
     .row-note { color: var(--muted); font: var(--t-small) var(--mono); margin-top: 2px; }
+    /* The role an elo plays in the policy, on the Health row that monitors it:
+       which tiers use it and at which position ("T2 primária, T3 hop 3").
+       Tier ids and hop numbers dominate the phrase, so it takes the small mono
+       treatment of the rail note it follows. */
+    .row-role { color: var(--muted); font: var(--t-small) var(--mono); margin-top: 2px; }
     .row-value { color: var(--muted); font: var(--t-small) var(--mono); text-align: right; white-space: nowrap; }
     /* A condition, in a word. Colour is one of the four and never decorative;
        the word is there so colour is not the only channel. */
@@ -528,6 +538,28 @@
     .step-dest { display: flex; align-items: baseline; gap: 8px; justify-content: flex-end; min-width: 0; }
     .step-arrow { color: var(--muted); font: var(--t-body) var(--mono); }
     .step-target { font: 500 var(--t-body) var(--mono); overflow: hidden; text-overflow: ellipsis; }
+    /* A destination that names a TIER is not a model: routing to T3 means "try
+       this chain, in order". The chip is the vocabulary the plain span lacked —
+       a button that reveals the chain it points at, so the operator sees what
+       'a regra manda pra T4' actually sends. Expanded wears the accent: that is
+       a selection ("you asked about this chain"), not a condition. */
+    .step-target.step-tier {
+      padding: 1px 9px; border: 1px solid var(--line); border-radius: var(--radius-pill);
+      background: transparent; color: var(--text); cursor: pointer;
+      max-width: 100%; white-space: nowrap;
+    }
+    .step-target.step-tier:hover { border-color: var(--line-strong); background: var(--surface-raised); }
+    .step-target.step-tier[aria-expanded="true"] { border-color: var(--accent-bg-strong); background: var(--accent-bg); color: var(--accent-text); }
+    /* The chain a tier chip revealed, under the row that named it. It spans the
+       whole row (the step is a three-column grid) and is read as the same chain
+       the Tier chains group draws — same list, same ordinals, same vocabulary. */
+    .step-chain {
+      grid-column: 1 / -1; margin: 2px 0 6px; padding: 10px 14px 12px;
+      border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--surface);
+    }
+    .step-chain .hops { margin-top: 0; }
+    .step-chain-note { color: var(--muted); font-size: var(--t-small); margin-bottom: 2px; }
     .step-hits {
       grid-column: 2; color: var(--muted); font: var(--t-small) var(--mono);
       text-align: right; white-space: nowrap;
@@ -951,12 +983,16 @@
     /* ── embedded in the Hermes One panel ────────────────────────────────────
        The rail icon is lit and labelled Capability Router, and the console's
        sections are the shell's sidebar now, so the 45px masthead title and the
-       37px tab row were 82px of chrome repeating what the shell already shows.
-       Both stay in the DOM — the tabs are the state the sidebar reads, and
-       clicking a sidebar row clicks the tab — they are just not drawn twice.
+       37px tab row were 82px of chrome repeating what the shell already shows —
+       and the review counted "Capability Router" THREE times on one screen: the
+       rail label, the sidebar's panel head, and this title. The tabs and the
+       title stay in the DOM — the tabs are the state the sidebar reads,
+       clicking a sidebar row clicks the tab, and the standalone page at
+       /capability-router still draws both — they are just not drawn twice.
        The head survives without its title: it carries the freshness chip and the
        Edit/Refresh actions, which have no other home. */
     .is-embedded nav.tabs { display: none; }
+    .is-embedded .view-title { display: none; }
     /* The head matches the shell sidebar's .panel-head exactly, measured off the running
        host: 41px min-height, 8px/16px padding, one hairline below. It was 45px with an
        18px title, which read as a second navigation row one row off from the real one. */
@@ -964,12 +1000,6 @@
       min-height: 41px;
       padding: 8px 16px;
       align-items: center;
-    }
-    .is-embedded .view-title {
-      font: 600 var(--t-label)/1.3 var(--sans);
-      letter-spacing: .08em;
-      text-transform: uppercase;
-      color: var(--muted);
     }
     /* The 41px min-height was already applying; the box measured 45 because the
        ACTIONS were 28px tall and 8px padding top and bottom put it over. 25px of
@@ -1104,24 +1134,6 @@
           <div class="group-head"><h2>Blocked</h2></div>
           <div id="bans"></div>
         </div>
-
-        <div class="group">
-          <div class="group-head"><h2>Compaction</h2><span class="screen-note" id="compactionNote"></span></div>
-          <div class="facts" id="compaction"></div>
-          <!-- The type-to-confirm stays: this action restarts the agent, and the
-               server demands the same phrase independently (one_sidecar.py:392),
-               so the two cannot drift apart. The summary carries the consequence,
-               so the decision to open it is informed. -->
-          <details id="compactionApply">
-            <summary>Recalculate thresholds — restarts the agent</summary>
-            <div class="field" style="margin-top:10px">
-              <label for="compactConfirm">Type COMPACT to confirm</label>
-              <input id="compactConfirm" autocomplete="off" placeholder="COMPACT">
-            </div>
-            <div class="actions"><button class="btn warn" id="compactGo" type="button">Recalculate</button></div>
-            <p class="msg" id="compactMsg" aria-live="polite"></p>
-          </details>
-        </div>
       </section>
 
       <!-- ── Pipeline: a decision sheet, read top to bottom ─────────── -->
@@ -1192,6 +1204,29 @@
         <div class="group">
           <div class="group-head"><h2>Tier chains</h2><span class="screen-note" id="ladderNote"></span></div>
           <div id="ladder"></div>
+        </div>
+
+        <!-- Compaction is a PIPELINE fact (DESIGN.md §1: Blocklist lives in
+             Health, Compaction in Pipeline), and it follows the Blocked group's
+             rule: hidden unless it carries an active condition — a sidecar that
+             reports no compaction data gets no group at all (Render nothing for
+             nothing, DESIGN.md §2.1). The type-to-confirm stays: this action
+             restarts the agent, and the server demands the same phrase
+             independently (one_sidecar.py:392), so the two cannot drift apart.
+             The summary carries the consequence, so the decision to open it is
+             informed. -->
+        <div class="group" id="compactionGroup" hidden>
+          <div class="group-head"><h2>Compaction</h2><span class="screen-note" id="compactionNote"></span></div>
+          <div class="facts" id="compaction"></div>
+          <details id="compactionApply">
+            <summary>Recalculate thresholds — restarts the agent</summary>
+            <div class="field" style="margin-top:10px">
+              <label for="compactConfirm">Type COMPACT to confirm</label>
+              <input id="compactConfirm" autocomplete="off" placeholder="COMPACT">
+            </div>
+            <div class="actions"><button class="btn warn" id="compactGo" type="button">Recalculate</button></div>
+            <p class="msg" id="compactMsg" aria-live="polite"></p>
+          </details>
         </div>
 
         <div id="inspector"></div>
@@ -2363,20 +2398,34 @@
       // ── rail ────────────────────────────────────────────────────────
       function renderRail() {
         const models = (state.liveness && Array.isArray(state.liveness.models)) ? state.liveness.models : [];
-        const rules = (state.policy && Array.isArray(state.policy.rules)) ? state.policy.rules : [];
         const routes = Array.isArray(state.routes) ? state.routes : [];
         const bl = state.blocklist || {};
         const bans = Array.isArray(bl.manual_bans) ? bl.manual_bans : [];
         const breakers = Array.isArray(bl.breaker_cooldowns) ? bl.breaker_cooldowns : [];
 
-        const set = (wrapId, countId, cls, count) => {
+        const set = (wrapId, countId, cls, count, warn = false) => {
           const wrap = $(wrapId);
           if (wrap) wrap.className = `tab-state${cls ? ` is-${cls}` : ''}`;
           const badge = $(countId);
-          if (badge) { badge.textContent = String(count); badge.hidden = !count; }
+          if (badge) {
+            badge.textContent = String(count);
+            badge.hidden = !count;
+            // A count that names an EXCEPTION wears amber (the .is-warn rule in
+            // the style block); a count that merely counts stays muted. Amber
+            // tracks the exceptions themselves: when they clear, the class goes
+            // with them, so a hidden badge never carries a stale attention hue.
+            if (warn && count) badge.classList.add('is-warn');
+            else badge.classList.remove('is-warn');
+          }
         };
         const health = state.unreachable ? 'dead' : (models.length ? worstOf(models) : '');
-        set('stateHealth', 'countHealth', health, bans.length + breakers.length || models.length);
+        // The Health badge counts EXCEPTIONS, not elos: a ban or a breaker
+        // cooldown is what an operator must act on, and the elo total already
+        // lives in the lede ("all 8 reachable" / "2 of 3 not routable").
+        // Counting elos here was worse than useless — ban one of eight models
+        // and the badge fell from 8 to 1 at the moment the problem appeared.
+        // Zero exceptions hides the badge entirely (badge.hidden = !count).
+        set('stateHealth', 'countHealth', health, bans.length + breakers.length, true);
         // The Pipeline dot reports the POLICY, never the operator's own mode. It
         // used to go amber ('degraded') whenever editing was open, so the console
         // claimed the router was degraded because someone had clicked a button —
@@ -2384,8 +2433,13 @@
         // invalid policy is a real degradation; an open editor is not.
         const invalid = Array.isArray(state.status && state.status.validation_errors)
           && state.status.validation_errors.length > 0;
+        // The Pipeline count is GONE: the sheet's numbered rule list 1..N is its
+        // own counter, so a badge repeating N duplicated the tab's content — and
+        // it undercounted the sheet: 13 lines rendered, 8 counted, because the
+        // fail-safe line (45% of decisions) is not a rule. The dot keeps the
+        // condition; the list keeps the count.
         set('statePipeline', 'countPipeline',
-            invalid ? 'degraded' : (state.policy ? 'alive' : ''), rules.length);
+            invalid ? 'degraded' : (state.policy ? 'alive' : ''), 0);
         set('stateRoutes', 'countRoutes', routes.length ? 'alive' : '', routes.length);
 
         const reach = $('reach');
@@ -2612,6 +2666,17 @@
           if (target && typeof target.later_index === 'number') {
             line.append(verRuleButton(target));
           }
+          // The vocabulary, where the term sits: "shadowed" is the one finding
+          // whose word does not say what it means to an operator who has never
+          // met it, and it is the highest-damage misreading on this screen — the
+          // row looks alive, the counts say it never fired, and the fix is to
+          // understand that an earlier rule already covers everything it would.
+          const shadowed = (target && target.code === 'shadowed')
+            || /shadowed/.test(String(errors[0] || ''));
+          if (shadowed) {
+            line.append(el('span', 'warn-def',
+              ' — nunca roda: uma regra anterior já cobre tudo o que esta cobriria'));
+          }
           box.append(line);
           renderProbeGate();
         } else if (probeResult && probeResult.firstChild
@@ -2631,11 +2696,31 @@
       }
 
       // ── Health ──────────────────────────────────────────────────────
+      // The role each elo plays in the policy, by model id: which tiers use it
+      // and at which position in the chain ("T2 primária", "T3 hop 3"). Hop
+      // numbering counts the FULL chain the router walks — primary is position
+      // 1 — because that is the position an operator acts on when a tier's
+      // primary dies. Same assembly tierChain performs, so the roles cannot
+      // drift from the chains the Tier chains group draws. A model in no tier
+      // gets no role: nothing to say is not a finding.
+      function tierRoles(policy) {
+        const out = {};
+        const tiers = (policy && typeof policy === 'object' && policy.tiers) || {};
+        Object.keys(tiers).forEach((name) => {
+          tierChain(tiers[name]).forEach((hop, i) => {
+            const id = String((hop && hop.model) || '');
+            if (!id) return;
+            const pos = i === 0 ? `${name} primária` : `${name} hop ${i + 1}`;
+            (out[id] = out[id] || []).push(pos);
+          });
+        });
+        return out;
+      }
+
       function renderHealth() {
         const facts = $('healthFacts');
         clear(facts);
         const st = state.status || {};
-        const rules = (state.policy && state.policy.rules) || [];
         // Mono is for machine facts — a model id, a count, something an operator
         // would copy — and sans for words. "on" is a word; "deepseek-v3.2" is not.
         const fact = (label, value, mono) => {
@@ -2644,12 +2729,14 @@
                    el('span', `fact-value${mono ? ' is-mono' : ''}`, value));
           facts.append(f);
         };
+        // Only the two facts that exist NOWHERE ELSE on the screen stay. The
+        // rules count echoed the Pipeline sheet's numbered list (and its badge,
+        // now removed), and the invalid count echoed the lint banner's "Policy
+        // invalid — N errors" 72px above — both were a second chip repeating a
+        // state something else already owns (DESIGN.md §2.2).
         fact('routing', say(st.enabled === undefined ? undefined : st.enabled, '—') === 'yes' ? 'on' : 'off');
-        fact('rules', String(rules.length || st.rules_count || 0), true);
         const classifier = (st.classifier && st.classifier.model) || (state.policy && state.policy.classifier && state.policy.classifier.model);
         if (classifier) fact('classifier', classifier, true);
-        const errors = Array.isArray(st.validation_errors) ? st.validation_errors : [];
-        if (errors.length) fact('invalid', `${errors.length} error${errors.length > 1 ? 's' : ''}`);
 
         const list = $('models');
         clear(list);
@@ -2685,6 +2772,10 @@
         if (!models.length) {
           list.append(el('p', 'nothing', absence('No routable models reported.')));
         } else {
+          // Built once per render, from the policy that is already on screen —
+          // no extra read: state.policy.tiers arrives in the same Promise.all
+          // as liveness, so the role of every elo is a local fact.
+          const roles = tierRoles(state.policy);
           models.forEach((m) => {
             const cls = modelState(m);
             const row = el('div', `row${cls ? ` is-${cls}` : ''}`);
@@ -2693,6 +2784,11 @@
             name.append(el('div', 'row-name', m.model || m.model_key || '—'));
             const rail = m.provider || (String(m.model_key || '').split('@')[1] || '');
             if (rail) name.append(el('div', 'row-note', rail));
+            // The answer to THIS tab's question: "o que quebra se este elo
+            // morrer?" — which tiers depend on it, and where. A model outside
+            // every tier gets no line: it cannot break a tier it does not serve.
+            const mine = roles[m.model || m.model_key || ''];
+            if (mine) name.append(el('div', 'row-role', mine.join(', ')));
             row.append(name);
             const right = el('div');
             right.append(el('span', 'state', cls || 'unknown'));
@@ -2729,15 +2825,24 @@
           row.append(el('span', 'row-value', `${Math.ceil(Number(b.cooldown_remaining_s) || 0)}s left`));
           banBox.append(row);
         });
+      }
 
+      // ── Compaction: a pipeline fact, shown only when there is one ────
+      // DESIGN.md §1 gives Compaction its home in Pipeline (Blocklist lives in
+      // Health, Compaction in Pipeline — "subordinate detail, not peers"), and
+      // the Blocked group's rule governs its visibility: hidden unless it
+      // carries an active condition. A sidecar that reports no compaction data
+      // gets no group at all — the "not implemented by this sidecar" note was
+      // the console reporting on itself, which DESIGN.md §2.7 forbids, and an
+      // absent group is what "Render nothing for nothing" (§2.1) prescribes.
+      function renderCompaction() {
+        const group = $('compactionGroup');
         const comp = $('compaction');
         clear(comp);
         const c = state.compaction;
+        group.hidden = !c;
         $('compactionApply').hidden = !c;
-        if (!c) {
-          $('compactionNote').textContent = 'not implemented by this sidecar';
-          return;
-        }
+        if (!c) { $('compactionNote').textContent = ''; return; }
 
         // The three numbers here were printed raw: "aggressiveness 50",
         // "summarizer window 272000", "compacts at 208352". An operator cannot act
@@ -3080,6 +3185,20 @@
         const { byRule, byCause, total } = ruleHits();
         const rules = Array.isArray(policy.rules) ? policy.rules : [];
         const editable = state.mode === 'editing';
+        // A destination that names a TIER is the sheet's one vocabulary gap: it
+        // reads as a model id while meaning "try this chain". The tier table and
+        // the chain-rendering context are computed once per render — declared
+        // config read at the console's hour, exactly as the Tier chains group
+        // reads it — so a row's chip costs nothing until the operator clicks it.
+        const tierIndex = (policy && policy.tiers) || {};
+        const tierNames = Object.keys(tierIndex);
+        const chainWhen = whenOf(nowUtc());
+        const chainLive = liveMultipliers(state.liveness, chainWhen);
+        const chainBilling = billingIndex(policy);
+        const tierDestOf = (model) => {
+          const id = model == null ? null : String(model);
+          return id && tierNames.indexOf(id) >= 0 ? id : null;
+        };
         // The sheet counts decisions against the CURRENT policy. When the window
         // predates the policy, or nothing has been recorded for STALE_WINDOW_DAYS,
         // or nothing is recorded at all, the counter refuses to count rules that
@@ -3160,11 +3279,55 @@
           step.append(what);
           const to = el('div', 'step-to');
           const dest = el('div', 'step-dest');
+          // A destination that names a tier becomes a CHIP: a button that
+          // reveals, in place, the chain "T3" points at — the same list the
+          // Tier chains group draws. Hover carries the compact form (the elos,
+          // primary first); the click is the primary channel, because a hover
+          // definition is invisible to touch and to a keyboard.
+          let expansion = null;
           if (opts.target) {
             dest.append(el('span', 'step-arrow', '→'));
-            const t = el('span', 'step-target', opts.target);
-            if (opts.targetColor) t.style.color = opts.targetColor;
-            dest.append(t);
+            const tier = opts.tierDest && tierIndex[opts.tierDest] ? tierIndex[opts.tierDest] : null;
+            const hops = tier ? tierChain(tier) : [];
+            if (tier && hops.length) {
+              const chip = el('button', 'step-target step-tier', opts.target);
+              chip.type = 'button';
+              chip.setAttribute('aria-expanded', 'false');
+              chip.title = hops.map((h) => h.model).join(' · ');
+              expansion = el('div', 'step-chain');
+              expansion.hidden = true;
+              let open = false;
+              chip.addEventListener('click', (event) => {
+                // The row's own click (edit mode) must not fire for the chip.
+                if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+                open = !open;
+                chip.setAttribute('aria-expanded', String(open));
+                if (open) {
+                  clear(expansion);
+                  const strategy = strategyWords(tier.fallback_strategy,
+                    { pinPrimary: declaredPin(tier.pin_primary), when: chainWhen });
+                  // The HOW is part of what a tier destination means: "tried in
+                  // order" and "tried in a random order" are different claims
+                  // about what the rule does. The label is the ladder's own word,
+                  // so the chip reads exactly like the Tier chains group.
+                  const how = el('div', 'step-chain-note',
+                    hops.length > 1 ? strategy.label : 'one elo, nothing to pick');
+                  if (strategy.note) how.append(el('span', '', ` — ${strategy.note}`));
+                  expansion.append(how);
+                  expansion.append(chainList(hops, {
+                    strategy, registry: state.capabilities, billing: chainBilling,
+                    when: chainWhen, live: chainLive,
+                    showPrice: strategy.timeRelative,
+                  }));
+                }
+                expansion.hidden = !open;
+              });
+              dest.append(chip);
+            } else {
+              const t = el('span', 'step-target', opts.target);
+              if (opts.targetColor) t.style.color = opts.targetColor;
+              dest.append(t);
+            }
           }
           to.append(dest);
           if (opts.hits !== undefined) {
@@ -3179,6 +3342,9 @@
             to.append(h);
           }
           step.append(to);
+          // The revealed chain lands under the whole row, not inside the
+          // destination column — it spans the sheet the way the sheet reads.
+          if (expansion) step.append(expansion);
           if (opts.onPick) step.addEventListener('click', opts.onPick);
           return step;
         };
@@ -3226,6 +3392,9 @@
             chips: predicateChips(r.when),
             when: phraseWhen(r.when),
             target,
+            // A destination that names a tier renders as the expandable chip,
+            // never for a refusal or a classifier hop — those are not chains.
+            tierDest: (!then.deny && then.action !== 'classify') ? tierDestOf(then.model) : null,
             targetColor: then.deny ? 'var(--bad-text)' : '',
             hits: byRule[r.id] || 0,
             stale,
@@ -3239,6 +3408,7 @@
           ord: '·', id: 'default', synthetic: true,
           when: 'nothing above matched',
           target: def.action === 'classify' ? 'classifier' : (def.model || '—'),
+          tierDest: def.action !== 'classify' ? tierDestOf(def.model) : null,
           targetColor: '',
           editable,
           onPick: editable ? () => pickBind({ id: 'default', name: 'default', bind: 'default' }) : null,
@@ -4718,6 +4888,26 @@
         return String(route && route.cause || '').includes('veto');
       }
 
+      // The definition of an off-rule CAUSE, attached where the term sits: the
+      // label "fail safe strong" names a routing event, not a condition, and a
+      // reader who has never met the word cannot infer from it that the normal
+      // chain produced nobody. Same idiom as the route-flag popover: the row
+      // carries the words, the hover carries the resolution. '' for a cause
+      // this console has not learned — nothing invented (DESIGN.md §2.6).
+      function causeTitle(cause) {
+        const c = String(cause || '');
+        if (c.includes('fail_safe')) {
+          return 'nenhuma regra pegou e o classificador não respondeu — este elo foi a rede de segurança';
+        }
+        if (c.includes('veto')) {
+          return 'o modelo pedido está banido ou em cooldown — o router recusou, nada foi despachado';
+        }
+        if (c.includes('classifier')) {
+          return 'nenhuma regra pegou — o classificador escolheu o tier';
+        }
+        return '';
+      }
+
       function inScope(route) {
         return state.scope === 'off-rule' ? isOffRulePath(route) : true;
       }
@@ -4841,6 +5031,11 @@
         const showingOffRule = state.scope === 'off-rule';
         scopeLabel($('scopeAll'), 'All', all.length);
         scopeLabel($('scopeOffRule'), 'Not by rule', offRule.length);
+        // The pill names a subset the console knows how to define: decisions
+        // that did not come from a rule. The definition rides on the pill so it
+        // is answerable before the operator commits to the filter — and the
+        // routes note below repeats it in full sentences once the scope is on.
+        $('scopeOffRule').title = 'decisões que não vieram de uma regra — o blocklist recusou ou o fail-safe capturou';
         $('scopeAll').classList.toggle('is-on', !showingOffRule);
         $('scopeOffRule').classList.toggle('is-on', showingOffRule);
         $('scopeAll').setAttribute('aria-pressed', String(!showingOffRule));
@@ -4909,6 +5104,9 @@
           if (state.replay && state.replay.id === r.id) row.setAttribute('aria-current', 'true');
           const cause = el('span', 'cause', String(r.cause || '—').replace(/_/g, ' '));
           cause.style.color = causeColor(r.cause);
+          // The definition of an off-rule cause rides with the term, resolved
+          // in the same hover idiom as the "fora da política" mark below.
+          cause.title = causeTitle(r.cause);
           row.append(cause);
           const mid = el('div');
           const name = el('div', 'row-name');
@@ -5063,6 +5261,7 @@
         renderWarnings();
         renderRail();
         renderHealth();
+        renderCompaction();
         renderRoutes();
         renderSheet();
         renderLadder();
@@ -5226,6 +5425,11 @@
         billingBadge, billsInDollars, ctxWindow, rejectWhy, contextShortfall, strategyWords,
         upstreamGroup, independentRails, sharedUpstream, hopCaps, billingIndex,
         capabilityRegistry, tierChain, renderChainPlan,
+        // The vocabulary this console added: which tiers an elo serves and where
+        // (tierRoles), the chain a tier destination points at (renderSheet's
+        // chip), and the definition of an off-rule cause (causeTitle). Each is
+        // exported because the strings an operator reads are the contract.
+        tierRoles, causeTitle, renderCompaction,
         // The time layer. Every one of these takes its clock as a PARAMETER, which
         // is what keeps them pure and what keeps these tests from passing at 05:00
         // UTC and failing at 07:00 — the failure mode the injected clock exists to
