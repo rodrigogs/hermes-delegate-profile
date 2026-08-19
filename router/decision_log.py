@@ -6,7 +6,13 @@ the only IO, and guards it.)
 Closed cause set — the only valid strings:
   blocklist_veto, breaker_cooldown, keyword_match, size_rule,
   has_code_rule, hard_rule, classifier, session_pin, default_fallthrough,
-  fail_safe_strong
+  fail_safe_strong, profile_ignored, selection_vetoed, unknown_cause
+
+A cause outside the closed set is recorded AS ``unknown_cause`` — it used to
+be coerced to ``fail_safe_strong``, which painted an inventing caller as the
+router's WORST real outcome at the exact spot where 18 of 40 live decisions
+already read ``fail_safe``. An unknown cause is a programming error upstream;
+the trace should say it is unknown, not that the fail-safe fired.
 
 Chain-plan persistence (additive, backward compatible):
   ``record(..., chain_plan=...)`` attaches the capability/fallback chain plan
@@ -64,6 +70,16 @@ VALID_CAUSES: set[str] = {
     "session_pin",
     "default_fallthrough",
     "fail_safe_strong",
+    # The kanban dispatch path cannot change the worker's profile (it only
+    # passes -m/--provider), so a rule that routes to a different profile is
+    # refused there with this cause rather than half-applied.
+    "profile_ignored",
+    # The selection guard (cost/data-policy) refused the chosen rail AND the
+    # fallback chain offered no clean replacement — a denial, not a substitution.
+    "selection_vetoed",
+    # A cause outside the closed set is recorded AS unknown (never masked as
+    # the worst real outcome) so an operator can spot the inventing caller.
+    "unknown_cause",
 }
 
 # ---------------------------------------------------------------------------
@@ -363,7 +379,11 @@ class DecisionLog:
         having been logged.
         """
         if cause not in VALID_CAUSES:
-            cause = "fail_safe_strong"
+            # NOT fail_safe_strong: a cause this module does not know is a
+            # programming error upstream, and recording it as the router's
+            # worst real outcome buries the error at exactly the spot an
+            # operator counts outcomes. Unknown stays unknown.
+            cause = "unknown_cause"
 
         recorded_output = dict(output)
         bounded = bound_chain_plan(chain_plan) if chain_plan is not None else None

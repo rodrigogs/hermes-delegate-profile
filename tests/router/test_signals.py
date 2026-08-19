@@ -717,8 +717,29 @@ class TestExportedFeatureVocabulary:
         assert KNOWN_FEATURE_NAMES == EXTRACTED_FEATURE_NAMES | INJECTED_FEATURE_NAMES
 
     def test_module_reads_no_clock(self):
-        # Cheap structural guard on the purity contract the module docstring
-        # states: no wall-clock read may creep into a signal.
-        source = Path(signals_module.__file__).read_text(encoding="utf-8")
-        for forbidden in ("import time", "datetime", "time.time("):
-            assert forbidden not in source
+        # AST-backed purity guard on the contract the module docstring states
+        # (the text probe it replaced could not tell a docstring that DISCUSSES
+        # time from a call that reads it). Same pattern as
+        # test_capabilities.test_capabilities_module_never_reads_the_wall_clock.
+        import ast
+        import inspect
+
+        tree = ast.parse(inspect.getsource(signals_module))
+        called: set = set()
+        imported: set = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Attribute):
+                    called.add(node.func.attr)
+                elif isinstance(node.func, ast.Name):
+                    called.add(node.func.id)
+            elif isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported.add((node.module or "").split(".")[0])
+
+        assert not called & {
+            "now", "utcnow", "today", "monotonic", "time", "fromtimestamp", "open",
+        }
+        # No IO, no state, no network: the import list is the proof.
+        assert imported <= {"__future__", "math", "re", "typing"}

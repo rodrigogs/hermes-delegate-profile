@@ -504,6 +504,145 @@ def test_blocklist_chain_fully_blocked_denies():
     assert out.get("blocked_model") == chosen
 
 
+# ---------------------------------------------------------------------------
+# Selection guard veto — Hermes' cost/data-policy guard as a rail veto
+# ---------------------------------------------------------------------------
+
+def _firing_guard(models):
+    """A warn_fn that fires for exactly ``models`` (by model id)."""
+    def warn_fn(model, provider=None):
+        if model in models:
+            return [{"kind": "cost", "model": model,
+                     "provider": provider or "", "message": "test guard fired",
+                     "title": "Expensive Model Warning"}]
+        return []
+    return warn_fn
+
+
+def test_a_guard_firing_model_the_router_chose_is_not_dispatched():
+    """The selection guard must bind the router's own choice, like the blocklist.
+
+    Every other model-selection surface in Hermes runs the guard when a human
+    picks a model; the router picked autonomously and nothing ever called it,
+    so a policy edited to name an above-threshold model was dispatched to
+    silently. The guard answer is a rail veto: substitute or deny, never run.
+    """
+    cfg = copy.deepcopy(_live_config())
+    task = "Rename getCwd in src/utils.py"
+    chosen = route(task, cfg).get("model")
+    assert chosen, "the live config must route this task somewhere"
+
+    out = route(task, cfg, warn_fn=_firing_guard({chosen}))
+    assert out.get("model") != chosen, f"dispatched a guard-firing model: {out}"
+    # Substituted or denied — and when substituted, the cause names the guard,
+    # not the blocklist, so an operator can tell the two vetoes apart.
+    assert out.get("deny") is True or out.get("cause") == "selection_vetoed"
+    assert out.get("blocked_model") == chosen
+
+
+def test_guard_firing_primary_with_no_clean_fallback_denies_with_cause():
+    """Guard fires on the primary AND every fallback link -> deny, cause=selection_vetoed."""
+    from router.decision_log import DecisionLog
+
+    cfg = copy.deepcopy(_live_config())
+    task = "rename a variable in utils.py"
+    chosen = route(task, cfg).get("model")
+    assert chosen
+
+    # No clean rail anywhere: the guard fires on the primary and the whole
+    # fallback chain (blocklist fallback_chain is flat model ids).
+    chain = [chosen, "fallback-a", "fallback-b"]
+    cfg["blocklist"]["fallback_chain"] = chain
+    log = DecisionLog()
+    out = route(task, cfg, warn_fn=_firing_guard(set(chain)), decision_log=log)
+    assert out.get("deny") is True
+    assert out.get("cause") == "selection_vetoed"
+    assert out.get("blocked_model") == chosen
+    # The LOG cause is the closed-set member, so a grep of cause= lines finds it.
+    assert log.entries()[-1]["cause"] == "selection_vetoed"
+
+
+def test_guard_firing_on_a_planned_hop_removes_it_with_reason():
+    """A chain hop the guard refuses is dropped with reject_reason=selection_warning."""
+    from router.blocklist import Blocklist
+    from router.decision_log import DecisionLog
+
+    cfg = copy.deepcopy(_live_config())
+    # Two clean hops; the guard fires only on the second. The planned chain
+    # must lose it, and the trace must say WHICH veto took it out.
+    cfg["tiers"]["T1"]["fallback"] = [
+        {"model": "hop-clean", "provider": "p1"},
+        {"model": "hop-warned", "provider": "p2"},
+    ]
+    cfg["tiers"]["T1"]["fallback_strategy"] = "sequential"
+    bl = Blocklist(cfg)
+    log = DecisionLog()
+    out = route(
+        "a trivial single-file rename", cfg, blocklist=bl,
+        warn_fn=_firing_guard({"hop-warned"}), decision_log=log,
+    )
+    planned = out.get("chain") or []
+    models = [h["model"] for h in planned]
+    assert "hop-warned" not in models, planned
+    assert "hop-clean" in models, planned
+    # The refused hop is reported with its own reason, not the blocklist's —
+    # the two vetoes must be distinguishable in the trace.
+    plan = log.entries()[-1]["chain_plan"]
+    reasons = {
+        row["model"]: row["reject_reason"] for row in plan.get("blocked", [])
+    }
+    assert reasons.get("hop-warned") == "selection_warning", reasons
+    assert out.get("cause") != "blocklist_substituted"
+
+
+def test_guard_raising_never_breaks_routing():
+    """A misbehaving guard degrades to 'not vetoed', never to a refused turn."""
+    cfg = copy.deepcopy(_live_config())
+
+    def broken_guard(model, provider=None):
+        raise RuntimeError("guard blew up")
+
+    out = route("Rename getCwd in src/utils.py", cfg, warn_fn=broken_guard)
+    assert out.get("deny") is not True
+    assert out.get("model"), out
+
+
+def test_guard_default_resolution_degrades_where_hermes_cli_is_absent(monkeypatch):
+    """warn_fn=None must resolve the live guard on Hermes hosts and None without."""
+    from router import adapter as adapter_mod
+
+    saved = adapter_mod._default_warn_fn()
+    try:
+        # Simulate a host with no hermes_cli.model_selection_guards: the
+        # resolution must yield None (inert), not raise.
+        import sys
+        monkeypatch.setitem(
+            sys.modules, "hermes_cli.model_selection_guards", None,
+        )
+        assert adapter_mod._default_warn_fn() is None
+    finally:
+        # Restore the live guard and prove the ordinary resolution is callable
+        # when the module exists — on CI (no hermes_cli) the try above already
+        # covered the degrade, and this branch is skipped by the same import.
+        import sys
+        if saved is None:
+            monkeypatch.delitem(
+                sys.modules, "hermes_cli.model_selection_guards", raising=False,
+            )
+        else:
+            monkeypatch.setitem(sys.modules, "hermes_cli.model_selection_guards", saved)
+        resolved = adapter_mod._default_warn_fn()
+        try:
+            import importlib.util
+            spec = importlib.util.find_spec("hermes_cli.model_selection_guards")
+        except (ImportError, ValueError):
+            spec = None
+        if spec is not None:
+            assert callable(resolved)
+        else:  # pragma: no cover - CI branch, nothing to assert beyond None
+            assert resolved is None
+
+
 def test_classifier_tier_without_provider_drops_stale_provider():
     """A tier that names no provider must not pair a stale provider with its model."""
     from router.adapter import route

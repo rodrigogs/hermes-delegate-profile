@@ -105,6 +105,17 @@ class TestClassifier:
         assert "T1" in tiers
         assert tiers["T4"]["model"] == "claude-opus"
 
+    def test_no_tiers_table_degrades_to_empty_not_stale_hardcode(self):
+        """A config without ``tiers`` must not invent rails (DEFAULT_TIERS removed)."""
+        c = Classifier({"classifier": {}})
+        assert c.tiers() == {}
+        # safety_ratchet still answers a tier, but materialises NO model —
+        # the adapter then routes under the caller's default instead of a
+        # stale elo that is not among the live links.
+        tier, cfg = c.safety_ratchet("T4", "high")
+        assert tier == "T4"
+        assert cfg == {}
+
     def test_anchors_accessor(self):
         c = Classifier(SAMPLE_CONFIG, anchors=ANCHORS)
         assert len(c.anchors()) == 2

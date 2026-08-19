@@ -79,6 +79,11 @@ class BreakerState:
         # Prune events outside sliding window, then add new event
         entry.prune(timestamp, self._window_s)
         entry.events.append(_Event(kind=failure_kind, ts=timestamp, weight=weight))
+        # The last failure to hit this entry, for the CLI/sidecar read-back.
+        # The ONLY writer used to be _Entry.from_dict, so a breaker that just
+        # tripped in-process displayed `last_failure=-` (cli.py) because the
+        # attribute had never been assigned on the record path.
+        entry.last_failure_kind = failure_kind
 
         # Sum weights in window
         total = entry.total_weight()

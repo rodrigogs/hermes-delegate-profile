@@ -44,11 +44,13 @@ def test_record_with_steps_attaches_trace():
     assert entry["steps"][0]["stage"] == "blocklist"
 
 
-def test_record_coerces_unknown_cause_to_fail_safe():
+def test_record_labels_unknown_cause_as_unknown_not_fail_safe():
+    """An inventing caller must not be painted as the router's worst outcome."""
     log = DecisionLog()
     log.record("not-a-real-cause", {"model": "x"})
-    assert log.entries()[0]["cause"] == "fail_safe_strong"
-    assert "fail_safe_strong" in VALID_CAUSES
+    assert log.entries()[0]["cause"] == "unknown_cause"
+    assert "unknown_cause" in VALID_CAUSES
+    assert "profile_ignored" in VALID_CAUSES
 
 
 def test_tail_and_format_line_unaffected_by_steps():

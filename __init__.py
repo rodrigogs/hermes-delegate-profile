@@ -806,6 +806,243 @@ def _route_task(
         _router_guard.active = False
 
 
+# ---------------------------------------------------------------------------
+# Kanban-dispatch shadow routing (pre_kanban_dispatch hook)
+# ---------------------------------------------------------------------------
+#
+# The capability router is now a model-selection surface for kanban cards: a
+# ``pre_kanban_dispatch`` hook, fired by the dispatcher AFTER a task is claimed
+# and BEFORE the worker spawns (ready and review lanes). It runs in SHADOW
+# MODE — the decision is recorded in the durable trace but the model/provider
+# field is NEVER written, so dispatch behaves exactly as if no hook subscribed.
+#
+# Two properties of this path are deliberate:
+#
+#   * NO CLASSIFIER. Stage 1 is an LLM call and the dispatch path is per-card,
+#     possibly many cards per tick — an LLM per card is exactly the per-turn
+#     cost the design keeps out of the hot path. The shadow therefore measures
+#     how well Stage 0 alone covers REAL cards; that measurement IS the gate
+#     for leaving shadow mode (shadow_gate_rate).
+#   * NO PROFILE CHANGE. The worker is ``hermes -p <assignee>`` and the
+#     dispatcher only passes -m/--provider — a rule whose destination changes
+#     profile cannot be honored. It is refused with cause=profile_ignored
+#     rather than half-applied (see _KanbanShadowLog), so the policy says to
+#     the face what this path cannot do.
+
+# The agreed gate for leaving shadow mode: the fraction of real cards that fell
+# through Stage 0 (no_classifier or fallthrough) must be at or below this.
+# 0.20 = the shipped Table 1 covering 4 of 5 real card shapes; an operator who
+# wants a stricter or looser bar changes this constant — the gate is advisory,
+# it never blocks dispatch.
+_SHADOW_MAX_FALLTHROUGH_RATE = 0.20
+
+try:
+    from .router.durable_decision_log import DurableDecisionLog, read_entries
+    from .router.decision_log import DecisionLog
+except ImportError:  # pragma: no cover - flat layout used by the test harness
+    from router.durable_decision_log import DurableDecisionLog, read_entries
+    from router.decision_log import DecisionLog
+
+
+class _KanbanShadowLog(DurableDecisionLog):
+    """Durable trace log for the shadow dispatch path — one entry per card.
+
+    Two duties, both applied BEFORE the entry is persisted so the disk line
+    carries them:
+
+    * ``shadow: True`` — the delegate_profile tool writes the SAME routes.jsonl,
+      and the exit gate (:func:`shadow_gate_rate`) must count only REAL cards.
+    * the profile constraint — the kanban dispatch path cannot change the
+      worker's profile. A decision whose profile differs from the card's
+      assignee is REFUSED here: the cause is rewritten to ``profile_ignored``
+      and the model/provider half is dropped from the recorded output, because
+      executing only the model half of a rule that also moved the role is how
+      a reviewer-only rule runs on a coder identity. The planned chain is
+      still recorded, so the operator sees what the policy wanted and why it
+      could not run.
+    """
+
+    def __init__(self, allowed_profile: Optional[str] = None) -> None:
+        super().__init__()
+        self._allowed_profile = allowed_profile
+
+    def record(
+        self,
+        cause: str,
+        output: Dict[str, Any],
+        matched_rule_id: Optional[str] = None,
+        task_preview: str = "",
+        *,
+        steps: Optional[List[Dict[str, Any]]] = None,
+        chain_plan: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if (
+            self._allowed_profile
+            and output.get("profile")
+            and output["profile"] != self._allowed_profile
+        ):
+            cause = "profile_ignored"
+            output = dict(output)
+            for key in ("model", "provider", "fallback", "chain"):
+                output.pop(key, None)
+        # In-memory append (NOT the parent's record, which would persist the
+        # unstamped entry), then stamp, then persist once.
+        DecisionLog.record(
+            self, cause, output, matched_rule_id, task_preview,
+            steps=steps, chain_plan=chain_plan,
+        )
+        entry = self._entries[-1]
+        entry["shadow"] = True
+        self._persist(entry)
+
+
+def _kanban_task_text(task: Any) -> str:
+    """Title + body of a kanban card — the routing input.
+
+    Title and body are joined because the card's routing signal may live in
+    the body (a review card's body IS the PR description the worker will
+    read). ``task`` is duck-typed (a kanban_db.Task or a test stand-in).
+    """
+    title = str(getattr(task, "title", "") or "")
+    body = str(getattr(task, "body", "") or "")
+    if body:
+        return f"{title}\n\n{body}"
+    return title
+
+
+def _read_kanban_task(task_id: str, board: Optional[str]) -> Any:
+    """Read a kanban card from the board DB, or None on any failure.
+
+    The hook payload carries identifiers only — the title/body that routing
+    needs must be read from the board. Guarded exactly like the plugin's other
+    hermes_cli accesses: absent hermes_cli (CI) or a busy DB degrades to None
+    and the hook does nothing, which is byte-identical to having no subscriber.
+    """
+    if not task_id:
+        return None
+    try:
+        from hermes_cli import kanban_db as _kb
+    except ImportError:  # pragma: no cover - CI has no hermes_cli
+        return None
+    try:
+        conn = _kb.connect(board=board)
+        try:
+            return _kb.get_task(conn, task_id)
+        finally:
+            conn.close()
+    except Exception:
+        logger.debug("delegate-profile: could not read kanban task %s", task_id,
+                     exc_info=True)
+        return None
+
+
+def _on_pre_kanban_dispatch(
+    task_id: str = "",
+    profile_name: str = "",
+    board: Optional[str] = None,
+    assignee: Optional[str] = None,
+    run_id: Optional[int] = None,
+    **_kwargs: Any,
+) -> None:
+    """``pre_kanban_dispatch`` subscriber — SHADOW MODE.
+
+    Routes the card through the capability router and records the decision in
+    the durable trace, but NEVER returns a model/provider dict: the field is
+    not written, so the dispatcher behaves exactly as if no hook subscribed.
+    The gate for leaving shadow mode is :func:`shadow_gate_rate` measured on
+    REAL cards (the ``shadow: True`` entries this hook writes).
+
+    Best-effort by contract — a broken callback can never corrupt dispatch, so
+    every failure path returns None. The hook is consulted only while the
+    card's ``model_override`` is NULL (hard precedence in the dispatcher), so
+    ``requested_model`` is "" in practice; the value is still passed through
+    so the call is the same shape a live consumer will use.
+    """
+    try:
+        config = _load_router_config()
+    except Exception:
+        return None
+    if not config.get("enabled", False):
+        return None
+    shadow = config.get("shadow") or {}
+    if shadow.get("enabled") is False:
+        return None
+
+    task = _read_kanban_task(task_id, board)
+    if task is None:
+        return None
+    goal = _kanban_task_text(task)
+
+    # No classifier on this path — see the section comment.
+    try:
+        if _LOADED_AS_PACKAGE:
+            from .router.adapter import route
+            from .router.blocklist import Blocklist
+        else:  # direct source loading used by the development test harness
+            from router.adapter import route
+            from router.blocklist import Blocklist
+
+        blocklist = Blocklist(config)
+        log = _KanbanShadowLog(allowed_profile=assignee)
+        route(
+            task=goal,
+            config=config,
+            requested_model=str(getattr(task, "model_override", None) or ""),
+            requested_provider=str(getattr(task, "provider_override", None) or ""),
+            classify_fn=None,
+            blocklist=blocklist,
+            decision_log=log,
+            prompt_text=goal,
+        )
+    except Exception:
+        logger.debug("delegate-profile: shadow dispatch failed for %s", task_id,
+                     exc_info=True)
+    return None
+
+
+def shadow_gate_rate(limit: Optional[int] = None) -> Optional[float]:
+    """Fraction of SHADOW card decisions that fell through Stage 0, or None.
+
+    ``None`` means there are no shadow entries yet — nothing has been measured
+    and the gate is NOT met (an empty sample proves nothing). Otherwise the
+    fraction of ``shadow: True`` trace entries whose steps show a fail_safe
+    stage with reason ``no_classifier`` or ``fallthrough`` — the two outcomes
+    the shadow exists to measure. The cause field alone cannot be counted:
+    ``_KanbanShadowLog`` may have rewritten it to ``profile_ignored``, but the
+    steps keep the pipeline's own record.
+
+    ``limit`` bounds the trace entries READ (shadow entries among the last N
+    mixed delegate+shadow entries); None reads everything.
+    """
+    entries = read_entries(limit)
+    shadow_entries = [e for e in entries if e.get("shadow") is True]
+    if not shadow_entries:
+        return None
+    fell = 0
+    for entry in shadow_entries:
+        for step in entry.get("steps") or []:
+            if (
+                isinstance(step, dict)
+                and step.get("stage") == "fail_safe"
+                and (step.get("in") or {}).get("reason")
+                in ("no_classifier", "fallthrough")
+            ):
+                fell += 1
+                break
+    return fell / len(shadow_entries)
+
+
+def _shadow_gate_ok(rate: Optional[float] = None) -> bool:
+    """True when the shadow measurement is at or below the agreed limit.
+
+    An empty sample (rate is None) is NOT ok: the gate must not read as met
+    before a single real card has been measured.
+    """
+    if rate is None:
+        rate = shadow_gate_rate()
+    return rate is not None and rate <= _SHADOW_MAX_FALLTHROUGH_RATE
+
+
 def _provider_of_declared_model(model: str, config: Dict[str, Any]) -> str:
     """Best-effort provider for ``model`` from the policy, or "" if unknown.
 
@@ -1362,6 +1599,12 @@ def register(ctx):
     )
 
     ctx.register_hook("post_tool_call", _on_post_tool_call)
+
+    # Kanban dispatch shadow routing: records what the capability router WOULD
+    # choose for each dispatched card, without writing the model/provider field.
+    # Shadow mode is on by default so the measurement starts the moment the
+    # plugin lands; `shadow: {enabled: false}` in router.yaml turns it off.
+    ctx.register_hook("pre_kanban_dispatch", _on_pre_kanban_dispatch)
 
     logger.info(
         "delegate-profile plugin registered (profile=%s)", current_profile,

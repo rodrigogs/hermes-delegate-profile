@@ -24,13 +24,15 @@ TIER_ANCHORS = {
     "T4": "HARD — cross-cutting, unknown-cause debug, correctness/concurrency/security/ambiguity, novel design",
 }
 
-# Tier → model/provider mapping (from router.yaml tiers)
-DEFAULT_TIERS: Dict[str, Dict[str, str]] = {
-    "T1": {"model": "glm-5.2-fast", "provider": "zai"},
-    "T2": {"model": "glm-5.2", "provider": "zai"},
-    "T3": {"model": "claude-sonnet", "provider": "anthropic"},
-    "T4": {"model": "claude-opus", "provider": "anthropic"},
-}
+# Tier → model/provider mapping comes from router.yaml's ``tiers`` table and
+# is passed in via config. There is deliberately NO hardcoded fallback here
+# anymore: the one that shipped pointed at glm-5.2-fast / glm-5.2 /
+# claude-sonnet / claude-opus — none of them among the 8 live links on the
+# reference install (measured 2026-08-19) — so a config without ``tiers``
+# would route the classifier's answer onto rails that do not exist. An empty
+# table degrades honestly: safety_ratchet returns an empty tier config, the
+# adapter materialises no model, and the delegation runs under the caller's
+# default instead of a stale lie.
 
 # Upward ratchet: when confidence is low or boundary straddle, bump up
 _UPWARD_RATCHET = {"T1": "T2", "T2": "T3", "T3": "T4", "T4": "T4"}
@@ -56,7 +58,9 @@ class Classifier:
         self.max_tokens: int = int(cls_conf.get("max_tokens", 128))
         self.timeout_seconds: int = int(cls_conf.get("timeout_seconds", 8))
         self._anchors = anchors or []
-        self._tiers = config.get("tiers", DEFAULT_TIERS)
+        # An absent ``tiers`` table degrades to EMPTY (see the DEFAULT_TIERS
+        # removal note above) rather than to a hardcoded stale rail set.
+        self._tiers = config.get("tiers") or {}
 
     # ------------------------------------------------------------------
     # Public API

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from router.breaker import BreakerState, _Entry, _Event, FAILURE_WEIGHTS
-from router.blocklist import Blocklist, _state_path
+from router.blocklist import Blocklist, _state_path, _state_dir
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +367,20 @@ class TestBlocklistWithBreaker:
         assert len(our_entry) == 1
         assert our_entry[0]["state"] == "OPEN"
 
+    def test_last_failure_kind_is_set_by_record_not_by_hand(self):
+        """record() must stamp last_failure_kind — the CLI reads it right after a trip."""
+        bl = Blocklist(BLOCKLIST_CONFIG)
+        model, provider = "flaky4", "prov4"
+        bl.record_failure(model, provider, "ttfb_stall")
+        bl.record_failure(model, provider, "idle_stall")
+        status = bl.breaker_status()
+        our_entry = [s for s in status if s["model_key"] == f"{model}@{provider}"][0]
+        # The most recent failure to hit the entry, whatever tripped it. The
+        # attribute is set by BreakerState.record — NOT pre-stamped here, which
+        # is exactly the defect this guards: the only writer used to be
+        # _Entry.from_dict, so a fresh in-process trip displayed `last_failure=-`.
+        assert our_entry["last_failure_kind"] == "idle_stall"
+
     def test_breaker_state_serialization(self):
         bl = Blocklist(BLOCKLIST_CONFIG)
         model, provider = "flaky3", "prov3"
@@ -389,6 +403,18 @@ class TestBlocklistWithBreaker:
     def test_blocked_model_not_blocked_wrong_provider(self):
         bl = Blocklist(BLOCKLIST_CONFIG)
         assert bl.is_blocked("gpt-5.6-sol", "anthropic") is False
+
+    def test_state_dir_peels_profile_scoped_home(self, monkeypatch, tmp_path):
+        """Writer (profiles/<name>) and sidecar (bare root) must share ONE state file."""
+        root = tmp_path
+        canonical = root / "delegate-profile" / "state"
+        # The delegate_profile plugin process runs with a profile-scoped HERMES_HOME...
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "trama-engineer"))
+        assert _state_dir() == canonical
+        # ...and the sidecar with a bare one — same canonical dir, or a rail's
+        # cooldown would live in a file the other profile never reads.
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        assert _state_dir() == canonical
 
 
 # ---------------------------------------------------------------------------

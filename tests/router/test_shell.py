@@ -183,7 +183,10 @@ class TestDecisionLog:
         from router.decision_log import DecisionLog
         dl = DecisionLog()
         dl.record("not-a-valid-cause", {"profile": "coder"})
-        assert dl.tail(1)[0]["cause"] == "fail_safe_strong"
+        # Unknown causes are recorded AS unknown (2026-08-19: coercion to
+        # fail_safe_strong painted inventing callers as the router's worst
+        # real outcome at the exact spot operators count outcomes).
+        assert dl.tail(1)[0]["cause"] == "unknown_cause"
 
     def test_format_line(self):
         from router.decision_log import DecisionLog

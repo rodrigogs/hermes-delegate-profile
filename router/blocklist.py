@@ -25,9 +25,20 @@ logger = logging.getLogger(__name__)
 
 
 def _state_dir() -> Path:
-    """Return the plugin state directory for breaker-state.json."""
-    home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
-    return Path(home) / "delegate-profile" / "state"
+    """Return the plugin state directory for breaker-state.json.
+
+    Same ``profiles/<name>`` peel as ``durable_decision_log.routes_path``:
+    the breaker state is written by the delegate_profile plugin process
+    (whose HERMES_HOME is profile-scoped per delegation) and read back by
+    the sidecar (pinned to one profile), so a profile-scoped path would
+    split the two — a rail failing for trama-engineer would keep getting
+    traffic from coder because its cooldown lives in a file the other
+    profile never reads and the breaker never accumulates.
+    """
+    home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    if home.parent.name == "profiles":
+        home = home.parent.parent
+    return home / "delegate-profile" / "state"
 
 
 def _state_path() -> Path:

@@ -4718,3 +4718,47 @@ class TestCapabilityLayerIsLiveUnderHermesPluginPackageShape:
             assert displayed == ran, rid
             # Non-vacuity: agreeing on the no-labeller degrade is not agreement.
             assert displayed != "default_fallthrough", rid
+
+
+# ---------------------------------------------------------------------------
+# Purity — the engine must stay deterministic and IO-free
+# ---------------------------------------------------------------------------
+
+def test_rules_module_never_reads_the_wall_clock():
+    """Load-bearing: reading the clock here would make every routing test flaky.
+
+    Same AST guard as
+    ``test_capabilities.test_capabilities_module_never_reads_the_wall_clock``
+    (and test_signals' twin), asserted over the AST rather than the text so the
+    module can still DISCUSS ``now()`` while never calling it. The ``datetime``
+    import is the TYPE_CHECKING-only annotation import; the relative
+    ``from . import capabilities`` (module name is None in the AST) and its
+    flat-layout fallback ``from router import capabilities`` are the sibling
+    registry, not IO.
+    """
+    import ast
+
+    tree = ast.parse(inspect.getsource(rules_mod))
+    called: set = set()
+    imported: set = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute):
+                called.add(node.func.attr)
+            elif isinstance(node.func, ast.Name):
+                called.add(node.func.id)
+        elif isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported.add((node.module or "").split(".")[0])
+
+    assert not called & {
+        "now", "utcnow", "today", "monotonic", "time", "fromtimestamp", "open",
+    }
+    # No IO, no state, no network: the import list is the proof. ``adapter`` is
+    # the function-local _cause_labeller delegation (sibling module, same
+    # relative/absolute pair as the capabilities registry), not a data source.
+    assert imported <= {
+        "", "__future__", "adapter", "datetime", "inspect", "random", "re",
+        "router", "typing",
+    }
