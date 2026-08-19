@@ -1390,6 +1390,209 @@ test('a rule with no clauses keeps its sentence instead of an empty chip', () =>
   assert.match(flat(dom.get('sheet')), /every task/, 'and "every task" is still said, as prose');
 });
 
+// ── the window a count is taken over ─────────────────────────────────────
+// "counts over the last 40 decisions, since 17d ago" implied continuous
+// coverage the file did not have: the corpus under review spanned one 3h39min
+// session of hand-typed smoke lines, and the policy had changed since. Every
+// assertion below pins the replacement — the window named by its endpoints,
+// and a sheet that refuses to count rules newer than it.
+
+test('windowSpan names the window by its endpoints, never by the oldest age', () => {
+  const { api } = loadConsole();
+  // The measured corpus: 22:12:11 on 01/08 → 01:51:38 on 02/08 UTC, 3h39min27s.
+  const t0 = Date.UTC(2026, 7, 1, 22, 12, 11) / 1000;
+  const t1 = Date.UTC(2026, 7, 2, 1, 51, 38) / 1000;
+  assert.equal(api.windowSpan([
+    { ts: t1 }, { ts: t0 + 100 }, { ts: t0 },
+  ]), 'de 01/08 22:12 a 02/08 01:51 UTC',
+  'a window crossing midnight UTC names both endpoints');
+  // Same UTC day → the compact form the review names: "3h39min de 01/08".
+  const a = Date.UTC(2026, 7, 1, 19, 12, 11) / 1000;
+  const b = Date.UTC(2026, 7, 1, 22, 51, 38) / 1000;
+  assert.equal(api.windowSpan([{ ts: b }, { ts: a }]), '3h39min de 01/08');
+  // Sub-minute windows stay truthful, and junk ts contribute nothing.
+  assert.equal(api.windowSpan([{ ts: b }, { ts: b - 45 }]), '45s de 01/08');
+  assert.equal(api.windowSpan([{ ts: 'junk' }, {}]), '');
+  assert.equal(api.windowSpan([]), '');
+});
+
+test('hitsWindow names the counted window instead of the oldest decision age', () => {
+  const { api } = loadConsole();
+  const t0 = Date.UTC(2026, 7, 1, 22, 12, 11) / 1000;
+  const t1 = Date.UTC(2026, 7, 2, 1, 51, 38) / 1000;
+  api.state.routes = Array.from({ length: 40 }, (_, i) => ({ ts: t0 + (t1 - t0) * i / 39 }));
+  assert.equal(api.hitsWindow(),
+    'counts over the last 40 decisions — de 01/08 22:12 a 02/08 01:51 UTC');
+  api.state.routes = [];
+  assert.equal(api.hitsWindow(), '', 'no window, no claim');
+});
+
+test('logFreshness says when the window cannot describe the current policy', () => {
+  const { api } = loadConsole();
+  const T = Date.UTC(2026, 7, 19, 12, 0, 0);
+  api.state.clock = new Date(T);
+  const nowS = T / 1000;
+  const hourS = 3600;
+  const dayS = 86400;
+
+  // Fresh: the newest decision is AFTER the config mtime and inside the day backstop.
+  api.state.routes = [{ ts: nowS - 2 * hourS }, { ts: nowS - 3 * hourS }];
+  api.state.status = { config_mtime: new Date(T - 5 * hourS * 1000).toISOString() };
+  assert.deepEqual(plain(api.logFreshness()), { stale: false, reason: null, days: 2 / 24 });
+
+  // The router.yaml on disk is NEWER than the newest decision: every rule in the
+  // sheet is newer than the window, so a zero hit proves nothing about it.
+  api.state.routes = [{ ts: nowS - 2 * hourS }];
+  api.state.status = { config_mtime: new Date(T - 1 * hourS * 1000).toISOString() };
+  assert.equal(api.logFreshness().stale, true);
+  assert.equal(api.logFreshness().reason, 'config');
+  assert.ok(Math.abs(api.logFreshness().days - 2 / 24) < 1e-9,
+    'the config case still measures the age for the banner');
+
+  // An older sidecar reports no config_mtime: the wall-clock backstop.
+  api.state.status = {};
+  api.state.routes = [{ ts: nowS - 17 * dayS }, { ts: nowS - 18 * dayS }];
+  assert.equal(api.logFreshness().stale, true);
+  assert.equal(api.logFreshness().reason, 'age');
+  assert.ok(api.logFreshness().days > 16, 'the age is measured in days');
+
+  // Nothing recorded at all.
+  api.state.routes = [];
+  assert.equal(api.logFreshness().stale, true);
+  assert.equal(api.logFreshness().reason, 'empty');
+});
+
+test('a window older than the policy demotes every count and says why', () => {
+  const { api, dom } = loadConsole();
+  const T = Date.UTC(2026, 7, 19, 12, 0, 0);
+  api.state.clock = new Date(T);
+  api.state.loading = false;
+  // The measured corpus: 40 hand-typed lines spanning 3h39min of 01/08, under a
+  // policy that changed since (config_mtime 17 days after the last decision).
+  const t0 = Date.UTC(2026, 7, 1, 22, 12, 11) / 1000;
+  const t1 = Date.UTC(2026, 7, 2, 1, 51, 38) / 1000;
+  api.state.routes = Array.from({ length: 40 }, (_, i) => ({
+    id: `r${i}`, ts: t0 + (t1 - t0) * i / 39,
+    cause: 'fail_safe_strong', rule_id: null,
+  }));
+  api.state.status = { config_mtime: new Date(T - 3600 * 1000).toISOString() };
+  api.state.policy = {
+    rules: [
+      { id: 'hard-verbs', when: { verb_class: { eq: 'hard' } }, then: { model: 'T4' } },
+      { id: 'huge-context-read', when: { est_input_tokens: { gt: 400000 } }, then: { model: 'T4' } },
+    ],
+    default: { action: 'classify' },
+    classifier: { model: 'deepseek-v3.2' },
+    fail_safe: { model: 'glm-4.7' },
+    tiers: { T4: {} },
+  };
+  api.renderSheet();
+
+  const banner = flat(dom.get('windowStale'));
+  assert.match(banner, /Nenhuma decisão há 17 dias/,
+    'the banner names how long since the last decision');
+  assert.match(banner, /Estas contagens descrevem de 01\/08 22:12 a 02\/08 01:51 UTC, não o presente/,
+    'and names the real window, not the present');
+  assert.equal(dom.get('windowStale').hidden, false);
+
+  // The counter REFUSES: no row carries a count or an amber "never fired" —
+  // even though this corpus would have painted both rules amber before.
+  const hits = findAll(dom.get('sheet'), 'step-hits');
+  assert.ok(hits.length >= 5, 'blocklist + 2 rules + classifier + fail-safe carry hits');
+  assert.ok(hits.every((n) => n.textContent === 'sem dados nesta janela'),
+    `every count demoted, got ${JSON.stringify(hits.map((n) => n.textContent))}`);
+  assert.ok(hits.every((n) => /empty/.test(n.className)), 'all demoted rows carry the muted class');
+  assert.ok(hits.every((n) => !/zero/.test(n.className)), 'no amber zero survives on a stale sheet');
+  assert.doesNotMatch(flat(dom.get('sheet')), /never fired/);
+  // The fail-safe % would have been computed from a window that predates the
+  // rule; stale means the plain sentence, never a percentage about old data.
+  assert.doesNotMatch(flat(dom.get('sheet')), /% of the decisions/);
+  // The window is still NAMED on the stage note — naming it is not the defect,
+  // claiming it is the present is.
+  assert.match(flat(dom.get('sheet')),
+    /counts over the last 40 decisions — de 01\/08 22:12 a 02\/08 01:51 UTC/);
+  // The sheet wears the widening class.
+  assert.ok(dom.get('sheet').classList.contains('stale'));
+});
+
+test('a covering window keeps the amber "never fired" finding', () => {
+  const { api, dom } = loadConsole();
+  const T = Date.UTC(2026, 7, 19, 12, 0, 0);
+  api.state.clock = new Date(T);
+  api.state.loading = false;
+  const nowS = T / 1000;
+  const hourS = 3600;
+  api.state.routes = [
+    { id: 'a', ts: nowS - 3600, cause: 'hard_rule', rule_id: 'hard-verbs' },
+    { id: 'b', ts: nowS - 7200, cause: 'hard_rule', rule_id: 'hard-verbs' },
+  ];
+  api.state.status = { config_mtime: new Date(T - 5 * hourS * 1000).toISOString() };
+  api.state.policy = {
+    rules: [
+      { id: 'hard-verbs', when: {}, then: { model: 'T4' } },
+      { id: 'never-caught', when: { keywords: { contains: 'audit' } }, then: { model: 'T4' } },
+    ],
+    default: {}, classifier: { model: 'm' }, fail_safe: { model: 'm' }, tiers: { T4: {} },
+  };
+  api.renderSheet();
+
+  assert.equal(dom.get('windowStale').hidden, true,
+    'a window covering the current policy shows no disclosure');
+  const text = flat(dom.get('sheet'));
+  assert.match(text, /2×/, 'a rule that fired keeps its count');
+  assert.match(text, /never fired/, 'a rule that existed and never fired keeps the finding');
+  assert.doesNotMatch(text, /sem dados nesta janela/);
+  assert.doesNotMatch(text, /% of the decisions/);
+  // All four zero-hit rows (blocklist, never-caught, classifier, fail-safe) are
+  // amber: the window covers the policy, so every zero is a genuine finding.
+  const zeros = findAll(dom.get('sheet'), 'step-hits').filter((n) => /zero/.test(n.className));
+  assert.equal(zeros.length, 4, 'every zero-hit row stays an amber finding');
+  assert.equal(findAll(dom.get('sheet'), 'step-hits').filter((n) => /empty/.test(n.className)).length, 0);
+  assert.ok(!dom.get('sheet').classList.contains('stale'));
+  assert.match(text, /counts over the last 2 decisions — 1h00min de 19\/08/);
+});
+
+test('an empty log demotes every count and says nothing is recorded yet', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.routes = [];
+  api.state.status = { config_mtime: '2026-08-18T22:40:00Z' };
+  api.state.policy = {
+    rules: [{ id: 'hard-verbs', when: {}, then: { model: 'T4' } }],
+    default: {}, classifier: { model: 'm' }, fail_safe: { model: 'm' }, tiers: { T4: {} },
+  };
+  api.renderSheet();
+
+  assert.equal(dom.get('windowStale').hidden, false);
+  assert.match(flat(dom.get('windowStale')), /Nenhuma decisão registrada ainda/);
+  const words = findAll(dom.get('sheet'), 'step-hits').map((n) => n.textContent);
+  assert.ok(words.length >= 4, 'every rule-bearing row renders a hits cell');
+  assert.ok(words.every((w) => w === 'sem dados nesta janela'));
+  assert.doesNotMatch(flat(dom.get('sheet')), /never fired/);
+  // No window exists, so no window is claimed.
+  assert.doesNotMatch(flat(dom.get('sheet')), /counts over/);
+});
+
+test('an old sidecar without config_mtime still falls back to the age backstop', () => {
+  const { api, dom } = loadConsole();
+  const T = Date.UTC(2026, 7, 19, 12, 0, 0);
+  api.state.clock = new Date(T);
+  api.state.loading = false;
+  api.state.status = {};  // older sidecar: provenance absent
+  const t0 = Date.UTC(2026, 7, 1, 22, 12, 11) / 1000;
+  const t1 = Date.UTC(2026, 7, 2, 1, 51, 38) / 1000;
+  api.state.routes = [{ id: 'a', ts: t0 }, { id: 'b', ts: t1 }];
+  api.state.policy = {
+    rules: [{ id: 'hard-verbs', when: {}, then: { model: 'T4' } }],
+    default: {}, classifier: { model: 'm' }, fail_safe: { model: 'm' }, tiers: { T4: {} },
+  };
+  api.renderSheet();
+  const banner = flat(dom.get('windowStale'));
+  assert.match(banner, /Nenhuma decisão há 17 dias/);
+  assert.match(banner, /Estas contagens descrevem de 01\/08 22:12 a 02\/08 01:51 UTC, não o presente/);
+  assert.doesNotMatch(flat(dom.get('sheet')), /never fired/);
+});
+
 test('billing is named in the operator\'s words, and a missing mode is a finding', () => {
   const { api } = loadConsole();
   // router.yaml's own vocabulary (capabilities.BILLING_MODES), because a console

@@ -504,11 +504,17 @@
        majority, and the rule is what the operator reads down the sheet. */
     /* The hits track is 80px, not the old 74px: 74 fitted "never fired" at the
        retired 10.5px step, and at the host's 12px the string wrapped to two lines.
-       A wrapped warning reads as damage rather than as a finding. */
+       A wrapped warning reads as damage rather than as a finding. The stale sheet
+       replaces that label with the longer "sem dados nesta janela": measured at
+       12px mono on DejaVu Sans Mono (the Linux fallback for --host-font-mono)
+       it is 158.8px, so the sheet-wide `.stale` state widens the track to 160px
+       — the destination column is the one the operator reads when the counts
+       are missing, and it ellipsizes rather than wraps. */
     .step-to {
       display: grid; grid-template-columns: minmax(0, 1fr) 80px;
       align-items: baseline; gap: 14px;
     }
+    .sheet.stale .step-to { grid-template-columns: minmax(0, 1fr) 160px; }
 
     .step-dest { display: flex; align-items: baseline; gap: 8px; justify-content: flex-end; min-width: 0; }
     .step-arrow { color: var(--muted); font: var(--t-body) var(--mono); }
@@ -518,8 +524,13 @@
       text-align: right; white-space: nowrap;
     }
     /* A rule that has never fired in the recorded window is a real finding, and
-       one of only three hues this screen is allowed. */
+       one of only three hues this screen is allowed. It is only a finding when
+       the rule EXISTED for the window it was counted over: a rule newer than the
+       log cannot have fired, so the stale sheet says "sem dados nesta janela"
+       in the muted step instead — a disclosure about the DATA, not about the
+       rule, and grey precisely so it can never be read as an amber verdict. */
     .step-hits.zero { color: var(--warn-text); }
+    .step-hits.empty { color: var(--muted); }
 
     /* ── a rule's conditions, one chip per clause ──────────────────────
        A `when` block now mixes three FAMILIES of predicate: the task's shape
@@ -769,6 +780,22 @@
     .warn-line strong { color: var(--text); font-weight: 600; }
     .warn-line.bad { color: var(--text); }
     .warn-line.bad::before { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-bg); }
+
+    /* The window-stale disclosure on the Pipeline sheet: NOT a warning. Nothing
+       is wrong — the recorded decisions just describe an older window than the
+       current policy, so the per-rule counts do not exist for it. Same line
+       shape as .warn-line, but the dot is the muted step and the halo the
+       hairline, so the line can never be read as amber: amber is a verdict, and
+       "the data is older than the policy" is a fact about the data. */
+    .window-stale {
+      display: flex; gap: 10px; align-items: baseline; padding: 11px 0; margin-bottom: 18px;
+      border-bottom: 1px solid var(--line); color: var(--muted); font-size: var(--t-body);
+    }
+    .window-stale::before {
+      content: ""; flex: 0 0 auto; width: 6px; height: 6px; margin-top: 6px;
+      border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 3px var(--line);
+    }
+    .window-stale strong { color: var(--text); font-weight: 600; }
 
     /* ── narrow: the host panel with the workspace open (~550px) ──────── */
     @media (max-width: 700px) {
@@ -1114,6 +1141,12 @@
              Driven by chain_plan on the /explain response; absent until a task is
              probed, because there is no chain plan without a task. -->
         <div id="chainPlan"></div>
+
+        <!-- One line at the top of the Pipeline tab that names why the per-rule
+             counts below are missing: the newest recorded decision predates the
+             router.yaml on disk (or the window is older than STALE_WINDOW_DAYS,
+             or nothing is recorded at all). Not a warning — a disclosure. -->
+        <div class="window-stale" id="windowStale" hidden></div>
 
         <div class="sheet" id="sheet"></div>
 
@@ -2768,8 +2801,12 @@
 
       // ── The decision sheet ──────────────────────────────────────────
       // Hit counts come from the recorded traces (cause + rule_id), never from
-      // invented telemetry. A rule with zero hits is a real finding, so it is
-      // called out rather than hidden.
+      // invented telemetry. A rule with zero hits is a real finding ONLY when
+      // the rule existed for the window it was counted over — a rule newer than
+      // the log physically cannot have fired, and "never fired" about it would
+      // be a verdict on evidence that does not exist. So the sheet first asks
+      // whether the window can describe the current policy at all (logFreshness)
+      // and only then paints zero hits as amber.
       function ruleHits() {
         const byRule = {};
         const byCause = {};
@@ -2780,14 +2817,75 @@
         return { byRule, byCause, total: (state.routes || []).length };
       }
 
+      // The window a count was taken over, named by its two ENDPOINTS, never by
+      // the age of the oldest alone: "since 17d ago" implied continuous coverage
+      // the file did not have (the 40-line corpus under review spanned one
+      // 3h39min session, not 17 days). Same UTC day → the compact "3h39min de
+      // 01/08"; a window crossing midnight UTC names both endpoints because the
+      // compact form would hide which day the older half belongs to.
+      function windowSpan(routes) {
+        const list = Array.isArray(routes) ? routes : [];
+        const ts = list.map((r) => Number(r && r.ts))
+          .filter((t) => Number.isFinite(t) && t > 0);
+        if (!ts.length) return '';
+        const newest = Math.max(...ts);
+        const oldest = Math.min(...ts);
+        const pad = (n) => String(n).padStart(2, '0');
+        const day = (d) => `${pad(d.getUTCDate())}/${pad(d.getUTCMonth() + 1)}`;
+        const hm = (d) => `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+        const seconds = newest - oldest;
+        const span = seconds >= 3600
+          ? `${Math.floor(seconds / 3600)}h${pad(Math.floor((seconds % 3600) / 60))}min`
+          : seconds >= 60 ? `${Math.floor(seconds / 60)}min` : `${Math.round(seconds)}s`;
+        const od = new Date(oldest * 1000);
+        const nd = new Date(newest * 1000);
+        const sameDay = od.getUTCFullYear() === nd.getUTCFullYear()
+          && od.getUTCMonth() === nd.getUTCMonth() && od.getUTCDate() === nd.getUTCDate();
+        return sameDay ? `${span} de ${day(od)}`
+          : `de ${day(od)} ${hm(od)} a ${day(nd)} ${hm(nd)} UTC`;
+      }
+
+      // Can the recorded window describe the CURRENT policy? No, and the sheet
+      // must say so instead of counting, when:
+      //   1. the newest decision predates the router.yaml mtime — every rule in
+      //      the sheet is then newer than the window, so a zero hit proves
+      //      nothing about it; or
+      //   2. no decision exists in the last STALE_WINDOW_DAYS — the blunt
+      //      backstop (an older service, or one whose config path is
+      //      unreadable, reports no config_mtime). 7 days: a week without a
+      //      single decision is not evidence about what the router does now,
+      //      and the corpus under review was 17 days old — the sharper test is
+      //      the config mtime, so the day count only needs to catch windows
+      //      that are old by any standard; or
+      //   3. nothing is recorded at all.
+      // The clock is the injected one, so a test pins the day instead of
+      // passing at 05:00 and failing at 06:00 (the rule that governs every
+      // time-dependent function in this file).
+      const STALE_WINDOW_DAYS = 7;
+      function logFreshness() {
+        const list = Array.isArray(state.routes) ? state.routes : [];
+        const ts = list.map((r) => Number(r && r.ts))
+          .filter((t) => Number.isFinite(t) && t > 0);
+        if (!ts.length) return { stale: true, reason: 'empty', days: null };
+        const newest = Math.max(...ts);
+        const days = (nowUtc().getTime() / 1000 - newest) / 86400;
+        const configMtime = state.status && state.status.config_mtime;
+        const configT = configMtime ? new Date(configMtime).getTime() / 1000 : NaN;
+        if (Number.isFinite(configT) && configT > newest) {
+          return { stale: true, reason: 'config', days };
+        }
+        if (days > STALE_WINDOW_DAYS) return { stale: true, reason: 'age', days };
+        return { stale: false, reason: null, days };
+      }
+
       // A count is only true of the window it was counted over. Naming that
       // window is what separates "16×" from a claim about right now — the sheet
       // showed 34% fail-safe long after the cause had been fixed.
       function hitsWindow() {
         const routes = state.routes || [];
         if (!routes.length) return '';
-        const oldest = routes[routes.length - 1];
-        return `counts over the last ${routes.length} decisions, since ${ago(oldest && oldest.ts)}`;
+        const span = windowSpan(routes);
+        return `counts over the last ${routes.length} decisions — ${span}`;
       }
 
       function renderSheet() {
@@ -2798,6 +2896,34 @@
         const { byRule, byCause, total } = ruleHits();
         const rules = Array.isArray(policy.rules) ? policy.rules : [];
         const editable = state.mode === 'editing';
+        // The sheet counts decisions against the CURRENT policy. When the window
+        // predates the policy, or nothing has been recorded for STALE_WINDOW_DAYS,
+        // or nothing is recorded at all, the counter refuses to count rules that
+        // are newer than the log: every count becomes "sem dados nesta janela",
+        // and one line at the top of the tab says why (never an amber verdict).
+        const fresh = logFreshness();
+        const stale = fresh.stale;
+        const span = windowSpan(state.routes);
+        box.classList.toggle('stale', stale);
+        const windowBanner = $('windowStale');
+        if (windowBanner) {
+          if (stale) {
+            windowBanner.hidden = false;
+            clear(windowBanner);
+            if (fresh.reason === 'empty') {
+              windowBanner.append(
+                el('strong', '', 'Nenhuma decisão registrada ainda.'),
+                el('span', '', 'Não há janela a contar — as contagens por regra ficam sem dados até a primeira decisão.'));
+            } else {
+              const days = Math.max(1, Math.round(fresh.days || 0));
+              windowBanner.append(
+                el('strong', '', `Nenhuma decisão há ${days} dia${days > 1 ? 's' : ''}.`),
+                el('span', '', `Estas contagens descrevem ${span}, não o presente.`));
+            }
+          } else {
+            windowBanner.hidden = true;
+          }
+        }
 
         const stage = (title, cls, note) => {
           const s = el('div', `stage${cls ? ` ${cls}` : ''}`);
@@ -2849,8 +2975,14 @@
           }
           to.append(dest);
           if (opts.hits !== undefined) {
-            const h = el('span', `step-hits${opts.hits === 0 ? ' zero' : ''}`,
-                         opts.hits === 0 ? 'never fired' : `${opts.hits}×`);
+            // A zero is a FINDING only when the rule could have fired in the
+            // counted window. On a stale sheet the counter refuses to count
+            // rules newer than the log, so every count becomes a muted
+            // disclosure about the DATA rather than an amber verdict on the rule.
+            const cls = opts.stale ? ' empty' : (opts.hits === 0 ? ' zero' : '');
+            const words = opts.stale ? 'sem dados nesta janela'
+              : (opts.hits === 0 ? 'never fired' : `${opts.hits}×`);
+            const h = el('span', `step-hits${cls}`, words);
             to.append(h);
           }
           step.append(to);
@@ -2871,13 +3003,17 @@
         // that says asking a model costs a model call. Naming it again on every
         // line that reaches it spends the loudest channel on the least news.
         // What survives: --bad for a refusal (the router declining IS a
-        // condition), --warn for a rule that never fired, --info on the single
-        // Stage 1 heading, and the accent on the line a probe matched.
+        // condition), --warn for a rule that never fired while it EXISTED for
+        // the counted window (a stale sheet demotes that to the muted
+        // "sem dados nesta janela", because a rule newer than the log cannot
+        // have fired), --info on the single Stage 1 heading, and the accent on
+        // the line a probe matched.
         box.append(line({
           ord: '', id: 'blocklist', synthetic: true,
           when: 'the requested model is banned or cooling down',
           target: 'refuse', targetColor: 'var(--bad-text)',
           hits: byCause.blocklist_veto || 0,
+          stale,
           editable, onPick: editable ? () => pickBind({ id: 'blocklist', name: 'blocklist', bind: 'blocklist' }) : null,
         }));
         rules.forEach((r, i) => {
@@ -2894,6 +3030,7 @@
             target,
             targetColor: then.deny ? 'var(--bad-text)' : '',
             hits: byRule[r.id] || 0,
+            stale,
             editable,
             onPick: editable ? () => pickBind({ id: `rule:${r.id}`, name: String(r.id), bind: 'rule', ruleIndex: i }) : null,
           }));
@@ -2916,6 +3053,7 @@
           when: `${cls.model || '—'} picks a tier`,
           target: 'a tier', targetColor: '',
           hits: byCause.classifier || 0,
+          stale,
           editable,
           onPick: editable ? () => pickBind({ id: 'classifier', name: 'classifier', bind: 'classifier' }) : null,
         }));
@@ -2923,7 +3061,7 @@
         const fsHits = byCause.fail_safe_strong || 0;
         box.append(line({
           ord: '', id: 'fail-safe', synthetic: true,
-          when: fsHits && total
+          when: !stale && fsHits && total
             ? `when the classifier cannot answer — ${Math.round(100 * fsHits / total)}% of the decisions counted here did`
             : 'when the classifier cannot answer',
           // The fail-safe's target is a model it DID route to, so it is not
@@ -2933,6 +3071,7 @@
           // carry the caveat ("when the classifier cannot answer").
           target: fs.model || '—', targetColor: '',
           hits: fsHits,
+          stale,
           editable,
           onPick: editable ? () => pickBind({ id: 'fail_safe', name: 'fail-safe', bind: 'fail_safe' }) : null,
         }));
@@ -4678,6 +4817,10 @@
         renderWarnings,
         drawPath, pickRoute, stepNode, stepOutcome, causeColor, worstOf, modelState,
         phraseCondition, phraseWhen, renderSheet, renderLadder, ruleHits, probe,
+        // The log window: named by its endpoints (never by the oldest's age) and
+        // judged against the policy that is on screen — the two facts that
+        // decide whether a zero hit is a finding or a missing window.
+        windowSpan, logFreshness, hitsWindow,
         // What a probe asks and what the answer was measured from. Both pure, and
         // both pinned against the server's own parameter names and `sized_from`
         // values — a console that sends one spelling and reads another is how the
