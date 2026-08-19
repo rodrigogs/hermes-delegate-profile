@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from typing import Optional
 
 import yaml
@@ -703,3 +704,120 @@ def test_explain_accepts_prompt_text_on_both_get_and_post(tmp_path):
     # number is not a prompt, and coercing one would size a turn from "0".
     assert app.dispatch("POST", "/explain", _auth(),
                         body={"task": task, "prompt_text": 0})[0] == 400
+
+
+# ── provenance (three ages on /status) ────────────────────────────────────
+# The sidecar stamps boot provenance so /status can report which source is
+# stale. `_code_mtime` must be captured once at boot, not per request — the
+# whole point is that a process that booted before the last edit keeps saying
+# what it loaded.
+
+class _FakeStat:
+    def __init__(self, mtime: float):
+        self.st_mtime = mtime
+
+
+class _FakeFile:
+    def __init__(self, payload):
+        self._payload = payload  # float mtime, or OSError to raise on stat
+
+    def stat(self):
+        if isinstance(self._payload, OSError):
+            raise self._payload
+        return _FakeStat(self._payload)
+
+
+class _FakeRouterDir:
+    def __init__(self, files, dir_mtime: float = 0.0, dir_error=None):
+        self._files = files
+        self._dir_mtime = dir_mtime
+        self._dir_error = dir_error
+
+    def glob(self, pattern: str):
+        assert pattern == "*.py", pattern
+        return list(self._files)
+
+    def stat(self):
+        if self._dir_error is not None:
+            raise self._dir_error
+        return _FakeStat(self._dir_mtime)
+
+
+class _FakePath:
+    """Path stand-in: ``Path(__file__).resolve().parent`` yields the fake dir."""
+
+    def __init__(self, router_dir):
+        self._router_dir = router_dir
+
+    def resolve(self):
+        return self
+
+    @property
+    def parent(self):
+        return self._router_dir
+
+
+def _patch_router_dir(monkeypatch, router_dir):
+    monkeypatch.setattr(sidecar_mod, "Path", lambda *_: _FakePath(router_dir))
+
+
+def test_code_mtime_is_the_newest_module_mtime(monkeypatch):
+    files = [_FakeFile(1000.0), _FakeFile(500.0), _FakeFile(2000.0)]
+    _patch_router_dir(monkeypatch, _FakeRouterDir(files))
+
+    out = sidecar_mod._code_mtime()
+    assert out == datetime.fromtimestamp(2000.0, tz=timezone.utc).isoformat()
+
+
+def test_code_mtime_skips_unreadable_modules(monkeypatch):
+    files = [_FakeFile(OSError("gone")), _FakeFile(1500.0)]
+    _patch_router_dir(monkeypatch, _FakeRouterDir(files))
+
+    out = sidecar_mod._code_mtime()
+    assert out == datetime.fromtimestamp(1500.0, tz=timezone.utc).isoformat()
+
+
+def test_code_mtime_falls_back_to_dir_mtime_when_no_modules(monkeypatch):
+    _patch_router_dir(monkeypatch, _FakeRouterDir([], dir_mtime=3000.0))
+
+    out = sidecar_mod._code_mtime()
+    assert out == datetime.fromtimestamp(3000.0, tz=timezone.utc).isoformat()
+
+
+def test_code_mtime_falls_back_to_boot_when_dir_unreadable(monkeypatch):
+    _patch_router_dir(monkeypatch, _FakeRouterDir([], dir_error=OSError("no dir")))
+
+    out = sidecar_mod._code_mtime()
+    assert out == sidecar_mod._PROCESS_STARTED_AT
+
+
+def test_sidecar_app_stamps_provenance_onto_service(tmp_path):
+    token_path = tmp_path / "token"
+    token_path.write_text(_TOKEN, encoding="utf-8")
+    service = RouterService(_config_path(tmp_path))
+
+    SidecarApp(
+        service,
+        token_path=lambda: token_path,
+        process_started_at="2026-08-18T23:40:44+00:00",
+        code_mtime="2026-08-18T19:39:42+00:00",
+    )
+
+    assert service._process_started_at == "2026-08-18T23:40:44+00:00"
+    assert service._code_mtime == "2026-08-18T19:39:42+00:00"
+
+
+def test_sidecar_app_without_provenance_leaves_service_blank(tmp_path):
+    token_path = tmp_path / "token"
+    token_path.write_text(_TOKEN, encoding="utf-8")
+    service = RouterService(_config_path(tmp_path))
+
+    SidecarApp(
+        service,
+        token_path=lambda: token_path,
+        process_started_at=None,
+        code_mtime=None,
+    )
+
+    assert service._process_started_at is None
+    assert service._code_mtime is None

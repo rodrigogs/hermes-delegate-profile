@@ -74,13 +74,22 @@ def test_status_and_policy_are_read_only_snapshots(config_path):
     status = service.status()
     policy = service.policy()
 
-    # `warnings` is purely ADDITIVE: pulling it out must leave the exact prior
-    # response. These tier models are unknown to the capability registry, which
-    # is advisory only — note `valid` stays True below.
+    # `warnings` and the provenance fields are purely ADDITIVE: pulling them out
+    # must leave the exact prior response. These tier models are unknown to the
+    # capability registry, which is advisory only — note `valid` stays True below.
     warnings = status.pop("warnings")
     assert warnings and all(
         "unknown to the capability registry" in warning for warning in warnings
     )
+
+    # Provenance: a standalone RouterService reports config_mtime — the config is
+    # re-read per request, so its age is knowable here. process_started_at and
+    # code_mtime are stamped by the sidecar at boot and injected; without that
+    # injection neither may appear, or the header would show ages it invented.
+    config_mtime = status.pop("config_mtime")
+    assert datetime.fromisoformat(config_mtime).tzinfo is not None, config_mtime
+    assert "process_started_at" not in status
+    assert "code_mtime" not in status
 
     assert status == {
         "valid": True,
@@ -96,6 +105,23 @@ def test_status_and_policy_are_read_only_snapshots(config_path):
         {"model": "backup", "provider": "backup-rail"}
     ]
     assert "api_key" not in json.dumps(policy)
+
+
+def test_status_reports_sidecar_injected_provenance(config_path):
+    """The sidecar stamps boot provenance onto the service; /status must echo it.
+
+    The mtimes are captured at sidecar boot (one_sidecar._code_mtime), not
+    computed per request — the whole point is that a process that booted before
+    the last edit keeps reporting the code it actually loaded.
+    """
+    service = RouterService(config_path)
+    service._process_started_at = "2026-08-18T23:40:44+00:00"
+    service._code_mtime = "2026-08-18T19:39:42+00:00"
+
+    status = service.status()
+    assert status["process_started_at"] == "2026-08-18T23:40:44+00:00"
+    assert status["code_mtime"] == "2026-08-18T19:39:42+00:00"
+    assert "config_mtime" in status
 
 
 def test_explain_is_deterministic_and_never_calls_classifier(config_path):

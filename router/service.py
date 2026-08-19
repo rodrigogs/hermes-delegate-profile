@@ -558,6 +558,12 @@ class RouterService:
         # RouterService; without this, two concurrent applies carrying the same
         # base_hash would both pass the drift check and both write.
         self._write_lock = threading.Lock()
+        # Boot provenance, stamped by the sidecar (one_sidecar) so /status can
+        # report three ages: process start, code mtime, config mtime. None here
+        # means "not served by the sidecar" — status() then omits the two fields
+        # rather than inventing ages for a process that never reported them.
+        self._process_started_at: Optional[str] = None
+        self._code_mtime: Optional[str] = None
 
     def _load(self) -> Tuple[Dict[str, Any], List[str]]:
         """Return policy plus parse/topology errors instead of raising them."""
@@ -602,12 +608,31 @@ class RouterService:
         loadable-but-wrong file (``rules: 5``, ``tiers: nope``): the diagnosis
         belongs in ``validation_errors``, never in a traceback where the one
         surface that could have explained the problem is the one that died of it.
+
+        Provenance fields:
+        - ``process_started_at`` — wall-clock start of the sidecar process, captured at boot (ISO 8601 UTC)
+        - ``code_mtime`` — mtime of the router/ package directory (ISO 8601 UTC)
+        - ``config_mtime`` — mtime of the loaded router.yaml (ISO 8601 UTC)
+
+        These three ages make staleness visible: if ``code_mtime > process_started_at``
+        the sidecar is running code older than what is on disk.
         """
         config, errors = self._load()
         classifier = _as_mapping(config.get("classifier"))
         breaker = _as_mapping(_as_mapping(config.get("blocklist")).get("auto_breaker"))
         tiers = config.get("tiers")
-        return {
+        # Provenance: config mtime is read on every request via _load; process start
+        # and code mtime are stamped by the sidecar at boot and stay as captured.
+        code_mtime = self._code_mtime
+        process_started_at = self._process_started_at
+        config_mtime = None
+        try:
+            config_mtime = datetime.fromtimestamp(
+                self._config_path.stat().st_mtime, tz=timezone.utc
+            ).isoformat()
+        except OSError:
+            pass
+        result = {
             "valid": not errors,
             "validation_errors": errors,
             "warnings": self._warnings(config),
@@ -620,6 +645,13 @@ class RouterService:
             },
             "breaker_enabled": bool(breaker.get("enabled", False)),
         }
+        if process_started_at is not None:
+            result["process_started_at"] = process_started_at
+        if code_mtime is not None:
+            result["code_mtime"] = code_mtime
+        if config_mtime is not None:
+            result["config_mtime"] = config_mtime
+        return result
 
     def policy(self) -> Dict[str, Any]:
         """Return only the declarative, non-secret policy material.

@@ -220,20 +220,13 @@
     .view-actions { display: inline-flex; align-items: center; gap: 8px; justify-self: end; }
 
     /* Liveness of the console's own reading, next to the controls that refresh
-       it: a dot and a clock, 11px, the host's metadata step. */
+       it: a dot and the provenance ages, 11px, the host's metadata step. The
+       ages render as their own lines at every width — they ARE the report
+       (which source is stale), not chrome, so the old phone rule that collapsed
+       the "checked HH:MM" clock was removed with the clock. A dead sidecar or a
+       not-yet-read status still keeps its words. */
     .reach { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font: var(--t-label) var(--mono); white-space: nowrap; }
-    /* At 390px the header's three items need 232px and the title is left 114px, so
-       "Capability Router" truncated to "Capability R…" — the one thing in the
-       header that says what you are looking at was the thing that yielded.
-       Measured: dropping the clock returns 99px, which is enough for the full
-       title. So the CLOCK yields, and only when it must. The dot stays: whether
-       these numbers are current is not a nicety, and a 6px dot beside the button
-       that refreshes them still reads. When the sidecar is unreachable the words
-       come back at any width, because that is a condition the operator must see —
-       and the wrapped warning line on the body says it too. */
-    @media (max-width: 640px) {
-      .reach.is-fresh #reachText { display: none; }
-    }
+    #reachText { white-space: pre-line; }
 
     /* ── The three destinations ────────────────────────────────────────
        Drawn as the host draws its own nav tabs: a quiet 14px label that takes
@@ -1008,6 +1001,10 @@
       <span class="tab-state" id="stateRoutes"><span class="count" id="countRoutes" hidden></span><span class="dot"></span></span>
     </button>
   </nav>
+
+  <!-- Stale banner (router-scoped): shows when code_mtime > process_started_at.
+       It is a warn-line style banner with the restart command. Hidden by default. -->
+  <div class="warn-line is-stale-banner" id="staleBanner" hidden></div>
 
   <main class="body" id="shell">
     <div class="measure">
@@ -2292,15 +2289,66 @@
         set('stateRoutes', 'countRoutes', routes.length ? 'alive' : '', routes.length);
 
         const reach = $('reach');
-        // is-fresh means "nothing to report about the read itself", which is what
-        // lets the phone drop the clock and keep the title. Anything else — no read
-        // yet, or a dead sidecar — keeps its words at every width.
-        const fresh = !state.unreachable && !!state.checkedAt;
-        reach.className = `reach${fresh ? ' is-fresh' : ''}`
+        // Provenance header: three ages instead of one "checked" clock.
+        // 1) sidecar up — time since process_started_at
+        // 2) code loaded — code_mtime age
+        // 3) router.yaml changed — config_mtime age
+        // When code_mtime > process_started_at, the sidecar is running stale code.
+        // We render three lines in the header's .reach, and if stale, also a
+        // router-scoped banner (warn-line) under the tabs.
+        const prov = state.status || {};
+        const procStart = prov.process_started_at;
+        const codeLoaded = prov.code_mtime;
+        const configChanged = prov.config_mtime;
+        const nowSec = Math.floor(nowUtc().getTime() / 1000);
+
+        const fmtAge = (ts) => {
+          if (!ts) return '—';
+          const s = Math.max(0, nowSec - Math.floor(new Date(ts).getTime() / 1000));
+          if (s < 60) return `${s}s`;
+          if (s < 3600) return `${Math.round(s / 60)}m`;
+          if (s < 86400) return `${Math.round(s / 3600)}h`;
+          return `${Math.round(s / 86400)}d`;
+        };
+
+        const stale = !!(procStart && codeLoaded && new Date(codeLoaded) > new Date(procStart));
+        reach.className = `reach${stale ? ' is-stale' : ''}`
           + `${state.unreachable ? ' is-dead' : (state.health ? ' is-alive' : '')}`;
-        $('reachText').textContent = state.unreachable
-          ? 'sidecar unreachable'
-          : state.checkedAt ? `checked ${clock(state.checkedAt)}` : 'checking';
+
+        // Three ages replace the one "checked HH:MM" clock, so the operator can
+        // see WHICH source is old — code or policy — instead of trusting a single
+        // number. They render only once a status has been read: before that the
+        // console says it is still checking, and a dead sidecar names the failure
+        // instead of drawing three dashes.
+        const reachText = $('reachText');
+        if (state.unreachable) {
+          reachText.textContent = 'sidecar unreachable';
+        } else if (procStart) {
+          reachText.textContent = [
+            `sidecar up ${fmtAge(procStart)}`,
+            `code loaded ${fmtAge(codeLoaded)}`,
+            `router.yaml changed ${fmtAge(configChanged)}`,
+          ].join('\n');
+        } else {
+          reachText.textContent = 'checking';
+        }
+
+        // Stale banner (router-scoped, not agent-scoped) — only when code is newer than process
+        const staleBanner = $('staleBanner');
+        if (staleBanner) {
+          staleBanner.hidden = !stale;
+          if (stale) {
+            clear(staleBanner);
+            const days = Math.ceil((new Date(codeLoaded) - new Date(procStart)) / 86400000);
+            staleBanner.append(
+              el('strong', '', `o sidecar está rodando código de ${days} dia${days > 1 ? 's' : ''} atrás`),
+              el('span', '', '; o que você vê pode não ser o que roda'),
+              el('br'),
+              el('code', '', 'systemctl --user restart hermes-router-sidecar')
+            );
+            staleBanner.classList.add('is-stale-banner');
+          }
+        }
       }
 
       // ── the pricing clock ───────────────────────────────────────────

@@ -310,6 +310,61 @@ test('the rail survives being rendered before any data arrives', () => {
   assert.equal(dom.get('countPipeline').hidden, true, 'no policy yet → no count shown');
 });
 
+test('the header reports three ages, and a stale sidecar says so', () => {
+  const { api, dom } = loadConsole();
+  // The console's own clock is injectable through state.clock; the provenance
+  // ages are read relative to it, so the test pins the header without racing now.
+  const T = Date.UTC(2026, 7, 19, 12, 0, 0);
+  api.state.clock = new Date(T);
+  api.state.unreachable = false;
+  api.state.status = {
+    process_started_at: new Date(T - 2 * 3600 * 1000).toISOString(),
+    code_mtime: new Date(T - 1 * 3600 * 1000).toISOString(),
+    config_mtime: new Date(T - 5 * 60 * 1000).toISOString(),
+  };
+  api.renderRail();
+
+  const text = dom.get('reachText').textContent;
+  assert.match(text, /sidecar up 2h/);
+  assert.match(text, /code loaded 1h/);
+  assert.match(text, /router.yaml changed 5m/);
+  assert.doesNotMatch(text, /checked/, 'the single checked clock is gone');
+
+  // Code (T-1h) is newer than the process (T-2h): the ROUTER banner must say so
+  // and carry the exact restart command.
+  assert.equal(dom.get('staleBanner').hidden, false);
+  assert.match(dom.get('reach').className, /is-stale/);
+  const banner = flat(dom.get('staleBanner'));
+  assert.match(banner, /1 dia atrás/);
+  assert.match(banner, /o que você vê pode não ser o que roda/);
+  assert.match(banner, /systemctl --user restart hermes-router-sidecar/);
+});
+
+test('a fresh sidecar shows no stale banner; checking and dead keep their words', () => {
+  const { api, dom } = loadConsole();
+  const T = Date.UTC(2026, 7, 19, 12, 0, 0);
+  api.state.clock = new Date(T);
+  api.state.unreachable = false;
+  api.state.status = {
+    process_started_at: new Date(T - 2 * 3600 * 1000).toISOString(),
+    code_mtime: new Date(T - 3 * 3600 * 1000).toISOString(),  // older than the process
+    config_mtime: new Date(T - 5 * 60 * 1000).toISOString(),
+  };
+  api.renderRail();
+  assert.equal(dom.get('staleBanner').hidden, true);
+  assert.doesNotMatch(dom.get('reach').className, /is-stale/);
+
+  // Before the first status the console is still checking; a dead sidecar names
+  // the failure — neither renders three dashes as if the ages existed.
+  api.state.status = undefined;
+  api.renderRail();
+  assert.equal(dom.get('reachText').textContent, 'checking');
+  api.state.status = { process_started_at: 'x' };
+  api.state.unreachable = true;
+  api.renderRail();
+  assert.equal(dom.get('reachText').textContent, 'sidecar unreachable');
+});
+
 // This replaces a test asserting that "the lock is the single authority on whether
 // writing is possible". That claim was false and the test was enforcing it: the
 // sidecar has never heard of the console's mode, and it already requires a
@@ -1109,18 +1164,26 @@ test('the decision sheet spends colour only where it is news', () => {
   assert.match(words, /costs a model call/, 'and inference is still flagged, once');
 });
 
-test('on a phone the clock yields, never the name of the surface', () => {
-  // Measured at 390px: the header's three items claimed 232px and left the title
-  // 114px, so "Capability Router" rendered as "Capability R…". The one element
-  // that says what you are looking at was the one that gave way. Dropping the
-  // "checked HH:MM" text returns 99px, which fits the title whole — so the clock
-  // is what collapses, and only while there is nothing to report about the read.
+test('the ages are the report, so they never collapse on a phone', () => {
+  // The header used to collapse the "checked HH:MM" clock at 390px — that text
+  // was chrome, and the clock was the first thing to give way. The three
+  // provenance ages are the opposite: the whole reason this header exists is to
+  // say WHICH source is stale, and hiding them would resurrect the exact defect
+  // this console was built to surface. So they render at every width, and only a
+  // dead sidecar or a not-yet-read status changes the words.
   const { api, dom } = loadConsole();
-
-  api.state.checkedAt = new Date();
+  const T = Date.UTC(2026, 7, 19, 12, 0, 0);
+  api.state.clock = new Date(T);
+  api.state.unreachable = false;
+  api.state.status = {
+    process_started_at: new Date(T - 2 * 3600 * 1000).toISOString(),
+    code_mtime: new Date(T - 1 * 3600 * 1000).toISOString(),
+    config_mtime: new Date(T - 5 * 60 * 1000).toISOString(),
+  };
   api.renderRail();
-  assert.match(dom.get('reach').className, /is-fresh/,
-    'a current read is collapsible at phone width');
+  assert.doesNotMatch(dom.get('reach').className, /is-fresh/,
+    'no fresh-state class: the ages are not collapsible chrome');
+  assert.match(dom.get('reachText').textContent, /sidecar up 2h/);
 
   // A dead sidecar keeps its words at every width: that is a condition, not chrome.
   api.state.unreachable = true;
@@ -1130,7 +1193,7 @@ test('on a phone the clock yields, never the name of the surface', () => {
 
   // And so does "we have not read anything yet", which is not the same as fine.
   api.state.unreachable = false;
-  api.state.checkedAt = null;
+  api.state.status = undefined;
   api.renderRail();
   assert.doesNotMatch(dom.get('reach').className, /is-fresh/);
   assert.equal(dom.get('reachText').textContent, 'checking');

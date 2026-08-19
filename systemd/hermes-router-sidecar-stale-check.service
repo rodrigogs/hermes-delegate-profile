@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the Capability Router sidecar for stale code
+Documentation=https://github.com/rodrigogs/hermes-delegate-profile
+After=network.target
+
+[Service]
+Type=oneshot
+Environment=HERMES_HOME=@HERMES_HOME@
+WorkingDirectory=@PLUGIN_DIR@
+ExecStart=@PYTHON@ scripts/sidecar_stale_check.py

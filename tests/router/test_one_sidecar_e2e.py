@@ -74,6 +74,14 @@ def test_status_requires_valid_token(running_sidecar):
     status, payload = _get(f"{base}/status", token="s3cret-token")
     assert status == 200
     assert "enabled" in payload
+    # Provenance: the live sidecar stamps boot provenance so the console can say
+    # which source is stale. A freshly booted test sidecar must serve code and
+    # config older than its own start — the exact invariant the header warns
+    # about when it is violated.
+    for field in ("process_started_at", "code_mtime", "config_mtime"):
+        assert field in payload, f"/status must report {field}"
+    assert payload["code_mtime"] <= payload["process_started_at"]
+    assert payload["config_mtime"] <= payload["process_started_at"]
 
 
 def test_policy_explain_and_unknown_route(running_sidecar):

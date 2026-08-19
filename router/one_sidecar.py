@@ -16,6 +16,7 @@ import platform
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -39,6 +40,35 @@ EXTENSION_ID = "hermes-one-capability-router"
 TOKEN_HEADER = "X-Hermes-Sidecar-Token"
 _VERSION = 1
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "[::1]", "localhost"}
+
+# Provenance: captured at process boot so /status can report three ages.
+# - _PROCESS_STARTED_AT: wall-clock ISO 8601 UTC captured once at boot
+# - _CODE_MTIME: mtime of the router/ package directory (newest .py file)
+_PROCESS_STARTED_AT = datetime.now(timezone.utc).isoformat()
+
+
+def _code_mtime() -> str:
+    """Return the newest mtime among router/*.py files, ISO 8601 UTC."""
+    router_dir = Path(__file__).resolve().parent
+    newest = 0.0
+    for py_file in router_dir.glob("*.py"):
+        try:
+            mtime = py_file.stat().st_mtime
+            if mtime > newest:
+                newest = mtime
+        except OSError:
+            pass
+    if newest:
+        return datetime.fromtimestamp(newest, tz=timezone.utc).isoformat()
+    # Fallback: directory mtime
+    try:
+        mtime = router_dir.stat().st_mtime
+        return datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+    except OSError:
+        return _PROCESS_STARTED_AT
+
+
+_CODE_MTIME = _code_mtime()
 
 # The impeccable console ships beside the extension; the sidecar serves it as a
 # static, same-origin HTML shell (auth-exempt like /health). All data it renders
@@ -224,6 +254,8 @@ class SidecarApp:
         restart_runner: Callable[[Path], Dict[str, Any]] = _default_restart_runner,
         model_windows: Optional[Dict[str, int]] = None,
         summarizer_window: int = SUMMARIZER_WINDOW,
+        process_started_at: Optional[str] = _PROCESS_STARTED_AT,
+        code_mtime: Optional[str] = _CODE_MTIME,
     ):
         self._service = service
         self._token_path = token_path
@@ -232,6 +264,11 @@ class SidecarApp:
         self._restart_runner = restart_runner
         self._model_windows = model_windows or dict(MODEL_WINDOWS)
         self._summarizer_window = summarizer_window
+        # Inject provenance into the service so /status can report it
+        if process_started_at is not None:
+            service._process_started_at = process_started_at
+        if code_mtime is not None:
+            service._code_mtime = code_mtime
 
     def render_console(self) -> Tuple[int, bytes, str]:
         """Return the console HTML shell as ``(status, body, content_type)``.

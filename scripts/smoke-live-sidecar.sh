@@ -24,9 +24,17 @@ systemctl --user restart hermes-router-sidecar.service; sleep 3
 chk "sidecar active" "$(systemctl --user is-active hermes-router-sidecar.service)" "active"
 chk "/health 200" "$(curl -s -o /dev/null -w %{http_code} --max-time 5 $B/health)" "200"
 chk "/console 200 (served)" "$(curl -s -o /dev/null -w %{http_code} --max-time 5 $B/console)" "200"
-chk "/console is the command-deck" "$(curl -s --max-time 5 $B/console | grep -c 'class=\"rail\"')" "1"
+# The console's rail used to be marked class="rail"; the markup now names the
+# three destination tabs by id. Assert on the Health tab — the console's own
+# surface — so a 404/error page still fails the check.
+chk "/console is the command-deck" "$(curl -s --max-time 5 $B/console | grep -c 'id=\"stateHealth\"')" "1"
 chk "/status needs token" "$(curl -s -o /dev/null -w %{http_code} --max-time 5 $B/status)" "401"
 chk "/status 200 w/ token" "$(curl -s -o /dev/null -w %{http_code} --max-time 5 -H "$H" $B/status)" "200"
+PROV=$(curl -s --max-time 5 -H "$H" $B/status)
+chk "/status has process_started_at" "$(echo "$PROV" | python3 -c 'import sys,json;print(bool(json.load(sys.stdin).get("process_started_at")))')" "True"
+chk "/status has code_mtime" "$(echo "$PROV" | python3 -c 'import sys,json;print(bool(json.load(sys.stdin).get("code_mtime")))')" "True"
+chk "/status has config_mtime" "$(echo "$PROV" | python3 -c 'import sys,json;print(bool(json.load(sys.stdin).get("config_mtime")))')" "True"
+chk "fresh boot: code not newer than process" "$(echo "$PROV" | python3 -c 'import sys,json;d=json.load(sys.stdin);print("yes" if d.get("code_mtime","9999")<=d.get("process_started_at","0000") else "no")')" "yes"
 chk "/liveness 200" "$(curl -s -o /dev/null -w %{http_code} --max-time 5 -H "$H" $B/liveness)" "200"
 chk "/routes 200" "$(curl -s -o /dev/null -w %{http_code} --max-time 5 -H "$H" $B/routes)" "200"
 chk "/routes unknown id 404" "$(curl -s -o /dev/null -w %{http_code} --max-time 5 -H "$H" "$B/routes?id=nope")" "404"
@@ -42,7 +50,15 @@ chk "LIVE router.yaml untouched" "$(md5sum $P/router.yaml | cut -d' ' -f1)" "$MD
 
 echo "--- replay chain on the live service ---"
 cd "$P"
-/usr/local/lib/hermes-agent/venv/bin/python3 -c "
+# The interpreter that can import router.*: the workspace venv on this box, or
+# the /usr/local layout older installs used. The script used to hardcode one
+# layout; on the other it died at this line with no hint why.
+PY=""
+for cand in /home/rodrigo/Workspace/hermes-agent/venv/bin/python /usr/local/lib/hermes-agent/venv/bin/python3; do
+  [ -x "$cand" ] && PY="$cand" && break
+done
+[ -n "$PY" ] || { echo "  FAIL  no python with the router importable"; fail=$((fail+1)); }
+"$PY" -c "
 import sys; sys.path.insert(0,'.')
 from router.adapter import route
 from router.durable_decision_log import DurableDecisionLog

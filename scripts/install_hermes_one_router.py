@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -97,8 +98,9 @@ def _render_unit(
     hermes_home: Path,
     webui_state_dir: Path,
     python: str | None = None,
+    template_name: str = "hermes-router-sidecar.service",
 ) -> str:
-    template = (repo_root / "systemd" / "hermes-router-sidecar.service").read_text(
+    template = (repo_root / "systemd" / template_name).read_text(
         encoding="utf-8"
     )
     replacements = {
@@ -107,9 +109,14 @@ def _render_unit(
         "@WEBUI_STATE_DIR@": str(webui_state_dir),
         "@PYTHON@": python or _default_python(),
     }
-    missing = [placeholder for placeholder in replacements if placeholder not in template]
-    if missing:
-        raise ValueError(f"sidecar unit template lacks placeholders: {', '.join(missing)}")
+    tokens = re.findall(r"@[A-Z_]+@", template)
+    if not tokens:
+        raise ValueError(f"{template_name} template lacks placeholders")
+    unknown = [token for token in tokens if token not in replacements]
+    if unknown:
+        raise ValueError(
+            f"{template_name} template has unknown placeholders: {', '.join(unknown)}"
+        )
     for placeholder, value in replacements.items():
         template = template.replace(placeholder, value)
     return template
@@ -164,6 +171,26 @@ def install(
             python=python,
         ),
         encoding="utf-8",
+    )
+    # Stale-code poller: a timer runs the check script and restarts the sidecar
+    # when router/*.py on disk is newer than the process start. This replaces
+    # the .path-unit approach, which never armed its inotify fd on this WSL box.
+    (systemd_dir / "hermes-router-sidecar-stale-check.service").write_text(
+        _render_unit(
+            repo_root,
+            plugin_dir,
+            effective_hermes_home,
+            effective_webui_state_dir,
+            python=python,
+            template_name="hermes-router-sidecar-stale-check.service",
+        ),
+        encoding="utf-8",
+    )
+    # The timer has no placeholders; copy it verbatim rather than pretending it
+    # needs rendering.
+    shutil.copy2(
+        repo_root / "systemd" / "hermes-router-sidecar-stale-check.timer",
+        systemd_dir / "hermes-router-sidecar-stale-check.timer",
     )
 
 

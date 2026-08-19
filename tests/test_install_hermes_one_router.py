@@ -66,6 +66,22 @@ def test_install_preserves_manifest_entries_and_is_idempotent(tmp_path):
     assert "X-Hermes-Sidecar-Token" not in unit
     assert "HERMES_EXT_SIDECAR_TOKEN" not in unit
     assert "127.0.0.1" in unit
+    assert "PYTHONDONTWRITEBYTECODE=1" in unit
+
+    # The stale-code poller: a timer runs the check service, which restarts the
+    # sidecar when router/*.py on disk is newer than the process start. This is
+    # the mechanism that keeps the Aug 2026 lint phantom from recurring.
+    check_unit = (systemd_dir / "hermes-router-sidecar-stale-check.service").read_text(
+        encoding="utf-8"
+    )
+    assert f"WorkingDirectory={plugin_dir}" in check_unit
+    assert "scripts/sidecar_stale_check.py" in check_unit
+    assert f"Environment=HERMES_HOME={hermes_home}" in check_unit
+    timer = (systemd_dir / "hermes-router-sidecar-stale-check.timer").read_text(
+        encoding="utf-8"
+    )
+    assert "OnUnitActiveSec=2min" in timer
+    assert "@" not in timer
 
 
 def test_install_replaces_existing_router_entry_without_reordering_others(tmp_path):
@@ -131,6 +147,32 @@ def test_installer_rejects_malformed_inputs_and_missing_templates(tmp_path):
             tmp_path / "home",
             tmp_path / "home/webui",
         )
+
+    unit.write_text("@NOPE@", encoding="utf-8")
+    with pytest.raises(ValueError, match="unknown placeholders"):
+        installer._render_unit(
+            unit_root,
+            tmp_path / "plugin",
+            tmp_path / "home",
+            tmp_path / "home/webui",
+        )
+
+    # The check-service template only needs @PLUGIN_DIR@/@PYTHON@/@HERMES_HOME@ —
+    # it must render without the service-only placeholders.
+    check_template = unit_root / "systemd/hermes-router-sidecar-stale-check.service"
+    check_template.write_text(
+        "WorkingDirectory=@PLUGIN_DIR@\nExecStart=@PYTHON@ scripts/sidecar_stale_check.py\n",
+        encoding="utf-8",
+    )
+    rendered = installer._render_unit(
+        unit_root,
+        tmp_path / "plugin",
+        tmp_path / "home",
+        tmp_path / "home/webui",
+        template_name="hermes-router-sidecar-stale-check.service",
+    )
+    assert f"WorkingDirectory={tmp_path / 'plugin'}" in rendered
+    assert "scripts/sidecar_stale_check.py" in rendered
 
 
 def test_installer_cli_builds_defaults_and_invokes_install(monkeypatch, tmp_path, capsys):

@@ -1,0 +1,15 @@
+[Unit]
+Description=Restart the Capability Router sidecar when its modules change (poll)
+Documentation=https://github.com/rodrigogs/hermes-delegate-profile
+
+[Timer]
+# A poller, deliberately: the .path-unit watch does not arm its inotify fd on
+# this WSL box (systemd 255, verified 2026-08-19), and even where it does arm,
+# a directory watch misses in-place edits. Comparing disk mtimes against the
+# process start cannot miss either case.
+OnBootSec=1min
+OnUnitActiveSec=2min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
