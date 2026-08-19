@@ -2121,6 +2121,24 @@ function shadowStatus(target) {
   const t = shadowTarget(target);
   return { validation_errors: [t.message], error_targets: [t] };
 }
+// Three rows for the position/state tests: a shadower, its victim, and a rule
+// the lint does not name. The sheet ordinal for index N is N+1, so later_index
+// 1 is "regra 2" and 2 is "regra 3".
+function rulePolicy() {
+  return {
+    rules: [
+      { id: 'broad', when: {}, then: { model: 'T2' } },
+      { id: 'dead', when: {}, then: { model: 'T4' } },
+      { id: 'r3', when: {}, then: { model: 'T2' } },
+    ],
+  };
+}
+// The message element the inspector appended. The DOM stub keys nodes by the id
+// they were CREATED with, so document.getElementById('nodeMsg') answers with an
+// unrelated empty node — the real one is found where renderInspector put it.
+function inspectorMsg(dom) {
+  return dom.get('inspector').children.find((c) => c.id === 'nodeMsg');
+}
 // wire() is stripped from the harness, so the tab machinery is driven through
 // its named function: give querySelectorAll a real table to act on.
 function tabWire(dom) {
@@ -2277,6 +2295,121 @@ test('the warnings line is sticky, so the fix path cannot scroll out of view', (
     'the only actionable message pins to the scrollport top');
   assert.match(style, /#warnings\s*\{[^}]*?background: var\(--bg\)/,
     'and paints the plane, so scrolled content never reads through it');
+});
+
+// ── THE FIX, STRUCTURED: POSITION AND STATE WITHOUT TOUCHING `when` ───────
+// The amber shadow finding says a later rule can never fire because an earlier
+// one matches everything it matches. The only fixes that class needs are order
+// and an off-switch, and the structured inspector offered neither — 'routes to'
+// and 'profile' were the only fields, and the whole-policy JSON editor was the
+// only door. These tests pin the two buttons as a user drives them (through
+// the rendered inspector), the one honest constraint (a move button can only
+// exist for a rule the lint actually names), and the blocklist row that used
+// to promise an editor it does not have.
+
+test('the shadowed rule grows a move button naming its shadower, and the click splices the draft', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = rulePolicy();
+  api.state.status = shadowStatus({ later_index: 1, later_id: 'dead', earlier_index: 0, earlier_id: 'broad' });
+  api.setMode('editing');
+  api.renderInspector({ id: 'rule:dead', name: 'dead', bind: 'rule', ruleIndex: 1 });
+  const move = findAll(dom.get('inspector'), 'btn')
+    .find((b) => /Mover para antes de/.test(b.textContent || ''));
+  assert.ok(move, 'the button exists for the rule the lint names');
+  assert.match(move.textContent, /antes de broad/, 'and it names the shadower from error_targets');
+  move._listeners.click();
+  assert.deepEqual(plain(api.state.draft.rules.map((r) => r.id)), ['dead', 'broad', 'r3'],
+    'the dead row now precedes the row that shadowed it');
+  assert.equal(move.disabled, true, 'one move per draft — a second click cannot redo it');
+  assert.match(inspectorMsg(dom).textContent, /Movido/, 'the message says what changed');
+});
+
+test('the move button targets the EARLIEST shadower when several shadow the same rule', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = rulePolicy();
+  api.state.status = shadowStatus({ later_index: 2, later_id: 'r3', earlier_index: 1, earlier_id: 'dead' });
+  // A second, earlier shadower: moving before the later one would leave this
+  // one in front of the rule still, and the finding would survive the move.
+  api.state.status.error_targets.push({
+    code: 'shadowed', later_index: 2, later_id: 'r3',
+    earlier_index: 0, earlier_id: 'broad',
+    message: "rule 'r3' is shadowed by earlier rule 'broad'",
+  });
+  api.setMode('editing');
+  api.renderInspector({ id: 'rule:r3', name: 'r3', bind: 'rule', ruleIndex: 2 });
+  const move = findAll(dom.get('inspector'), 'btn')
+    .find((b) => /Mover para antes de/.test(b.textContent || ''));
+  assert.ok(move);
+  assert.match(move.textContent, /antes de broad/, 'the EARLIEST shadower is the fix');
+  move._listeners.click();
+  assert.equal(plain(api.state.draft.rules.map((r) => r.id))[0], 'r3',
+    'the row lands before the earliest shadower, resolving every finding at once');
+});
+
+test('the disable button turns the rule off in the draft and back on', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = rulePolicy();
+  api.state.status = { validation_errors: [], error_targets: [] };
+  api.setMode('editing');
+  api.renderInspector({ id: 'rule:dead', name: 'dead', bind: 'rule', ruleIndex: 1 });
+  const toggle = findAll(dom.get('inspector'), 'btn')
+    .find((b) => /Desativar esta regra/.test(b.textContent || ''));
+  assert.ok(toggle, 'every rule can be disabled, shadowed or not');
+  toggle._listeners.click();
+  assert.equal(api.state.draft.rules[1].enabled, false, 'the draft rule carries enabled:false');
+  assert.match(toggle.textContent, /Ativar esta regra/, 'the label offers the way back');
+  assert.match(inspectorMsg(dom).textContent, /Desativada/);
+  toggle._listeners.click();
+  assert.equal('enabled' in api.state.draft.rules[1], false,
+    're-enabling removes the field — missing means live, per the matcher');
+  assert.match(toggle.textContent, /Desativar esta regra/);
+});
+
+test('a rule the lint does not name gets no move button — disable is still there', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = rulePolicy();
+  api.state.status = shadowStatus({ later_index: 1, later_id: 'dead', earlier_index: 0, earlier_id: 'broad' });
+  api.setMode('editing');
+  api.renderInspector({ id: 'rule:r3', name: 'r3', bind: 'rule', ruleIndex: 2 });
+  const labels = findAll(dom.get('inspector'), 'btn').map((b) => b.textContent || '');
+  assert.ok(!labels.some((t) => /Mover/.test(t)),
+    'no move button without a finding — the button must not invent a shadower');
+  assert.ok(labels.some((t) => /Desativar/.test(t)), 'disable is always available for a rule');
+});
+
+test('the blocklist row is not clickable in editing mode — no pointer for a row with no editor', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = rulePolicy();
+  api.state.status = { validation_errors: [], error_targets: [] };
+  api.setMode('editing');
+  api.renderSheet();
+  const row = dom.get('sheet').children.find((c) => c.dataset.ruleId === '__blocklist');
+  assert.ok(row, 'the informational row still renders');
+  assert.equal(row.classList.contains('editable'), false,
+    'no cursor:pointer promise on a row that cannot edit');
+  assert.equal(row._listeners.click, undefined, 'and no click handler to ignore');
+});
+
+test('a disabled rule renders marked off on the sheet', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = {
+    rules: [
+      { id: 'broad', when: {}, then: { model: 'T2' } },
+      { id: 'dead', enabled: false, when: {}, then: { model: 'T4' } },
+    ],
+  };
+  api.state.status = { validation_errors: [], error_targets: [] };
+  api.renderSheet();
+  const dead = dom.get('sheet').children.find((c) => c.dataset.ruleId === 'dead');
+  assert.ok(dead, 'the disabled row is still on the sheet');
+  // The off class is baked into the row's className string by line() — exactly
+  // like the rail's state class, so the string is what has to be read: the
+  // stub's classList only tracks add()/remove() calls, and asserting through
+  // it would pass no matter what the console rendered.
+  assert.match(dead.className, /\boff\b/, 'it wears the off state');
+  assert.match(flat(dead), /· off/, 'and the marker is visible in the row text');
+  const live = dom.get('sheet').children.find((c) => c.dataset.ruleId === 'broad');
+  assert.doesNotMatch(live.className, /\boff\b/, 'a live rule does not');
 });
 
 test('a fresh probe clears the previous task\'s chain plan before asking', async () => {

@@ -133,6 +133,9 @@ blocklist:
 # later row's, so this order is load-bearing: `standard-implementation`
 # (has_code) MUST stay last, because it shares the has_code clause with
 # `trivial-mechanical-edit` and would otherwise swallow every narrower row.
+# A rule can carry `enabled: false` to take it out of first-match without
+# deleting it: the matcher skips it, it shadows nothing and is shadowed by
+# nothing, and the console's inspector offers the switch on each rule row.
 rules:
 # Narrowest row first: three clauses, and the only row that can reach T1.
 - id: trivial-mechanical-edit

@@ -484,6 +484,11 @@
     .step.hit { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
     .step.hit::before { background: var(--accent); }
     .step.cold { opacity: .5; }
+    /* A rule the operator switched off (enabled: false) is still in the file
+       but is not routing; dim the condition column and keep the mute marker on
+       the id — the row must not read as live policy. */
+    .step.off .step-what { opacity: .55; }
+    .step-off { color: var(--muted); font-weight: 400; }
     .step-ord { color: var(--muted); font: 500 var(--t-label) var(--mono); text-align: right; }
     .step-what { min-width: 0; }
     .step-id { font: 500 var(--t-body) var(--mono); }
@@ -2497,6 +2502,21 @@
         return null;
       }
 
+      // The lint finding that names THIS rule as the dead one, when there is
+      // one. error_targets is aligned to validation_errors by index
+      // (service._error_targets), and the inspector opens with the same index
+      // the sheet row carries, so later_index here IS node.ruleIndex. When
+      // several earlier rows shadow the same rule, the EARLIEST one is the fix:
+      // moving before a later shadower leaves an even earlier one in front of
+      // the rule still — the finding would survive the move.
+      function shadowTargetFor(ruleIndex) {
+        const targets = lintTargets().filter((t) => t && typeof t === 'object'
+          && Number.isInteger(t.later_index) && t.later_index === ruleIndex
+          && Number.isInteger(t.earlier_index));
+        if (!targets.length) return null;
+        return targets.reduce((best, t) => (t.earlier_index < best.earlier_index ? t : best));
+      }
+
       // The probe's answer BEFORE it asks: a disabled submit button still lets
       // Enter submit the form, so the result space carries the refusal and the
       // fix path preemptively, in the same line language as the banner.
@@ -3054,7 +3074,7 @@
         };
 
         const line = (opts) => {
-          const step = el('div', `step${opts.editable ? ' editable' : ''}${opts.cold ? ' cold' : ''}`);
+          const step = el('div', `step${opts.editable ? ' editable' : ''}${opts.cold ? ' cold' : ''}${opts.off ? ' off' : ''}`);
           // Mark the probe winner HERE rather than after the fact. It used to be applied
           // in probe(), so clicking Edit or Refresh rebuilt the sheet with no .hit while
           // #probeResult still named the winning rule — the verdict and the list
@@ -3082,7 +3102,12 @@
           }
           step.append(el('div', 'step-ord', opts.ord || ''));
           const what = el('div', 'step-what');
-          what.append(el('div', 'step-id', opts.id));
+          const idLine = el('div', 'step-id', opts.id);
+          // A rule the operator switched off is still in the policy file but is
+          // not routing; the id keeps a mute marker so the row cannot read as
+          // live policy while it dims below.
+          if (opts.off) idLine.append(el('span', 'step-off', ' · off'));
+          what.append(idLine);
           // A rule's conditions are a LIST of independent clauses, so they are
           // marked up as one: a real <ul> keeps them separately announced instead
           // of running together into "has codeover 400,000 tokens" — the same trap
@@ -3133,13 +3158,18 @@
         // "sem dados nesta janela", because a rule newer than the log cannot
         // have fired), --info on the single Stage 1 heading, and the accent on
         // the line a probe matched.
+        // The blocklist has no structured editor — its rows are lists of
+        // models managed in router.yaml or the JSON editor — so the line is
+        // NOT editable: a pointer that opens the read-only inspector is a
+        // promise of an edit it cannot perform. It stays on the sheet as an
+        // informational row (its vetoes are counted and refused in red).
         box.append(line({
           ord: '', id: 'blocklist', synthetic: true,
           when: 'the requested model is banned or cooling down',
           target: 'refuse', targetColor: 'var(--bad-text)',
           hits: byCause.blocklist_veto || 0,
           stale,
-          editable, onPick: editable ? () => pickBind({ id: 'blocklist', name: 'blocklist', bind: 'blocklist' }) : null,
+          editable: false,
         }));
         rules.forEach((r, i) => {
           const then = r.then || {};
@@ -3157,6 +3187,7 @@
             hits: byRule[r.id] || 0,
             stale,
             editable,
+            off: r.enabled === false,
             onPick: editable ? () => pickBind({ id: `rule:${r.id}`, name: String(r.id), bind: 'rule', ruleIndex: i }) : null,
           }));
         });
@@ -4376,6 +4407,10 @@
         }
 
         state.draft = fullPolicy();
+        // Created here, before the fields, because the rule position/state
+        // controls below write their feedback to it; appended once, after the
+        // actions, so the message reads where the buttons are.
+        const msg = el('p', 'msg'); msg.id = 'nodeMsg'; msg.setAttribute('aria-live', 'polite');
         const field = (label, get, set, options) => {
           const wrap = el('div', 'field');
           wrap.append(el('label', '', label));
@@ -4407,6 +4442,45 @@
           const tiers = Object.keys(d.tiers || {});
           field('routes to', () => r.then.model, (v) => { r.then.model = v; }, tiers.concat(['']));
           field('profile', () => r.then.profile, (v) => { r.then.profile = v; });
+          // Position and state are the two knobs that resolve the shadow class
+          // this screen reports in amber WITHOUT touching `when` — the lint
+          // finding names the shadower, and disabling is dead-by-declaration
+          // (match skips enabled:false). Both edit the draft; Apply/Preview
+          // below run the existing /plan + /apply flow, and the write gate
+          // still lints the merged result before anything lands on disk.
+          const target = shadowTargetFor(node.ruleIndex);
+          const ops = el('div', 'rule-ops');
+          if (target) {
+            const move = el('button', 'btn', `Mover para antes de ${target.earlier_id}`);
+            move.type = 'button';
+            move.addEventListener('click', () => {
+              const rules = d.rules;
+              const from = node.ruleIndex;
+              const to = target.earlier_index;
+              if (!Array.isArray(rules) || from === to || from < 0 || from >= rules.length
+                  || to < 0 || to >= rules.length) {
+                setMsg(msg, 'Esse movimento é impossível neste rascunho.', 'bad');
+                return;
+              }
+              const [rule] = rules.splice(from, 1);
+              rules.splice(to, 0, rule);
+              move.disabled = true;
+              move.textContent = 'Movido no rascunho';
+              setMsg(msg, 'Movido no rascunho — Preview para ver o diff, Apply para escrever.', 'ok');
+            });
+            ops.append(move);
+          }
+          const toggle = el('button', 'btn', r.enabled === false ? 'Ativar esta regra' : 'Desativar esta regra');
+          toggle.type = 'button';
+          toggle.addEventListener('click', () => {
+            if (r.enabled === false) delete r.enabled;
+            else r.enabled = false;
+            toggle.textContent = r.enabled === false ? 'Ativar esta regra' : 'Desativar esta regra';
+            setMsg(msg, (r.enabled === false ? 'Desativada' : 'Ativada')
+              + ' no rascunho — Preview para ver o diff, Apply para escrever.', 'ok');
+          });
+          ops.append(toggle);
+          box.append(ops);
         } else if (node.bind === 'classifier' || node.bind === 'fail_safe') {
           const f = d[node.bind] = d[node.bind] || {};
           field('model', () => f.model, (v) => { f.model = v; });
@@ -4426,7 +4500,6 @@
         const revertBtn = el('button', 'btn warn', 'Revert');
         actions.append(applyBtn, previewBtn, revertBtn);
         box.append(actions);
-        const msg = el('p', 'msg'); msg.id = 'nodeMsg'; msg.setAttribute('aria-live', 'polite');
         box.append(msg);
         const diff = el('pre', 'code'); diff.id = 'nodeDiff'; diff.hidden = true;
         box.append(diff);
@@ -4956,7 +5029,7 @@
         // and the two payload readers it is built from. The button wiring is
         // exercised by driving showLintTarget, because a test that only counted
         // buttons would pass no matter what the button did.
-        showLintTarget, selectTab, lintErrors, lintTargets, findRuleRow,
+        showLintTarget, selectTab, lintErrors, lintTargets, findRuleRow, shadowTargetFor,
         drawPath, pickRoute, stepNode, stepOutcome, causeColor, worstOf, modelState,
         phraseCondition, phraseWhen, renderSheet, renderLadder, ruleHits, probe,
         // The log window: named by its endpoints (never by the oldest's age) and

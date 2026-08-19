@@ -233,6 +233,39 @@ class TestMatch:
         assert rule_id is None
         assert output["action"] == "classify"
 
+    def test_disabled_rule_never_fires_and_yields_to_the_next(self):
+        """enabled:false takes a row out of first-match without deleting it.
+
+        The console's 'Desativar esta regra' writes exactly this field, so the
+        matcher is the contract that makes the button honest: a disabled row
+        must neither win nor stand in the way of the row behind it.
+        """
+        rows = [
+            {"id": "broad", "enabled": False,
+             "when": {"has_code": {"eq": True}}, "then": {"profile": "coder", "model": "T1"}},
+            {"id": "narrow", "when": {"has_code": {"eq": True}},
+             "then": {"profile": "reviewer", "model": "T2"}},
+        ]
+        fv = _mkf(has_code=True)
+        output, rule_id = match(fv, False, rows, {"action": "classify"}, ROUTER_CONFIG["tiers"])
+        assert rule_id == "narrow", "the disabled row must not fire"
+        assert output["model"] == "glm-5.2"
+        # explain() is the surface the operator reads: it must not claim the
+        # disabled row matched either.
+        trace = explain("some task", fv, False, rows, {"action": "classify"}, ROUTER_CONFIG["tiers"])
+        assert trace["matched_rule_id"] == "narrow"
+
+    def test_disabled_rule_skipped_even_when_it_would_have_won(self):
+        """A disabled row that WOULD have matched must fall through past it."""
+        rows = [
+            {"id": "only", "enabled": False,
+             "when": {"verb_class": {"eq": "hard"}}, "then": {"model": "T4"}},
+        ]
+        output, rule_id = match(_mkf(verb_class="hard"), False, rows,
+                                {"action": "classify"}, ROUTER_CONFIG["tiers"])
+        assert rule_id is None
+        assert output["action"] == "classify"
+
 
 # ---------------------------------------------------------------------------
 # lint() tests
@@ -242,6 +275,30 @@ class TestLint:
     def test_valid_config(self):
         errors = lint(ROUTER_CONFIG)
         assert errors == []
+
+    def test_non_boolean_rule_enabled_is_rejected(self):
+        """enabled is a switch: a truthy string would silently mean 'on'."""
+        config = _rules_cfg(
+            {"id": "r1", "enabled": "no",
+             "when": {"has_code": {"eq": True}}, "then": {"model": "T2"}},
+        )
+        errors = lint(config)
+        assert any("'enabled' must be boolean" in e for e in errors)
+
+    def test_disabled_rule_is_still_schema_validated(self):
+        """Disabling is not a lint bypass: a dormant typo becomes live on re-enable.
+
+        The write gate is fail-closed; 'just turn it off' must not be the hatch
+        that ships a rule that can never pass lint. The disable button exists to
+        resolve the SHADOW class, which it does — shadow findings are the one
+        check a disabled rule is exempt from, because it cannot fire.
+        """
+        config = _rules_cfg(
+            {"id": "r1", "enabled": False,
+             "when": {"verb_classs": {"eq": "hard"}}, "then": {"model": "T4"}},
+        )
+        errors = lint(config)
+        assert any("'when.verb_classs' is not a known signal" in e for e in errors)
 
     def test_missing_default(self):
         config = {"rules": [], "tiers": {}}
@@ -1810,6 +1867,45 @@ class TestShadowDetection:
              "then": {"model": "T1"}},
         )
         assert lint(config) == []
+
+    def test_a_disabled_row_neither_shadows_nor_is_shadowed(self):
+        """A rule the operator turned off is dead by declaration, not by shadow.
+
+        _shadowed_pairs must skip it on BOTH sides: as the later row (it cannot
+        fire, so nothing is dead BECAUSE of it) and as the earlier row (it skips
+        in the matcher, so it cannot kill the row behind it). Otherwise the
+        console's disable button would write enabled:false and the amber finding
+        would survive, telling the operator the fix did not work.
+        """
+        # Disabled LATER row: the pair lint used to flag must go quiet.
+        config = _rules_cfg(
+            {"id": "broad", "when": {"has_code": {"eq": True}}, "then": {"model": "T2"}},
+            {"id": "dead", "enabled": False,
+             "when": {"has_code": {"eq": True}}, "then": {"model": "T3"}},
+        )
+        assert lint(config) == []
+        assert lint_findings(config) == []
+        # Disabled EARLIER row: the row behind it becomes reachable, so it is
+        # not shadowed by anything.
+        config = _rules_cfg(
+            {"id": "off", "enabled": False,
+             "when": {"has_code": {"eq": True}}, "then": {"model": "T2"}},
+            {"id": "alive", "when": {"has_code": {"eq": True}}, "then": {"model": "T3"}},
+        )
+        assert lint(config) == []
+        assert lint_findings(config) == []
+        # And the matcher agrees: the reachable row really fires.
+        assert _first_match(config["rules"], has_code=True) == "alive"
+
+    def test_disabled_rule_is_never_a_finding_even_with_identical_when(self):
+        """The one case that used to be shadowed unconditionally."""
+        config = _rules_cfg(
+            {"id": "a", "when": {"verb_class": {"eq": "hard"}}, "then": {"model": "T4"}},
+            {"id": "b", "enabled": False,
+             "when": {"verb_class": {"eq": "hard"}}, "then": {"model": "T3"}},
+        )
+        assert lint(config) == []
+        assert lint_findings(config) == []
 
     def test_disjoint_equality_values_are_not_shadowed(self):
         """The exact pair phase 1 got wrong: contradictory, so both reachable."""

@@ -218,6 +218,12 @@ def match(
         tiers: {T1: {model, provider}, ...}
     """
     for rule in rules:
+        # A rule the operator disabled (console: 'Desativar esta regra') is
+        # dead by declaration, not by condition: it never fires, and it cannot
+        # stand in the way of the rows behind it. Only the literal boolean
+        # False disables — a missing or truthy field keeps the rule live.
+        if rule.get("enabled") is False:
+            continue
         when = rule.get("when", {})
         if _all_clauses_match(when, features, blocked_model):
             output = dict(rule.get("then", {}))
@@ -438,7 +444,9 @@ def lint(config: Dict[str, Any]) -> List[str]:
 
     Fail-closed: any error means the config is invalid.
     Checks:
-      - enabled present (skip if false)
+      - rule 'enabled' must be boolean when present; a disabled rule never
+        fires (match skips it) and never shadows or is shadowed, but is still
+        schema-validated — disabling must not be a hatch past the write gate
       - mandatory default present
       - rules have required fields (id, when, then)
       - rule ids unique
@@ -520,6 +528,13 @@ def lint(config: Dict[str, Any]) -> List[str]:
             errors.append(f"duplicate rule id '{rid}'")
         seen_ids.add(rid)
 
+        # enabled is a switch, and only the literal boolean False turns it off
+        # (match() tests `is False`). A truthy string would read as 'on' while
+        # looking like a setting someone intended — a typo with a face.
+        enabled_flag = rule.get("enabled")
+        if enabled_flag is not None and not isinstance(enabled_flag, bool):
+            errors.append(f"rule '{rid}': 'enabled' must be boolean")
+
         when = rule.get("when")
         if not when or not isinstance(when, dict):
             errors.append(f"rule '{rid}': missing or invalid 'when'")
@@ -596,6 +611,12 @@ def _shadowed_pairs(rules: List[Any]) -> Iterator[Dict[str, Any]]:
             if not isinstance(ri, dict) or not isinstance(rj, dict):
                 continue
             if not ri.get("id") or not rj.get("id"):
+                continue
+            # A disabled row cannot fire, so it cannot kill the row behind it
+            # and nothing can be dead because of it: skip it on BOTH sides.
+            # This is what makes the console's disable button resolve a shadow
+            # finding — the pair lint used to report must go quiet.
+            if ri.get("enabled") is False or rj.get("enabled") is False:
                 continue
             earlier_when = ri.get("when")
             later_when = rj.get("when")

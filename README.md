@@ -228,8 +228,10 @@ Hermes One panel
 
 V1 exposes live status, declarative policy, real breaker state and **Trace
 Route**, a deterministic Stage-0 dry-run. It never calls the classifier from
-the UI and never presents simulations as real delegation telemetry. It does
-not edit policy, reset breakers or dispatch agents.
+the UI and never presents simulations as real delegation telemetry. Policy
+edits go through the guarded /plan + /apply write path — rule position and
+state, tier destinations, never `when` conditions — and it never resets
+breakers or dispatches agents.
 
 Install the assets and generated user service:
 
