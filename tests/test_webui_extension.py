@@ -156,6 +156,48 @@ def test_console_html_declares_its_three_screens_and_their_surfaces():
     assert "<svg" not in html, "no canvas survives: both screens are read as lists"
 
 
+def test_console_transcribes_the_classifier_tier_anchors():
+    """The four group names on screen are the classifier's rubric, not a copy of it.
+
+    `T1`..`T4` mean nothing to someone opening this console, and that was the
+    operator's complaint: the screen named groups it never explained. The authority
+    already exists in the engine — ``classify.TIER_ANCHORS`` is the text the
+    classifier scores against — so the console transcribes it instead of minting a
+    second vocabulary that can drift from the one that routes.
+
+    Asserted against the module rather than against a copy of the phrases, so adding
+    a tier to the rubric, or rewording one, fails HERE until the screen follows. A
+    key outside the rubric is legal in ``tiers`` and the classifier can never pick
+    it, so the console needs a sentence for that case too.
+    """
+    import re
+    import sys
+
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from router import classify
+
+    html = (EXTENSION / "console.html").read_text(encoding="utf-8")
+    block = re.search(r"const TIER_MEANING = \{(.*?)\n\s*\};", html, re.S)
+    assert block, "the console must declare TIER_MEANING to explain the groups"
+
+    entries = dict(re.findall(r"(\w+): \{ label: '([^']+)'", block.group(1)))
+    assert set(entries) == set(classify.TIER_ANCHORS), (
+        "the screen's groups and the classifier's rubric must be the same set: "
+        f"screen={sorted(entries)} rubric={sorted(classify.TIER_ANCHORS)}"
+    )
+    for key in classify.TIER_ANCHORS:
+        assert entries[key], f"{key} needs a short label"
+        what = re.search(rf"{key}: \{{ label: '[^']+', what: '([^']+)'", block.group(1))
+        assert what and len(what.group(1)) > 30, (
+            f"{key} needs the rubric's own description, not just a label"
+        )
+
+    assert "TIER_UNKNOWN_WHAT" in html, (
+        "a tier key outside the rubric is legal, so the screen owes it a sentence"
+    )
+
+
 def test_extension_css_only_dresses_the_nav_button():
     """This stylesheet's whole job is the rail button.
 

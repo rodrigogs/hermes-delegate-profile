@@ -3553,6 +3553,24 @@
         return words;
       }
 
+      // ── What the four groups mean ───────────────────────────────────
+      // T1..T4 are the classifier's OWN rubric, not this screen's invention:
+      // classify.TIER_ANCHORS (router/classify.py) is the text the classifier
+      // scores against, so the console transcribes it rather than minting a
+      // second vocabulary that can drift from the one that actually routes. A
+      // key outside T1..T4 is legal in `tiers`, and the classifier can never
+      // choose it — only a rule can send work there — so that case says exactly
+      // that instead of guessing a meaning.
+      // tests/test_webui_extension.py asserts this map against the module, so
+      // rewording an anchor upstream fails there until this follows.
+      const TIER_MEANING = {
+        T1: { label: 'Trivial', what: 'uma edição mecânica, sem raciocínio: renomear, formatar, corrigir digitação' },
+        T2: { label: 'Simples', what: 'um arquivo bem especificado, padrão conhecido, código repetitivo' },
+        T3: { label: 'Moderado', what: 'várias etapas delimitadas, 2 a 5 arquivos, alguma decisão de desenho' },
+        T4: { label: 'Difícil', what: 'mexe em várias partes, bug de causa desconhecida, correção/concorrência/segurança, desenho novo' },
+      };
+      const TIER_UNKNOWN_WHAT = 'Este grupo não é um dos quatro que o classificador conhece, então o classificador nunca o escolhe. Só uma regra pode mandar tarefas para ele.';
+
       // ── Tier chains ─────────────────────────────────────────────────
       // A tier used to read as one model with a trailing list of names, which hid
       // the three things that decide whether the chain is any good: how it picks
@@ -3596,7 +3614,9 @@
 
           const block = el('div', 'tier');
           const head = el('div', 'tier-head');
-          head.append(el('span', 'tier-name', name));
+          const meaning = TIER_MEANING[name] || null;
+          head.append(el('span', 'tier-name',
+                          meaning ? `Grupo ${name} · ${meaning.label}` : `Grupo ${name} · sem descrição`));
           head.append(el('span', 'tier-fact', hops.length > 1 ? strategy.label : 'one elo, nothing to pick'));
           // Redundancy in the only terms that mean anything: distinct upstreams. A
           // count of vendors would call two OpenRouter resellers two rails.
@@ -3612,6 +3632,10 @@
             (words) => head.append(el('span', 'tier-fact', words)));
           const floorChips = requirementChips(t.requirements);
           block.append(head);
+          // The bare key was the complaint: "T1" tells an operator nothing about
+          // which work lands here. The rubric's own words go directly under the
+          // name, before any fact about the chain.
+          block.append(el('div', 'tier-fact', meaning ? meaning.what : TIER_UNKNOWN_WHAT));
           if (strategy.note) block.append(el('div', 'tier-fact', strategy.note));
           // A per-tier floor is a condition on every elo in the chain, so it is
           // said in the same chips a rule's own conditions use.
