@@ -156,6 +156,51 @@ def test_console_html_declares_its_three_screens_and_their_surfaces():
     assert "<svg" not in html, "no canvas survives: both screens are read as lists"
 
 
+def test_console_tabs_read_as_tasks_models_decisions():
+    """CA1 of the redesign spec: the three tabs are Tarefas / Modelos / Decisões.
+
+    The task list is the axis the whole redesign hangs on, so it is the FIRST
+    tab and the one born selected; ids stay ``tab-pipeline``/``tab-health``/
+    ``tab-routes`` because router-nav.js and the tests match by id. The sidebar
+    mirrors the same three words in the same order — one vocabulary, not two.
+    """
+    import re
+
+    html = (EXTENSION / "console.html").read_text(encoding="utf-8")
+    nav = re.search(r'<nav class="tabs".*?</nav>', html, re.S)
+    assert nav, "the console declares its tab list"
+
+    order = re.findall(r'id="(tab-\w+)".*?<span class="tab-name">([^<]+)</span>', nav.group(0), re.S)
+    assert [tab for tab, _ in order] == ["tab-pipeline", "tab-health", "tab-routes"], (
+        "Tarefas leads; ids keep their historic names"
+    )
+    assert [label for _, label in order] == ["Tarefas", "Modelos", "Decisões"]
+
+    # Born selected: the markup itself carries the state, not a script pass.
+    first = re.search(r'<button class="tab" id="tab-pipeline"[^>]*>', nav.group(0))
+    assert first and 'aria-selected="true"' in first.group(0), "Tarefas is the tab an operator lands on"
+    for other in ("tab-health", "tab-routes"):
+        line = re.search(rf'<button class="tab" id="{other}"[^>]*>', nav.group(0))
+        assert line and 'aria-selected="false"' in line.group(0)
+
+    panel = re.search(r'<section class="screen active" id="panel-pipeline"', html)
+    assert panel, "the Tarefas panel is born active"
+    assert re.search(r'<section class="screen" id="panel-health"', html), "Modelos starts inactive"
+
+    # The script state agrees with the markup it is born into.
+    assert re.search(r"tab: 'pipeline',", html), "state.tab starts on Tarefas"
+
+    # And the sidebar says the same three words in the same order. The source
+    # escapes non-ASCII, so compare the escaped spellings it actually ships.
+    nav_js = (EXTENSION / "router-nav.js").read_text(encoding="utf-8")
+    sections = re.search(r"for \(const \[tab, label\] of \[\[(.*?)\]\]\)", nav_js, re.S)
+    assert sections, "the sidebar declares its section list"
+    pairs = re.findall(r"\['(\w+)', '([^']+)'\]", sections.group(0))
+    assert pairs == [
+        ("pipeline", "Tarefas"), ("health", "Modelos"), ("routes", "Decis\\u00f5es"),
+    ], "the sidebar mirrors the tabs: same words, same order"
+
+
 def test_console_transcribes_the_classifier_tier_anchors():
     """The four group names on screen are the classifier's rubric, not a copy of it.
 

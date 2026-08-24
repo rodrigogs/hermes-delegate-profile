@@ -1079,16 +1079,16 @@
        label that takes the accent when selected, with a 20px accent bar on the
        bottom edge. Each carries the live state of what it leads to. -->
   <nav class="tabs" role="tablist" aria-label="Console sections">
-    <button class="tab" id="tab-health" role="tab" aria-selected="true" aria-controls="panel-health" data-tab="health" type="button">
-      <span class="tab-name">Health</span>
-      <span class="tab-state" id="stateHealth"><span class="count" id="countHealth" hidden></span><span class="dot"></span></span>
-    </button>
-    <button class="tab" id="tab-pipeline" role="tab" aria-selected="false" aria-controls="panel-pipeline" data-tab="pipeline" type="button">
-      <span class="tab-name">Pipeline</span>
+    <button class="tab" id="tab-pipeline" role="tab" aria-selected="true" aria-controls="panel-pipeline" data-tab="pipeline" type="button">
+      <span class="tab-name">Tarefas</span>
       <span class="tab-state" id="statePipeline"><span class="count" id="countPipeline" hidden></span><span class="dot"></span></span>
     </button>
+    <button class="tab" id="tab-health" role="tab" aria-selected="false" aria-controls="panel-health" data-tab="health" type="button">
+      <span class="tab-name">Modelos</span>
+      <span class="tab-state" id="stateHealth"><span class="count" id="countHealth" hidden></span><span class="dot"></span></span>
+    </button>
     <button class="tab" id="tab-routes" role="tab" aria-selected="false" aria-controls="panel-routes" data-tab="routes" type="button">
-      <span class="tab-name">Routes</span>
+      <span class="tab-name">Decisões</span>
       <span class="tab-state" id="stateRoutes"><span class="count" id="countRoutes" hidden></span><span class="dot"></span></span>
     </button>
   </nav>
@@ -1116,8 +1116,8 @@
       </div>
       <div id="warnings"></div>
 
-      <!-- ── Health: which models can this router reach right now ────── -->
-      <section class="screen active" id="panel-health" role="tabpanel" aria-labelledby="tab-health">
+      <!-- ── Modelos: which models can this router reach right now ────── -->
+      <section class="screen" id="panel-health" role="tabpanel" aria-labelledby="tab-health">
         <!-- The screen's one question, answered in its first line: the rollup of
              the model set, with the router's own three facts on the opposite
              margin. There is no second "Router" heading — the panel header
@@ -1136,8 +1136,8 @@
         </div>
       </section>
 
-      <!-- ── Pipeline: a decision sheet, read top to bottom ─────────── -->
-      <section class="screen" id="panel-pipeline" role="tabpanel" aria-labelledby="tab-pipeline">
+      <!-- ── Tarefas: a decision sheet, read top to bottom ─────────── -->
+      <section class="screen active" id="panel-pipeline" role="tabpanel" aria-labelledby="tab-pipeline">
         <!-- The probe is the first thing in the first viewport, because "where
              would MY task land?" is the question this screen exists for and the
              sheet below is the answer's audit trail. Backed by /explain (Stage 0,
@@ -1249,7 +1249,7 @@
         </div>
       </section>
 
-      <!-- ── Routes: what it actually decided ───────────────────────── -->
+      <!-- ── Decisões: what it actually decided ───────────────────────── -->
       <section class="screen" id="panel-routes" role="tabpanel" aria-labelledby="tab-routes">
         <div class="lede">
           <p class="lede-answer is-quiet" id="routesNote"></p>
@@ -1330,7 +1330,10 @@
         // Which tab is active. renderClock reprices the strip at a SELECTED
         // decision's hour only on Routes; every other screen's subject is now,
         // so the clock needs to know which subject it is serving.
-        tab: 'health',
+        // 'pipeline' (Tarefas): the first tab is the task list, the axis the
+        // redesign hangs everything else on — a task row answers "where does
+        // this kind of work go?", and the other two tabs answer follow-ups.
+        tab: 'pipeline',
         // THE INJECTED CLOCK. null means "use the wall clock", which only nowUtc()
         // ever does. Everything downstream takes the instant as a parameter, so a
         // rendering test pins an hour instead of passing at 05:59 and failing at

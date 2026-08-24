@@ -145,7 +145,7 @@
 
     const list = el('nav', 'router-sections');
     list.setAttribute('aria-label', 'Se\u00e7\u00f5es do console');
-    for (const [tab, label] of [['health', 'Sa\u00fade'], ['pipeline', 'Pol\u00edtica'], ['routes', 'Decis\u00f5es']]) {
+    for (const [tab, label] of [['pipeline', 'Tarefas'], ['health', 'Modelos'], ['routes', 'Decis\u00f5es']]) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'router-section';
