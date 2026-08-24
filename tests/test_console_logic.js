@@ -1528,16 +1528,19 @@ test('the decision sheet spends colour only where it is news', () => {
   };
   walk(dom.get('sheet'));
 
-  // Exactly the two refusals: the blocklist veto and the deny rule.
-  assert.deepEqual(painted.map((p) => p[0]).sort(), ['refuse', 'refuse'],
+  // The one refusal: the deny rule. There is no blocklist veto row here because
+  // this policy declares no manual ban, and the synthetic row is conditional on
+  // blocklist.manual_ban being non-empty (spec 1.3).
+  assert.deepEqual(painted.map((p) => p[0]).sort(), ['Recusar a tarefa'],
     `only refusals are coloured, got ${JSON.stringify(painted)}`);
   for (const [, colour] of painted) {
     assert.match(colour, /--bad-text/, 'and a refusal is the danger token');
   }
   // The classifier's destinations exist and are legible — they are just not paint.
   const words = JSON.stringify(dom.get('sheet'));
-  assert.match(words, /classifier/, 'the classifier is still named');
-  assert.match(words, /costs a model call/, 'and inference is still flagged, once');
+  assert.match(words, /classificador/, 'the classifier is still named');
+  assert.match(words, /gasta uma chamada de modelo a mais/,
+    'and inference is still flagged, once');
 });
 
 test('the ages are the report, so they never collapse on a phone', () => {
@@ -1717,19 +1720,20 @@ test('a predicate says which family it belongs to, because the three mean differ
   const context = plain(api.predicateChip('est_input_tokens', { gt: 400000 }));
   assert.equal(context.family, 'context');
   assert.equal(context.kind, 'context', 'the family is a WORD in the chip, so it survives being read aloud');
-  assert.equal(context.text, 'over 400,000 tokens');
+  assert.equal(context.text, 'o contexto estimado passa de 400.000 tokens');
   assert.doesNotMatch(context.text, /400000/, 'six digits are compared, not counted');
 
   assert.deepEqual(plain(api.predicateChip('needs_vision', { eq: true })),
-    { family: 'capability', kind: 'needs', text: 'vision' });
+    { family: 'capability', kind: 'needs', text: 'o pedido envolve imagem' });
   // A negative capability clause is a real predicate and must not read as the
   // positive one with a colour difference nobody can hear.
-  assert.equal(api.predicateChip('needs_vision', { eq: false }).text, 'no vision');
+  assert.equal(api.predicateChip('needs_vision', { eq: false }).text,
+    'o pedido não envolve imagem');
 
   const shape = plain(api.predicateChip('verb_class', { eq: 'hard' }));
   assert.equal(shape.family, 'shape');
   assert.equal(shape.kind, '', 'task shape is the default, so it spends no label');
-  assert.equal(shape.text, 'verb is hard');
+  assert.equal(shape.text, 'o verbo do pedido é difícil');
 });
 
 test('a rule row draws one chip per clause, so two conditions never merge into one', () => {
@@ -1754,7 +1758,8 @@ test('a rule row draws one chip per clause, so two conditions never merge into o
   // Each clause is its own list item, which is what keeps "has code" and "over
   // 400,000 tokens" from being announced as one string.
   const values = findAll(dom.get('sheet'), 'chip-val').map((n) => n.textContent);
-  assert.deepEqual(values, ['has code', 'over 400,000 tokens', 'vision']);
+  assert.deepEqual(values, ['tem código',
+    'o contexto estimado passa de 400.000 tokens', 'o pedido envolve imagem']);
 });
 
 test('a rule with no clauses keeps its sentence instead of an empty chip', () => {
@@ -1763,7 +1768,8 @@ test('a rule with no clauses keeps its sentence instead of an empty chip', () =>
   api.state.policy = { rules: [{ id: 'catch-all', when: {}, then: { model: 'T1' } }], tiers: { T1: {} }, default: {} };
   api.renderSheet();
   assert.equal(findAll(dom.get('sheet'), 'chip').length, 0, 'nothing is rendered for nothing');
-  assert.match(flat(dom.get('sheet')), /every task/, 'and "every task" is still said, as prose');
+  assert.match(flat(dom.get('sheet')), /vale para toda tarefa/,
+    'and "every task" is still said, as prose');
 });
 
 // ── a tier destination is a chip, not a mute span ────────────────────────
@@ -1800,7 +1806,8 @@ test('a tier destination is a chip that reveals the chain it points at', () => {
   const chips = findAll(dom.get('sheet'), 'step-tier');
   assert.equal(chips.length, 1, 'the tier destination is the chip; the deny row is not');
   const chip = chips[0];
-  assert.equal(chip.textContent, 'T3');
+  // The chip carries the group's meaning, not the bare key (spec 4.3).
+  assert.equal(chip.textContent, 'Grupo T3 · Moderado');
   assert.equal(chip.getAttribute('aria-expanded'), 'false');
   // Hover carries the compact form, primary first — the elos of the chain.
   assert.equal(chip.title, 'gpt-5.6-terra · deepseek-v4-pro · glm-5.3');
@@ -1845,7 +1852,7 @@ test('the tier chip expands a rule whose shared hops are the finding', () => {
   };
   api.renderSheet();
   const chip = findAll(dom.get('sheet'), 'step-tier')[0];
-  assert.equal(chip.textContent, 'T4');
+  assert.equal(chip.textContent, 'Grupo T4 · Difícil');
   chip._listeners.click();
   const text = flat(findAll(dom.get('sheet'), 'step-chain')[0]);
   assert.match(text, /gpt-5\.5/, 'T4\'s own primary');
@@ -1902,7 +1909,7 @@ test('hitsWindow names the counted window instead of the oldest decision age', (
   const t1 = Date.UTC(2026, 7, 2, 1, 51, 38) / 1000;
   api.state.routes = Array.from({ length: 40 }, (_, i) => ({ ts: t0 + (t1 - t0) * i / 39 }));
   assert.equal(api.hitsWindow(),
-    'counts over the last 40 decisions — de 01/08 22:12 a 02/08 01:51 UTC');
+    'contagens sobre as últimas 40 decisões — de 01/08 22:12 a 02/08 01:51 UTC');
   api.state.routes = [];
   assert.equal(api.hitsWindow(), '', 'no window, no claim');
 });
@@ -1978,7 +1985,9 @@ test('a window older than the policy demotes every count and says why', () => {
   // The counter REFUSES: no row carries a count or an amber "never fired" —
   // even though this corpus would have painted both rules amber before.
   const hits = findAll(dom.get('sheet'), 'step-hits');
-  assert.ok(hits.length >= 5, 'blocklist + 2 rules + classifier + fail-safe carry hits');
+  // 2 rules + classifier: no blocklist row, because this policy declares no
+  // manual ban (spec 1.3).
+  assert.ok(hits.length >= 3, '2 rules + classifier carry hits');
   assert.ok(hits.every((n) => n.textContent === 'sem dados nesta janela'),
     `every count demoted, got ${JSON.stringify(hits.map((n) => n.textContent))}`);
   assert.ok(hits.every((n) => /empty/.test(n.className)), 'all demoted rows carry the muted class');
@@ -1987,10 +1996,14 @@ test('a window older than the policy demotes every count and says why', () => {
   // The fail-safe % would have been computed from a window that predates the
   // rule; stale means the plain sentence, never a percentage about old data.
   assert.doesNotMatch(flat(dom.get('sheet')), /% of the decisions/);
-  // The window is still NAMED on the stage note — naming it is not the defect,
-  // claiming it is the present is.
-  assert.match(flat(dom.get('sheet')),
-    /counts over the last 40 decisions — de 01\/08 22:12 a 02\/08 01:51 UTC/);
+  // The window is still NAMED — by the disclosure banner asserted above, which
+  // spells out "de 01/08 22:12 a 02/08 01:51 UTC, não o presente". The single
+  // legend that used to sit above the list is gone on purpose: spec 3.3 moves the
+  // period into each row's own count, and 1.2 gives #pipelineNote a different job.
+  // PENDENTE (spec 3.3): the per-row phrasing does not carry the period yet — it
+  // says "sem dados nesta janela" where the spec asks for "sem histórico: o
+  // registro de decisões não cobre este período". Three passing tests pin the
+  // current strings, so absorbing the period is its own change.
   // The sheet wears the widening class.
   assert.ok(dom.get('sheet').classList.contains('stale'));
 });
@@ -2020,16 +2033,21 @@ test('a covering window keeps the amber "never fired" finding', () => {
     'a window covering the current policy shows no disclosure');
   const text = flat(dom.get('sheet'));
   assert.match(text, /2×/, 'a rule that fired keeps its count');
-  assert.match(text, /never fired/, 'a rule that existed and never fired keeps the finding');
+  assert.match(text, /nunca disparou/,
+    'a rule that existed and never fired keeps the finding');
   assert.doesNotMatch(text, /sem dados nesta janela/);
   assert.doesNotMatch(text, /% of the decisions/);
-  // All four zero-hit rows (blocklist, never-caught, classifier, fail-safe) are
-  // amber: the window covers the policy, so every zero is a genuine finding.
+  // Both zero-hit rows (never-caught, fail-safe) are amber: the window covers the
+  // policy, so every zero is a genuine finding. There is no blocklist row — this
+  // policy declares no manual ban (spec 1.3).
   const zeros = findAll(dom.get('sheet'), 'step-hits').filter((n) => /zero/.test(n.className));
-  assert.equal(zeros.length, 4, 'every zero-hit row stays an amber finding');
+  assert.equal(zeros.length, 2, 'every zero-hit row stays an amber finding');
   assert.equal(findAll(dom.get('sheet'), 'step-hits').filter((n) => /empty/.test(n.className)).length, 0);
   assert.ok(!dom.get('sheet').classList.contains('stale'));
-  assert.match(text, /counts over the last 2 decisions — 1h00min de 19\/08/);
+  // No disclosure banner here (the window covers the policy) and no global legend
+  // either — see the note in the stale-window test above. What this window earns is
+  // the per-row counts asserted at the top of this test: "2×" and "nunca disparou".
+  // PENDENTE (spec 3.3): neither of those names the period yet.
 });
 
 test('an empty log demotes every count and says nothing is recorded yet', () => {
@@ -2046,7 +2064,7 @@ test('an empty log demotes every count and says nothing is recorded yet', () => 
   assert.equal(dom.get('windowStale').hidden, false);
   assert.match(flat(dom.get('windowStale')), /Nenhuma decisão registrada ainda/);
   const words = findAll(dom.get('sheet'), 'step-hits').map((n) => n.textContent);
-  assert.ok(words.length >= 4, 'every rule-bearing row renders a hits cell');
+  assert.ok(words.length >= 2, 'every rule-bearing row renders a hits cell');
   assert.ok(words.every((w) => w === 'sem dados nesta janela'));
   assert.doesNotMatch(flat(dom.get('sheet')), /never fired/);
   // No window exists, so no window is claimed.
@@ -2892,6 +2910,9 @@ test('a rule the lint does not name gets no move button — disable is still the
 test('the blocklist row is not clickable in editing mode — no pointer for a row with no editor', () => {
   const { api, dom } = loadConsole();
   api.state.policy = rulePolicy();
+  // The synthetic row is conditional on a manual ban existing (spec 1.3), so the
+  // subject of this test has to be declared for the test to have a subject at all.
+  api.state.policy.blocklist = { manual_ban: ['glm-4.7'] };
   api.state.status = { validation_errors: [], error_targets: [] };
   api.setMode('editing');
   api.renderSheet();
@@ -2919,7 +2940,8 @@ test('a disabled rule renders marked off on the sheet', () => {
   // stub's classList only tracks add()/remove() calls, and asserting through
   // it would pass no matter what the console rendered.
   assert.match(dead.className, /\boff\b/, 'it wears the off state');
-  assert.match(flat(dead), /· off/, 'and the marker is visible in the row text');
+  assert.match(flat(dead), /\(desligada\)/,
+    'and the marker is visible in the row text');
   const live = dom.get('sheet').children.find((c) => c.dataset.ruleId === 'broad');
   assert.doesNotMatch(live.className, /\boff\b/, 'a live rule does not');
 });

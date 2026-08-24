@@ -1199,7 +1199,7 @@
              or nothing is recorded at all). Not a warning — a disclosure. -->
         <div class="window-stale" id="windowStale" hidden></div>
 
-        <div class="sheet" id="sheet"></div>
+        <ol class="sheet" id="sheet"></ol>
 
         <div class="group">
           <div class="group-head"><h2>Tier chains</h2><span class="screen-note" id="ladderNote"></span></div>
@@ -1458,60 +1458,178 @@
       // the chip renders as its own word, so the distinction survives being read
       // aloud rather than living in a border colour.
       const FIELD = {
-        verb_class:       { noun: 'verb' },
-        lang:             { noun: 'language' },
-        keywords:         { noun: 'keywords' },
-        has_code:         { yes: 'has code', no: 'has no code' },
-        has_stacktrace:   { yes: 'has a stacktrace', no: 'has no stacktrace' },
-        size_lines:       { unit: 'lines' },
-        num_files:        { unit: 'files' },
-        num_requirements: { unit: 'requirements' },
-        char_len:         { unit: 'characters' },
-        // Context: how much the turn needs held, in tokens. Six-digit numbers, so
-        // they take the thousands separator the facts strip already uses — 400000
-        // has to be counted digit by digit against a 272,000 window.
-        est_input_tokens: { noun: 'estimated context', unit: 'tokens', num: true, family: 'context' },
-        // Capability: what the model must be able to do. Phrased as the capability
-        // itself, because the chip's own NEEDS label supplies the verb.
-        needs_vision:            { yes: 'vision', no: 'no vision', family: 'capability' },
-        needs_tools:             { yes: 'tool calls', no: 'no tool calls', family: 'capability' },
-        needs_structured_output: { yes: 'structured output', no: 'no structured output', family: 'capability' },
-        attachment_kinds:        { noun: 'attachments', family: 'capability' },
+        verb_class:       { family: 'shape' },
+        lang:             { family: 'shape' },
+        keywords:         { family: 'shape' },
+        has_code:         { family: 'shape' },
+        has_stacktrace:   { family: 'shape' },
+        size_lines:       { family: 'shape' },
+        num_files:        { family: 'shape' },
+        num_requirements: { family: 'shape' },
+        char_len:         { family: 'shape' },
+        // Context: how much the turn needs held, in tokens. Six digits, so
+        // they take the separator the language of this screen reads by.
+        est_input_tokens: { family: 'context' },
+        // Capability: what the model must be able to do.
+        needs_vision:            { family: 'capability' },
+        needs_tools:             { family: 'capability' },
+        needs_structured_output: { family: 'capability' },
+        attachment_kinds:        { family: 'capability' },
+        // Injected clock fields: legal in `when`, produced by the CALLER, not
+        // by signals.extract — the gloss (condNote) says what that costs.
+        utc_hour:     { family: 'shape', injected: true },
+        utc_weekday:  { family: 'shape', injected: true },
       };
-      const AMOUNT = { gt: 'over', gte: 'at least', lt: 'under', lte: 'at most' };
+      const DAY_PT = ['segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado', 'domingo'];
+      const QUOTED = (v) => `“${String(v)}”`;
+      // A count is read in the language of the screen: 400.000, não 400,000.
+      const fmtPt = (n) => {
+        const value = Number(n);
+        return Number.isFinite(value) ? value.toLocaleString('pt-BR') : say(n);
+      };
+      const asList = (raw) => [].concat(raw);
+      const amountPt = (unit, op, value) => {
+        const v = fmtPt(value);
+        switch (op) {
+          case 'gt':  return `mais de ${v} ${unit}`;
+          case 'gte': return `${v} ${unit} ou mais`;
+          case 'lt':  return `menos de ${v} ${unit}`;
+          case 'lte': return `no máximo ${v} ${unit}`;
+          case 'eq':  return `exatamente ${v} ${unit}`;
+          default:    return `${op} ${v} ${unit}`;
+        }
+      };
+      const boolPt = (yes, no, op, value) => ((op === 'eq') === (value === true) ? yes : no);
 
+      // The condition translation is the spec §4.4 table, closed over the
+      // fields router/signals.py really produces. Fragments of one field and
+      // across fields join by " e ", because that is how the sheet reads
+      // them: one sentence about what catches the task.
       function phraseCondition(field, condition) {
-        const spec = FIELD[field] || {};
-        const noun = spec.noun || field;
+        const c = condition && typeof condition === 'object' ? condition : {};
+        const ops = Object.keys(c);
         const parts = [];
-        Object.keys(condition || {}).forEach((op) => {
-          const raw = condition[op];
-          // A token count is read against another token count, so it is written
-          // the way this console writes every other one.
-          const value = spec.num ? fmt(raw) : raw;
-          if (spec.yes && (op === 'eq' || op === 'ne')) {
-            // A boolean signal reads as presence, never as "= true".
-            const affirmative = (op === 'eq') === (raw === true);
-            parts.push(affirmative ? spec.yes : spec.no);
-            return;
+        const push = (s) => { if (s) parts.push(s); };
+        switch (field) {
+          case 'has_code':
+            ops.forEach((op) => push(boolPt('tem código', 'não tem código', op, c[op])));
+            break;
+          case 'has_stacktrace':
+            ops.forEach((op) => push(boolPt('tem rastro de erro colado', 'não tem rastro de erro colado', op, c[op])));
+            break;
+          case 'needs_vision':
+            ops.forEach((op) => push(boolPt('o pedido envolve imagem', 'o pedido não envolve imagem', op, c[op])));
+            break;
+          case 'needs_tools':
+            ops.forEach((op) => push(boolPt('o pedido exige uso de ferramentas', 'não exige uso de ferramentas', op, c[op])));
+            break;
+          case 'needs_structured_output':
+            ops.forEach((op) => push(boolPt('o pedido exige resposta em formato fixo', 'não exige resposta em formato fixo', op, c[op])));
+            break;
+          case 'size_lines':
+            ops.forEach((op) => push(amountPt('linhas', op, c[op])));
+            break;
+          case 'num_files':
+            ops.forEach((op) => push(amountPt('arquivos', op, c[op])));
+            break;
+          case 'num_requirements':
+            ops.forEach((op) => push(`${amountPt('requisitos', op, c[op])} no pedido`));
+            break;
+          case 'char_len':
+            ops.forEach((op) => {
+              const v = fmtPt(c[op]);
+              if (op === 'gt') push(`o pedido tem mais de ${v} caracteres`);
+              else if (op === 'gte') push(`o pedido tem ${v} caracteres ou mais`);
+              else if (op === 'lt') push(`o pedido tem menos de ${v} caracteres`);
+              else if (op === 'lte') push(`o pedido tem no máximo ${v} caracteres`);
+              else if (op === 'eq') push(`o pedido tem exatamente ${v} caracteres`);
+              else push(`o pedido ${op} ${v} caracteres`);
+            });
+            break;
+          case 'est_input_tokens':
+            ops.forEach((op) => {
+              const v = fmtPt(c[op]);
+              if (op === 'gt') push(`o contexto estimado passa de ${v} tokens`);
+              else if (op === 'lt') push(`o contexto estimado fica abaixo de ${v} tokens`);
+              else if (op === 'gte') push(`${v} tokens ou mais de contexto estimado`);
+              else if (op === 'lte') push(`no máximo ${v} tokens de contexto estimado`);
+              else if (op === 'eq') push(`exatamente ${v} tokens de contexto estimado`);
+              else push(`o contexto estimado ${op} ${v} tokens`);
+            });
+            break;
+          case 'verb_class':
+            ops.forEach((op) => {
+              const raw = c[op];
+              const word = String(raw);
+              if (op === 'eq' && word === 'unknown') { push('o verbo do pedido não foi reconhecido'); return; }
+              const known = { trivial: 'mecânico', hard: 'difícil' }[word] || word;
+              if (op === 'eq') push(`o verbo do pedido é ${known}`);
+              else if (op === 'ne') push(`o verbo do pedido não é ${known}`);
+              else if (op === 'in') push(`o verbo do pedido é ${asList(raw).join(' ou ')}`);
+              else if (op === 'nin') push(`o verbo do pedido não é ${asList(raw).join(' nem ')}`);
+              else if (op === 'matches') push(`o verbo do pedido casa com a expressão ${String(raw)}`);
+              else push(`o verbo do pedido ${op} ${String(raw)}`);
+            });
+            break;
+          case 'keywords':
+            ops.forEach((op) => {
+              const raw = c[op];
+              if (op === 'contains') push(`o texto contém ${QUOTED(raw)}`);
+              else if (op === 'in') push(`o texto tem alguma das palavras ${asList(raw).map(QUOTED).join(', ')}`);
+              else if (op === 'nin') push(`o texto não tem nenhuma das palavras ${asList(raw).map(QUOTED).join(', ')}`);
+              else if (op === 'starts_with') push(`o texto começa com ${QUOTED(raw)}`);
+              else if (op === 'ends_with') push(`o texto termina com ${QUOTED(raw)}`);
+              else push(`o texto ${op} ${String(raw)}`);
+            });
+            break;
+          case 'lang':
+            ops.forEach((op) => {
+              if (op === 'eq') push(`a linguagem detectada é ${String(c[op])}`);
+              else if (op === 'ne') push(`a linguagem detectada não é ${String(c[op])}`);
+              else if (op === 'in') push(`a linguagem detectada é ${asList(c[op]).join(' ou ')}`);
+              else push(`a linguagem detectada ${op} ${String(c[op])}`);
+            });
+            break;
+          case 'attachment_kinds':
+            ops.forEach((op) => {
+              if (op === 'contains') push(`há anexo do tipo ${String(c[op])}`);
+              else if (op === 'in') push(`há anexo de algum destes tipos: ${asList(c[op]).join(', ')}`);
+              else push(`anexos ${op} ${String(c[op])}`);
+            });
+            break;
+          case 'utc_hour':
+            // The window is written against the real half-open bounds:
+            // gte 6 + lt 10 is 06:00 through 09:59 UTC (router.yaml's own
+            // comment). A loose operator set falls through verbatim.
+            if (c.gte !== undefined && c.lt !== undefined) push(`entre ${c.gte}:00 e ${Number(c.lt) - 1}:59 UTC`);
+            else if (c.gte !== undefined) push(`a partir de ${c.gte}:00 UTC`);
+            else if (c.lt !== undefined) push(`antes de ${c.lt}:00 UTC`);
+            else if (c.eq !== undefined) push(`na hora ${c.eq}:00 UTC`);
+            else ops.forEach((op) => push(`a hora UTC ${op} ${String(c[op])}`));
+            break;
+          case 'utc_weekday': {
+            if (c.in !== undefined) {
+              const days = asList(c.in).map(Number);
+              const weekdays = days.length === 5 && [0, 1, 2, 3, 4].every((d) => days.includes(d));
+              const weekend = days.length === 2 && days.includes(5) && days.includes(6);
+              if (weekdays) push('de segunda a sexta');
+              else if (weekend) push('no fim de semana');
+              else push(`em ${days.map((d) => DAY_PT[d] || String(d)).join(', ')}`);
+            } else if (c.eq !== undefined) {
+              push(`na ${DAY_PT[Number(c.eq)] || String(c.eq)}`);
+            } else {
+              ops.forEach((op) => push(`o dia da semana ${op} ${String(c[op])}`));
+            }
+            break;
           }
-          if (spec.unit && AMOUNT[op]) { parts.push(`${AMOUNT[op]} ${value} ${spec.unit}`); return; }
-          switch (op) {
-            case 'eq': parts.push(`${noun} is ${value}`); break;
-            case 'ne': parts.push(`${noun} is not ${value}`); break;
-            case 'in': parts.push(`${noun} is ${[].concat(raw).join(' or ')}`); break;
-            case 'nin': parts.push(`${noun} is not ${[].concat(raw).join(' or ')}`); break;
-            case 'contains': parts.push(`${noun} include “${value}”`); break;
-            case 'starts_with': parts.push(`${noun} start with “${value}”`); break;
-            case 'ends_with': parts.push(`${noun} end with “${value}”`); break;
-            case 'matches': parts.push(`${noun} matches /${value}/`); break;
-            default:
-              // An operator this console has not learned must still render — a
-              // dropped condition would misrepresent why the rule fires.
-              parts.push(`${noun} ${op} ${value}`);
-          }
-        });
-        return parts.join(' and ');
+          default:
+            // A field this console has not learned must still render — a
+            // dropped condition would misrepresent why the rule fires. The
+            // gloss (condNote) marks it as a name the router does not
+            // produce, so it never reads as a working condition.
+            ops.forEach((op) => push(`${field} ${op} ${String(c[op])}`));
+        }
+        return parts.join(' e ');
       }
 
       // Which family a predicate belongs to. Unknown fields are task shape: that
@@ -1557,12 +1675,85 @@
         }).filter(Boolean);
       }
 
-      function phraseWhen(when) {
-        if (!when || typeof when !== 'object') return 'every task';
+      const whenWords = (when) => {
+        if (!when || typeof when !== 'object') return 'vale para toda tarefa';
         const clauses = Object.keys(when)
           .map((field) => phraseCondition(field, when[field]))
           .filter(Boolean);
-        return clauses.length ? clauses.join(', ') : 'every task';
+        return clauses.length ? `quando ${clauses.join(' e ')}` : 'vale para toda tarefa';
+      };
+      // phraseWhen keeps the EXACT shape the tests pin: clauses joined by
+      // ' e ' with no prefix — the second line of a rule row. whenWords is
+      // the same assembly with the sheet's "quando" prefix.
+      function phraseWhen(when) {
+        if (!when || typeof when !== 'object') return 'vale para toda tarefa';
+        const clauses = Object.keys(when)
+          .map((field) => phraseCondition(field, when[field]))
+          .filter(Boolean);
+        return clauses.length ? clauses.join(' e ') : 'vale para toda tarefa';
+      }
+
+      // The sheet's rule TITLE is generated from `when` (spec §1.3), never the
+      // id: a compact noun phrase naming the DOMINANT signal, in the §4.4
+      // vocabulary. The second line carries the exact clauses, so the title
+      // may summarise — it must never contradict.
+      const TITLE_BY_KEYWORD = { audit: 'Pedido de auditoria', review: 'Pedido de revisão' };
+      function ruleTitle(when) {
+        const w = (when && typeof when === 'object') ? when : {};
+        const eqTrue = (v) => v && typeof v === 'object' && v.eq === true;
+        if (eqTrue(w.needs_vision)) return 'Pedido com imagem';
+        if (w.keywords && typeof w.keywords === 'object' && w.keywords.contains !== undefined) {
+          const known = TITLE_BY_KEYWORD[String(w.keywords.contains).toLowerCase()];
+          if (known) return known;
+          return `Pedido com a palavra ${QUOTED(w.keywords.contains)}`;
+        }
+        if (w.verb_class && typeof w.verb_class === 'object' && w.verb_class.eq !== undefined) {
+          if (w.verb_class.eq === 'trivial') return 'Edição mecânica pequena';
+          if (w.verb_class.eq === 'hard') return 'Verbo de trabalho difícil';
+          if (w.verb_class.eq === 'unknown') return 'Verbo não reconhecido';
+        }
+        if (w.est_input_tokens && typeof w.est_input_tokens === 'object') return 'Leitura de contexto enorme';
+        if (w.num_files && typeof w.num_files === 'object' && w.num_files.gte !== undefined) {
+          return Number(w.num_files.gte) >= 3 ? 'Mudança em vários arquivos'
+            : `Mudança em ${w.num_files.gte} arquivos ou mais`;
+        }
+        if (eqTrue(w.has_code)) return 'Trabalho de código padrão';
+        const base = phraseWhen(w);
+        return base === 'vale para toda tarefa' ? 'Toda tarefa'
+          : base.charAt(0).toUpperCase() + base.slice(1);
+      }
+
+      // Per-rule footnotes (spec §4.4): injected clock fields and unknown
+      // condition names each carry their consequence, on the row that uses
+      // them — never in a glossary the operator has to go find.
+      function condNotes(when) {
+        const notes = [];
+        const fields = Object.keys(when || {});
+        if (fields.some((f) => FIELD[f] && FIELD[f].injected)) {
+          notes.push('Esta condição só casa quando quem chama o roteador informa a hora. Sem hora informada, esta regra fica inerte — não dispara e não dá erro.');
+        }
+        if (fields.some((f) => !FIELD[f])) {
+          notes.push('⚠ Este nome de condição não é um sinal que o roteador produz. A regra nunca vai disparar.');
+        }
+        return notes;
+      }
+
+      // The sheet's one destination vocabulary (spec §4.3): five closed
+      // prefixes. Every line with a destination renders one of them.
+      function destWords(then, tiers) {
+        const t = then && typeof then === 'object' ? then : {};
+        const tierNames = tiers && typeof tiers === 'object' ? Object.keys(tiers) : [];
+        const model = t.model == null ? null : String(t.model);
+        if (t.deny === true) return { text: 'Recusar a tarefa', kind: 'refuse' };
+        if (t.action === 'classify') return { text: 'Perguntar ao classificador', kind: 'classify' };
+        if (model == null) return { text: '⚠ Sem destino. O lint recusa este arquivo; nada pode ser salvo até corrigir.', kind: 'empty' };
+        if (tierNames.indexOf(model) >= 0) {
+          const m = TIER_MEANING[model];
+          return { text: `Grupo ${model} · ${m ? m.label : 'sem descrição'}`, kind: 'tier' };
+        }
+        if (/^T\d+$/.test(model)) return { text: `⚠ Grupo ${model} — não existe`, kind: 'missing' };
+        const provider = t.provider == null ? '?' : String(t.provider);
+        return { text: `${model} @ ${provider} — modelo fixo, sem reserva`, kind: 'fixed' };
       }
 
       // ── elos: how they are billed, how big they are, whose rail they use ──
@@ -3177,14 +3368,14 @@
         const routes = state.routes || [];
         if (!routes.length) return '';
         const span = windowSpan(routes);
-        return `counts over the last ${routes.length} decisions — ${span}`;
+        return `contagens sobre as últimas ${routes.length} decisões — ${span}`;
       }
 
       function renderSheet() {
         const box = $('sheet');
         clear(box);
         const policy = state.policy;
-        if (!policy) { box.append(el('p', 'nothing', absence('Policy unavailable.'))); return; }
+        if (!policy) { box.append(el('p', 'nothing', absence('Este serviço do roteador não tem lista de regras.'))); return; }
         const { byRule, byCause, total } = ruleHits();
         const rules = Array.isArray(policy.rules) ? policy.rules : [];
         const editable = state.mode === 'editing';
@@ -3231,62 +3422,39 @@
           }
         }
 
-        const stage = (title, cls, note) => {
-          const s = el('div', `stage${cls ? ` ${cls}` : ''}`);
-          s.append(el('span', '', title));
-          if (note) s.append(el('span', 'stage-note', note));
-          return s;
-        };
-
-        const line = (opts) => {
-          const step = el('div', `step${opts.editable ? ' editable' : ''}${opts.cold ? ' cold' : ''}${opts.off ? ' off' : ''}`);
-          // Mark the probe winner HERE rather than after the fact. It used to be applied
-          // in probe(), so clicking Edit or Refresh rebuilt the sheet with no .hit while
-          // #probeResult still named the winning rule — the verdict and the list
-          // disagreed until the operator probed again.
-          // The lint target gets the SAME mark: it is the answer to a different
-          // question ("which row is broken?"), and the accent means "the row you
-          // asked about" either way.
+        // The §1.3 list: manual bans (only when they exist), then every rule in
+        // file order, then the two synthetic rows. Order IS the semantics —
+        // first match wins — so the ordinals are the reading.
+        const row = (opts) => {
+          const item = el('li', `step${opts.editable ? ' editable' : ''}${opts.off ? ' off' : ''}`);
           if (opts.id && !opts.synthetic
               && (String(opts.id) === state.probeRule || String(opts.id) === state.lintRule)) {
-            step.classList.add('hit');
-            step.setAttribute('aria-current', 'true');
+            item.classList.add('hit');
+            item.setAttribute('aria-current', 'true');
           }
-          // The dry run names the rule that won; without this the operator has to
-          // read a sentence and then find that rule by eye in the list below it.
-          // Kong and LaunchDarkly both mark the winning rule in place for the same
-          // reason: first-match-wins is only legible if you can see WHERE it stopped.
-          // Synthetic rows (default / classifier / fail-safe / blocklist / the runtime
-          // note) share the id namespace with real rule ids, and all of those names are
-          // lint-clean for a rule. Without a prefix a rule named "default" marked two
-          // rows — one of which never matched — and emitted two aria-current. Real ids
-          // are matched against String(matched_rule_id); synthetic ones can never
-          // collide because a policy id cannot start with the marker.
+          // Real rule ids are matched against String(matched_rule_id); synthetic
+          // rows share the id namespace, so they carry the marker prefix that a
+          // policy id cannot start with (see findRuleRow).
           if (opts.id) {
-            step.dataset.ruleId = opts.synthetic ? `__${opts.id}` : String(opts.id);
+            item.dataset.ruleId = opts.synthetic ? `__${opts.id}` : String(opts.id);
           }
-          step.append(el('div', 'step-ord', opts.ord || ''));
+          if (opts.title) item.title = opts.title;
+          item.append(el('span', 'step-ord', opts.ord || ''));
           const what = el('div', 'step-what');
-          const idLine = el('div', 'step-id', opts.id);
-          // A rule the operator switched off is still in the policy file but is
-          // not routing; the id keeps a mute marker so the row cannot read as
-          // live policy while it dims below.
-          if (opts.off) idLine.append(el('span', 'step-off', ' · off'));
+          const idLine = el('div', 'step-id', opts.titleText || opts.id);
+          if (opts.off) idLine.append(el('span', 'step-off', ' (desligada)'));
+          if (opts.id && !opts.synthetic && opts.id !== opts.titleText) {
+            idLine.append(el('span', 'step-off', ` — ${opts.id}`));
+          }
           what.append(idLine);
-          // A rule's conditions are a LIST of independent clauses, so they are
-          // marked up as one: a real <ul> keeps them separately announced instead
-          // of running together into "has codeover 400,000 tokens" — the same trap
-          // the probe verdict fell into when a flex gap stood in for a space.
           if (opts.chips && opts.chips.length) what.append(chipList(opts.chips));
           else if (opts.when) what.append(el('div', 'step-when', opts.when));
-          step.append(what);
+          // Per-rule footnotes (§4.4): injected clock fields and unknown
+          // condition names say their consequence on the row itself.
+          (opts.notes || []).forEach((note) => what.append(el('div', 'step-when', note)));
+          item.append(what);
           const to = el('div', 'step-to');
           const dest = el('div', 'step-dest');
-          // A destination that names a tier becomes a CHIP: a button that
-          // reveals, in place, the chain "T3" points at — the same list the
-          // Tier chains group draws. Hover carries the compact form (the elos,
-          // primary first); the click is the primary channel, because a hover
-          // definition is invisible to touch and to a keyboard.
           let expansion = null;
           if (opts.target) {
             dest.append(el('span', 'step-arrow', '→'));
@@ -3301,7 +3469,6 @@
               expansion.hidden = true;
               let open = false;
               chip.addEventListener('click', (event) => {
-                // The row's own click (edit mode) must not fire for the chip.
                 if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
                 open = !open;
                 chip.setAttribute('aria-expanded', String(open));
@@ -3309,12 +3476,8 @@
                   clear(expansion);
                   const strategy = strategyWords(tier.fallback_strategy,
                     { pinPrimary: declaredPin(tier.pin_primary), when: chainWhen });
-                  // The HOW is part of what a tier destination means: "tried in
-                  // order" and "tried in a random order" are different claims
-                  // about what the rule does. The label is the ladder's own word,
-                  // so the chip reads exactly like the Tier chains group.
                   const how = el('div', 'step-chain-note',
-                    hops.length > 1 ? strategy.label : 'one elo, nothing to pick');
+                    hops.length > 1 ? strategy.label : 'uma tentativa só, nada a escolher');
                   if (strategy.note) how.append(el('span', '', ` — ${strategy.note}`));
                   expansion.append(how);
                   expansion.append(chainList(hops, {
@@ -3335,125 +3498,117 @@
           to.append(dest);
           if (opts.hits !== undefined) {
             // A zero is a FINDING only when the rule could have fired in the
-            // counted window. On a stale sheet the counter refuses to count
-            // rules newer than the log, so every count becomes a muted
+            // counted window. On a stale sheet every count becomes a muted
             // disclosure about the DATA rather than an amber verdict on the rule.
             const cls = opts.stale ? ' empty' : (opts.hits === 0 ? ' zero' : '');
             const words = opts.stale ? 'sem dados nesta janela'
-              : (opts.hits === 0 ? 'never fired' : `${opts.hits}×`);
+              : (opts.hits === 0 ? 'nunca disparou' : `disparou ${opts.hits}×`);
             const h = el('span', `step-hits${cls}`, words);
             to.append(h);
           }
-          step.append(to);
-          // The revealed chain lands under the whole row, not inside the
-          // destination column — it spans the sheet the way the sheet reads.
-          if (expansion) step.append(expansion);
-          if (opts.onPick) step.addEventListener('click', opts.onPick);
-          return step;
+          item.append(to);
+          if (expansion) item.append(expansion);
+          // The shadowed-rule fix path (§3.3): the finding names the earlier
+          // row that swallows this one, and the ONE move that resolves the
+          // class without touching `when` — jump and open its editor.
+          if (opts.shadow) {
+            const warn = el('div', 'step-when');
+            warn.append(el('span', '', `Sem efeito: a regra ${opts.shadow.earlier_index + 1} acima pega tudo que esta pegaria, e a primeira que casa decide. Esta nunca vai disparar.`));
+            const jump = el('button', 'btn', `Ir para a regra ${opts.shadow.earlier_index + 1}`);
+            jump.type = 'button';
+            jump.addEventListener('click', (event) => {
+              if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+              showLintTarget(opts.shadow);
+            });
+            warn.append(jump);
+            item.append(warn);
+          }
+          if (opts.onPick) item.addEventListener('click', opts.onPick);
+          return item;
         };
 
-        // Stage 0 — deterministic. The product's core principle is that cheap,
-        // auditable rules decide before any inference happens.
-        box.append(stage('Stage 0 · deterministic', '', hitsWindow()));
-        // COLOUR BUDGET FOR THIS SCREEN. Only a REFUSAL is coloured in the
-        // destination column. The classifier used to be coloured too, which put
-        // five cyan destinations in one viewport against one gold underline, one
-        // amber finding and two reds — four hues competing, which is exactly what
-        // the host's guide forbids ("one accent at a time; semantic colours for
-        // semantic state"). And "goes to the classifier" is not a condition, it is
-        // a KIND of destination: it is already named once, on the Stage 1 heading
-        // that says asking a model costs a model call. Naming it again on every
-        // line that reaches it spends the loudest channel on the least news.
-        // What survives: --bad for a refusal (the router declining IS a
-        // condition), --warn for a rule that never fired while it EXISTED for
-        // the counted window (a stale sheet demotes that to the muted
-        // "sem dados nesta janela", because a rule newer than the log cannot
-        // have fired), --info on the single Stage 1 heading, and the accent on
-        // the line a probe matched.
-        // The blocklist has no structured editor — its rows are lists of
-        // models managed in router.yaml or the JSON editor — so the line is
-        // NOT editable: a pointer that opens the read-only inspector is a
-        // promise of an edit it cannot perform. It stays on the sheet as an
-        // informational row (its vetoes are counted and refused in red).
-        box.append(line({
-          ord: '', id: 'blocklist', synthetic: true,
-          when: 'the requested model is banned or cooling down',
-          target: 'refuse', targetColor: 'var(--bad-text)',
-          hits: byCause.blocklist_veto || 0,
-          stale,
-          editable: false,
-        }));
+        const manualBans = (policy.blocklist && Array.isArray(policy.blocklist.manual_ban))
+          ? policy.blocklist.manual_ban : [];
+        let ord = 0;
+        // 1 · Bloqueios manuais — a synthetic row that exists only when the
+        // list does (§1.3). Render nothing for nothing (DESIGN.md §2.1): an
+        // empty ban list drawn as a numbered row would read as a policy step.
+        if (manualBans.length) {
+          ord += 1;
+          box.append(row({
+            ord: `${ord}`, id: 'blocklist', synthetic: true,
+            titleText: 'Bloqueios manuais',
+            when: 'o modelo pedido está bloqueado ou em cooldown',
+            target: 'Recusar a tarefa', targetColor: 'var(--bad-text)',
+            hits: byCause.blocklist_veto || 0,
+            stale,
+            editable: false,
+            title: 'blocklist.manual_ban',
+          }));
+        }
         rules.forEach((r, i) => {
           const then = r.then || {};
-          const target = then.deny ? 'refuse' : (then.action === 'classify' ? 'classifier' : (then.model || '—'));
-          box.append(line({
-            ord: String(i + 1),
-            id: r.id != null ? String(r.id) : `rule ${i + 1}`,
-            // Chips when there are clauses; the prose form when there are none,
-            // because "every task" is a sentence about the rule, not a condition
-            // chip an operator can compare against another rule's.
+          const dest = destWords(then, tierIndex);
+          ord += 1;
+          box.append(row({
+            ord: `${ord}`,
+            id: r.id != null ? String(r.id) : `regra ${i + 1}`,
+            titleText: ruleTitle(r.when),
             chips: predicateChips(r.when),
             when: phraseWhen(r.when),
-            target,
-            // A destination that names a tier renders as the expandable chip,
-            // never for a refusal or a classifier hop — those are not chains.
-            tierDest: (!then.deny && then.action !== 'classify') ? tierDestOf(then.model) : null,
-            targetColor: then.deny ? 'var(--bad-text)' : '',
+            notes: condNotes(r.when),
+            target: dest.text,
+            tierDest: dest.kind === 'tier' ? tierDestOf(then.model) : null,
+            targetColor: dest.kind === 'refuse' || dest.kind === 'missing' ? 'var(--bad-text)' : '',
             hits: byRule[r.id] || 0,
             stale,
             editable,
             off: r.enabled === false,
+            shadow: shadowTargetFor(i),
             onPick: editable ? () => pickBind({ id: `rule:${r.id}`, name: String(r.id), bind: 'rule', ruleIndex: i }) : null,
           }));
         });
         const def = policy.default || {};
-        box.append(line({
-          ord: '·', id: 'default', synthetic: true,
-          when: 'nothing above matched',
-          target: def.action === 'classify' ? 'classifier' : (def.model || '—'),
-          tierDest: def.action !== 'classify' ? tierDestOf(def.model) : null,
-          targetColor: '',
+        ord += 1;
+        const defDest = destWords(def, tierIndex);
+        box.append(row({
+          ord: `${ord}`, id: 'default', synthetic: true,
+          titleText: 'Quando nenhuma regra casa',
+          target: defDest.text,
+          tierDest: defDest.kind === 'tier' ? tierDestOf(def.model) : null,
+          targetColor: defDest.kind === 'refuse' || defDest.kind === 'missing' ? 'var(--bad-text)' : '',
+          notes: ['Esta é a única rota que gasta uma chamada de modelo a mais.'],
           editable,
           onPick: editable ? () => pickBind({ id: 'default', name: 'default', bind: 'default' }) : null,
         }));
-
-        // Stage 1 — inference. Marked apart because it costs a model call.
-        box.append(stage('Stage 1 · asks a model', 'inference', 'costs a model call'));
-        const cls = (state.status && state.status.classifier) || policy.classifier || {};
-        box.append(line({
-          ord: '', id: 'classifier', synthetic: true,
-          when: `${cls.model || '—'} picks a tier`,
-          target: 'a tier', targetColor: '',
-          hits: byCause.classifier || 0,
-          stale,
-          editable,
-          onPick: editable ? () => pickBind({ id: 'classifier', name: 'classifier', bind: 'classifier' }) : null,
-        }));
         const fs = policy.fail_safe || {};
+        ord += 1;
+        const fsDest = destWords(fs, tierIndex);
         const fsHits = byCause.fail_safe_strong || 0;
-        box.append(line({
-          ord: '', id: 'fail-safe', synthetic: true,
-          when: !stale && fsHits && total
-            ? `when the classifier cannot answer — ${Math.round(100 * fsHits / total)}% of the decisions counted here did`
-            : 'when the classifier cannot answer',
-          // The fail-safe's target is a model it DID route to, so it is not
-          // painted as a refusal. Measured against the live log: 17 of 21
-          // off-rule decisions named a model they routed to successfully, so
-          // colouring this red called 81% of them failures. The line's own words
-          // carry the caveat ("when the classifier cannot answer").
-          target: fs.model || '—', targetColor: '',
+        box.append(row({
+          ord: `${ord}`, id: 'fail_safe', synthetic: true,
+          titleText: 'Quando tudo falha',
+          when: fs.model ? null : 'Não há último recurso configurado. Se todas as filas falharem, a tarefa falha.',
+          notes: fs.model
+            ? ['Esta fila não passa pelos grupos. É a última coisa que o roteador tenta.'] : [],
+          target: fs.model ? fsDest.text : null,
+          tierDest: null,
+          targetColor: '',
           hits: fsHits,
           stale,
           editable,
-          onPick: editable ? () => pickBind({ id: 'fail_safe', name: 'fail-safe', bind: 'fail_safe' }) : null,
+          onPick: editable ? () => pickBind({ id: 'fail_safe', name: 'fail_safe', bind: 'fail_safe' }) : null,
         }));
 
-        // Runtime helpers are honest about being cold on the live path.
-        box.append(stage('Runtime'));
-        box.append(line({
-          ord: '', id: 'cache · session pin', synthetic: true, cold: true,
-          when: 'rebuilt per call on this deployment, so neither carries between tasks',
-        }));
+        // The phrase-answer above the list (§1.2): how many task types, and
+        // whether any of them is without effect.
+        const shadowCount = rules.filter((r, i) => shadowTargetFor(i)).length;
+        const note = $('pipelineNote');
+        if (note) {
+          note.textContent = rules.length
+            ? `${rules.length} tipos de tarefa, em ordem. A primeira que casar decide.${shadowCount ? ` ${shadowCount} está sem efeito.` : ' Todas valem.'}`
+            : 'Nenhuma regra de roteamento no arquivo. Toda tarefa cai no último recurso.';
+        }
       }
 
       // The elos a tier declares, primary first — the same assembly
@@ -5449,6 +5604,7 @@
         // pure, so the words an operator acts on are pinned by tests rather than
         // eyeballed on a screenshot.
         predicateFamily, predicateChip, predicateChips, requirementChips,
+        whenWords, ruleTitle, condNotes, destWords,
         billingBadge, billsInDollars, ctxWindow, rejectWhy, contextShortfall, strategyWords,
         upstreamGroup, independentRails, sharedUpstream, hopCaps, billingIndex,
         capabilityRegistry, tierChain, renderChainPlan,
