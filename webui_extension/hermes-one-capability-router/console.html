@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="pt-BR">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Capability Router</title>
+  <title>Roteador de modelos</title>
   <!--
     THESIS: An operator opens this to answer three questions — is it healthy, how
       does it route, what did it decide. Everything that serves none of them is
@@ -1052,12 +1052,12 @@
        "ROUTER · HERMES ONE" wordmark — 9 characters saying what the highlighted
        rail icon says for free, in a mono uppercase voice the shell never uses. -->
   <header class="view-head">
-    <h1 class="view-title">Capability Router</h1>
+    <h1 class="view-title">Roteador de modelos</h1>
     <div class="view-actions">
       <!-- Whether these numbers are current. Not a status chip repeating a state
            something else owns: it reports THIS CONSOLE'S last read, which nothing
            else on screen can say. -->
-      <span class="reach" id="reach"><span class="dot"></span><span id="reachText">checking</span></span>
+      <span class="reach" id="reach"><span class="dot"></span><span id="reachText">Ainda não li nada do roteador.</span></span>
       <!-- Edit, not a padlock. The padlock claimed to be a protection and was
            not: the sidecar has never heard of it (zero mentions in
            one_sidecar.py), and every write is already gated server-side by the
@@ -1069,16 +1069,16 @@
            Pipeline shows the live routing policy, and a stray tap on a line
            should not start editing it. That is a mode, so it is named as one. -->
       <button class="btn mode" id="editMode" type="button" aria-pressed="false">
-        <span id="editLabel">Edit</span>
+        <span id="editLabel">Editar</span>
       </button>
-      <button class="btn" id="refresh" type="button">Refresh</button>
+      <button class="btn" id="refresh" type="button">Recarregar</button>
     </div>
   </header>
 
   <!-- Three destinations, drawn the way the host draws its own nav tabs: a quiet
        label that takes the accent when selected, with a 20px accent bar on the
        bottom edge. Each carries the live state of what it leads to. -->
-  <nav class="tabs" role="tablist" aria-label="Console sections">
+  <nav class="tabs" role="tablist" aria-label="Seções da tela">
     <button class="tab" id="tab-pipeline" role="tab" aria-selected="true" aria-controls="panel-pipeline" data-tab="pipeline" type="button">
       <span class="tab-name">Tarefas</span>
       <span class="tab-state" id="statePipeline"><span class="count" id="countPipeline" hidden></span><span class="dot"></span></span>
@@ -1131,7 +1131,7 @@
         <div id="models"></div>
 
         <div class="group" id="bansGroup" hidden>
-          <div class="group-head"><h2>Blocked</h2></div>
+          <div class="group-head"><h2>Fora de rotação</h2></div>
           <div id="bans"></div>
         </div>
       </section>
@@ -1144,18 +1144,18 @@
              deterministic): GET for a goal, POST once a context is supplied,
              because that is the only pipe wide enough for one. -->
         <div class="lede">
-          <p class="lede-answer is-quiet" id="pipelineNote">Read top to bottom — the first rule that matches wins.</p>
+          <p class="lede-answer is-quiet" id="pipelineNote">Leia de cima para baixo — a primeira regra que casar decide.</p>
         </div>
 
         <form class="probe" id="probeForm">
           <input id="probeTask" class="probe-input" autocomplete="off"
-                 placeholder="Try a task — “Debug a race condition in the cache”" aria-label="Task to route">
+                 placeholder="Descreva uma tarefa — “Depurar uma condição de corrida no cache”" aria-label="Tarefa a rotear">
           <!-- id=routeGo: the ONLY submit on the screen, and the one control
                that must not promise a dry run a broken policy will refuse. Its
                disabled state and the reason in its title are owned by
                renderWarnings, which reads the same status cycle that draws the
                invalid-policy banner. -->
-          <button class="btn" type="submit" id="routeGo">Route it</button>
+          <button class="btn" type="submit" id="routeGo">Rotear</button>
         </form>
         <!-- THE OTHER HALF OF THE QUESTION: HOW BIG IS THE TURN. Production sizes a
              turn from the text the child really receives — context PLUS goal — and
@@ -1174,15 +1174,15 @@
              open in the first viewport would make the exception the default
              (DESIGN.md §2.1). -->
         <details id="probeContextBox">
-          <summary>Add the context this task would carry</summary>
+          <summary>Acrescentar o contexto que esta tarefa carregaria</summary>
           <!-- A .field label is TRACKED UPPERCASE, which is a treatment for a label
                and not for a sentence: 58 characters of it is a passage in caps, which
                is read by shape and has none. So the label stays a label and the
                sentence goes where sentence case survives — the placeholder. -->
           <div class="field">
-            <label for="probeContext">Composed prompt</label>
+            <label for="probeContext">Texto composto</label>
             <textarea id="probeContext" class="editor" spellcheck="false"
-                      placeholder="Paste the goal plus its context, exactly as the child receives it — the plan is then sized from this text, the way a real turn is. Left empty, it is sized from the goal line above."></textarea>
+                      placeholder="Cole o objetivo junto com o contexto dele, exatamente como o filho recebe — o plano passa a ser medido por este texto, como um pedido de verdade. Vazio, o plano é medido pela linha do objetivo acima."></textarea>
           </div>
         </details>
         <div id="probeResult"></div>
@@ -1202,7 +1202,7 @@
         <ol class="sheet" id="sheet"></ol>
 
         <div class="group">
-          <div class="group-head"><h2>Tier chains</h2><span class="screen-note" id="ladderNote"></span></div>
+          <div class="group-head"><h2>Grupos de modelos</h2><span class="screen-note" id="ladderNote"></span></div>
           <div id="ladder"></div>
         </div>
 
@@ -1232,16 +1232,16 @@
         <div id="inspector"></div>
         <div class="group">
           <details>
-            <summary>Edit the whole policy as JSON</summary>
-            <textarea id="policyEditor" class="editor" spellcheck="false" readonly aria-label="Policy JSON"></textarea>
+            <summary>Editar como texto</summary>
+            <textarea id="policyEditor" class="editor" spellcheck="false" readonly aria-label="Política como texto"></textarea>
             <!-- No Confirm button. It POSTed /apply/confirm, which on the server
                  is the SAME function as /apply — one_sidecar.py:346 and :353 both
                  return _commit_policy(body). Two buttons, one effect, and nothing
                  on screen said which to press or what the difference was. -->
             <div class="actions">
-              <button class="btn go" id="jsonApply" type="button">Apply</button>
-              <button class="btn" id="jsonPreview" type="button">Preview</button>
-              <button class="btn warn" id="jsonRevert" type="button">Revert</button>
+              <button class="btn go" id="jsonApply" type="button">Salvar</button>
+              <button class="btn" id="jsonPreview" type="button">Ver o que muda</button>
+              <button class="btn warn" id="jsonRevert" type="button">Voltar à versão anterior</button>
             </div>
             <p class="msg" id="jsonMsg" aria-live="polite"></p>
             <pre class="code" id="jsonDiff" hidden></pre>
@@ -1264,14 +1264,14 @@
         <div class="canvas-row routes waiting" id="routesRow">
           <div>
             <input id="routesFilter" class="probe-input filter" type="search" autocomplete="off" hidden
-                   placeholder="Filter by task, model or cause" aria-label="Filter decisions">
+                   placeholder="Filtrar por tarefa, modelo ou causa" aria-label="Filtrar decisões">
             <!-- The question an operator actually arrives with is "did anything go
                  wrong?", and answering it meant reading 47 cause labels and
                  knowing which of them mean refusal. The console already knows, so
                  the knowledge becomes a control — not a colour legend, a filter. -->
-            <div class="route-scopes" id="routeScopes" role="group" aria-label="Which decisions to show">
-              <button class="scope is-on" id="scopeAll" type="button" aria-pressed="true">All</button>
-              <button class="scope" id="scopeOffRule" type="button" aria-pressed="false">Not by rule</button>
+            <div class="route-scopes" id="routeScopes" role="group" aria-label="Quais decisões mostrar">
+              <button class="scope is-on" id="scopeAll" type="button" aria-pressed="true">Todas</button>
+              <button class="scope" id="scopeOffRule" type="button" aria-pressed="false">Sem regra associada</button>
             </div>
             <div id="routesTable" class="route-list"></div>
           </div>
@@ -1401,7 +1401,7 @@
       // there is genuinely nothing. Claiming the third while the first is true is
       // the most common lie a console tells.
       const absence = (empty) => state.loading ? 'Loading…'
-        : state.unreachable ? 'Unavailable while the sidecar is unreachable.'
+        : state.unreachable ? 'Indisponível enquanto não for possível falar com o roteador.'
         : empty;
 
       // The WebUI derives a CSRF token from the session (HMAC, server-side) and
@@ -1655,10 +1655,10 @@
       // three-family vocabulary as the rule that asked for them — so "why is this
       // elo ineligible" and "what did the rule ask for" read as one language.
       const REQUIREMENT_CHIP = {
-        min_context:       (v) => ({ family: 'context', kind: 'context', text: `at least ${fmt(v)} tokens` }),
-        vision:            () => ({ family: 'capability', kind: 'needs', text: 'vision' }),
-        tool_calling:      () => ({ family: 'capability', kind: 'needs', text: 'tool calls' }),
-        structured_output: () => ({ family: 'capability', kind: 'needs', text: 'structured output' }),
+        min_context:       (v) => ({ family: 'context', kind: 'context', text: `pelo menos ${fmt(v)} tokens` }),
+        vision:            () => ({ family: 'capability', kind: 'needs', text: 'imagem' }),
+        tool_calling:      () => ({ family: 'capability', kind: 'needs', text: 'ferramentas' }),
+        structured_output: () => ({ family: 'capability', kind: 'needs', text: 'resposta em formato fixo' }),
       };
       function requirementChips(requirements) {
         const req = requirements && typeof requirements === 'object' ? requirements : {};
@@ -1765,16 +1765,16 @@
       // recognise is shown as written rather than swallowed — and a MISSING one is
       // a finding, because a request whose rail is undeclared cannot be costed.
       const BILLING = {
-        plan:         'covered by a plan — no per-token invoice',
-        subscription: 'covered by a subscription seat',
-        metered:      'invoiced per token',
-        free:         'no charge',
+        plan:         'coberto por um plano — sem cobrança por token',
+        subscription: 'coberto por uma assinatura',
+        metered:      'cobrado por token',
+        free:         'sem cobrança',
       };
       function billingBadge(mode) {
         const key = String(mode == null ? '' : mode).trim().toLowerCase();
         if (BILLING[key]) return { word: key, meaning: BILLING[key], unknown: false };
-        if (!key) return { word: 'billing undeclared', meaning: 'this elo declares no billing_mode, so its cost cannot be read here', unknown: true };
-        return { word: key.replace(/_/g, ' '), meaning: 'not a billing mode this router knows', unknown: true };
+        if (!key) return { word: 'modo de pagamento não declarado', meaning: 'esta tentativa não declara modo de pagamento, então o custo dela não pode ser lido aqui', unknown: true };
+        return { word: key.replace(/_/g, ' '), meaning: 'não é um modo de pagamento que este roteador conhece', unknown: true };
       }
       // WHICH UNIT THE PRICE IS QUOTED IN — the question `cheapest_now`'s bucketing
       // and a `time_cap`'s ceiling both key on, mirroring capabilities._BILLING_RANK.
@@ -1806,20 +1806,20 @@
       // exactly; an unknown one still renders, because a rejection with no reason
       // is the one thing this panel must never show.
       const REJECT = {
-        context_too_small:    'its context window is smaller than this task needs',
-        no_vision:            'it cannot read images',
-        no_tool_calling:      'it cannot call tools',
-        no_structured_output: 'it cannot return schema-constrained output',
-        capability_unknown:   'its capabilities are unverified',
+        context_too_small:    'a janela de contexto dele é menor do que esta tarefa precisa',
+        no_vision:            'ele não lê imagem',
+        no_tool_calling:      'ele não chama ferramentas',
+        no_structured_output: 'ele não devolve resposta em formato fixo',
+        capability_unknown:   'as capacidades dele não foram verificadas',
         // The time cap is a COST refusal, not a capability one: the elo can do the
         // work, the tier declines to pay this hour's price for it.
-        time_cap:             'it costs more this hour than the tier’s price cap allows',
-        over_time_cap:        'it costs more this hour than the tier’s price cap allows',
+        time_cap:             'nesta hora ele custa mais do que o teto de preço do grupo permite',
+        over_time_cap:        'nesta hora ele custa mais do que o teto de preço do grupo permite',
       };
       function rejectWhy(reason) {
         const key = String(reason == null ? '' : reason).trim();
         if (REJECT[key]) return REJECT[key];
-        if (!key) return 'the capability filter gave no reason';
+        if (!key) return 'o filtro de capacidade não deu motivo';
         return key.replace(/_/g, ' ');
       }
       // The two numbers that make a context rejection actionable: what the elo
@@ -1840,9 +1840,9 @@
         if (have === need) {
           const exactHave = Number(windowTokens);
           const exactNeed = Number(neededTokens);
-          if (exactHave !== exactNeed) return `holds ${fmt(exactHave)}, needs ${fmt(exactNeed)}`;
+          if (exactHave !== exactNeed) return `tem ${fmt(exactHave)}, precisa de ${fmt(exactNeed)}`;
         }
-        return `holds ${have}, needs ${need}`;
+        return `tem ${have}, precisa de ${need}`;
       }
 
       // ── the clock, and what it does to a price ──────────────────────
@@ -2150,15 +2150,15 @@
       // clock line reads as a sentence rather than a table of numbers.
       function windowWords(windows, when) {
         const list = (Array.isArray(windows) ? windows : []).filter(Boolean);
-        if (!list.length) return 'no time-varying price';
-        if (!when || typeof when !== 'object') return 'time-agnostic — no clock supplied';
+        if (!list.length) return 'sem preço que varia com a hora';
+        if (!when || typeof when !== 'object') return 'independe da hora — nenhuma hora informada';
         const multiplier = priceMultiplier(list, when);
         const next = nextWindowChange(list, when);
-        const until = next ? ` until ${hourLabel(next.hour)}` : '';
-        if (multiplier > 1) return `${times(multiplier)} peak${until}`;
-        if (multiplier < 1) return `${times(multiplier)} cheap window${until}`;
-        if (!next) return 'base rate at every hour';
-        return `base rate until ${hourLabel(next.hour)}, then ${times(next.multiplier)}`;
+        const until = next ? ` até ${hourLabel(next.hour)}` : '';
+        if (multiplier > 1) return `${times(multiplier)} em hora de pico${until}`;
+        if (multiplier < 1) return `${times(multiplier)} em hora barata${until}`;
+        if (!next) return 'tarifa base em toda hora';
+        return `tarifa base até ${hourLabel(next.hour)}, depois ${times(next.multiplier)}`;
       }
 
       // The clock line's own rows: one per rail that prices by the hour, the
@@ -2332,21 +2332,24 @@
       // on the strength of not having read one. A missing rate is NEVER $0 either
       // way (see effectivePrices), because a plan rail billed in credits rendered as
       // zero would look like the cheapest thing on the screen.
+      const CREDIT_WORD = {
+        plan: 'créditos do plano', subscription: 'créditos da assinatura',
+      };
       function priceWords(caps, multiplier, billingMode, published) {
         const m = Number.isFinite(Number(multiplier)) ? Number(multiplier) : 1;
         const prices = effectivePrices(caps, m);
         const mode = String(billingMode == null ? '' : billingMode).trim().toLowerCase();
         const parts = [];
-        if (m > 1) parts.push(`${times(m)} peak`);
-        else if (m < 1) parts.push(`${times(m)} cheap window`);
+        if (m > 1) parts.push(`${times(m)} em hora de pico`);
+        else if (m < 1) parts.push(`${times(m)} em hora barata`);
         if (prices) {
-          parts.push(`${money(prices.in)} in / ${money(prices.out)} out per 1M`);
+          parts.push(`${money(prices.in)} entrada / ${money(prices.out)} saída por 1M`);
           // The multiplier is true of the credit draw as well — the window doubles
           // both — so what needs saying is whose unit those two figures are in. Two
           // clauses and no more: the row is dense, the badge beside it already reads
           // PLAN, and §3b of DESIGN.md carries the whole explanation. "list price"
           // says the dollars are not the bill; "billed in plan credits" says what is.
-          if (mode === 'plan') parts.push('list price — billed in plan credits');
+          if (mode === 'plan') parts.push('preço de tabela — cobrado em créditos do plano');
         } else {
           // Three arguments is the old call shape and it carried no answer, so the
           // caps themselves are asked. Nothing here invents one.
@@ -2354,8 +2357,8 @@
           const covered = mode === 'plan' || mode === 'subscription';
           if (known === false && (m !== 1 || covered)) {
             parts.push(covered
-              ? `billed in ${mode} credits — no per-token price published`
-              : 'no per-token price published');
+              ? `cobrado em ${CREDIT_WORD[mode] || `créditos de ${mode}`} — sem preço por token publicado`
+              : 'sem preço por token publicado');
           }
         }
         return parts.join(' · ');
@@ -2387,27 +2390,27 @@
         const degraded = opts.degraded === true;
         const ordered = (extra) => Object.assign({
           declared: key, key: 'sequential', ordered: true, pinPrimary,
-          timeRelative: false, label: 'tried in order', note: '',
+          timeRelative: false, label: 'na ordem escrita', note: '',
         }, extra || {});
 
         if (!STRATEGIES[key]) {
-          return ordered({ note: `“${raw}” is not a strategy the router knows, so it falls back to trying them in order` });
+          return ordered({ note: `“${raw}” não é uma ordem que o roteador conhece, então ele volta a tentar na ordem escrita` });
         }
         if (key === 'random') {
           // The router degrades `random` to declared order when no random source
           // was injected, and the plan still reports the declared word — so the
           // console reports the DEGRADATION, not the label it was handed.
           if (degraded) {
-            return ordered({ note: '“random” needed a random source the caller did not supply, so the chain was tried in declared order' });
+            return ordered({ note: '“sorteada” precisa de uma fonte de sorteio que quem chamou não informou, então a fila foi tentada na ordem escrita' });
           }
           return {
             declared: 'random', key: 'random', ordered: false, pinPrimary, timeRelative: false,
-            label: 'tried in a random order',
+            label: 'em ordem sorteada',
             note: pinPrimary === true
-              ? 'the primary stays first; the rest are drawn at random on every request'
+              ? 'a primeira fica fixa; as outras são sorteadas a cada pedido'
               : pinPrimary === false
-                ? 'every elo is drawn at random on every request'
-                : 'pin_primary is not reported here, so which elo runs first is unknown — none is drawn as first',
+                ? 'todas as tentativas são sorteadas a cada pedido'
+                : 'esta leitura não diz se a primeira fica fixa, então não se sabe qual tentativa roda primeiro — nenhuma é marcada como primeira',
           };
         }
         if (key === 'cheapest_now') {
@@ -2415,12 +2418,12 @@
           // and an order labelled "cheapest" that is really declared order is the
           // most expensive kind of wrong on this screen.
           if (degraded || !when) {
-            return ordered({ note: '“cheapest now” needs a clock; none was supplied, so the chain was tried in declared order' });
+            return ordered({ note: '“pelo mais barato agora” precisa de hora; nenhuma foi informada, então a fila foi tentada na ordem escrita' });
           }
           return {
             declared: 'cheapest_now', key: 'cheapest_now', ordered: true, pinPrimary, timeRelative: true,
-            label: 'tried cheapest first',
-            note: `ordered by output price at ${hourLabel(when.hour)} — TIME-RELATIVE, not the declared order${pinPrimary === true ? ', primary pinned first' : ''}`,
+            label: 'pelo mais barato agora',
+            note: `ordenada pelo preço de saída às ${hourLabel(when.hour)} — depende da hora, não é a ordem escrita${pinPrimary === true ? ', com a primeira fixa' : ''}`,
           };
         }
         // No note for the ordinary case: "top to bottom, every time" is one fact
@@ -2576,6 +2579,11 @@
         if (raw.includes('alive') || raw === 'ok' || raw === 'closed') return 'alive';
         return '';
       }
+      // A chave de estado nomeia a classe CSS e e o retorno de modelState, que a
+      // §5.5 congela; a palavra que a tela mostra e outra coisa e mora aqui.
+      const STATE_WORD = {
+        alive: 'no ar', degraded: 'instável', quota: 'cota estourada', dead: 'fora do ar',
+      };
       function worstOf(models) {
         return models.reduce((worst, m) => {
           const s = modelState(m);
@@ -2670,15 +2678,15 @@
         // instead of drawing three dashes.
         const reachText = $('reachText');
         if (state.unreachable) {
-          reachText.textContent = 'sidecar unreachable';
+          reachText.textContent = 'Não consegui falar com o roteador.';
         } else if (procStart) {
           reachText.textContent = [
-            `sidecar up ${fmtAge(procStart)}`,
-            `code loaded ${fmtAge(codeLoaded)}`,
-            `router.yaml changed ${fmtAge(configChanged)}`,
+            `serviço no ar há ${fmtAge(procStart)}`,
+            `código carregado há ${fmtAge(codeLoaded)}`,
+            `arquivo mudou há ${fmtAge(configChanged)}`,
           ].join('\n');
         } else {
-          reachText.textContent = 'checking';
+          reachText.textContent = 'Ainda não li nada do roteador.';
         }
 
         // Stale banner (router-scoped, not agent-scoped) — only when code is newer than process
@@ -2817,7 +2825,7 @@
         clear(box);
         const gate = el('div', 'warn-line');
         gate.dataset.gate = 'lint';
-        gate.append(el('strong', '', 'bloqueado pela política inválida — consertar'));
+        gate.append(el('strong', '', 'Não é possível simular enquanto houver erro no arquivo. Corrija o erro:'));
         const target = lintTargets()[0];
         if (target && typeof target.later_index === 'number') {
           gate.append(verRuleButton(target));
@@ -2830,8 +2838,8 @@
         clear(box);
         if (state.unreachable) {
           const line = el('div', 'warn-line bad');
-          line.append(el('strong', '', 'Sidecar unreachable.'),
-                      el('span', '', 'Reads and writes are unavailable until the proxy answers.'));
+          line.append(el('strong', '', 'Não consegui falar com o roteador.'),
+                      el('span', '', 'Não é possível ler nem gravar até o proxy responder.'));
           box.append(line);
           return;
         }
@@ -2845,14 +2853,14 @@
           go.disabled = errors.length > 0;
           // A disabled button still needs to say why, on hover.
           go.title = errors.length > 0
-            ? 'bloqueado pela política inválida — consertar'
+            ? 'Não é possível simular enquanto houver erro no arquivo.'
             : '';
         }
         const probeResult = $('probeResult');
         if (errors.length) {
           const line = el('div', 'warn-line');
-          line.append(el('strong', '', `Policy invalid — ${errors.length} error${errors.length === 1 ? '' : 's'}.`),
-                      el('span', '', `Dry runs are refused until it passes lint. First: ${String(errors[0])}`));
+          line.append(el('strong', '', `Não é possível salvar enquanto houver erro. ${errors.length} erro${errors.length === 1 ? '' : 's'} no arquivo.`),
+                      el('span', '', `A simulação é recusada enquanto o arquivo não passar no lint. Primeiro erro: ${String(errors[0])}`));
           // The error shown is errors[0], so its target is the one worth a
           // button. Without a target (a config-level error) the line stays the
           // dead text it always was — there is no row to jump to.
@@ -2883,8 +2891,8 @@
         }
         if (state.mode === 'editing' && !csrf()) {
           const line = el('div', 'warn-line');
-          line.append(el('strong', '', 'Editing cannot apply here.'),
-                      el('span', '', 'This console is open standalone, so the WebUI grants it no write token. Open the Router panel inside Hermes One.'));
+          line.append(el('strong', '', 'A edição não pode ser aplicada aqui.'),
+                      el('span', '', 'Não é possível salvar com esta tela aberta fora do Hermes One: o navegador não manda a credencial da sessão. Abra o Hermes One e volte aqui pelo menu lateral.'));
           box.append(line);
         }
       }
@@ -2904,7 +2912,7 @@
           tierChain(tiers[name]).forEach((hop, i) => {
             const id = String((hop && hop.model) || '');
             if (!id) return;
-            const pos = i === 0 ? `${name} primária` : `${name} hop ${i + 1}`;
+            const pos = i === 0 ? `${name} · 1ª tentativa` : `${name} · ${i + 1}ª tentativa`;
             (out[id] = out[id] || []).push(pos);
           });
         });
@@ -2958,13 +2966,13 @@
         // all rather than an empty line holding space open (DESIGN.md §2.1).
         const note = $('modelsNote');
         note.textContent = !models.length ? ''
-          : state.unreachable ? 'last known — the sidecar is not answering'
+          : state.unreachable ? 'último valor conhecido — o roteador não está respondendo'
           : notWell.length
-            ? `${notWell.length} of ${models.length} not routable`
-            : `all ${models.length} reachable`;
+            ? `${notWell.length} de ${models.length} não estão roteáveis`
+            : `todos os ${models.length} alcançáveis`;
 
         if (!models.length) {
-          list.append(el('p', 'nothing', absence('No routable models reported.')));
+          list.append(el('p', 'nothing', absence('Nenhum modelo roteável informado.')));
         } else {
           // Built once per render, from the policy that is already on screen —
           // no extra read: state.policy.tiers arrives in the same Promise.all
@@ -2985,9 +2993,9 @@
             if (mine) name.append(el('div', 'row-role', mine.join(', ')));
             row.append(name);
             const right = el('div');
-            right.append(el('span', 'state', cls || 'unknown'));
+            right.append(el('span', 'state', STATE_WORD[cls] || 'sem leitura'));
             const cooldown = m.breaker && Number(m.breaker.cooldown_remaining_s);
-            if (cooldown > 0) right.append(el('div', 'row-value', `${Math.ceil(cooldown)}s cooldown`));
+            if (cooldown > 0) right.append(el('div', 'row-value', `${Math.ceil(cooldown)}s de bloqueio automático`));
             row.append(right);
             list.append(row);
           });
@@ -3128,8 +3136,8 @@
         // An unverified elo is not a blank cell. Nothing in the registry knows this
         // model, so it routes UNCHECKED — the capability filter cannot reject it and
         // cannot vouch for it either, and that is the operator's problem to know.
-        if (window) row.append(el('span', 'hop-ctx', `${window} context`));
-        else row.append(el('span', 'hop-ctx unverified', verified ? 'context unpublished' : 'unverified'));
+        if (window) row.append(el('span', 'hop-ctx', `${window} de contexto`));
+        else row.append(el('span', 'hop-ctx unverified', verified ? 'contexto não publicado' : 'sem capacidade verificada'));
         // What it costs at the injected hour, in ONE order of precedence and never
         // the console's own arithmetic where a server number exists:
         //   1. the plan's `multipliers` — the number the ordering decision RAN on;
@@ -3172,10 +3180,10 @@
         const own = elo && typeof elo === 'object' ? elo : {};
         const rail = String(own.provider || '').trim().toLowerCase();
         if (own.demoted === true || f.demoted === true) {
-          return `moved to the end — ${rail || 'its rail'} is in an expensive window, so it is tried only if everything ahead of it fails`;
+          return `foi para o fim da fila — ${rail || 'o provedor dela'} está em hora cara, então ela só é tentada se tudo à frente falhar`;
         }
         if (own.promoted === true || f.promoted === true) {
-          return `moved to the front — this tier prefers it while it is not in an expensive window`;
+          return `foi para o começo da fila — este grupo a prefere enquanto ela não está em hora cara`;
         }
         return '';
       }
@@ -3636,15 +3644,15 @@
       // both halves of that second case — an absent mode and one this console has not
       // learned — exactly as _BILLING_RANK.get() answers undefined for both.
       const CAP_EXEMPT_WHY = {
-        plan: 'credits come off an allowance already bought, so no multiplier on them adds a dollar',
-        free: 'a multiple of no charge is still no charge',
-        '': 'a unit the router cannot place is never guessed at in order to drop a rail',
+        plan: 'os créditos saem de uma franquia já comprada, então nenhum multiplicador sobre eles cobra a mais',
+        free: 'um múltiplo de zero continua zero',
+        '': 'uma unidade que o roteador não sabe localizar nunca é adivinhada para tirar um provedor da fila',
       };
       // How each of them is named in that sentence, in the mode's own word — and a
       // mode this console has not learned is named AS WRITTEN rather than swallowed.
       const CAP_EXEMPT_LABEL = {
-        plan: (model) => `plan-billed ${model}`,
-        free: (model) => `free ${model}`,
+        plan: (model) => `${model} pago por plano`,
+        free: (model) => `${model} sem cobrança`,
       };
       // A tier's declared time knobs, said as what they DO. Each is rendered only
       // when declared: a tier with no cap and no policy spends no words saying so.
@@ -3665,7 +3673,7 @@
         const words = [];
         const cap = t.time_cap && typeof t.time_cap === 'object' ? Number(t.time_cap.max_multiplier) : NaN;
         if (Number.isFinite(cap)) {
-          words.push(`declines a metered or subscription hop over ${times(cap)} — the cap is dropped if that would empty the chain`);
+          words.push(`recusa uma tentativa paga por token ou por assinatura acima de ${times(cap)} — o teto se desliga se isso fosse deixar a fila vazia`);
           // WHICH OF THIS TIER'S HOPS THE CEILING CANNOT REACH. The mode is resolved
           // exactly as eloRow resolves it — the elo's own declaration first, then the
           // registry — so the sentence names the same rails apply_time_cap exempts.
@@ -3684,12 +3692,12 @@
             const named = CAP_EXEMPT_LABEL[mode];
             if (!named) undescribed += 1;
             labels.push(named ? named(model)
-              : mode ? `${model}, billed in ${mode}` : `${model}, billing undeclared`);
+              : mode ? `${model}, pago em ${mode}` : `${model}, modo de pagamento não declarado`);
             const why = CAP_EXEMPT_WHY[named ? mode : ''];
             if (reasons.indexOf(why) < 0) reasons.push(why);
           });
           if (labels.length) {
-            words.push(`a dollar ceiling, so it cannot remove ${nameList(labels)} — ${reasons.join('; ')}`);
+            words.push(`é um teto em dinheiro, então não pode tirar ${nameList(labels)} — ${reasons.join('; ')}`);
           }
           // A cap over a chain with nothing dollar-priced in it removes nothing at
           // all: it is insurance against a future dollar-billed hop plus a standing
@@ -3698,16 +3706,16 @@
           // cap has nothing to act on, and a cost control must never be reported as
           // inert on the strength of a gap.
           if (!dollars && !undescribed && labels.length) {
-            words.push('nothing in this chain is priced in dollars, so the cap removes nothing here — it reports the peak and leaves the chain alone');
+            words.push('nada nesta fila é pago em dinheiro, então o teto não tira nada aqui — ele informa a hora de pico e deixa a fila como está');
           }
         }
         const policy = t.time_policy && typeof t.time_policy === 'object' ? t.time_policy : {};
         const avoid = Array.isArray(policy.avoid_peak)
           ? policy.avoid_peak.map((p) => String(p)).filter(Boolean) : [];
-        if (avoid.length) words.push(`moves ${avoid.join(' and ')} to the end while they are in a peak window`);
+        if (avoid.length) words.push(`manda ${avoid.join(' e ')} para o fim da fila enquanto estiverem em hora de pico`);
         const prefer = Array.isArray(policy.prefer)
           ? policy.prefer.map((m) => String(m)).filter(Boolean) : [];
-        if (prefer.length) words.push(`prefers ${prefer.join(' and ')} while they are off-peak`);
+        if (prefer.length) words.push(`prefere ${prefer.join(' e ')} enquanto estiverem fora do pico`);
         return words;
       }
 
@@ -3742,7 +3750,7 @@
         const names = Object.keys(tiers);
         if (!names.length) {
           note.textContent = '';
-          box.append(el('p', 'nothing', absence('No tiers defined — every task lands on the default.')));
+          box.append(el('p', 'nothing', absence('Nenhum grupo. Nenhuma regra pode mandar tarefa para um grupo.')));
           return;
         }
         const registry = state.capabilities;
@@ -3775,11 +3783,11 @@
           const meaning = TIER_MEANING[name] || null;
           head.append(el('span', 'tier-name',
                           meaning ? `Grupo ${name} · ${meaning.label}` : `Grupo ${name} · sem descrição`));
-          head.append(el('span', 'tier-fact', hops.length > 1 ? strategy.label : 'one elo, nothing to pick'));
+          head.append(el('span', 'tier-fact', hops.length > 1 ? strategy.label : 'uma só tentativa, nada a escolher'));
           // Redundancy in the only terms that mean anything: distinct upstreams. A
           // count of vendors would call two OpenRouter resellers two rails.
           head.append(el('span', `tier-fact${rails < 2 ? ' thin' : ''}`,
-                          `${rails} independent rail${rails === 1 ? '' : 's'} of ${hops.length} hop${hops.length === 1 ? '' : 's'}`));
+                          `${rails} provedor${rails === 1 ? '' : 'es'} independente${rails === 1 ? '' : 's'} em ${hops.length} tentativa${hops.length === 1 ? '' : 's'}`));
           // The tier's own time knobs, in the operator's words. They are facts about
           // the CONFIG — what it will decline to pay, and which rails it steps
           // around — while "which rail is expensive right now" belongs to the clock
@@ -3807,13 +3815,13 @@
 
           if (hops.length < 2) {
             block.append(el('div', 'tier-note',
-              `No fallback declared — if ${hops.length ? (hops[0].provider || 'this rail') : 'this tier'} refuses, the tier has nowhere to go. Add a hop on another vendor.`));
+              `Sem reserva declarada — se ${hops.length ? (hops[0].provider || 'este provedor') : 'este grupo'} recusar, o grupo não tem para onde ir. Acrescente uma tentativa em outro provedor.`));
           } else if (shared && shared.first === 1 && shared.second === 2) {
             block.append(el('div', 'tier-note',
-              `Hops 1 and 2 both resolve to ${shared.group}, so the first fallback survives nothing the primary does not. Reorder so hop 2 is on another upstream.`));
+              `As tentativas 1 e 2 caem as duas em ${shared.group}, então a primeira reserva não sobrevive a nada que a primeira opção também não sobreviva. Reordene para a 2ª tentativa ficar em outro provedor.`));
           } else if (shared) {
             block.append(el('div', 'tier-note',
-              `Hops ${shared.first} and ${shared.second} both resolve to ${shared.group} — one upstream outage takes both.`));
+              `As tentativas ${shared.first} e ${shared.second} caem as duas em ${shared.group} — uma queda desse provedor derruba as duas.`));
           }
           box.append(block);
         });
@@ -3822,8 +3830,8 @@
         // the chain still routes and still bills, so the honest report is which
         // elos are unchecked — not a note about a missing endpoint.
         note.textContent = unverified
-          ? `${unverified} elo${unverified === 1 ? '' : 's'} unverified — no capability record, so the filter cannot check them.`
-          : 'Every elo a tier can try, and how it picks the next one.';
+          ? `${unverified} tentativa${unverified === 1 ? '' : 's'} sem capacidade verificada — sem registro no catálogo, o filtro não pode conferir.`
+          : 'Todas as tentativas que um grupo pode fazer, e como ele escolhe a próxima.';
       }
 
       // ── The chain plan for one probed task ──────────────────────────
@@ -3924,9 +3932,9 @@
         if (capBypassed) capped.forEach((hop) => take(hop, false));
         // Which control gave way, in the operator's words, so the retained list can
         // name it instead of leaving "why is this here?" to be inferred.
-        const gaveWay = filterBypassed && capBypassed ? 'capability filter and the time cap'
-          : filterBypassed ? 'capability filter'
-          : capBypassed ? 'time cap' : '';
+        const gaveWay = filterBypassed && capBypassed ? 'filtro de capacidade e teto de preço'
+          : filterBypassed ? 'filtro de capacidade'
+          : capBypassed ? 'teto de preço' : '';
         return { dropped, retained, filterBypassed, capBypassed, gaveWay };
       }
 
@@ -3934,8 +3942,8 @@
       // final "and", because these lines are read aloud beside the chain they name.
       const nameList = (names) => {
         const list = (Array.isArray(names) ? names : []).filter(Boolean);
-        if (list.length < 3) return list.join(' and ');
-        return `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`;
+        if (list.length < 3) return list.join(' e ');
+        return `${list.slice(0, -1).join(', ')} e ${list[list.length - 1]}`;
       };
 
       // ── THE REQUIREMENT NOTHING COULD EVER MEET ─────────────────────
@@ -3986,8 +3994,8 @@
       // and the one thing the console must not overstate when it never read the
       // registry.
       const CEILING_SCOPE = {
-        registry: 'The widest context window the router can reach',
-        chain: 'The widest context window this chain declares',
+        registry: 'A maior janela de contexto que o roteador alcança',
+        chain: 'A maior janela de contexto que esta fila declara',
       };
       // Which requirement is unmeetable, against what ceiling, and what an operator
       // can actually do — which is never "add an elo that qualifies", because by
@@ -4006,21 +4014,21 @@
           const needed = Number(req.min_context);
           if (gap) said.push(`${CEILING_SCOPE[ceiling.scope]} ${gap}.`);
           else if (Number.isFinite(needed) && needed > 0) {
-            said.push(`Nothing the router can reach holds the ${fmt(needed)} tokens this task needs, and no elo here publishes a window to compare it against.`);
-          } else said.push('Nothing the router can reach can hold this task’s context.');
+            said.push(`Nada que o roteador alcança tem os ${fmt(needed)} tokens que esta tarefa precisa, e nenhuma tentativa aqui publica janela para comparar.`);
+          } else said.push('Nada que o roteador alcança tem janela para o contexto desta tarefa.');
         }
         // A requirement key this console has not learned still renders, for the same
         // reason requirementChips renders one: dropping it would leave the loudest
         // fact about the request unsaid.
         const others = keys.filter((key) => key !== 'min_context').map((key) => key.replace(/_/g, ' '));
-        if (others.length) said.push(`No model the router can reach can meet ${nameList(others)}.`);
+        if (others.length) said.push(`Nenhum modelo que o roteador alcança atende a ${nameList(others)}.`);
         // The sentence that separates this from a Dropped row. An ordinary rejection
         // is a fact about the roster; this is a fact about the request.
-        said.push('That is the requirement being impossible, not these elos being wrong for it — no ordering, no extra hop and no hour changes it.');
+        said.push('A exigência é que está impossível, não as tentativas — nenhuma ordem, nenhuma tentativa a mais e nenhuma hora mudam isso.');
         said.push(context && !others.length
-          ? 'Split the work into smaller turns, or add a model with a bigger context window.'
-          : 'Split the work, or relax what the rule requires of the model.');
-        return { title: 'Requirement no model can meet.', said: said.join(' ') };
+          ? 'Divida o trabalho em pedidos menores, ou acrescente um modelo com janela maior.'
+          : 'Divida o trabalho, ou baixe o que a regra exige do modelo.');
+        return { title: 'Exigência que nenhum modelo atende.', said: said.join(' ') };
       }
 
       // ── PRICE AND POSITION ARE TWO READINGS ─────────────────────────
@@ -4059,26 +4067,26 @@
         const report = peakPricing(p);
         if (!report.priced.length) return null;
         const many = report.priced.length !== 1;
-        const them = many ? 'them' : 'it';
-        const hour = when ? ` at ${hourLabel(when.hour)}` : '';
-        const said = [`${nameList(report.priced)} ${many ? 'are' : 'is'} in a dearer window${hour}, so the task pays the higher rate on ${many ? 'those hops' : 'that hop'}.`];
+        const them = many ? 'elas' : 'ela';
+        const hour = when ? ` às ${hourLabel(when.hour)}` : '';
+        const said = [`${nameList(report.priced)} ${many ? 'estão' : 'está'} em hora mais cara${hour}, então a tarefa paga a tarifa maior ${many ? 'nessas tentativas' : 'nessa tentativa'}.`];
         if (!report.moved.length) {
-          said.push(`The tier’s time policy matched ${them} and moved nothing — ${many ? 'they are' : 'it is'} already at the back of the chain, so there is nothing cheaper to try ahead of ${them}. The order below is the order the policy left.`);
+          said.push(`A política de horário do grupo casou com ${them} e não moveu nada — ${many ? 'já estão' : 'já está'} no fim da fila, então não há nada mais barato para tentar antes. A ordem abaixo é a que a política deixou.`);
         } else if (!report.stuck.length) {
-          said.push(`The tier’s time policy moved ${report.moved.length !== 1 ? 'them' : 'it'} later, so every cheaper hop is tried first.`);
+          said.push(`A política de horário do grupo ${report.moved.length !== 1 ? 'as' : 'a'} mandou para depois, então toda tentativa mais barata é tentada antes.`);
         } else {
           // Only the STUCK elos are named here. Which hop moved is already said on
           // that hop's own row, in the words that name its consequence (§3b), and
           // naming it twice would give one fact two authorities.
-          said.push(`The tier’s time policy moved what it could; ${nameList(report.stuck)} could not go any further back, so there is nothing cheaper to try ahead of ${report.stuck.length !== 1 ? 'them' : 'it'}.`);
+          said.push(`A política de horário do grupo moveu o que podia; ${nameList(report.stuck)} não ${report.stuck.length !== 1 ? 'podiam' : 'podia'} ir mais para trás, então não há nada mais barato para tentar antes.`);
         }
         // The two moves left are the hour and the roster, and they are named ONCE per
         // viewport: the time-cap bypass line above already carries both, and saying
         // them twice is the same fact twice (DESIGN.md §2.3).
         if (report.stuck.length && !p.time_cap_bypassed) {
-          said.push('Move the work to an off-peak hour, or add a rail that is cheap at this one.');
+          said.push('Passe o trabalho para uma hora fora do pico, ou acrescente um provedor que seja barato nesta hora.');
         }
-        return { title: 'Peak-priced hops.', said: said.join(' ') };
+        return { title: 'Tentativas em hora de pico.', said: said.join(' ') };
       }
 
       // ONE CHAIN PANEL, TWO SURFACES. The Explain tab plans a task that has not run
@@ -4129,8 +4137,8 @@
         // the router reported the hour it planned against, or the trace reported when
         // it happened and the prices below are read at that hour.
         const hourNote = !elsewhere ? ''
-          : clock.source === 'plan' ? `planned at ${hourLabel(when.hour)}`
-          : `priced at ${hourLabel(when.hour)}, the hour this decision was recorded`;
+          : clock.source === 'plan' ? `planejado às ${hourLabel(when.hour)}`
+          : `preço às ${hourLabel(when.hour)}, a hora em que esta decisão foi gravada`;
         // `plan.strategy` is the strategy that RAN, and it is the one that decides
         // whether the chain below gets ordinals — so it is the one asked here.
         const strategy = strategyWords(plan.strategy, {
@@ -4169,16 +4177,16 @@
         // will run on a model that cannot meet its stated requirements.
         if (outcome.filterBypassed) {
           const line = el('div', 'warn-line bad');
-          line.append(el('strong', '', 'Capability filter bypassed.'),
+          line.append(el('strong', '', 'Filtro de capacidade ignorado.'),
                       // With an unmeetable requirement named above, the cause and the
                       // fix belong to THAT line: repeating "no elo can meet these
                       // requirements" would be the same fact twice, and "add an elo
                       // that qualifies" would be advice nobody can take, because
                       // nothing could qualify.
                       el('span', '', impossible
-                        ? 'Every elo was disqualified, so the router will try them all anyway rather than refuse the task — whichever one it picks cannot meet the requirement above.'
-                        : 'No elo in this chain can meet these requirements, so the router will try them all anyway rather than refuse the task. '
-                          + 'Add an elo that qualifies, or lower the tier’s requirements.'));
+                        ? 'Toda tentativa foi desqualificada, então o roteador vai tentar todas mesmo assim em vez de recusar a tarefa — qualquer uma que ele escolher não atende à exigência acima.'
+                        : 'Nenhuma tentativa desta fila atende a estas exigências, então o roteador vai tentar todas mesmo assim em vez de recusar a tarefa. '
+                          + 'Acrescente uma tentativa que atenda, ou baixe as exigências do grupo.'));
           box.append(line);
         }
         // The time cap bypassing is the same class of event and gets the same
@@ -4188,9 +4196,9 @@
         // been failed by the console.
         if (outcome.capBypassed) {
           const line = el('div', 'warn-line bad');
-          line.append(el('strong', '', 'Time cap bypassed.'),
-                      el('span', '', `Every elo was over the tier’s price cap${cap !== null ? ` of ${times(cap)}` : ''} at ${when ? hourLabel(when.hour) : 'this hour'}, so the cap was dropped rather than leave the task with no rail. `
-                                   + 'This request pays peak price. Add a rail that is off-peak at this hour, raise the cap, or move the work to an off-peak hour.'));
+          line.append(el('strong', '', 'Teto de preço ignorado.'),
+                      el('span', '', `Toda tentativa passou do teto de preço do grupo${cap !== null ? ` of ${times(cap)}` : ''} às ${when ? hourLabel(when.hour) : 'esta hora'}, então o teto foi desligado em vez de deixar a tarefa sem nenhum provedor. `
+                                   + 'Este pedido paga preço de pico. Acrescente um provedor que esteja fora do pico nesta hora, aumente o teto, ou passe o trabalho para uma hora fora do pico.'));
           box.append(line);
         }
         // WHAT IS BILLING DOUBLE, which is a different question from what moved. The
@@ -4225,21 +4233,21 @@
           const guess = declaredWord && declaredWord !== strategy.key
             ? strategyWords(declaredWord, { pinPrimary: plan.pin_primary, when, degraded: true }).note
             : '';
-          const why = reported || guess || 'the caller supplied neither a clock nor a random source';
+          const why = reported || guess || 'quem chamou não informou nem hora nem fonte de sorteio';
           const line = el('div', 'warn-line');
-          line.append(el('strong', '', 'Fallback order degraded.'),
+          line.append(el('strong', '', 'A ordem de reserva não foi a declarada.'),
                       // A declared word the plan did not report is not invented: the
                       // degrade is still stated, without naming a strategy nobody sent.
                       el('span', '', (declaredWord && declaredWord !== strategy.key
-                                        ? `The tier declares “${declaredWord}”, and it did not run: ${why}. `
-                                        : `The declared fallback order did not run: ${why}. `)
-                                   + `The chain below is the order that DID run — ${strategy.label}.`));
+                                        ? `O grupo declara “${declaredWord}”, e não foi isso que rodou: ${why}. `
+                                        : `A ordem de reserva declarada não foi a que rodou: ${why}. `)
+                                   + `A fila abaixo é a ordem que de fato rodou — ${strategy.label}.`));
           box.append(line);
         }
 
         const group = el('div', 'group');
         const head = el('div', 'group-head');
-        head.append(el('h2', '', 'Chain plan'));
+        head.append(el('h2', '', 'Plano da fila'));
         // The degradation already has a line of its own above, and it says more
         // than this note can; repeating it here would be the same fact twice in one
         // viewport, which is what the head note is not for (DESIGN.md §2.2).
@@ -4250,7 +4258,7 @@
         group.append(head);
 
         if (chips.length) group.append(chipList(chips));
-        else group.append(el('p', 'nothing', 'No capability requirements derived, so every elo in the chain qualifies.'));
+        else group.append(el('p', 'nothing', 'Nenhuma exigência de capacidade foi derivada, então toda tentativa da fila atende.'));
 
         // A bypass with no per-elo reasons is the one empty state this panel cannot
         // fill in for itself: the filter dropped every elo and then reported which
@@ -4259,7 +4267,7 @@
         // reads as "nothing was dropped", which is the opposite of what happened.
         if (outcome.filterBypassed && !rejected.length) {
           group.append(el('div', 'tier-note',
-            'The router reported no per-elo reasons for this bypass, so compare the requirements above against each elo below yourself.'));
+            'O roteador não informou motivo por tentativa para esta exceção, então compare você mesmo as exigências acima com cada tentativa abaixo.'));
         }
 
         if (chain.length) {
@@ -4272,26 +4280,26 @@
           }));
           const rails = independentRails(chain);
           group.append(el('div', `tier-fact rails${rails < 2 ? ' thin' : ''}`,
-                          `${rails} independent rail${rails === 1 ? '' : 's'} across ${chain.length} eligible hop${chain.length === 1 ? '' : 's'}`));
+                          `${rails} provedor${rails === 1 ? '' : 'es'} independente${rails === 1 ? '' : 's'} em ${chain.length} tentativa${chain.length === 1 ? '' : 's'} elegíve${chain.length === 1 ? 'l' : 'is'}`));
           // A chain that filtering collapsed onto ONE upstream has no fallback at
           // all, and it does not look any different from a healthy three-hop tier
           // unless the console says so. The declared chain still lists three hops,
           // so this is invisible in router.yaml — it is a property of THIS task.
           if (rails < 2) {
             group.append(el('div', 'tier-note',
-              `No fallback for this task: every eligible hop resolves to ${upstreamGroup(chain[0] && chain[0].provider) || 'one upstream'}. `
-              + 'One outage there and the task has nowhere to go — the declared chain is wider, but this task’s requirements ruled the rest out.'));
+              `Sem reserva para esta tarefa: toda tentativa elegível cai em ${upstreamGroup(chain[0] && chain[0].provider) || 'um provedor só'}. `
+              + 'Uma queda ali e a tarefa não tem para onde ir — a fila declarada é mais larga, mas as exigências desta tarefa descartaram o resto.'));
           }
         } else {
-          group.append(el('p', 'nothing', 'No elo survived the filter — see the rejections below.'));
+          group.append(el('p', 'nothing', 'Nenhuma tentativa passou pelo filtro — veja as recusas abaixo.'));
         }
 
         // Unverified elos run UNCHECKED: the filter neither cleared nor rejected
         // them, so their eligibility is an assumption.
         if (unknown.length) {
           group.append(el('div', 'tier-note',
-            `Unverified, so eligible by assumption: ${unknown.join(', ')}. `
-            + 'Nothing published their capabilities — declare the window and flags on the elo in router.yaml to have them checked.'));
+            `Sem verificação, então elegíveis por suposição: ${unknown.join(', ')}. `
+            + 'Nada publicou as capacidades delas — declare a janela e as marcas da tentativa no router.yaml para que sejam conferidas.'));
         }
 
         // Elos that are OUT: a capability rejection and a cost refusal answer the
@@ -4312,8 +4320,8 @@
         })));
         if (outcome.dropped.length) {
           const rejectHead = el('div', 'group-head later');
-          rejectHead.append(el('h2', '', `Dropped (${outcome.dropped.length})`));
-          rejectHead.append(el('span', 'screen-note', 'Ineligible for this task — not banned, not down.'));
+          rejectHead.append(el('h2', '', `Tirados da fila (${outcome.dropped.length})`));
+          rejectHead.append(el('span', 'screen-note', 'Não elegível para esta tarefa — não está bloqueada nem fora do ar.'));
           group.append(rejectHead);
           rows(outcome.dropped);
         }
@@ -4324,14 +4332,14 @@
         // beside WHICH requirement each elo failed.
         if (outcome.retained.length) {
           const keptHead = el('div', 'group-head later');
-          keptHead.append(el('h2', '', `Still in the chain (${outcome.retained.length})`));
+          keptHead.append(el('h2', '', `Continuam na fila (${outcome.retained.length})`));
           // ONE sentence, carrying the three facts the heading cannot imply: that
           // nothing was dropped, WHICH control gave way, and that a reason here is not
           // an exclusion. What the router will do about it and what the operator can
           // do are already said, once, in the bypass line at the top of the panel —
           // repeating either here would be the same fact twice (DESIGN.md §2.3).
           keptHead.append(el('span', 'screen-note',
-                             `Nothing was dropped — the ${outcome.gaveWay || 'control'} gave way, so these are objections, not exclusions.`));
+                             `Nada foi tirado — o ${outcome.gaveWay || 'controle'} cedeu, então estas são objeções, não exclusões.`));
           group.append(keptHead);
           rows(outcome.retained);
         }
@@ -4484,20 +4492,20 @@
         const chars = count(p.prompt_chars);
         const tokens = count(f.est_input_tokens);
         const measured = [
-          chars === null ? '' : `${fmt(chars)} characters`,
-          tokens === null ? '' : `${fmt(tokens)} estimated tokens`,
+          chars === null ? '' : `${fmt(chars)} caracteres`,
+          tokens === null ? '' : `${fmt(tokens)} tokens estimados`,
         ].filter(Boolean).join(', ');
         const goalOnly = sized === 'task';
-        const what = goalOnly ? 'the goal line alone' : 'the context you supplied';
+        const what = goalOnly ? 'da linha do objetivo apenas' : 'do contexto que você informou';
         return {
           goalOnly,
-          label: 'sized from ',
+          label: 'medido a partir ',
           // The advice is on the goal-only branch only, and it is the whole point
           // of the line: a context-heavy turn routes on the context's size, so a
           // plan measured without it may not be the plan production attempts.
           said: `${what}${measured ? ` — ${measured}` : ''}.`
             + (goalOnly
-              ? ' A turn that carries context routes on the whole composed text, so paste it in above to preview the plan that turn really gets.'
+              ? ' Um pedido que carrega contexto é roteado pelo texto inteiro, então cole o contexto acima para ver o plano que o pedido de verdade recebe.'
               : ''),
         };
       }
@@ -4525,9 +4533,9 @@
         // one probe an operator opened this box to run.
         if (req.options.method === 'POST' && !csrf()) {
           box.append(el('p', 'nothing',
-            'A context is too large for a query string, so it has to be POSTed — which a standalone '
-            + 'console cannot do. Open the Router panel inside Hermes One, or clear the context to '
-            + 'route the goal line alone.'));
+            'Um contexto é grande demais para caber na URL, então precisa ir por POST — o que uma tela '
+            + 'aberta fora do Hermes One não pode fazer: o navegador não manda a credencial da sessão. Abra o Hermes One e volte aqui pelo menu lateral, ou limpe o contexto para '
+            + 'rotear só a linha do objetivo.'));
           return;
         }
         box.append(el('div', 'verdict', 'Routing…'));
@@ -4543,10 +4551,10 @@
           // a second bound that can disagree with the one being enforced.
           const why = (res.data && (res.data.error || res.data.message)) || '';
           box.append(el('p', 'nothing', /invalid/i.test(why)
-            ? 'The router policy is invalid, so a dry run is refused. Fix the errors named above, then try again.'
+            ? 'Não é possível simular enquanto houver erro no arquivo. Corrija os erros nomeados acima e tente de novo.'
             : (res.status === 400 && why)
-              ? `The dry run was refused: ${why}`
-              : 'The dry run is unavailable on this sidecar.'));
+              ? `A simulação foi recusada: ${why}`
+              : 'Este serviço do roteador não sabe simular.'));
           return;
         }
         const d = res.data || {};
@@ -4567,13 +4575,13 @@
         // the Pipeline row one line above correctly said "→ refuse". renderSheet
         // already tests then.deny; this is the same test on the decision side.
         if (out.deny === true) {
-          verdict.append(el('span', '', 'Caught by '));
+          verdict.append(el('span', '', 'Capturado por '));
           verdict.append(el('span', 'verdict-model', dec.matched_rule_id || 'default'));
-          verdict.append(el('span', '', ', which '));
-          const refuse = el('span', 'verdict-model', 'refuses');
+          verdict.append(el('span', '', ', que '));
+          const refuse = el('span', 'verdict-model', 'recusa');
           refuse.style.color = 'var(--bad-text)';
           verdict.append(refuse);
-          verdict.append(el('span', '', ' the task \u2014 no model is asked.'));
+          verdict.append(el('span', '', ' o pedido \u2014 nenhum modelo é consultado.'));
         } else if (d.requires_classifier) {
           // Honest limit: /explain runs Stage 0 only, so a task bound for the
           // classifier cannot be previewed all the way to a model.
@@ -4588,16 +4596,16 @@
           // Saying "No rule catches it" for the second was simply false, and it
           // threw away the rule id the server had already worked out.
           if (dec.matched_rule_id) {
-            verdict.append(el('span', '', 'Caught by '));
+            verdict.append(el('span', '', 'Capturado por '));
             verdict.append(el('span', 'verdict-model', dec.matched_rule_id));
-            verdict.append(el('span', '', ', which asks the classifier — so the model depends on that call.'));
+            verdict.append(el('span', '', ', que pergunta ao classificador — então o modelo depende dessa chamada.'));
           } else {
-            verdict.append(el('span', '', 'No rule catches it — it would go to the classifier, so the model depends on that call.'));
+            verdict.append(el('span', '', 'Nenhuma regra pega o pedido — ele iria para o classificador, então o modelo depende dessa chamada.'));
           }
         } else {
           // Real spaces in the text, not a layout gap standing in for them: this
           // string is read aloud as well as looked at.
-          verdict.append(el('span', '', 'Caught by '));
+          verdict.append(el('span', '', 'Capturado por '));
           verdict.append(el('span', 'verdict-model', dec.matched_rule_id || 'default'));
           // A list of model ids, each in mono as its own span: they are machine facts
           // an operator copies, and the separators are real characters rather than a
@@ -4607,16 +4615,16 @@
             verdict.append(el('span', 'verdict-model', model));
           });
           if (route.first) {
-            verdict.append(el('span', '', ', routed to '));
+            verdict.append(el('span', '', ', roteado para '));
             verdict.append(el('span', 'verdict-model', route.first));
-            if (route.provider) verdict.append(el('span', '', ` on ${route.provider}`));
+            if (route.provider) verdict.append(el('span', '', ` em ${route.provider}`));
             if (route.rest.length && route.ordered) {
-              verdict.append(el('span', '', '. Falls back to '));
+              verdict.append(el('span', '', '. Recorre a '));
               names(route.rest, ' → ');
             } else if (route.rest.length) {
               // A pinned random tail: hop 1 genuinely runs first and the rest
               // genuinely have no order, so neither half is written as the other.
-              verdict.append(el('span', '', '. Then, in a random order, '));
+              verdict.append(el('span', '', '. Depois, em ordem sorteada, '));
               names(route.rest, ', ');
             }
             verdict.append(el('span', '', '.'));
@@ -4626,15 +4634,15 @@
             // ordinal — and the two cases are not the same claim. false is the tier
             // saying "shuffle everything"; null is the plan not saying, and describing
             // that as shuffled would be inventing the field's value.
-            verdict.append(el('span', '', ', routed to any of '));
+            verdict.append(el('span', '', ', roteado para qualquer um de '));
             names(route.rest, ', ');
             verdict.append(el('span', '', route.pinPrimary === false
-              ? ' — drawn at random per request, so which runs first is not decided until then.'
-              : ' — the plan does not report whether the primary is pinned, so which runs first cannot be said here.'));
+              ? ' — sorteadas a cada pedido, então qual roda primeiro só se decide na hora.'
+              : ' — esta leitura não diz se a primeira fica fixa, então não é possível dizer aqui qual roda primeiro.'));
           } else {
             // No plan and no declared model: the decision named no route at all, which
             // is a finding rather than an em dash.
-            verdict.append(el('span', '', ', which names no model — nothing here can say where this task would go.'));
+            verdict.append(el('span', '', ', que não nomeia modelo — nada aqui pode dizer para onde esta tarefa iria.'));
           }
         }
         box.append(verdict);
@@ -4648,7 +4656,7 @@
         if (clauses.length) {
           const why = el('div', 'verdict-why');
           why.append(el('span', 'verdict-why-label',
-                        clauses.length === 1 ? 'because ' : 'because all of '));
+                        clauses.length === 1 ? 'porque ' : 'porque todos de '));
           clauses.forEach(([field, test]) => {
             // phraseCondition already owns this vocabulary — it handles boolean
             // signals as presence rather than "= true", carries units, and knows
@@ -4678,7 +4686,7 @@
         // §2.2), and it names no reasons because the Dropped list below owns those.
         if (route.source === 'plan' && route.differs && route.declared.route.length) {
           const line = el('div', 'verdict-declared');
-          line.append(el('span', 'verdict-why-label', 'declared route '));
+          line.append(el('span', 'verdict-why-label', 'rota declarada '));
           line.append(el('span', 'verdict-route', route.declared.route.join(' → ')));
           box.append(line);
         }
@@ -4703,14 +4711,14 @@
       // for the answer. The recorded path IS a short sequence, so it is drawn
       // as one — same vertical vocabulary as the decision sheet.
       const STAGE_WORDS = {
-        blocklist: 'checked the blocklist',
-        signals: 'read the task',
-        rules: 'matched the rules',
-        session_pin: 'checked the session pin',
-        cache: 'looked in the cache',
-        classifier: 'asked the classifier',
-        veto: 'refused the request',
-        fail_safe: 'fell back to the fail-safe',
+        blocklist: 'conferiu os bloqueios',
+        signals: 'leu o pedido',
+        rules: 'passou pelas regras',
+        session_pin: 'conferiu o modelo fixado na sessão',
+        cache: 'olhou no cache',
+        classifier: 'perguntou ao classificador',
+        veto: 'recusou o pedido',
+        fail_safe: 'caiu no último recurso',
       };
 
       function stepNode(step) {
@@ -4728,8 +4736,8 @@
       function stepOutcome(step) {
         const out = (step && step.out) || {};
         if (out.rule_id != null) return String(out.rule_id);
-        if (out.deny === true) return 'refused';
-        if (out.blocked === false) return 'clear';
+        if (out.deny === true) return 'recusou';
+        if (out.blocked === false) return 'liberado';
         if (out.model) return String(out.model);
         if (out.tier) return String(out.tier);
         if (out.hit === false) return 'miss';
@@ -4740,7 +4748,7 @@
         const box = $('replayPath');
         clear(box);
         if (!state.replay) {
-          box.append(el('p', 'nothing', 'Pick a decision on the left.'));
+          box.append(el('p', 'nothing', 'Escolha uma decisão à esquerda.'));
           return;
         }
         const { steps, at } = state.replay;
@@ -4796,7 +4804,7 @@
           if (node.bind === 'rule') fragment = (policy.rules || [])[node.ruleIndex];
           else if (node.bind === 'tier') fragment = (policy.tiers || {})[node.tier];
           else if (node.bind) fragment = policy[node.bind];
-          if (node.runtime) box.append(el('p', 'nothing', 'Runtime state — rebuilt per call, nothing to configure.'));
+          if (node.runtime) box.append(el('p', 'nothing', 'Estado de execução — refeito a cada chamada, não há o que configurar.'));
           else box.append(Object.assign(el('pre', 'code', pretty(fragment || {})), {}));
           return;
         }
@@ -4829,14 +4837,14 @@
         const d = state.draft;
         if (node.bind === 'tier') {
           const t = d.tiers[node.tier] = d.tiers[node.tier] || {};
-          field('model', () => t.model, (v) => { t.model = v; });
-          field('provider', () => t.provider, (v) => { t.provider = v; });
+          field('Modelo', () => t.model, (v) => { t.model = v; });
+          field('Provedor', () => t.provider, (v) => { t.provider = v; });
         } else if (node.bind === 'rule') {
           const r = d.rules[node.ruleIndex] = d.rules[node.ruleIndex] || {};
           r.then = r.then || {};
           const tiers = Object.keys(d.tiers || {});
-          field('routes to', () => r.then.model, (v) => { r.then.model = v; }, tiers.concat(['']));
-          field('profile', () => r.then.profile, (v) => { r.then.profile = v; });
+          field('Destino', () => r.then.model, (v) => { r.then.model = v; }, tiers.concat(['']));
+          field('Papel', () => r.then.profile, (v) => { r.then.profile = v; });
           // Position and state are the two knobs that resolve the shadow class
           // this screen reports in amber WITHOUT touching `when` — the lint
           // finding names the shadower, and disabling is dead-by-declaration
@@ -4878,12 +4886,12 @@
           box.append(ops);
         } else if (node.bind === 'classifier' || node.bind === 'fail_safe') {
           const f = d[node.bind] = d[node.bind] || {};
-          field('model', () => f.model, (v) => { f.model = v; });
-          field('provider', () => f.provider, (v) => { f.provider = v; });
+          field('Modelo', () => f.model, (v) => { f.model = v; });
+          field('Provedor', () => f.provider, (v) => { f.provider = v; });
         } else if (node.bind === 'default') {
           const def = d.default = d.default || {};
-          field('routes to', () => def.model, (v) => { def.model = v; });
-          field('action', () => def.action, (v) => { def.action = v; });
+          field('Destino', () => def.model, (v) => { def.model = v; });
+          field('Ação', () => def.action, (v) => { def.action = v; });
         }
 
         // Apply leads, because applying is the intention; Preview is for the
@@ -4917,9 +4925,9 @@
       // Both remaining tests describe an obstacle the operator can DO something
       // about, and each names the fix.
       function writable(msg, action) {
-        if (state.unreachable) { setMsg(msg, `${action} unavailable — sidecar unreachable.`, 'bad'); return false; }
+        if (state.unreachable) { setMsg(msg, `Não é possível ${action}: não consegui falar com o roteador.`, 'bad'); return false; }
         if (!csrf()) {
-          setMsg(msg, `${action} cannot apply from a standalone console — open the Router panel inside Hermes One.`, 'bad');
+          setMsg(msg, `Não é possível ${action} com esta tela aberta fora do Hermes One: o navegador não manda a credencial da sessão. Abra o Hermes One e volte aqui pelo menu lateral.`, 'bad');
           return false;
         }
         return true;
@@ -4934,7 +4942,7 @@
       // write, and leaves the reason in `msg` when it is not.
       async function plan(policy, msg, diffNode) {
         const res = await call('/plan', { method: 'POST', body: { policy } });
-        if (res.missing) { setMsg(msg, 'This sidecar has no /plan endpoint.', 'bad'); return false; }
+        if (res.missing) { setMsg(msg, 'Este serviço do roteador não sabe simular uma gravação.', 'bad'); return false; }
         if (res.error) { setMsg(msg, `Rejected (HTTP ${res.status || 'network'}).`, 'bad'); return false; }
         state.plan = res.data;
         if (diffNode) {
@@ -4955,7 +4963,7 @@
         if (!writable(msg, 'Preview')) return;
         setMsg(msg, 'Checking…');
         if (await plan(policy, msg, diffNode)) {
-          setMsg(msg, 'No problems found — this is what would change.', 'ok');
+          setMsg(msg, 'Nenhum problema encontrado — isto é o que muda.', 'ok');
         }
       }
 
@@ -4979,12 +4987,12 @@
 
       async function doApply(path, msg, draft, diffNode) {
         if (!writable(msg, 'Apply')) return;
-        if (applying) { setMsg(msg, 'Still writing the last change…', 'bad'); return; }
+        if (applying) { setMsg(msg, 'Uma gravação já está em andamento.', 'bad'); return; }
         applying = true;
         try {
         if (path !== '/apply/revert') {
           const policy = draft !== undefined ? draft : (state.draft || (state.plan && state.plan.policy));
-          if (policy === undefined || policy === null) { setMsg(msg, 'Nothing to apply.', 'bad'); return; }
+          if (policy === undefined || policy === null) { setMsg(msg, 'Não há o que salvar.', 'bad'); return; }
           setMsg(msg, 'Checking…');
           // The diff is passed through, not discarded. Folding Validate into Apply
           // removed the step that used to render it, and with it the guarantee that
@@ -5002,15 +5010,15 @@
           // with the live policy whenever the console is not in editing mode, so in
           // the default state its Apply is a guaranteed no-op write.
           if (state.plan && state.plan.diff === '') {
-            setMsg(msg, 'Nothing to change — this is already the policy on disk.', 'ok');
+            setMsg(msg, 'Nada mudou em relação ao arquivo atual, então não há o que salvar.', 'ok');
             return;
           }
         }
         const body = path === '/apply/revert' ? {} : { plan: state.plan, policy: state.plan.policy };
         const res = await call(path, { method: 'POST', body });
-        if (res.missing) { setMsg(msg, 'This sidecar has no such endpoint.', 'bad'); return; }
-        if (res.status === 409) { setMsg(msg, 'Policy changed underneath — validate again.', 'bad'); state.plan = null; await load(); return; }
-        if (res.error) { setMsg(msg, `Failed (HTTP ${res.status || 'network'}).`, 'bad'); return; }
+        if (res.missing) { setMsg(msg, 'Este serviço do roteador não tem essa ação.', 'bad'); return; }
+        if (res.status === 409) { setMsg(msg, 'O arquivo mudou por fora desde que esta tela leu. Recarreguei tudo; confira e tente de novo.', 'bad'); state.plan = null; await load(); return; }
+        if (res.error) { setMsg(msg, `Falhou (HTTP ${res.status || 'rede'}).`, 'bad'); return; }
         setMsg(msg, 'Written.', 'ok');
         state.plan = null; state.draft = null;
         await load();
@@ -5030,11 +5038,11 @@
           // The status alone sent an operator hunting: the real 400 was a
           // resolvable path bug and the reason was in the body all along.
           const why = (res.data && (res.data.error || res.data.message)) || `HTTP ${res.status || 'n/a'}`;
-          setMsg(msg, `Refused — ${why}`, 'bad');
+          setMsg(msg, `Recusado — ${why}`, 'bad');
           return;
         }
         $('compactConfirm').value = '';
-        setMsg(msg, 'Scheduled — the agent restarts and reverts itself if unhealthy.', 'ok');
+        setMsg(msg, 'Agendado — o agente reinicia e volta sozinho se não ficar saudável.', 'ok');
       }
 
       // ── Routes + replay ─────────────────────────────────────────────
@@ -5079,13 +5087,13 @@
       function causeTitle(cause) {
         const c = String(cause || '');
         if (c.includes('fail_safe')) {
-          return 'nenhuma regra pegou e o classificador não respondeu — este elo foi a rede de segurança';
+          return 'nenhuma regra pegou e o classificador não respondeu — o último recurso foi a rede de segurança';
         }
         if (c.includes('veto')) {
-          return 'o modelo pedido está banido ou em cooldown — o router recusou, nada foi despachado';
+          return 'o modelo pedido está bloqueado ou em bloqueio automático — o roteador recusou, nada foi despachado';
         }
         if (c.includes('classifier')) {
-          return 'nenhuma regra pegou — o classificador escolheu o tier';
+          return 'nenhuma regra pegou — o classificador escolheu o grupo';
         }
         return '';
       }
@@ -5211,13 +5219,13 @@
           node.append(el('span', '', word), el('span', 'scope-count', String(count)));
         };
         const showingOffRule = state.scope === 'off-rule';
-        scopeLabel($('scopeAll'), 'All', all.length);
-        scopeLabel($('scopeOffRule'), 'Not by rule', offRule.length);
+        scopeLabel($('scopeAll'), 'Todas', all.length);
+        scopeLabel($('scopeOffRule'), 'Sem regra associada', offRule.length);
         // The pill names a subset the console knows how to define: decisions
         // that did not come from a rule. The definition rides on the pill so it
         // is answerable before the operator commits to the filter — and the
         // routes note below repeats it in full sentences once the scope is on.
-        $('scopeOffRule').title = 'decisões que não vieram de uma regra — o blocklist recusou ou o fail-safe capturou';
+        $('scopeOffRule').title = 'decisões que não vieram de uma regra — um bloqueio recusou ou o último recurso capturou';
         $('scopeAll').classList.toggle('is-on', !showingOffRule);
         $('scopeOffRule').classList.toggle('is-on', showingOffRule);
         $('scopeAll').setAttribute('aria-pressed', String(!showingOffRule));
@@ -5237,19 +5245,19 @@
         // refusals (no model chosen) from the fail-safe catches (a model WAS chosen,
         // because nothing else would take the task).
         const windowNote = state.routesTotal > all.length
-          ? ` Counting the most recent ${all.length} of ${state.routesTotal} recorded.`
+          ? ` Contando as ${all.length} mais recentes de ${state.routesTotal} gravadas.`
           : '';
         $('routesNote').textContent = !all.length
-          ? (state.pending.has('GET /routes') ? 'This sidecar does not record decisions yet.' : '')
-          : q ? `${routes.length} of ${all.length} match “${state.query.trim()}”.${windowNote}`
+          ? (state.pending.has('GET /routes') ? 'Este serviço do roteador não grava decisões.' : '')
+          : q ? `${routes.length} de ${all.length} casam com “${state.query.trim()}”.${windowNote}`
           : showingOffRule
-            ? `${offRule.length} of ${all.length} did not come from a rule — `
-              + `${vetoed} refused, ${offRule.length - vetoed} caught by the fail-safe.${windowNote}`
+            ? `${offRule.length} de ${all.length} não vieram de uma regra — `
+              + `${vetoed} recusada(s) e ${offRule.length - vetoed} capturada(s) pelo último recurso.${windowNote}`
           // "Pick one to replay its path" stayed on screen after picking one, so
           // the instruction outlived its own task and read as though the click
           // had not registered. Once a trace is open the note says what is open.
-          : state.replay ? `Replaying one decision — pick another to switch.${windowNote}`
-              : `Pick one to replay its path.${windowNote}`;
+          : state.replay ? `Refazendo o caminho de uma decisão — escolha outra para trocar.${windowNote}`
+              : `Escolha uma para refazer o caminho dela.${windowNote}`;
 
         // The reconciliation line: what the log names against what the policy on
         // screen can dispatch. Only when both exist — a log with no models, or a
@@ -5264,11 +5272,11 @@
         }
 
         if (!all.length) {
-          box.append(el('p', 'nothing', absence('No decisions recorded yet.')));
+          box.append(el('p', 'nothing', absence('Nenhuma decisão gravada ainda. O roteador grava uma linha aqui a cada tarefa que ele decide.')));
           return;
         }
         if (!routes.length) {
-          box.append(el('p', 'nothing', 'No decision matches that search.'));
+          box.append(el('p', 'nothing', 'Nenhuma decisão casa com essa busca.'));
           return;
         }
         // Adjacent identical decisions collapse into one line with the count —
@@ -5327,7 +5335,7 @@
       // hour it happened and not the hour an operator opens it.
       async function pickRoute(id) {
         const res = await call(`/routes?id=${encodeURIComponent(id)}`);
-        if (res.error || res.missing) { $('routesNote').textContent = 'That trace could not be read.'; return; }
+        if (res.error || res.missing) { $('routesNote').textContent = 'Não foi possível ler esse rastro.'; return; }
         const entry = res.data && typeof res.data === 'object' ? res.data : {};
         const steps = Array.isArray(entry.steps) ? entry.steps : [];
         const plan = entry.chain_plan && typeof entry.chain_plan === 'object' ? entry.chain_plan : null;
@@ -5366,7 +5374,7 @@
         const { steps, at } = state.replay;
         const step = steps[at] || {};
         const io = el('div', 'io');
-        [['in', step.in], ['out', step.out]].forEach(([label, value]) => {
+        [['entrada', step.in], ['saída', step.out]].forEach(([label, value]) => {
           if (value === undefined) return;
           const cell = el('div');
           cell.append(el('div', 'io-label', label));
@@ -5384,7 +5392,7 @@
         button.setAttribute('aria-pressed', String(open));
         // The label names what the button DOES next, so the operator never has to
         // work out whether a state word is a description or an instruction.
-        button.title = open ? 'Stop editing' : 'Edit the routing policy';
+        button.title = open ? 'Stop editing' : 'Editar a política de roteamento';
         $('editLabel').textContent = open ? 'Done' : 'Edit';
         $('policyEditor').readOnly = !open;
         // The JSON twisty's write buttons follow the read-only default too. They are
@@ -5399,8 +5407,8 @@
         $('jsonApply').disabled = !open;
         $('jsonRevert').disabled = !open;
         $('pipelineNote').textContent = open
-          ? 'Editing — click any line to change it.'
-          : 'Read top to bottom — the first rule that matches wins.';
+          ? 'Modo edição ligado. Nada é gravado até você apertar “Salvar”, e a tela mostra o que muda antes.'
+          : 'Leia de cima para baixo — a primeira regra que casar decide.';
         renderWarnings();
         renderRail();
         renderInspector(null);
@@ -5544,7 +5552,7 @@
         // server should have to tell you.
         const jsonDraft = () => {
           try { return { ok: true, value: JSON.parse($('policyEditor').value) }; }
-          catch (e) { setMsg($('jsonMsg'), `Not valid JSON: ${e.message}`, 'bad'); return { ok: false }; }
+          catch (e) { setMsg($('jsonMsg'), `Não é JSON válido: ${e.message}`, 'bad'); return { ok: false }; }
         };
         $('jsonApply').addEventListener('click', () => {
           const draft = jsonDraft();

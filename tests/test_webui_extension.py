@@ -243,6 +243,177 @@ def test_console_transcribes_the_classifier_tier_anchors():
     )
 
 
+import re as _re
+
+# The second argument of ``el(tag, cls, text)`` is a class name, and so is every
+# argument of the classList calls. Matched on what PRECEDES the literal, because the
+# only reliable difference between `tier-fact rails` and a sentence is where it sits.
+CLASS_POSITION = _re.compile(
+    r"""(?:
+          el\(\s*['"`][a-z0-9]+['"`]\s*,\s*
+        | classList\.(?:add|remove|toggle)\(\s*
+        | className\s*(?:=|\+=)\s*
+        | dataset\.[A-Za-z_$][\w$]*\s*=\s*
+        )$""",
+    _re.X,
+)
+
+
+def _console_rendered_text() -> list[tuple[str, int, str]]:
+    """Every string this console can put on screen, as ``(where, line, text)``.
+
+    Four things are deliberately NOT rendered text, and counting them would force
+    changes the spec forbids elsewhere:
+
+    * HTML comments and the ``<style>`` block — this file keeps its design rationale
+      in comments, two of which discuss the word ``rail`` on purpose.
+    * ``${...}`` bodies inside template literals, which are code. Without this,
+      ``reach${stale ? ' is-stale' : ''}`` reads as prose carrying ``stale`` when all
+      it carries is a CSS class and a variable.
+    * Single-token literals: identifiers, endpoint paths and the lint error codes the
+      server sends. ``eloRow`` may not be renamed (spec §5.5 freezes the exported
+      surface), the id ``#staleBanner`` is required by §4.2 and ``call('/blocklist')``
+      is a route.
+    * Anything in a class-name position. ``el(tag, cls, text)`` puts the class second
+      and the text third, so the second argument is excluded by POSITION rather than
+      by how it looks: ``el('div', `tier-fact rails${…}`)`` carries a space and would
+      otherwise read as a sentence, and ``.tier-fact.rails`` is a real rule in the
+      ``<style>`` — a class name is not something a reader is shown.
+    * Attribute values that are not shown to anyone (``data-*``, ``class``, ``id``).
+      ``placeholder``, ``title`` and ``aria-label`` ARE shown, so they are included.
+    """
+    import re
+
+    html = (EXTENSION / "console.html").read_text(encoding="utf-8")
+    script = re.search(r"<script>\n?(.*?)\n?\s*</script>", html, re.S)
+    assert script, "the console must carry exactly one inline <script>"
+
+    def blank(mo):
+        return "\n" * mo.group(0).count("\n")
+
+    markup = html[: script.start()] + html[script.end():]
+    markup = re.sub(r"<style>.*?</style>", blank, markup, flags=re.S)
+    markup = re.sub(r"<!--.*?-->", blank, markup, flags=re.S)
+
+    out: list[tuple[str, int, str]] = []
+    for attr in ("placeholder", "title", "aria-label"):
+        for mo in re.finditer(attr + r'="([^"]+)"', markup):
+            out.append(("markup", markup[: mo.start()].count("\n") + 1, mo.group(1)))
+    for number, line in enumerate(markup.split("\n"), 1):
+        stripped = re.sub(r"<[^>]*>", " ", line).strip()
+        if stripped:
+            out.append(("markup", number, stripped))
+
+    # Hand-rolled because a regex cannot tell a quote inside a comment from a real
+    # one, and this file has apostrophes in prose and quotes inside regex literals.
+    body = script.group(1)
+    start_line = html[: script.start(1)].count("\n") + 1
+    index, size, line_number = 0, len(body), start_line
+    while index < size:
+        char = body[index]
+        if char == "\n":
+            line_number += 1
+            index += 1
+        elif char == "/" and body[index + 1:index + 2] == "/":
+            while index < size and body[index] != "\n":
+                index += 1
+        elif char == "/" and body[index + 1:index + 2] == "*":
+            index += 2
+            while index + 1 < size and body[index:index + 2] != "*/":
+                line_number += body[index] == "\n"
+                index += 1
+            index += 2
+        elif char in "'\"`":
+            quote, opened, buffer = char, line_number, []
+            before = body[max(0, index - 48):index]
+            index += 1
+            while index < size:
+                if body[index] == "\\":
+                    buffer.append(body[index:index + 2])
+                    index += 2
+                    continue
+                if body[index] == quote:
+                    index += 1
+                    break
+                line_number += body[index] == "\n"
+                buffer.append(body[index])
+                index += 1
+            if not CLASS_POSITION.search(before):
+                out.append(("script", opened, "".join(buffer)))
+        else:
+            index += 1
+
+    def without_interpolations(text: str) -> str:
+        kept, depth, cursor = [], 0, 0
+        while cursor < len(text):
+            if text.startswith("${", cursor):
+                depth += 1
+                cursor += 2
+                continue
+            if depth and text[cursor] == "{":
+                depth += 1
+            elif depth and text[cursor] == "}":
+                depth -= 1
+                cursor += 1
+                continue
+            if not depth:
+                kept.append(text[cursor])
+            cursor += 1
+        return "".join(kept)
+
+    prose = []
+    for where, line, text in out:
+        clean = without_interpolations(text).strip() if where == "script" else text.strip()
+        if " " in clean:  # a single token is a key, a class or a path — not prose
+            prose.append((where, line, clean))
+    return prose
+
+
+def test_console_vocabulario():
+    """CA7: the words the screen says are the glossary's, and nobody else's.
+
+    ``elo``, ``hop``, ``shadowed`` and ``stale`` are not in DESIGN.md's domain list
+    (rule 6), so they are invented vocabulary that the rule itself forbids; ``rail``
+    IS in the list, as a synonym of ``provider``, and the screen picks one of the two
+    — **provedor**. Matching is on whole words: a literal ``grep -oi elo`` also hits
+    ``modelo`` and ``pelo``, which are required Portuguese, so the criterion can only
+    mean the word standing on its own.
+
+    The five domain words that ARE allowed appear only glossed, in parentheses right
+    after the Portuguese term, exactly as §4.6 writes them — the screen may say
+    "Grupo de modelos (tier)" and may not say "tier" alone.
+    """
+    import re
+
+    prose = _console_rendered_text()
+    assert len(prose) > 200, "the extractor stopped seeing the screen's own sentences"
+
+    for word in ("elo", "hop", "rail", "shadowed", "stale"):
+        # The plural is the same invented word: the file said "these elos" and "3
+        # hops" before this criterion, and a guard blind to the -s would have let
+        # both back in. Verified by mutation: without the `s?` the plural passes.
+        pattern = re.compile(r"(?<![\w-])" + word + r"s?(?![\w-])", re.I)
+        found = [(w, ln, t) for w, ln, t in prose if pattern.search(t)]
+        assert not found, (
+            f"'{word}' is not this screen's vocabulary (§4.6), and it reaches the "
+            f"reader in {len(found)} place(s): "
+            + "; ".join(f"{w}:{ln} {t[:70]!r}" for w, ln, t in found[:6])
+        )
+
+    for word in ("tier", "breaker", "fail-safe", "blocklist", "profile"):
+        pattern = re.compile(r"(?<![\w-])" + re.escape(word) + r"(?![\w-])", re.I)
+        glossed = re.compile(r"\(\s*" + re.escape(word) + r"\s*\)", re.I)
+        bare = [
+            (w, ln, t) for w, ln, t in prose
+            if pattern.search(t) and not glossed.search(t)
+        ]
+        assert not bare, (
+            f"'{word}' is a domain word §4.6 allows only as a gloss in parentheses "
+            f"after the Portuguese term, and it stands alone in {len(bare)} place(s): "
+            + "; ".join(f"{w}:{ln} {t[:70]!r}" for w, ln, t in bare[:6])
+        )
+
+
 def test_extension_css_only_dresses_the_nav_button():
     """This stylesheet's whole job is the rail button.
 

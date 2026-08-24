@@ -234,7 +234,7 @@ test('replay renders the chain plan the router persisted with the decision', asy
 
   // What it dropped and why, in the words the Explain panel uses for the same reason.
   assert.match(text, /glm-5\.3/);
-  assert.match(text, /cannot read images/);
+  assert.match(text, /não lê imagem/);
 
   // THE HOUR IS THE DECISION'S. Reading a 03:00 decision at 07:14 must not price it
   // at 07:00: every multiplier under this panel is the one the router planned with.
@@ -276,7 +276,7 @@ test('a replayed plan with no hour of its own is priced at the hour it was recor
   await api.pickRoute('r1');
 
   const text = flat(dom.get('replayPlan'));
-  assert.match(text, /priced at 03:00 UTC, the hour this decision was recorded/,
+  assert.match(text, /preço às 03:00 UTC, a hora em que esta decisão foi gravada/,
     'the hour is named AND its source, because the clock line above reports now');
   assert.doesNotMatch(text, /planned at/, 'the router reported no hour, so nothing may claim it did');
   assert.doesNotMatch(text, /07:00 UTC/);
@@ -285,8 +285,8 @@ test('a replayed plan with no hour of its own is priced at the hour it was recor
 test('a step says what it concluded, so the JSON is optional', () => {
   const { api } = loadConsole();
   assert.equal(api.stepOutcome({ out: { rule_id: 'hard-verbs' } }), 'hard-verbs');
-  assert.equal(api.stepOutcome({ out: { deny: true } }), 'refused');
-  assert.equal(api.stepOutcome({ out: { blocked: false } }), 'clear');
+  assert.equal(api.stepOutcome({ out: { deny: true } }), 'recusou');
+  assert.equal(api.stepOutcome({ out: { blocked: false } }), 'liberado');
   assert.equal(api.stepOutcome({ out: { model: 'gpt-5.6-terra' } }), 'gpt-5.6-terra');
   // Nothing to report must render nothing, never a placeholder.
   assert.equal(api.stepOutcome({ out: {} }), '');
@@ -358,9 +358,9 @@ test('the header reports three ages, and a stale sidecar says so', () => {
   api.renderRail();
 
   const text = dom.get('reachText').textContent;
-  assert.match(text, /sidecar up 2h/);
-  assert.match(text, /code loaded 1h/);
-  assert.match(text, /router.yaml changed 5m/);
+  assert.match(text, /serviço no ar há 2h/);
+  assert.match(text, /código carregado há 1h/);
+  assert.match(text, /arquivo mudou há 5m/);
   assert.doesNotMatch(text, /checked/, 'the single checked clock is gone');
 
   // Code (T-1h) is newer than the process (T-2h): the ROUTER banner must say so
@@ -391,11 +391,11 @@ test('a fresh sidecar shows no stale banner; checking and dead keep their words'
   // the failure — neither renders three dashes as if the ages existed.
   api.state.status = undefined;
   api.renderRail();
-  assert.equal(dom.get('reachText').textContent, 'checking');
+  assert.equal(dom.get('reachText').textContent, 'Ainda não li nada do roteador.');
   api.state.status = { process_started_at: 'x' };
   api.state.unreachable = true;
   api.renderRail();
-  assert.equal(dom.get('reachText').textContent, 'sidecar unreachable');
+  assert.equal(dom.get('reachText').textContent, 'Não consegui falar com o roteador.');
 });
 
 // This replaces a test asserting that "the lock is the single authority on whether
@@ -424,7 +424,7 @@ test('the edit control says what it will do, not what state it is in', () => {
   api.setMode('reading');
   assert.equal(dom.get('editLabel').textContent, 'Edit',
     'reading mode offers the next action');
-  assert.match(button.title, /Edit the routing policy/,
+  assert.match(button.title, /Editar a política de roteamento/,
     'and the title says what gets edited');
 
   api.setMode('editing');
@@ -509,14 +509,14 @@ test('an empty screen distinguishes "not asked yet" from "genuinely nothing"', (
   // Before the first response, claiming "no models" is a guess presented as a
   // fact — the operator cannot tell a healthy-but-empty router from a broken one.
   assert.equal(api.state.loading, true, 'the console starts out not knowing');
-  assert.equal(api.absence('No routable models reported.'), 'Loading…');
+  assert.equal(api.absence('Nenhum modelo roteável informado.'), 'Loading…');
 
   api.state.loading = false;
   api.state.unreachable = true;
-  assert.match(api.absence('No routable models reported.'), /unreachable/);
+  assert.match(api.absence('Nenhum modelo roteável informado.'), /não for possível falar com o roteador/);
 
   api.state.unreachable = false;
-  assert.equal(api.absence('No routable models reported.'), 'No routable models reported.');
+  assert.equal(api.absence('Nenhum modelo roteável informado.'), 'Nenhum modelo roteável informado.');
 });
 
 test('filtering decisions searches what an operator actually remembers', () => {
@@ -608,7 +608,7 @@ test('a conflict tells the operator to try again instead of overwriting', async 
   });
   const msg = { textContent: '', className: '' };
   await api.doApply('/apply', msg, {});
-  assert.match(msg.textContent, /changed underneath/);
+  assert.match(msg.textContent, /mudou por fora/);
   assert.match(msg.className, /bad/);
   assert.equal(api.state.plan, null, 'the stale plan must not survive to be applied again');
 });
@@ -618,7 +618,7 @@ test('nothing to apply is said, not silently ignored', async () => {
   const { api } = loadConsole({ csrfToken: 'tok', fetch: () => { called += 1; return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') }); } });
   const msg = { textContent: '', className: '' };
   await api.doApply('/apply', msg);
-  assert.match(msg.textContent, /Nothing to apply/);
+  assert.match(msg.textContent, /Não há o que salvar/);
   assert.equal(called, 0, 'a click with no draft must not reach the network');
 });
 
@@ -646,7 +646,7 @@ test('a missing endpoint is distinguished from a rejected write', async () => {
   await api.doPreview({}, msg, null);
   // "This sidecar cannot do that" and "this sidecar refused that" call for
   // different fixes: upgrade versus correct the input.
-  assert.match(msg.textContent, /no \/plan endpoint/);
+  assert.match(msg.textContent, /não sabe simular uma gravação/);
 });
 
 test('preview shows the diff without writing anything', async () => {
@@ -690,8 +690,8 @@ test('a model on a breaker cooldown says how long it will be out', () => {
   const text = (row) => JSON.stringify(row).match(/"textContent":"[^"]*"/g).join(' ');
 
   // Rounded UP: reporting "12s" for 12.3 tells the operator it is over before it is.
-  assert.match(text(rows[0]), /13s cooldown/);
-  assert.match(text(rows[0]), /degraded/, 'a cooling model is degraded, not dead');
+  assert.match(text(rows[0]), /13s de bloqueio automático/);
+  assert.match(text(rows[0]), /instável/, 'a cooling model is degraded, not dead');
   // A healthy model must not grow a phantom timer.
   assert.doesNotMatch(text(rows[1]), /cooldown/);
 
@@ -725,13 +725,13 @@ test('the model count never claims health the console cannot know', () => {
   ] };
 
   api.renderHealth();
-  assert.match(dom.get('modelsNote').textContent, /all 2 reachable/);
+  assert.match(dom.get('modelsNote').textContent, /todos os 2 alcançáveis/);
 
   api.state.unreachable = true;
   api.renderHealth();
   assert.doesNotMatch(dom.get('modelsNote').textContent, /reachable/,
     'a dead sidecar must not yield a reachability claim');
-  assert.match(dom.get('modelsNote').textContent, /last known/);
+  assert.match(dom.get('modelsNote').textContent, /último valor conhecido/);
 });
 
 test('the model count names the exception, not the total, when something is wrong', () => {
@@ -745,7 +745,7 @@ test('the model count names the exception, not the total, when something is wron
   api.renderHealth();
   // "1 of 3 reachable" would make the operator do the subtraction to find the
   // number they care about.
-  assert.match(dom.get('modelsNote').textContent, /2 of 3 not routable/);
+  assert.match(dom.get('modelsNote').textContent, /2 de 3 não estão roteáveis/);
 });
 
 test('the summary facts exist nowhere else on the screen', () => {
@@ -791,11 +791,11 @@ test('tierRoles names every position an elo occupies in the policy', () => {
   const roles = plain(api.tierRoles(rolePolicy()));
   // The shipped fact that made the review: glm-5.3 looks like a one-tier elo
   // but three tiers depend on it — T2 as primary, T3 and T4 as hop 3.
-  assert.deepEqual(roles['glm-5.3'], ['T2 primária', 'T3 hop 3', 'T4 hop 3']);
-  assert.deepEqual(roles['deepseek-v4-pro'], ['T3 hop 2', 'T4 hop 2']);
-  assert.deepEqual(roles['gpt-5.6-luna'], ['T1 hop 2', 'T2 hop 2']);
-  assert.deepEqual(roles['glm-4.7'], ['T1 primária']);
-  assert.deepEqual(roles['mimo-v2.5'], ['T1 hop 3']);
+  assert.deepEqual(roles['glm-5.3'], ['T2 · 1ª tentativa', 'T3 · 3ª tentativa', 'T4 · 3ª tentativa']);
+  assert.deepEqual(roles['deepseek-v4-pro'], ['T3 · 2ª tentativa', 'T4 · 2ª tentativa']);
+  assert.deepEqual(roles['gpt-5.6-luna'], ['T1 · 2ª tentativa', 'T2 · 2ª tentativa']);
+  assert.deepEqual(roles['glm-4.7'], ['T1 · 1ª tentativa']);
+  assert.deepEqual(roles['mimo-v2.5'], ['T1 · 3ª tentativa']);
   // A model in no tier gets no entry: nothing to say is not a finding.
   assert.equal(roles['us.anthropic.claude-opus-5'], undefined);
   assert.deepEqual(plain(api.tierRoles({})), {});
@@ -814,9 +814,9 @@ test('a Health row says which tiers depend on the elo, and where', () => {
   const roleLines = findAll(dom.get('models'), 'row-role');
   assert.equal(roleLines.length, 1,
     'only an elo the policy uses gets the role line — a retired elo cannot break a tier');
-  assert.equal(roleLines[0].textContent, 'T2 primária, T3 hop 3, T4 hop 3');
+  assert.equal(roleLines[0].textContent, 'T2 · 1ª tentativa, T3 · 3ª tentativa, T4 · 3ª tentativa');
   const row = dom.get('models').children.find((c) => flat(c).includes('glm-5.3'));
-  assert.match(flat(row), /T2 primária, T3 hop 3, T4 hop 3/,
+  assert.match(flat(row), /T2 · 1ª tentativa, T3 · 3ª tentativa, T4 · 3ª tentativa/,
     'the answer to THIS tab\'s question sits on the elo\'s own row');
 });
 
@@ -908,7 +908,7 @@ test('the scope pill does not call a successful route a refusal', () => {
   // "Refused 21" was false for 17 of the 21: they each named a model they routed
   // to. The word has to be true of everything it counts.
   assert.doesNotMatch(pill, /Refused/, 'the pill must not claim a refusal it cannot support');
-  assert.match(pill, /Not by rule/);
+  assert.match(pill, /Sem regra associada/);
   assert.match(pill, /21/, 'it still counts everything that left the rule path');
 });
 
@@ -921,12 +921,12 @@ test('the note distinguishes a refusal from a fail-safe catch', () => {
   const note = dom.get('routesNote').textContent;
   // The distinction is the actionable part: a veto refused outright, while the
   // fail-safe DID route — because nothing else would take the task.
-  assert.match(note, /4 refused/);
-  assert.match(note, /17 caught by the fail-safe/);
-  assert.match(note, /21 of 50/, 'and the subset is scoped to what is on screen');
+  assert.match(note, /4 recusada/);
+  assert.match(note, /17 capturada\(s\) pelo último recurso/);
+  assert.match(note, /21 de 50/, 'and the subset is scoped to what is on screen');
 });
 
-test('the "Not by rule" pill defines the subset it offers, before it is chosen', () => {
+test('the "Sem regra associada" pill defines the subset it offers, before it is chosen', () => {
   // The pill names a subset the console knows how to define; the definition
   // rides on the pill so it is answerable before the operator commits to the
   // filter — the same hover idiom as the "fora da política" mark.
@@ -934,7 +934,7 @@ test('the "Not by rule" pill defines the subset it offers, before it is chosen',
   decisionLog(api);
   api.renderRoutes();
   assert.match(dom.get('scopeOffRule').title,
-    /decisões que não vieram de uma regra — o blocklist recusou ou o fail-safe capturou/);
+    /decisões que não vieram de uma regra — um bloqueio recusou ou o último recurso capturou/);
 });
 
 test('an off-rule cause carries the definition of what it names', () => {
@@ -966,7 +966,7 @@ test('a truncated log says so, and an untruncated one stays quiet', () => {
   api.renderRoutes();
   // 50 rows presented as the record understated every hit count by 27%, and a rule
   // that fired only in the dropped 21 would have rendered "never fired".
-  assert.match(dom.get('routesNote').textContent, /most recent 50 of 71 recorded/);
+  assert.match(dom.get('routesNote').textContent, /50 mais recentes de 71 gravadas/);
 
   // When the console has everything, the disclosure must disappear rather than
   // becoming permanent furniture.
@@ -981,8 +981,8 @@ test('the scope note survives a search and still scopes it', () => {
   api.state.query = 'glm';
   api.renderRoutes();
   const note = dom.get('routesNote').textContent;
-  assert.match(note, /19 of 50 match/);
-  assert.match(note, /most recent 50 of 71/, 'the window applies to a search too');
+  assert.match(note, /19 de 50 casam com/);
+  assert.match(note, /50 mais recentes de 71/, 'the window applies to a search too');
 });
 
 test('an empty off-rule set disables the pill instead of showing nothing', () => {
@@ -1278,7 +1278,7 @@ test('a no-op apply is refused, because writing it destroys the undo', async () 
 
   assert.equal(posted.length, 1, 'the plan happens; the write must not');
   assert.match(posted[0], /\/plan$/);
-  assert.match(msg.textContent, /already the policy on disk/);
+  assert.match(msg.textContent, /não há o que salvar/);
   assert.match(msg.className, /ok/, 'nothing to do is not an error');
 });
 
@@ -1334,7 +1334,7 @@ test('a double-clicked apply does not race itself', async () => {
   await api.doApply('/apply', second, { rules: [] });
   await first;
 
-  assert.match(second.textContent, /Still writing/, 'the second click is told to wait');
+  assert.match(second.textContent, /gravação já está em andamento/, 'the second click is told to wait');
   assert.equal(writes.length, 1, 'the second click must not produce a second write');
 });
 
@@ -1562,25 +1562,25 @@ test('the ages are the report, so they never collapse on a phone', () => {
   api.renderRail();
   assert.doesNotMatch(dom.get('reach').className, /is-fresh/,
     'no fresh-state class: the ages are not collapsible chrome');
-  assert.match(dom.get('reachText').textContent, /sidecar up 2h/);
+  assert.match(dom.get('reachText').textContent, /serviço no ar há 2h/);
 
   // A dead sidecar keeps its words at every width: that is a condition, not chrome.
   api.state.unreachable = true;
   api.renderRail();
   assert.doesNotMatch(dom.get('reach').className, /is-fresh/);
-  assert.match(dom.get('reachText').textContent, /unreachable/);
+  assert.match(dom.get('reachText').textContent, /Não consegui falar com o roteador/);
 
   // And so does "we have not read anything yet", which is not the same as fine.
   api.state.unreachable = false;
   api.state.status = undefined;
   api.renderRail();
   assert.doesNotMatch(dom.get('reach').className, /is-fresh/);
-  assert.equal(dom.get('reachText').textContent, 'checking');
+  assert.equal(dom.get('reachText').textContent, 'Ainda não li nada do roteador.');
 
   // The title itself never truncates by being hidden — it is always in the DOM.
   const fs = require('node:fs');
   const html = fs.readFileSync(sourcePath, 'utf8');
-  assert.match(html, /<h1 class="view-title">Capability Router<\/h1>/);
+  assert.match(html, /<h1 class="view-title">Roteador de modelos<\/h1>/);
 });
 
 test('a state colour used as TYPE is derived, because the raw hue is illegible', () => {
@@ -1646,10 +1646,10 @@ test('the probe verdict is a sentence, not a row of fragments', async () => {
     (acc, kid) => acc + String(kid.textContent || '') + read(kid), '');
   const sentence = read(dom.get('probeResult'));
 
-  assert.match(sentence, /Caught by hard-verbs/, 'words must not run together');
-  assert.match(sentence, /routed to gpt-5\.6-terra/);
-  assert.match(sentence, /on openai-codex/);
-  assert.match(sentence, /Falls back to us\.anthropic\.claude-opus-5 → deepseek-v4-pro/);
+  assert.match(sentence, /Capturado por hard-verbs/, 'words must not run together');
+  assert.match(sentence, /roteado para gpt-5\.6-terra/);
+  assert.match(sentence, /em openai-codex/);
+  assert.match(sentence, /Recorre a us\.anthropic\.claude-opus-5 → deepseek-v4-pro/);
   assert.doesNotMatch(sentence, /byhard|terraon/, 'no missing space survives');
 });
 
@@ -1827,7 +1827,7 @@ test('a tier destination is a chip that reveals the chain it points at', () => {
   assert.match(text, /gpt-5\.6-terra/);
   assert.match(text, /deepseek-v4-pro/);
   assert.match(text, /glm-5\.3/);
-  assert.match(text, /tried in order/, 'the same strategy words the Tier chains group uses');
+  assert.match(text, /na ordem escrita/, 'the same strategy words the Tier chains group uses');
 
   chip._listeners.click();
   assert.equal(chip.getAttribute('aria-expanded'), 'false');
@@ -2101,14 +2101,14 @@ test('billing is named in the operator\'s words, and a missing mode is a finding
     assert.equal(badge.unknown, false);
     assert.ok(badge.meaning.length > 0, `${mode} must say what it means for cost`);
   }
-  assert.match(api.billingBadge('plan').meaning, /no per-token invoice/);
+  assert.match(api.billingBadge('plan').meaning, /sem cobrança por token/);
   assert.equal(api.billingBadge(' PLAN ').word, 'plan', 'whitespace and case are the file\'s, not the fact\'s');
 
   // An elo whose rail is undeclared cannot be costed, which is the operator's
   // problem and therefore said out loud rather than left as a blank cell.
   const missing = api.billingBadge(undefined);
   assert.equal(missing.unknown, true);
-  assert.match(missing.word, /undeclared/);
+  assert.match(missing.word, /não declarado/);
   // And a mode this console has not learned still renders as written: swallowing
   // it would claim the elo declares nothing when it declares something unknown.
   const odd = api.billingBadge('barter');
@@ -2133,11 +2133,11 @@ test('a context window is written to be compared, not counted', () => {
 test('a dropped elo says WHY in words, never as a raw enum', () => {
   const { api } = loadConsole();
   const reasons = {
-    context_too_small: /context window is smaller/,
-    no_vision: /cannot read images/,
-    no_tool_calling: /cannot call tools/,
-    no_structured_output: /cannot return schema-constrained/,
-    capability_unknown: /unverified/,
+    context_too_small: /janela de contexto dele é menor/,
+    no_vision: /não lê imagem/,
+    no_tool_calling: /não chama ferramentas/,
+    no_structured_output: /não devolve resposta em formato fixo/,
+    capability_unknown: /não foram verificadas/,
   };
   for (const [reason, expected] of Object.entries(reasons)) {
     const words = api.rejectWhy(reason);
@@ -2147,10 +2147,10 @@ test('a dropped elo says WHY in words, never as a raw enum', () => {
   // A reason from a newer router still renders — an unexplained rejection is
   // worse than an awkwardly worded one.
   assert.equal(api.rejectWhy('no_audio_input'), 'no audio input');
-  assert.match(api.rejectWhy(''), /gave no reason/);
+  assert.match(api.rejectWhy(''), /não deu motivo/);
 
   // "Too small" is only actionable next to the two numbers.
-  assert.equal(api.contextShortfall(200000, 500000), 'holds 200K, needs 500K');
+  assert.equal(api.contextShortfall(200000, 500000), 'tem 200K, precisa de 500K');
   assert.equal(api.contextShortfall(undefined, 500000), '', 'no invented numbers');
   assert.equal(api.contextShortfall(200000, 0), '');
   // A near-miss must not read as a tie. min_context is ceil(est_input_tokens × 1.25)
@@ -2164,17 +2164,17 @@ test('a dropped elo says WHY in words, never as a raw enum', () => {
   assert.equal(api.ctxWindow(window), api.ctxWindow(Math.ceil(840001 * 1.25)),
     'both round to the same string, which is the trap');
   assert.equal(api.contextShortfall(window, Math.ceil(840001 * 1.25)),
-    'holds 1,050,000, needs 1,050,002');
+    'tem 1,050,000, precisa de 1,050,002');
   // And an actual tie is not dressed up as a shortfall with invented digits.
-  assert.equal(api.contextShortfall(window, window), 'holds 1.1M, needs 1.1M');
+  assert.equal(api.contextShortfall(window, window), 'tem 1.1M, precisa de 1.1M');
 });
 
 test('the derived requirements read in the same three families as the rules', () => {
   const { api } = loadConsole();
   const chips = plain(api.requirementChips({ min_context: 500000, vision: true, tool_calling: false }));
   assert.deepEqual(chips, [
-    { family: 'context', kind: 'context', text: 'at least 500,000 tokens' },
-    { family: 'capability', kind: 'needs', text: 'vision' },
+    { family: 'context', kind: 'context', text: 'pelo menos 500,000 tokens' },
+    { family: 'capability', kind: 'needs', text: 'imagem' },
   ], 'only a TRUE boolean constrains anything, so a false one is not drawn as a requirement');
   // A requirement key this console has not learned is still shown, because an
   // elo rejected by an invisible requirement is unexplainable.
@@ -2186,13 +2186,13 @@ test('sequential is ordered and random must not pretend to be', () => {
   const { api } = loadConsole();
   const seq = api.strategyWords('sequential');
   assert.equal(seq.ordered, true);
-  assert.match(seq.label, /in order/);
+  assert.match(seq.label, /na ordem escrita/);
 
   const rand = api.strategyWords('random', { pinPrimary: true });
   assert.equal(rand.ordered, false, 'a set has no first hop, so it gets no ordinals');
-  assert.match(rand.label, /random/);
-  assert.match(rand.note, /primary stays first/);
-  assert.match(api.strategyWords('random', { pinPrimary: false }).note, /every elo/);
+  assert.match(rand.label, /sorteada/);
+  assert.match(rand.note, /primeira fica fixa/);
+  assert.match(api.strategyWords('random', { pinPrimary: false }).note, /todas as tentativas/);
 
   // capabilities.order_chain degrades an unrecognised strategy to sequential. The
   // console must degrade the same way AND say so: silently drawing a typo'd
@@ -2200,7 +2200,7 @@ test('sequential is ordered and random must not pretend to be', () => {
   const typo = api.strategyWords('shuffled');
   assert.equal(typo.ordered, true);
   assert.match(typo.note, /shuffled/);
-  assert.match(typo.note, /not a strategy the router knows/);
+  assert.match(typo.note, /não é uma ordem que o roteador conhece/);
   assert.equal(api.strategyWords(undefined).ordered, true);
 });
 
@@ -2268,9 +2268,9 @@ test('a sequential chain is numbered down a spine; a random one is neither', () 
     'a numbered random chain is a lie about which elo runs first');
 
   const text = flat(dom.get('ladder'));
-  assert.match(text, /tried in order/);
-  assert.match(text, /tried in a random order/);
-  assert.match(text, /every elo is drawn at random/, 'pin_primary false shuffles the primary too');
+  assert.match(text, /na ordem escrita/);
+  assert.match(text, /em ordem sorteada/);
+  assert.match(text, /todas as tentativas são sorteadas/, 'pin_primary false shuffles the primary too');
   // "top to bottom, every time" beside "tried in order" is one fact written twice
   // (DESIGN.md §2.3), so an ordinary sequential tier carries no second line.
   assert.doesNotMatch(text, /top to bottom/);
@@ -2308,12 +2308,12 @@ test('every elo shows the rail it runs on, how it is billed and what it can hold
   assert.match(text, /plan/);
   assert.match(text, /subscription/);
   assert.match(text, /metered/);
-  assert.match(text, /200K context/);
-  assert.match(text, /1M context/);
+  assert.match(text, /200K de contexto/);
+  assert.match(text, /1M de contexto/);
   // An elo nothing knows is not a blank cell: it routes UNCHECKED, and the filter
   // can neither clear it nor reject it.
-  assert.match(text, /unverified/);
-  assert.match(dom.get('ladderNote').textContent, /unverified/,
+  assert.match(text, /sem capacidade verificada/);
+  assert.match(dom.get('ladderNote').textContent, /sem capacidade verificada/,
     'and the group head counts them, so the gap is visible without reading every row');
 });
 
@@ -2323,10 +2323,10 @@ test('a tier with one elo and no fallback says what to do about it', () => {
   api.state.policy = { rules: [], default: {}, tiers: { T1: { model: 'glm-4.7', provider: 'zai', billing_mode: 'plan' } } };
   api.renderLadder();
   const text = flat(dom.get('ladder'));
-  assert.match(text, /No fallback declared/);
+  assert.match(text, /Sem reserva declarada/);
   assert.match(text, /zai/, 'it names the rail whose outage takes the tier down');
-  assert.match(text, /Add a hop on another vendor/, 'an empty state that teaches the next action');
-  assert.match(text, /1 independent rail of 1 hop/);
+  assert.match(text, /Acrescente uma tentativa em outro provedor/, 'an empty state that teaches the next action');
+  assert.match(text, /1 provedor independente em 1 tentativa/);
 });
 
 test('a chain whose first two hops share an upstream is called out, not counted as two', () => {
@@ -2343,9 +2343,9 @@ test('a chain whose first two hops share an upstream is called out, not counted 
   };
   api.renderLadder();
   const text = flat(dom.get('ladder'));
-  assert.match(text, /2 independent rails of 3 hops/, 'three vendors, two upstreams');
-  assert.match(text, /Hops 1 and 2 both resolve to openrouter/);
-  assert.match(text, /Reorder so hop 2 is on another upstream/);
+  assert.match(text, /2 provedores independentes em 3 tentativas/, 'three vendors, two upstreams');
+  assert.match(text, /As tentativas 1 e 2 caem as duas em openrouter/);
+  assert.match(text, /Reordene para a 2ª tentativa ficar em outro provedor/);
 });
 
 test('no tiers is an instruction, not a blank panel', () => {
@@ -2353,14 +2353,14 @@ test('no tiers is an instruction, not a blank panel', () => {
   api.state.loading = false;
   api.state.policy = { rules: [], default: {}, tiers: {} };
   api.renderLadder();
-  assert.match(flat(dom.get('ladder')), /No tiers defined/);
+  assert.match(flat(dom.get('ladder')), /Nenhuma regra pode mandar tarefa para um grupo/);
   assert.equal(dom.get('ladderNote').textContent, '', 'and no note about a chain that does not exist');
 
   // Unreachable is a different claim from empty, and the console must not make the
   // second while the first is true.
   api.state.unreachable = true;
   api.renderLadder();
-  assert.match(flat(dom.get('ladder')), /unreachable/);
+  assert.match(flat(dom.get('ladder')), /não for possível falar com o roteador/);
 });
 
 // ── the chain plan for a probed task ─────────────────────────────────────
@@ -2419,13 +2419,13 @@ test('the chain plan shows the requirements and the order the elos will be tried
   api.renderChainPlan(chainPlan());
 
   const box = dom.get('chainPlan');
-  assert.deepEqual(findAll(box, 'chip-val').map((n) => n.textContent), ['at least 500,000 tokens']);
+  assert.deepEqual(findAll(box, 'chip-val').map((n) => n.textContent), ['pelo menos 500,000 tokens']);
   assert.deepEqual(findAll(box, 'hop-model').map((n) => n.textContent),
     ['gpt-5.6-terra', 'deepseek-v4-pro'], 'the order it will really try them');
   assert.deepEqual(findAll(box, 'hop-ord').map((n) => n.textContent), ['1', '2']);
   const text = flat(box);
-  assert.match(text, /1\.1M context/);
-  assert.match(text, /2 independent rails across 2 eligible hops/);
+  assert.match(text, /1\.1M de contexto/);
+  assert.match(text, /2 provedores independentes em 2 tentativas elegíveis/);
 });
 
 test('a bypassed capability filter is the first thing the panel says', () => {
@@ -2438,9 +2438,9 @@ test('a bypassed capability filter is the first thing the panel says', () => {
   const first = dom.get('chainPlan').children[0];
   assert.match(first.className, /warn-line bad/, 'it takes the loudest line this console has');
   const said = String(first.textContent || '') + flat(first);
-  assert.match(said, /bypassed/i);
-  assert.match(said, /try them all anyway/, 'it says what the router will do');
-  assert.match(said, /lower the tier/, 'and what the operator can do about it');
+  assert.match(said, /ignorado/i);
+  assert.match(said, /tentar todas mesmo assim/, 'it says what the router will do');
+  assert.match(said, /baixe as exigências do grupo/, 'and what the operator can do about it');
 });
 
 test('a rejected elo carries the reason and the two numbers behind it', () => {
@@ -2451,12 +2451,12 @@ test('a rejected elo carries the reason and the two numbers behind it', () => {
     rejected: [{ model: 'glm-5-turbo', provider: 'zai', reject_reason: 'context_too_small' }],
   }));
   const text = flat(dom.get('chainPlan'));
-  assert.match(text, /Dropped \(1\)/);
+  assert.match(text, /Tirados da fila \(1\)/);
   assert.match(text, /glm-5-turbo/);
-  assert.match(text, /context window is smaller than this task needs/);
-  assert.match(text, /holds 200K, needs 500K/, 'the numbers are what make it fixable');
+  assert.match(text, /janela de contexto dele é menor do que esta tarefa precisa/);
+  assert.match(text, /tem 200K, precisa de 500K/, 'the numbers are what make it fixable');
   assert.doesNotMatch(text, /context_too_small/, 'the enum never reaches the screen');
-  assert.match(text, /not banned, not down/, 'ineligible is a different condition from unhealthy');
+  assert.match(text, /não está bloqueada nem fora do ar/, 'ineligible is a different condition from unhealthy');
 });
 
 test('an unverified elo is named as running unchecked', () => {
@@ -2464,9 +2464,9 @@ test('an unverified elo is named as running unchecked', () => {
   api.state.policy = tierPolicy();
   api.renderChainPlan(chainPlan({ unknown: ['mystery-2'] }));
   const text = flat(dom.get('chainPlan'));
-  assert.match(text, /Unverified/);
+  assert.match(text, /Sem verificação/);
   assert.match(text, /mystery-2/);
-  assert.match(text, /eligible by assumption/, 'the filter neither cleared nor rejected it');
+  assert.match(text, /elegíveis por suposição/, 'the filter neither cleared nor rejected it');
   assert.match(text, /router\.yaml/, 'and the fix is named');
 });
 
@@ -2478,15 +2478,15 @@ test('an emptied chain says the filter emptied it instead of showing a blank lis
     rejected: [{ model: 'glm-4.7', provider: 'zai', reject_reason: 'no_vision' }],
   }));
   const text = flat(dom.get('chainPlan'));
-  assert.match(text, /No elo survived the filter/);
-  assert.match(text, /cannot read images/);
+  assert.match(text, /Nenhuma tentativa passou pelo filtro/);
+  assert.match(text, /não lê imagem/);
 });
 
 test('no requirements is said plainly, and no plan renders nothing at all', () => {
   const { api, dom } = loadConsole();
   api.state.policy = tierPolicy();
   api.renderChainPlan(chainPlan({ requirements: {} }));
-  assert.match(flat(dom.get('chainPlan')), /No capability requirements derived/);
+  assert.match(flat(dom.get('chainPlan')), /Nenhuma exigência de capacidade foi derivada/);
 
   // DESIGN.md §2.1: a section with no data is absent, never a framed void. A task
   // bound for the classifier has no resolved chain yet.
@@ -2504,7 +2504,7 @@ test('a random chain plan loses its ordinals too, wherever it is read', () => {
   assert.equal(lists.length, 1);
   assert.match(lists[0].className, /drawn/);
   assert.equal(findAll(dom.get('chainPlan'), 'hop-ord').length, 0);
-  assert.match(flat(dom.get('chainPlan')), /random/);
+  assert.match(flat(dom.get('chainPlan')), /sorteada/);
 });
 
 test('the primary\'s billing comes from the policy, not from nowhere', () => {
@@ -2520,7 +2520,7 @@ test('the primary\'s billing comes from the policy, not from nowhere', () => {
   api.renderChainPlan(chainPlan({ chain: [{ model: 'glm-4.7', provider: 'zai' }] }));
   const text = flat(dom.get('chainPlan'));
   assert.match(text, /plan/);
-  assert.doesNotMatch(text, /billing undeclared/);
+  assert.doesNotMatch(text, /modo de pagamento não declarado/);
 });
 
 test('an elo declaring its own capabilities beats the registry', () => {
@@ -2577,8 +2577,8 @@ test('an invalid policy is reported where the operator is, with the first error'
   api.state.status = { validation_errors: ["tier 'T9': 'fallback_strategy' must be one of sequential, random"] };
   api.renderWarnings();
   const text = flat(dom.get('warnings'));
-  assert.match(text, /Policy invalid — 1 error\./);
-  assert.match(text, /Dry runs are refused/);
+  assert.match(text, /Não é possível salvar enquanto houver erro\. 1 erro no arquivo\./);
+  assert.match(text, /A simulação é recusada/);
   assert.match(text, /fallback_strategy/, 'the first error itself, not a count of errors');
 });
 
@@ -2628,8 +2628,8 @@ test('a probe refused by an invalid policy explains which of the two is broken',
   api.state.loading = false;
   await api.probe('anything at all');
   const text = flat(dom.get('probeResult'));
-  assert.match(text, /router policy is invalid/i);
-  assert.match(text, /Fix the errors/, 'the next action, not a status code');
+  assert.match(text, /não é possível simular enquanto houver erro no arquivo/i);
+  assert.match(text, /Corrija os erros nomeados acima/, 'the next action, not a status code');
   assert.equal(dom.get('chainPlan').children.length, 0, 'and no stale plan survives a refused probe');
 });
 
@@ -2687,7 +2687,7 @@ test('the invalid-policy line grows a jump button when the error names a rule', 
   api.state.status = shadowStatus();
   api.renderWarnings();
   const text = flat(dom.get('warnings'));
-  assert.match(text, /Policy invalid — 1 error\./);
+  assert.match(text, /Não é possível salvar enquanto houver erro\. 1 erro no arquivo\./);
   assert.match(text, /Ver regra 7/, 'the button names the row by its sheet ordinal (index 6 + 1)');
 });
 
@@ -2704,9 +2704,9 @@ test('an invalid policy disables Route it, says why, and gates the result space'
   api.renderWarnings();
   const go = dom.get('routeGo');
   assert.equal(go.disabled, true);
-  assert.match(go.title, /bloqueado pela política inválida/);
+  assert.match(go.title, /Não é possível simular enquanto houver erro no arquivo/);
   const gate = flat(dom.get('probeResult'));
-  assert.match(gate, /bloqueado pela política inválida — consertar/);
+  assert.match(gate, /Não é possível simular enquanto houver erro no arquivo\. Corrija o erro:/);
   assert.match(gate, /Ver regra 7/, 'the fix path rides in the result space too');
 });
 
@@ -2733,7 +2733,7 @@ test('a probe refuses locally when the policy is invalid — no round-trip', asy
   api.state.status = shadowStatus();
   await api.probe('anything at all');
   assert.equal(called, false, 'the refusal is known before asking — Enter cannot bypass a disabled button');
-  assert.match(flat(dom.get('probeResult')), /bloqueado pela política inválida/);
+  assert.match(flat(dom.get('probeResult')), /Não é possível simular enquanto houver erro no arquivo/);
   assert.match(flat(dom.get('probeResult')), /Ver regra 7/);
 });
 
@@ -2962,14 +2962,14 @@ test('a fresh probe clears the previous task\'s chain plan before asking', async
   api.state.policy = tierPolicy();
   await api.probe('Read the whole repository and summarise it');
   assert.match(flat(dom.get('chainPlan')), /gpt-5\.6-terra/, 'the plan rides on the decision');
-  assert.match(flat(dom.get('chainPlan')), /Unverified/);
+  assert.match(flat(dom.get('chainPlan')), /Sem verificação/);
   assert.deepEqual(plain(api.state.chainPlan.requirements), { min_context: 500000 },
     'and it is kept in state, so a refresh re-renders it instead of dropping it');
 });
 
 // ── THE SIZE A PREVIEW IS MEASURED FROM ───────────────────────────────────
 // Production routes on the text the child really receives (context + goal) and
-// this console asked /explain about the goal line alone, so the Explain panel
+// this console asked /explain about só a linha do objetivo, so the Explain panel
 // showed a plan production never attempts: measured on the shipped policy, a
 // 615,059-char composed prompt is 170,850 estimated tokens with a 213,563-token
 // min_context floor, while the same goal by itself measures 17 and derives none.
@@ -3086,11 +3086,11 @@ test('a probe says which text the plan was sized from, in the service\'s own wor
   await api.probe('Debug a race condition in the cache');
 
   const text = flat(dom.get('probeResult'));
-  assert.match(text, /sized from the context you supplied/);
+  assert.match(text, /medido a partir do contexto que você informou/);
   // Both numbers, each from the surface that owns it: the length of the text
   // measured, and the token count the rules were evaluated against.
-  assert.match(text, /615,059 characters/);
-  assert.match(text, /170,850 estimated tokens/);
+  assert.match(text, /615,059 caracteres/);
+  assert.match(text, /170,850 tokens estimados/);
   assert.doesNotMatch(text, /goal line alone/, 'it was not sized from the goal');
 });
 
@@ -3114,8 +3114,8 @@ test('a preview sized from the goal line says so, because it reads as production
   await api.probe('Debug a race condition in the cache');
 
   const text = flat(dom.get('probeResult'));
-  assert.match(text, /sized from the goal line alone — 35 characters, 10 estimated tokens\./);
-  assert.match(text, /paste it in above/, 'and it names what to do about it');
+  assert.match(text, /medido a partir da linha do objetivo apenas — 35 caracteres, 10 tokens estimados\./);
+  assert.match(text, /cole o contexto acima/, 'and it names what to do about it');
 
   // A sidecar that reports no preview at all is not described: "sized from the
   // goal line" would be a claim about a field nobody sent.
@@ -3124,12 +3124,12 @@ test('a preview sized from the goal line says so, because it reads as production
     'and a value the service does not define is not guessed at either');
   // A preview that named the text but no size still says which text it was.
   const partial = api.sizedFromWords({ sized_from: sized.prompt }, {});
-  assert.equal(partial.said, 'the context you supplied.', 'no invented characters, no invented tokens');
+  assert.equal(partial.said, 'do contexto que você informou.', 'no invented characters, no invented tokens');
   // And a null size is not zero: `Number(null)` is 0, so a coerced one would read
   // as a measured "0 characters" — a number nobody sent.
   assert.equal(api.sizedFromWords({ sized_from: sized.prompt, prompt_chars: null },
                                   { est_input_tokens: null }).said,
-               'the context you supplied.');
+               'do contexto que você informou.');
 });
 
 test('a context that cannot be POSTed is refused before it becomes an HTTP status', async () => {
@@ -3149,8 +3149,8 @@ test('a context that cannot be POSTed is refused before it becomes an HTTP statu
   await api.probe('Add a retry to the cache client');
   assert.equal(calls.length, 0, 'nothing is sent that cannot be answered');
   const text = flat(dom.get('probeResult'));
-  assert.match(text, /Open the Router panel inside Hermes One/);
-  assert.match(text, /clear the context/, 'and the other way out is named too');
+  assert.match(text, /Abra o Hermes One e volte aqui pelo menu lateral/);
+  assert.match(text, /limpe o contexto/, 'and the other way out is named too');
 });
 
 test('an input the server refuses is quoted, not restated as a number', async () => {
@@ -3457,7 +3457,7 @@ test('a refused window is DROPPED, so a rail with only one reads as untimed', ()
     assert.deepEqual(plain(api.entryWindows({ price_windows: [window] })), [],
       `${JSON.stringify(window)} is not a window the router would honour`);
     assert.equal(api.windowWords(api.entryWindows({ price_windows: [window] }), { hour: 7, weekday: 0 }),
-      'no time-varying price', 'and the words say so, exactly as they do for a flat rail');
+      'sem preço que varia com a hora', 'and the words say so, exactly as they do for a flat rail');
   }
   // A window BESIDE a malformed one still prices: the bad entry is skipped, not
   // the declaration — _multiplier_at walks past it to the next candidate.
@@ -3510,7 +3510,7 @@ test('an elo with no window of its own is priced flat, never at its rail\'s peak
   assert.equal(api.priceMultiplier(api.eloWindows(catalogueEntry('glm-4.6')), { hour: 7, weekday: 0 }), 1,
     'flat at the hour its rail doubles — the same answer capabilities.price_multiplier gives');
   const words = api.priceWords(catalogueEntry('glm-4.6'), 1, 'metered', true);
-  assert.equal(words, '$0.60 in / $2.20 out per 1M', 'and the price it renders is the base rate, undoubled');
+  assert.equal(words, '$0.60 entrada / $2.20 saída por 1M', 'and the price it renders is the base rate, undoubled');
   assert.doesNotMatch(words, /peak/);
 
   // An elo that DOES declare one keeps it, and it is the registry's own.
@@ -3643,12 +3643,12 @@ test('a rail says what it costs now and until when, in one clause', () => {
   const { api } = loadConsole();
   const deepseek = api.eloWindows(catalogueEntry('deepseek-v4-flash'));
   const xiaomi = api.eloWindows(catalogueEntry('mimo-v2.5'));
-  assert.equal(api.windowWords(deepseek, { hour: 7, weekday: 0 }), '2× peak until 10:00 UTC');
-  assert.equal(api.windowWords(deepseek, { hour: 12, weekday: 0 }), 'base rate until 01:00 UTC, then 2×');
-  assert.equal(api.windowWords(xiaomi, { hour: 18, weekday: 0 }), '0.8× cheap window until 00:00 UTC');
-  assert.equal(api.windowWords([], { hour: 7, weekday: 0 }), 'no time-varying price');
+  assert.equal(api.windowWords(deepseek, { hour: 7, weekday: 0 }), '2× em hora de pico até 10:00 UTC');
+  assert.equal(api.windowWords(deepseek, { hour: 12, weekday: 0 }), 'tarifa base até 01:00 UTC, depois 2×');
+  assert.equal(api.windowWords(xiaomi, { hour: 18, weekday: 0 }), '0.8× em hora barata até 00:00 UTC');
+  assert.equal(api.windowWords([], { hour: 7, weekday: 0 }), 'sem preço que varia com a hora');
   // Time-agnostic is its own answer and must not read as off-peak.
-  assert.match(api.windowWords(deepseek, null), /time-agnostic/);
+  assert.match(api.windowWords(deepseek, null), /independe da hora/);
 });
 
 test('the clock line names every timed rail, expensive ones first', () => {
@@ -3712,17 +3712,17 @@ test('an elo\'s cost line reports the multiplier and the prices behind it', () =
   // Inside the peak: both numbers, because "2x" without the rate is not something
   // an operator can compare against the next hop.
   assert.equal(api.priceWords({ price_in: 0.66, price_out: 1.98 }, 2, 'metered'),
-    '2× peak · $1.32 in / $3.96 out per 1M');
+    '2× em hora de pico · $1.32 entrada / $3.96 saída por 1M');
   assert.equal(api.priceWords({ price_in: 0.22, price_out: 0.66 }, 1, 'metered'),
-    '$0.22 in / $0.66 out per 1M');
+    '$0.22 entrada / $0.66 saída por 1M');
   // A plan model in a peak window: the multiplier is real (the credits double) and
   // there is still no dollar figure to show.
   const plan = api.priceWords({ price_in: null, price_out: null }, 2, 'plan');
-  assert.match(plan, /2× peak/);
-  assert.match(plan, /plan credits/);
+  assert.match(plan, /2× em hora de pico/);
+  assert.match(plan, /créditos do plano/);
   assert.doesNotMatch(plan, /\$0/, 'a plan model rendered as $0 would win every comparison');
   // A cheap window says which direction it goes.
-  assert.match(api.priceWords({ price_in: 0.3, price_out: 0.9 }, 0.8, 'metered'), /0\.8× cheap window/);
+  assert.match(api.priceWords({ price_in: 0.3, price_out: 0.9 }, 0.8, 'metered'), /0\.8× em hora barata/);
   // Nothing to say is nothing rendered: a flat metered rail with no published rate
   // spends no words on it.
   assert.equal(api.priceWords({}, 1, 'metered'), '');
@@ -3736,10 +3736,10 @@ test('cheapest_now says out loud that its order is only true of this hour', () =
   assert.equal(now.key, 'cheapest_now');
   assert.equal(now.ordered, true, 'ascending price IS an order, so it keeps its ordinals');
   assert.equal(now.timeRelative, true);
-  assert.match(now.label, /cheapest first/);
+  assert.match(now.label, /pelo mais barato agora/);
   assert.match(now.note, /07:00 UTC/);
-  assert.match(now.note, /TIME-RELATIVE/);
-  assert.match(now.note, /primary pinned first/);
+  assert.match(now.note, /depende da hora/);
+  assert.match(now.note, /com a primeira fixa/);
 
   // With no clock it IS sequential (capabilities.order_chain), and an order
   // labelled "cheapest" that is really declared order is the most expensive kind
@@ -3749,7 +3749,7 @@ test('cheapest_now says out loud that its order is only true of this hour', () =
   assert.equal(agnostic.ordered, true);
   assert.equal(agnostic.timeRelative, false);
   assert.equal(agnostic.declared, 'cheapest_now', 'what the tier asked for is still reported');
-  assert.match(agnostic.note, /needs a clock/);
+  assert.match(agnostic.note, /precisa de hora/);
 });
 
 test('a strategy that did not run is reported as the one that did', () => {
@@ -3760,10 +3760,10 @@ test('a strategy that did not run is reported as the one that did', () => {
   const degraded = api.strategyWords('random', { pinPrimary: false, degraded: true });
   assert.equal(degraded.ordered, true, 'it really was tried in declared order');
   assert.equal(degraded.declared, 'random');
-  assert.match(degraded.note, /random source/);
+  assert.match(degraded.note, /fonte de sorteio/);
   const cheap = api.strategyWords('cheapest_now', { when: { hour: 7, weekday: 0 }, degraded: true });
   assert.equal(cheap.timeRelative, false);
-  assert.match(cheap.note, /needs a clock/);
+  assert.match(cheap.note, /precisa de hora/);
 });
 
 test('an unreported pin_primary says so instead of claiming the primary is first', () => {
@@ -3776,8 +3776,8 @@ test('an unreported pin_primary says so instead of claiming the primary is first
   const unknown = api.strategyWords('random', {});
   assert.equal(unknown.pinPrimary, null, 'three-valued: true, false, and nobody said');
   assert.equal(unknown.ordered, false);
-  assert.match(unknown.note, /pin_primary is not reported/);
-  assert.match(unknown.note, /unknown/);
+  assert.match(unknown.note, /não diz se a primeira fica fixa/);
+  assert.match(unknown.note, /não se sabe qual tentativa roda primeiro/);
   assert.doesNotMatch(unknown.note, /stays first/, 'the wrong claim is what F7 was');
 
   // A TIER is different, and the difference is not a detail: the console reads the
@@ -3801,7 +3801,7 @@ test('a chain plan with no pin_primary draws no hop as first', () => {
   assert.match(lists[0].className, /drawn/);
   assert.equal(findAll(dom.get('chainPlan'), 'hop-ord').length, 0,
     'an ordinal on hop 1 is the claim "this runs first", and nothing here supports it');
-  assert.match(flat(dom.get('chainPlan')), /pin_primary is not reported/);
+  assert.match(flat(dom.get('chainPlan')), /não diz se a primeira fica fixa/);
 
   // And when it IS reported true, the primary is drawn as the first hop it really is.
   api.renderChainPlan(chainPlan({ strategy: 'random', pin_primary: true }));
@@ -3824,7 +3824,7 @@ test('the pricing clock names the hour in both zones and the rails in a window',
   const rails = dom.get('clockRails').children;
   assert.equal(rails.length, 3, 'one line per rail that prices by the hour');
   const first = flat(rails[0]);
-  assert.match(first, /deepseek 2× peak until 10:00 UTC/, 'real spaces, so it reads aloud');
+  assert.match(first, /deepseek 2× em hora de pico até 10:00 UTC/, 'real spaces, so it reads aloud');
   assert.match(rails[0].className, /peak/, 'and amber, because paying double needs attention');
   assert.doesNotMatch(rails[2].className, /peak/, 'a rail at base rate is not a condition');
 
@@ -3833,7 +3833,7 @@ test('the pricing clock names the hour in both zones and the rails in a window',
   api.renderClock();
   const night = findAll(dom.get('clockRails'), 'clock-rail').concat(dom.get('clockRails').children);
   const xiaomi = night.find((row) => /xiaomi/.test(flat(row)));
-  assert.match(flat(xiaomi), /0\.8× cheap window/);
+  assert.match(flat(xiaomi), /0\.8× em hora barata/);
   assert.doesNotMatch(xiaomi.className, /peak/);
 });
 
@@ -3854,18 +3854,18 @@ test('the tier chains show a cheapest_now order as time-relative, with the price
   api.renderLadder();
 
   const text = flat(dom.get('ladder'));
-  assert.match(text, /tried cheapest first/);
-  assert.match(text, /TIME-RELATIVE/, 'an order that differs from the YAML must say why');
+  assert.match(text, /pelo mais barato agora/);
+  assert.match(text, /depende da hora/, 'an order that differs from the YAML must say why');
   assert.match(text, /07:00 UTC/);
   // The numbers the comparison ran on, per elo — and the peak multiplier applied
   // to the stored base rate rather than a pre-doubled number.
   const pro = registryFacts('deepseek-v4-pro');
-  assert.match(text, /2× peak · \$1\.32 in \/ \$3\.96 out per 1M/);
+  assert.match(text, /2× em hora de pico · \$1\.32 entrada \/ \$3\.96 saída por 1M/);
   assert.deepEqual([pro.price_in * 2, pro.price_out * 2], [1.32, 3.96],
     'and those two numbers are the registry rate times the declared multiplier');
-  assert.match(text, /\$5\.00 in \/ \$30\.00 out per 1M/);
+  assert.match(text, /\$5\.00 entrada \/ \$30\.00 saída por 1M/);
   // The plan-covered primary has no dollar price and must not acquire one.
-  assert.match(text, /plan credits/);
+  assert.match(text, /créditos do plano/);
   assert.doesNotMatch(text, /\$0 in/);
 });
 
@@ -3886,10 +3886,10 @@ test('a tier states what its time knobs will do', () => {
   };
   api.renderLadder();
   const text = flat(dom.get('ladder'));
-  assert.match(text, /the cap is dropped if that would empty the chain/,
+  assert.match(text, /o teto se desliga se isso fosse deixar a fila vazia/,
     'a cost control that can cause an outage is the one thing the cap must not be');
-  assert.match(text, /moves deepseek and zai to the end while they are in a peak window/);
-  assert.match(text, /prefers gpt-5\.6-luna while they are off-peak/);
+  assert.match(text, /manda deepseek e zai para o fim da fila enquanto estiverem em hora de pico/);
+  assert.match(text, /prefere gpt-5\.6-luna enquanto estiverem fora do pico/);
   // The knobs are facts about the CONFIG. Which rail is expensive right now is the
   // clock line's fact, and it is said in exactly one place.
   assert.deepEqual(plain(api.timeKnobWords({})), [], 'a tier with no knobs spends no words');
@@ -3905,21 +3905,23 @@ test('a tier states what its time knobs will do', () => {
   const tier = api.state.policy.tiers.T1;
   const hops = plain(api.tierChain(tier));
   const words = plain(api.timeKnobWords(tier, { hops }));
-  const declines = words.find((w) => /declines/.test(w)) || '';
-  const exemption = words.find((w) => /cannot remove/.test(w)) || '';
+  const declines = words.find((w) => /recusa uma tentativa/.test(w)) || '';
+  const exemption = words.find((w) => /não pode tirar/.test(w)) || '';
 
-  assert.doesNotMatch(text, /declines any rail/,
+  assert.doesNotMatch(text, /recusa qualquer provedor/,
     'the third appearance of a dollar cap described as evicting anything it is priced against');
-  units.removable.forEach((mode) => assert.match(declines, new RegExp(mode),
+  // A frase nomeia o modo na palavra do glossário (§4.6), não no enum cru.
+  const MODE_WORD = { metered: 'por token', subscription: 'por assinatura', plan: 'plano', free: 'sem cobrança' };
+  units.removable.forEach((mode) => assert.match(declines, new RegExp(MODE_WORD[mode] || mode),
     `the cap removes ${mode} hops, so it has to name them`));
-  units.exempt.forEach((mode) => assert.doesNotMatch(declines, new RegExp(mode),
+  units.exempt.forEach((mode) => assert.doesNotMatch(declines, new RegExp(MODE_WORD[mode] || mode),
     `${mode} is not in the dollars bucket, so the cap cannot decline it`));
   // And the exemption is named on THIS tier's own hop, with the reason: an operator
   // reading 1.5× over a 2.0× primary is owed the answer, not left to measure it.
   assert.match(exemption, /glm-4\.7/);
-  assert.match(exemption, /credits come off an allowance already bought/);
-  assert.match(exemption, /adds a dollar/, 'why credits are not dollars, not just that they differ');
-  assert.equal(words.some((w) => /removes nothing here/.test(w)), false,
+  assert.match(exemption, /créditos saem de uma franquia já comprada/);
+  assert.match(exemption, /cobra a mais/, 'why credits are not dollars, not just that they differ');
+  assert.equal(words.some((w) => /o teto não tira nada aqui/.test(w)), false,
     'this chain still holds two dollar-billed hops, so the cap is not inert');
 
   // AGREEMENT ON THE TABLE ITSELF, mode for mode: the console's answer to "is this
@@ -3944,9 +3946,9 @@ test('a cap over a chain with no dollar-billed hop says it can remove nothing', 
     time_cap: { max_multiplier: 1.5 },
   };
   const words = plain(api.timeKnobWords(tier)).join(' ');
-  assert.match(words, /cannot remove plan-billed glm-4\.7 and free nemotron-ultra/);
-  assert.match(words, /no charge is still no charge/, 'each unit gets its own reason');
-  assert.match(words, /removes nothing here/);
+  assert.match(words, /não pode tirar glm-4\.7 pago por plano e nemotron-ultra sem cobrança/);
+  assert.match(words, /múltiplo de zero continua zero/, 'each unit gets its own reason');
+  assert.match(words, /o teto não tira nada aqui/);
 
   // A hop whose billing mode NOBODY declared is not evidence that the cap is inert:
   // the console does not know that hop's unit, so it says what it does know — the
@@ -3956,9 +3958,9 @@ test('a cap over a chain with no dollar-billed hop says it can remove nothing', 
     fallback: [{ model: 'mystery-1', provider: 'somewhere' }],
     time_cap: { max_multiplier: 1.5 },
   })).join(' ');
-  assert.match(undeclared, /mystery-1, billing undeclared/);
-  assert.match(undeclared, /never guessed at in order to drop a rail/);
-  assert.doesNotMatch(undeclared, /removes nothing here/,
+  assert.match(undeclared, /mystery-1, modo de pagamento não declarado/);
+  assert.match(undeclared, /nunca é adivinhada para tirar um provedor da fila/);
+  assert.doesNotMatch(undeclared, /o teto não tira nada aqui/,
     'a cost control is never reported as inert on the strength of a gap');
 
   // A mode the console has not learned is exempt for the same reason — _BILLING_RANK
@@ -3968,8 +3970,8 @@ test('a cap over a chain with no dollar-billed hop says it can remove nothing', 
     fallback: [{ model: 'mystery-1', provider: 'somewhere', billing_mode: 'prepaid' }],
     time_cap: { max_multiplier: 1.5 },
   })).join(' ');
-  assert.match(foreign, /mystery-1, billed in prepaid/);
-  assert.doesNotMatch(foreign, /removes nothing here/);
+  assert.match(foreign, /mystery-1, pago em prepaid/);
+  assert.doesNotMatch(foreign, /o teto não tira nada aqui/);
 });
 
 test('a bypassed time cap is as loud as a bypassed capability filter', () => {
@@ -3982,11 +3984,11 @@ test('a bypassed time cap is as loud as a bypassed capability filter', () => {
   const first = dom.get('chainPlan').children[0];
   assert.match(first.className, /warn-line bad/);
   const said = String(first.textContent || '') + flat(first);
-  assert.match(said, /Time cap bypassed/);
+  assert.match(said, /Teto de preço ignorado/);
   assert.match(said, /1\.5×/, 'the cap that was dropped');
   assert.match(said, /07:00 UTC/, 'and the hour it was dropped at');
-  assert.match(said, /pays peak price/, 'what it costs');
-  assert.match(said, /raise the cap|off-peak hour/, 'and what the operator can do');
+  assert.match(said, /paga preço de pico/, 'what it costs');
+  assert.match(said, /aumente o teto|fora do pico/, 'and what the operator can do');
 });
 
 test('a degraded strategy names the DECLARED word and the router\'s own reason', () => {
@@ -4008,12 +4010,12 @@ test('a degraded strategy names the DECLARED word and the router\'s own reason',
   }));
   const banner = dom.get('chainPlan').children[0];
   const said = String(banner.textContent || '') + flat(banner);
-  assert.match(said, /Fallback order degraded/);
-  assert.match(said, /declares “cheapest_now”/, 'the DECLARED word, which is the only one that can have failed to run');
+  assert.match(said, /A ordem de reserva não foi a declarada/);
+  assert.match(said, /declara “cheapest_now”/, 'the DECLARED word, which is the only one that can have failed to run');
   assert.doesNotMatch(said, /declares “sequential”/, 'never the strategy that did run');
   assert.match(said, /no clock was injected, so prices could not be compared/,
     'the router computed the reason; the console must not guess at it');
-  assert.match(said, /order that DID run — tried in order/, 'and what ran instead');
+  assert.match(said, /ordem que de fato rodou — na ordem escrita/, 'and what ran instead');
 
   // The reason is the SERVER'S: change it and the banner changes with it.
   api.renderChainPlan(chainPlan({
@@ -4023,7 +4025,7 @@ test('a degraded strategy names the DECLARED word and the router\'s own reason',
     strategy_degraded_reason: 'no rng was injected, so the tail was not shuffled',
   }));
   const random = flat(dom.get('chainPlan')) + String(dom.get('chainPlan').children[0].textContent || '');
-  assert.match(random, /declares “random”/);
+  assert.match(random, /declara “random”/);
   assert.match(random, /no rng was injected, so the tail was not shuffled/);
 
   // A plan that reports no reason still states the degrade, and the fallback wording
@@ -4033,14 +4035,14 @@ test('a degraded strategy names the DECLARED word and the router\'s own reason',
     strategy: 'sequential', strategy_declared: 'random', strategy_degraded: true, strategy_degraded_reason: '',
   }));
   assert.match(flat(dom.get('chainPlan')) + String(dom.get('chainPlan').children[0].textContent || ''),
-    /random.*random source/s, 'the fallback wording is about random, because random is what was declared');
+    /sorteada.*fonte de sorteio/s, 'the fallback wording is about random, because random is what was declared');
 
   // And a plan that reports no declared word names none: the degrade is still said,
   // without inventing a strategy nobody sent.
   api.renderChainPlan(chainPlan({ strategy: 'sequential', strategy_degraded: true, strategy_declared: '' }));
   const nameless = String(dom.get('chainPlan').children[0].textContent || '')
     + flat(dom.get('chainPlan').children[0]);
-  assert.match(nameless, /The declared fallback order did not run/);
+  assert.match(nameless, /A ordem de reserva declarada não foi a que rodou/);
   assert.doesNotMatch(nameless, /declares “/);
 });
 
@@ -4062,7 +4064,7 @@ test('the degrade banner and the chain agree about which strategy ran', () => {
     strategy: 'random', strategy_declared: 'random', strategy_degraded: false, pin_primary: false,
   }));
   assert.equal(findAll(dom.get('chainPlan'), 'hop-ord').length, 0);
-  assert.doesNotMatch(flat(dom.get('chainPlan')), /Fallback order degraded/);
+  assert.doesNotMatch(flat(dom.get('chainPlan')), /A ordem de reserva não foi a declarada/);
 });
 
 test('a task whose eligible chain collapsed to one rail is told it has no fallback', () => {
@@ -4081,10 +4083,10 @@ test('a task whose eligible chain collapsed to one rail is told it has no fallba
     ],
   }));
   const text = flat(dom.get('chainPlan'));
-  assert.match(text, /1 independent rail across 1 eligible hop/);
-  assert.match(text, /No fallback for this task/);
+  assert.match(text, /1 provedor independente em 1 tentativa elegível/);
+  assert.match(text, /Sem reserva para esta tarefa/);
   assert.match(text, /openai-codex/, 'it names the upstream everything now depends on');
-  assert.match(text, /nowhere to go/);
+  assert.match(text, /não tem para onde ir/);
 });
 
 test('an elo the time cap refused says the two numbers that make it fixable', () => {
@@ -4105,9 +4107,9 @@ test('an elo the time cap refused says the two numbers that make it fixable', ()
     multipliers: { 'deepseek-v4-pro': 2 },
   }));
   const text = flat(dom.get('chainPlan'));
-  assert.match(text, /Dropped \(1\)/, 'a cost refusal and a capability refusal answer the same question');
+  assert.match(text, /Tirados da fila \(1\)/, 'a cost refusal and a capability refusal answer the same question');
   assert.match(text, /deepseek-v4-pro/);
-  assert.match(text, /costs more this hour than the tier’s price cap allows/);
+  assert.match(text, /nesta hora ele custa mais do que o teto de preço do grupo permite/);
   assert.match(text, /2× now, cap 1\.5×/, 'the price and the ceiling, not an enum');
   assert.doesNotMatch(text, /time_cap allows|reject_reason/, 'the enum never reaches the screen');
 
@@ -4132,7 +4134,7 @@ test('a capped elo is listed once, even when the filter also reported it', () =>
     rejected: [{ model: 'deepseek-v4-pro', provider: 'deepseek', reject_reason: 'time_cap' }],
     capped: [{ model: 'deepseek-v4-pro', provider: 'deepseek' }],
   }));
-  assert.match(flat(dom.get('chainPlan')), /Dropped \(1\)/, 'one elo, one row');
+  assert.match(flat(dom.get('chainPlan')), /Tirados da fila \(1\)/, 'one elo, one row');
   assert.deepEqual(plain(api.cappedEntries({ capped: [{ model: 'a' }, 'b'] }, [{ model: 'a' }])),
     [{ model: 'b', reject_reason: 'time_cap' }], 'a plain string is a model too');
   assert.deepEqual(plain(api.cappedEntries({}, [])), []);
@@ -4156,15 +4158,15 @@ test('an elo the time policy moved says why it moved', () => {
     peak_priced: ['deepseek-v4-pro'],
   }));
   const text = flat(dom.get('chainPlan'));
-  assert.match(text, /moved to the end — deepseek is in an expensive window/);
-  assert.match(text, /tried only if everything ahead of it fails/);
-  assert.match(text, /moved to the front — this tier prefers it/);
+  assert.match(text, /foi para o fim da fila — deepseek está em hora cara/);
+  assert.match(text, /só é tentada se tudo à frente falhar/);
+  assert.match(text, /foi para o começo da fila — este grupo a prefere/);
   // Both flag shapes the router uses reach the same words.
   assert.deepEqual(plain(api.timeFlagIndex({ demoted: [{ model: 'x' }], promoted: ['y'], capped: ['z'] })),
     { x: { demoted: true }, y: { promoted: true }, z: { capped: true } });
   assert.deepEqual(plain(api.timeFlagIndex(null)), {});
   // A per-elo flag works too, because the plan may carry it either way.
-  assert.match(api.timePolicyMove({ provider: 'zai', demoted: true }, null), /moved to the end — zai/);
+  assert.match(api.timePolicyMove({ provider: 'zai', demoted: true }, null), /foi para o fim da fila — zai/);
   assert.equal(api.timePolicyMove({ provider: 'zai' }, null), '');
 });
 
@@ -4179,7 +4181,7 @@ test('the plan\'s own hour wins over the console\'s, and it says which it used',
   assert.deepEqual(planned.when, { hour: 3, weekday: 0 });
   assert.equal(planned.source, 'plan');
   api.renderChainPlan(chainPlan({ utc_hour: 3, utc_weekday: 0 }));
-  assert.match(flat(dom.get('chainPlan')), /planned at 03:00 UTC/,
+  assert.match(flat(dom.get('chainPlan')), /planejado às 03:00 UTC/,
     'a plan made at another hour must not be read as though it were made now');
 
   // And when the plan was made at the hour the clock line is already reporting,
@@ -4219,7 +4221,7 @@ test('the planner\'s own multiplier wins over the console\'s arithmetic', () => 
     multipliers: { 'deepseek-v4-pro': 2 },
   }));
   const text = flat(dom.get('chainPlan'));
-  assert.match(text, /2× peak · \$1\.32 in \/ \$3\.96 out per 1M/);
+  assert.match(text, /2× em hora de pico · \$1\.32 entrada \/ \$3\.96 saída por 1M/);
 });
 
 test('an ordinary sequential tier gains no price noise from the time layer', () => {
@@ -4234,7 +4236,7 @@ test('an ordinary sequential tier gains no price noise from the time layer', () 
   api.renderLadder();
   const text = flat(dom.get('ladder'));
   assert.doesNotMatch(text, /per 1M/, 'no window, no price-ordering, no cost line');
-  assert.match(text, /200K context/, 'and the facts that were always there stay');
+  assert.match(text, /200K de contexto/, 'and the facts that were always there stay');
 });
 
 test('a bypass that reports no reasons says so, instead of reading as "nothing dropped"', () => {
@@ -4246,8 +4248,8 @@ test('a bypass that reports no reasons says so, instead of reading as "nothing d
   // opposite of what happened.
   api.renderChainPlan(chainPlan({ bypassed: true, rejected: [], unknown: [] }));
   const text = flat(dom.get('chainPlan'));
-  assert.match(text, /no per-elo reasons for this bypass/);
-  assert.match(text, /compare the requirements above/, 'the operator is given the one move left');
+  assert.match(text, /não informou motivo por tentativa para esta exceção/);
+  assert.match(text, /compare você mesmo as exigências acima/, 'the operator is given the one move left');
   assert.doesNotMatch(text, /Dropped \(0\)/, 'and no empty section is framed to hold it');
 
   // When the reasons ARE reported, the note is not repeated — the rows carry it.
@@ -4296,21 +4298,21 @@ test('a bypassed filter drops nothing, so no elo is rendered twice', () => {
   assert.deepEqual(outcome.dropped, [], 'a bypass removes nothing');
   assert.deepEqual(outcome.retained.map((hop) => hop.model),
     ['gpt-5.6-terra', 'deepseek-v4-pro', 'glm-5.3'], 'and keeps every reason');
-  assert.equal(outcome.gaveWay, 'capability filter');
+  assert.equal(outcome.gaveWay, 'filtro de capacidade');
 
   api.renderChainPlan(plan);
   const text = flat(dom.get('chainPlan'));
   assert.doesNotMatch(text, /Dropped/, 'nothing was dropped, so nothing says it was');
-  assert.match(text, /Still in the chain \(3\)/);
-  assert.match(text, /Nothing was dropped — the capability filter gave way/);
-  assert.match(text, /objections, not exclusions/);
+  assert.match(text, /Continuam na fila \(3\)/);
+  assert.match(text, /Nada foi tirado — o filtro de capacidade cedeu/);
+  assert.match(text, /objeções, não exclusões/);
   // What the router will do and what the operator can do are said ONCE, in the
   // bypass line at the top; this section does not repeat either.
-  assert.match(text, /try them all anyway/);
+  assert.match(text, /tentar todas mesmo assim/);
   // Every elo appears as an eligible hop AND in the retained list — which is
   // correct, and is exactly why the second list may not be headed "Dropped".
   assert.deepEqual(findAll(dom.get('chainPlan'), 'hop-ord').map((n) => n.textContent), ['1', '2', '3']);
-  assert.match(text, /context window is smaller than this task needs/);
+  assert.match(text, /janela de contexto dele é menor do que esta tarefa precisa/);
 });
 
 test('a bypassed time cap drops nothing either, and the two bypasses are independent', () => {
@@ -4330,10 +4332,10 @@ test('a bypassed time cap drops nothing either, and the two bypasses are indepen
     multipliers: { 'deepseek-v4-pro': 2, 'glm-4.7': 2 },
   }));
   const text = flat(dom.get('chainPlan'));
-  assert.match(text, /Time cap bypassed/, 'the loud line still fires');
+  assert.match(text, /Teto de preço ignorado/, 'the loud line still fires');
   assert.doesNotMatch(text, /Dropped/, 'but nothing was dropped');
-  assert.match(text, /Still in the chain \(2\)/);
-  assert.match(text, /time cap gave way/);
+  assert.match(text, /Continuam na fila \(2\)/);
+  assert.match(text, /teto de preço cedeu/);
   assert.match(text, /2× now, cap 1\.5×/, 'and the numbers behind the objection survive');
 
   // INDEPENDENT: the filter can bypass — restoring everything it rejected — and the
@@ -4416,13 +4418,13 @@ test('an unsatisfiable requirement names the requirement and the ceiling, not th
   assert.match(first.className, /warn-line/);
   assert.doesNotMatch(first.className, /bad/, 'nothing was refused — the router kept routing');
   const said = String(first.textContent || '') + flat(first);
-  assert.match(said, /Requirement no model can meet/);
+  assert.match(said, /Exigência que nenhum modelo atende/);
   // The ceiling, at the precision that keeps the two figures DIFFERENT: both round
   // to "1.1M", and "holds 1.1M, needs 1.1M" would deny its own reason.
-  assert.match(said, /widest context window the router can reach holds 1,050,000, needs 1,050,002/);
-  assert.match(said, /requirement being impossible, not these elos being wrong for it/,
+  assert.match(said, /maior janela de contexto que o roteador alcança tem 1,050,000, precisa de 1,050,002/);
+  assert.match(said, /exigência é que está impossível, não as tentativas/,
     'the whole distinction the field carries');
-  assert.match(said, /Split the work into smaller turns, or add a model with a bigger context window/,
+  assert.match(said, /Divida o trabalho em pedidos menores, ou acrescente um modelo com janela maior/,
     'and a recovery that is actually available');
   assert.doesNotMatch(said, /min_context/, 'the requirement key never reaches the screen');
 
@@ -4431,8 +4433,8 @@ test('an unsatisfiable requirement names the requirement and the ceiling, not th
   const bypass = box.children[1];
   assert.match(bypass.className, /warn-line bad/);
   const bypassSaid = String(bypass.textContent || '') + flat(bypass);
-  assert.match(bypassSaid, /try them all anyway/);
-  assert.match(bypassSaid, /cannot meet the requirement above/);
+  assert.match(bypassSaid, /tentar todas mesmo assim/);
+  assert.match(bypassSaid, /não atende à exigência acima/);
   assert.doesNotMatch(bypassSaid, /No elo in this chain can meet these requirements/,
     'the cause is stated once');
   assert.doesNotMatch(bypassSaid, /Add an elo that qualifies/,
@@ -4440,7 +4442,7 @@ test('an unsatisfiable requirement names the requirement and the ceiling, not th
 
   // And the bypass still means nothing was dropped: every elo is in the chain.
   assert.doesNotMatch(text, /Dropped/);
-  assert.match(text, /Still in the chain \(3\)/);
+  assert.match(text, /Continuam na fila \(3\)/);
 });
 
 test('an unsatisfiable requirement is reported even when the filter did not bypass', () => {
@@ -4459,10 +4461,10 @@ test('an unsatisfiable requirement is reported even when the filter did not bypa
     unknown: ['who-knows'],
   }));
   const text = flat(dom.get('chainPlan'));
-  assert.match(text, /Requirement no model can meet/);
-  assert.match(text, /holds 1M, needs 4M/, 'the ceiling is the registry\'s widest, not the chain\'s');
+  assert.match(text, /Exigência que nenhum modelo atende/);
+  assert.match(text, /tem 1M, precisa de 4M/, 'the ceiling is the registry\'s widest, not the chain\'s');
   assert.doesNotMatch(text, /Capability filter bypassed/, 'no control gave way here');
-  assert.match(text, /eligible by assumption/, 'and the unverified hop is still named');
+  assert.match(text, /elegíveis por suposição/, 'and the unverified hop is still named');
 });
 
 test('the ceiling is read from what published one, and never invented', () => {
@@ -4504,16 +4506,16 @@ test('an unsatisfiable requirement with no visible ceiling still says which requ
     chain: [{ model: 'who-knows', provider: 'zai' }],
   }));
   const text = flat(dom.get('chainPlan'));
-  assert.match(text, /Nothing the router can reach holds the 1,050,002 tokens this task needs/);
-  assert.match(text, /no elo here publishes a window to compare it against/);
+  assert.match(text, /Nada que o roteador alcança tem os 1,050,002 tokens que esta tarefa precisa/);
+  assert.match(text, /nenhuma tentativa aqui publica janela para comparar/);
   assert.doesNotMatch(text, /holds 0|0 tokens/, 'an unknown ceiling is never zero');
 
   // A requirement key this console has not learned still renders, for the same
   // reason a requirement chip does: the loudest fact about the request must not be
   // dropped because the vocabulary grew.
   const grown = api.unsatisfiableWords({ unsatisfiable: ['min_output_tokens'] }, null);
-  assert.match(grown.said, /No model the router can reach can meet min output tokens/);
-  assert.match(grown.said, /relax what the rule requires of the model/);
+  assert.match(grown.said, /Nenhum modelo que o roteador alcança atende a min output tokens/);
+  assert.match(grown.said, /baixe o que a regra exige do modelo/);
 
   // Absence renders nothing at all — not an empty line, not a framed void.
   assert.equal(api.unsatisfiableWords(chainPlan(), null), null, 'an empty list is not a section');
@@ -4548,19 +4550,19 @@ test('peak-priced hops with an unchanged order read as billing double, not as a 
     multipliers: { 'deepseek-v4-pro': 2, 'glm-5.3': 2 },
   }));
   const text = flat(dom.get('chainPlan'));
-  assert.match(text, /Peak-priced hops/);
-  assert.match(text, /deepseek-v4-pro and glm-5\.3 are in a dearer window at 07:00 UTC/);
-  assert.match(text, /pays the higher rate on those hops/, 'the BILL, which is what the field is about');
-  assert.match(text, /matched them and moved nothing/, 'the policy fired and the permutation was the identity');
-  assert.match(text, /already at the back of the chain/);
-  assert.match(text, /nothing cheaper to try ahead of them/,
+  assert.match(text, /Tentativas em hora de pico/);
+  assert.match(text, /deepseek-v4-pro e glm-5\.3 estão em hora mais cara às 07:00 UTC/);
+  assert.match(text, /paga a tarifa maior nessas tentativas/, 'the BILL, which is what the field is about');
+  assert.match(text, /casou com elas e não moveu nada/, 'the policy fired and the permutation was the identity');
+  assert.match(text, /já estão no fim da fila/);
+  assert.match(text, /não há nada mais barato para tentar antes/,
     'this chain cannot step around them — which is not the same as a policy that failed');
   // POSITION is a different fact, and there is no position to report.
   assert.doesNotMatch(text, /moved to the end/, 'nothing moved, so nothing says it moved');
   assert.doesNotMatch(text, /moved them later/);
   // The per-elo prices are still the router's own numbers, so the line and the hops
   // cannot disagree about which hour this is true of.
-  assert.match(text, /2× peak/);
+  assert.match(text, /2× em hora de pico/);
 });
 
 test('a peak-priced hop the policy did move reports the move and the price separately', () => {
@@ -4578,11 +4580,11 @@ test('a peak-priced hop the policy did move reports the move and the price separ
     multipliers: { 'deepseek-v4-pro': 2 },
   }));
   const text = flat(dom.get('chainPlan'));
-  assert.match(text, /deepseek-v4-pro is in a dearer window at 07:00 UTC/, 'singular, because one hop matched');
-  assert.match(text, /moved it later, so every cheaper hop is tried first/);
+  assert.match(text, /deepseek-v4-pro está em hora mais cara às 07:00 UTC/, 'singular, because one hop matched');
+  assert.match(text, /a mandou para depois, então toda tentativa mais barata é tentada antes/);
   assert.doesNotMatch(text, /moved nothing/);
   // The elo's own row still carries the position, which is where a position belongs.
-  assert.match(text, /moved to the end — deepseek is in an expensive window/);
+  assert.match(text, /foi para o fim da fila — deepseek está em hora cara/);
 
   // A chain the policy could only partly reorder names both halves, so neither
   // reading is implied from the other.
@@ -4598,13 +4600,13 @@ test('a peak-priced hop the policy did move reports the move and the price separ
     multipliers: { 'deepseek-v4-pro': 2, 'glm-5.3': 2 },
   }));
   const partly = flat(dom.get('chainPlan'));
-  assert.match(partly, /moved what it could/);
-  assert.match(partly, /glm-5\.3 could not go any further back/);
-  assert.match(partly, /nothing cheaper to try ahead of it/);
+  assert.match(partly, /moveu o que podia/);
+  assert.match(partly, /glm-5\.3 não podia ir mais para trás/);
+  assert.match(partly, /não há nada mais barato para tentar antes/);
   // Which hop moved is said on that hop's own row and nowhere else, so one fact
   // does not get two authorities half a panel apart.
   assert.equal(partly.match(/deepseek-v4-pro/g).length, 2, 'the chain hop and the peak set, not a third claim');
-  assert.match(partly, /moved to the end — deepseek is in an expensive window/);
+  assert.match(partly, /foi para o fim da fila — deepseek está em hora cara/);
 });
 
 test('peak pricing splits price from position, and absence renders nothing', () => {
@@ -4632,16 +4634,16 @@ test('peak pricing splits price from position, and absence renders nothing', () 
   // A time-agnostic plan has no hour to report the window at, and inventing the
   // browser's would price a plan that never saw a clock.
   const clockless = api.peakPriceWords({ peak_priced: ['glm-5.3'], demoted: [] }, null);
-  assert.match(clockless.said, /glm-5\.3 is in a dearer window, so the task pays/);
+  assert.match(clockless.said, /glm-5\.3 está em hora mais cara, então a tarefa paga/);
   assert.doesNotMatch(clockless.said, /UTC/);
 
   // The two moves left are named once per viewport: the time-cap bypass line already
   // carries both, so this line does not repeat them.
   const alsoCapped = api.peakPriceWords(
     { peak_priced: ['glm-5.3'], demoted: [], time_cap_bypassed: true }, { hour: 7, weekday: 0 });
-  assert.doesNotMatch(alsoCapped.said, /off-peak hour/);
+  assert.doesNotMatch(alsoCapped.said, /fora do pico/);
   assert.match(api.peakPriceWords({ peak_priced: ['glm-5.3'], demoted: [] }, { hour: 7, weekday: 0 }).said,
-    /Move the work to an off-peak hour/);
+    /Passe o trabalho para uma hora fora do pico/);
 });
 
 // ── the headline verdict answers from the plan, not from the declared route ──
@@ -4695,15 +4697,15 @@ test('the verdict names the elo the executor will really try first', async () =>
 
   const sentence = flat(dom.get('probeResult'));
   // What the plan says, and only that.
-  assert.match(sentence, /routed to gpt-5\.6-luna/);
-  assert.match(sentence, /on openai-codex/);
+  assert.match(sentence, /roteado para gpt-5\.6-luna/);
+  assert.match(sentence, /em openai-codex/);
   assert.doesNotMatch(sentence, /routed to glm-5\.3/,
     'the declared primary cannot read an image and is not where this task goes');
   assert.doesNotMatch(sentence, /Falls back to/,
     'one eligible hop is no fallback, and claiming two would be the declared route again');
 
   // The declared route survives as SECONDARY context, labelled for what it is.
-  assert.match(sentence, /declared route/);
+  assert.match(sentence, /rota declarada/);
   assert.match(sentence, /glm-5\.3 → gpt-5\.6-luna → deepseek-v4-flash/);
 
   // AGREEMENT, which is the whole point: the model the verdict names is the model
@@ -4713,7 +4715,7 @@ test('the verdict names the elo the executor will really try first', async () =>
   assert.equal(api.verdictRoute(plan, explain.decision.output).first, plan.chain[0].model);
   const eligible = findAll(dom.get('chainPlan'), 'hops')[0];
   assert.deepEqual(findAll(eligible, 'hop-model').map((n) => n.textContent), [plan.chain[0].model]);
-  assert.match(flat(dom.get('chainPlan')), /cannot read images/);
+  assert.match(flat(dom.get('chainPlan')), /não lê imagem/);
 });
 
 test('verdictRoute reads the plan, and reports what it cannot know', () => {
@@ -4816,9 +4818,9 @@ test('a shuffled chain is not given a first hop by the verdict either', async ()
   api.state.policy = tierPolicy();
   await api.probe('describe this screenshot');
   const sentence = flat(dom.get('probeResult'));
-  assert.match(sentence, /routed to any of/);
-  assert.match(sentence, /drawn at random per request/);
-  assert.doesNotMatch(sentence, /routed to gpt-5\.6-luna/, 'no elo is named as first');
+  assert.match(sentence, /roteado para qualquer um de/);
+  assert.match(sentence, /sorteadas a cada pedido/);
+  assert.doesNotMatch(sentence, /roteado para gpt-5\.6-luna/, 'no elo is named as first');
   // And the panel below draws no ordinals, which is the same fact reached the same
   // way — one field, `strategy`, read once.
   assert.equal(findAll(dom.get('chainPlan'), 'hop-ord').length, 0);
@@ -4843,16 +4845,16 @@ test('the declared route is silent when it is the route that runs', async () => 
   api.state.policy = tierPolicy();
   await api.probe('write a docstring');
   const sentence = flat(dom.get('probeResult'));
-  assert.match(sentence, /routed to glm-5\.3 on zai/);
-  assert.match(sentence, /Falls back to gpt-5\.6-luna → deepseek-v4-flash/);
-  assert.doesNotMatch(sentence, /declared route/, 'the same fact twice is not context');
+  assert.match(sentence, /roteado para glm-5\.3 em zai/);
+  assert.match(sentence, /Recorre a gpt-5\.6-luna → deepseek-v4-flash/);
+  assert.doesNotMatch(sentence, /rota declarada/, 'the same fact twice is not context');
 });
 
 // ── the price audit: an unread catalogue is not a missing price ────────────
 // GET /capabilities is the read behind the audit, and while the route did not exist
 // the call 404'd and the panel did not go blank — it went FALSE. Every elo rendered
 // as capability-unverified, and deepseek-v4-flash, which publishes 0.22 in / 0.66
-// out, rendered "no per-token price published".
+// out, rendered "sem preço por token publicado".
 
 test('an unanswered price question renders as silence, never as "no price"', () => {
   const { api } = loadConsole();
@@ -4863,7 +4865,7 @@ test('an unanswered price question renders as silence, never as "no price"', () 
   // NO CATALOGUE. The console knows nothing about this elo's price, and a peak
   // multiplier does not license it to claim there is none.
   assert.equal(api.pricePublished({}, null), null, 'three-valued: null is "nobody answered"');
-  assert.equal(api.priceWords({}, 2, 'metered', null), '2× peak',
+  assert.equal(api.priceWords({}, 2, 'metered', null), '2× em hora de pico',
     'the multiplier is the router\'s and survives; the invented absence does not');
   assert.doesNotMatch(api.priceWords({}, 2, 'metered', null), /no per-token price/);
 
@@ -4874,16 +4876,16 @@ test('an unanswered price question renders as silence, never as "no price"', () 
   assert.equal(plan.price_published, false, 'glm-5.3 publishes no dollar rate');
   assert.equal(api.pricePublished(plan, plan), false);
   const words = api.priceWords(plan, 2, 'plan', api.pricePublished(plan, plan));
-  assert.match(words, /2× peak/);
-  assert.match(words, /billed in plan credits/);
+  assert.match(words, /2× em hora de pico/);
+  assert.match(words, /cobrado em créditos do plano/);
   assert.doesNotMatch(words, /\$0/, 'a plan rail rendered as $0 would win every comparison on screen');
 
   // THE CATALOGUE ANSWERED WITH A RATE: it is rendered, at the multiplier applied.
   const metered = catalogueEntry('deepseek-v4-flash');
   assert.equal(metered.price_published, true);
   assert.equal(api.pricePublished(metered, metered), true);
-  assert.equal(api.priceWords(metered, 1, 'metered', true), '$0.22 in / $0.66 out per 1M');
-  assert.equal(api.priceWords(metered, 2, 'metered', true), '2× peak · $0.44 in / $1.32 out per 1M');
+  assert.equal(api.priceWords(metered, 1, 'metered', true), '$0.22 entrada / $0.66 saída por 1M');
+  assert.equal(api.priceWords(metered, 2, 'metered', true), '2× em hora de pico · $0.44 entrada / $1.32 saída por 1M');
 
   // A rate declared on the elo in router.yaml still wins over the catalogue's answer,
   // the same precedence capabilities.capabilities_for applies everywhere else.
@@ -4907,11 +4909,11 @@ test('a plan-billed elo with a list price still says the dollars are not invoice
   // The mode comes from the entry the endpoint sent, not from a literal here.
   const peak = api.priceWords(entry, facts.price_windows[0].multiplier, entry.billing_mode,
                               api.pricePublished(entry, entry));
-  assert.match(peak, /2× peak/);
-  assert.match(peak, new RegExp(`\\$${(facts.price_in * 2).toFixed(2)} in / \\$${(facts.price_out * 2).toFixed(2)} out per 1M`),
+  assert.match(peak, /2× em hora de pico/);
+  assert.match(peak, new RegExp(`\\$${(facts.price_in * 2).toFixed(2)} entrada / \\$${(facts.price_out * 2).toFixed(2)} saída por 1M`),
     'the numbers stay: they are the registry rate times the declared multiplier');
-  assert.match(peak, /list price/, 'the dollars are named as the list price they are, not left as the bill');
-  assert.match(peak, /billed in plan credits/, 'and what the elo actually spends is said in the same breath');
+  assert.match(peak, /preço de tabela/, 'the dollars are named as the list price they are, not left as the bill');
+  assert.match(peak, /cobrado em créditos do plano/, 'and what the elo actually spends is said in the same breath');
 
   // AGREEMENT WITH THE BUCKETING, mode for mode. The qualifier fires on the modes
   // capabilities._BILLING_RANK puts in the credits bucket and on no others —
@@ -4921,9 +4923,9 @@ test('a plan-billed elo with a list price still says the dollars are not invoice
   const units = billingUnits();
   units.modes.forEach(({ mode }) => {
     const words = api.priceWords(entry, 1, mode, true);
-    assert.equal(/credits/.test(words), units.inCredits.indexOf(mode) !== -1,
+    assert.equal(/créditos/.test(words), units.inCredits.indexOf(mode) !== -1,
       `${mode} prices read in ${units.inCredits.indexOf(mode) !== -1 ? 'credits' : 'dollars'}`);
-    assert.match(words, /\$0\.60 in \/ \$2\.20 out per 1M/, 'every mode still shows the published rate');
+    assert.match(words, /\$0\.60 entrada \/ \$2\.20 saída por 1M/, 'every mode still shows the published rate');
   });
 });
 
@@ -4944,10 +4946,10 @@ test('the chain plan shows the catalogue\'s prices instead of reporting it has n
   });
   api.renderChainPlan(plan);
   const text = flat(dom.get('chainPlan'));
-  assert.doesNotMatch(text, /no per-token price published/,
+  assert.doesNotMatch(text, /sem preço por token publicado/,
     'both of these elos publish one; the panel said otherwise while /capabilities 404\'d');
-  assert.match(text, /2× peak · \$0\.44 in \/ \$1\.32 out per 1M/, 'the peak rate, from the plan\'s own multiplier');
-  assert.match(text, /\$0\.20 in \/ \$1\.20 out per 1M/, 'and the flat rail\'s, undoubled');
+  assert.match(text, /2× em hora de pico · \$0\.44 entrada \/ \$1\.32 saída por 1M/, 'the peak rate, from the plan\'s own multiplier');
+  assert.match(text, /\$0\.20 entrada \/ \$1\.20 saída por 1M/, 'and the flat rail\'s, undoubled');
   assert.doesNotMatch(text, /unverified/, 'the catalogue verified them, so nothing routes unchecked');
 
   // WITHOUT the endpoint the same plan says less, and nothing false: the multipliers
@@ -4955,9 +4957,9 @@ test('the chain plan shows the catalogue\'s prices instead of reporting it has n
   api.state.capabilities = api.capabilityRegistry({ missing: true });
   api.renderChainPlan(plan);
   const blind = flat(dom.get('chainPlan'));
-  assert.doesNotMatch(blind, /no per-token price published/, 'silence, not a false absence');
+  assert.doesNotMatch(blind, /sem preço por token publicado/, 'silence, not a false absence');
   assert.doesNotMatch(blind, /per 1M/, 'and no price it cannot source');
-  assert.match(blind, /2× peak/, 'while the router\'s own multiplier is still reported');
+  assert.match(blind, /2× em hora de pico/, 'while the router\'s own multiplier is still reported');
 });
 
 test('the catalogue envelope is read by name, and an empty one is not a model', () => {
@@ -5033,7 +5035,7 @@ test('the tier chains price an elo with liveness\'s number, not their own arithm
   ], { iso: '2026-08-17T07:14:00+00:00', hour: 7, weekday: 0 });
   api.renderLadder();
   const text = flat(dom.get('ladder'));
-  assert.match(text, /2× peak · \$1\.20 in \/ \$4\.40 out per 1M/,
+  assert.match(text, /2× em hora de pico · \$1\.20 entrada \/ \$4\.40 saída por 1M/,
     'the server\'s multiplier against the catalogue\'s base rate');
 
   // WITH NO CATALOGUE the console can read no window at all, and liveness is then the
@@ -5043,7 +5045,7 @@ test('the tier chains price an elo with liveness\'s number, not their own arithm
   api.state.capabilities = null;
   api.renderLadder();
   const blind = flat(dom.get('ladder'));
-  assert.match(blind, /2× peak/, 'liveness answered, so the peak is still reported');
+  assert.match(blind, /2× em hora de pico/, 'liveness answered, so the peak is still reported');
   assert.doesNotMatch(blind, /per 1M/, 'and no rate is claimed that nothing published');
 
   // A liveness read from ANOTHER hour is not used. With no catalogue and no usable
