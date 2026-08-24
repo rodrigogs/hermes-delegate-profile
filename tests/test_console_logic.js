@@ -5058,3 +5058,191 @@ test('the tier chains price an elo with liveness\'s number, not their own arithm
   assert.doesNotMatch(flat(dom.get('ladder')), /peak|cheap window/,
     'a stale read is discarded rather than believed against the current hour');
 });
+
+// ── CA9: the model field is a pre-filtered <select>, not a place to type ──
+// The defect under test: a model field was an <input> where the operator
+// typed an id from memory. The question they were actually answering was
+// "which models CAN serve this group" — answerable only from the catalogue,
+// and only with the group's own requirements applied. These tests pin the
+// picker the spec §2.5 describes: a select grouped by provider, a count
+// that renders even at zero, the two escapes (show-all and free-id), the
+// §3.4(c) fallback when the catalogue did not come, and the provider rail
+// syncing from the catalogue entry.
+
+function byLabel(node, label) {
+  return (node.children || []).find((c) => (c.children[0] || {}).textContent === label
+    && String(c.className || '').includes('field'));
+}
+
+test('a model field is a <select> grouped by provider, with the count always visible', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  const policy = tierPolicy();
+  policy.tiers.T2.model = 'glm-4.7';
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = {
+    'glm-4.7': { provider: 'zai', context_window: 200000 },
+    'gpt-5.6-luna': { provider: 'openai-codex', context_window: 1000000 },
+    'mimo-v2.5': { provider: 'xiaomi', context_window: 1048576 },
+    'sem-rail': {},
+  };
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const box = dom.get('inspector');
+
+  const modelWrap = byLabel(box, 'Modelo');
+  assert.ok(modelWrap, 'the model field exists and is labelled');
+  const select = modelWrap.children.find((c) => c.tagName === 'select');
+  assert.ok(select, 'a model field is a <select>, not an <input> (CA9)');
+  const groups = select.children.filter((c) => c.tagName === 'optgroup');
+  assert.equal(groups.length, 4, 'one optgroup per provider, none hidden');
+  assert.ok(groups.some((g) => g.label === 'Sem provedor informado'),
+    'a model with no provider is visible, never dropped');
+  const optionIds = [];
+  groups.forEach((g) => g.children.forEach((o) => optionIds.push(o.value)));
+  assert.deepEqual(optionIds.sort(), ['glm-4.7', 'gpt-5.6-luna', 'mimo-v2.5', 'sem-rail'].sort(),
+    'every catalogue model is present');
+
+  const note = modelWrap.children.find((c) => String(c.className).includes('field-note'));
+  assert.ok(note, 'the count line renders');
+  assert.match(note.textContent, /^4 modelos atendem à exigência deste grupo/,
+    'no requirements declared, so every catalogue model is eligible');
+  assert.doesNotMatch(note.textContent, /tokens/, 'no floor claimed where none was declared');
+
+  // CA9 word for word: with the catalogue up, no free-text model field is
+  // born — typing is the escape hatch, not the default.
+  const freeInputs = [];
+  modelWrap.children.forEach((c) => { if (c.tagName === 'input' && c.hidden === false) freeInputs.push(c); });
+  assert.equal(freeInputs.length, 0, 'no free-text model field in the initial editing state');
+});
+
+test('the count applies the group min_context floor and renders zero as a diagnosis', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  const policy = tierPolicy();
+  policy.tiers.T3 = { requirements: { min_context: 200000 } };
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = {
+    'glm-4.7': { provider: 'zai', context_window: 200000 },
+    'gpt-5.6-luna': { provider: 'openai-codex', context_window: 1000000 },
+  };
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T3', name: 'T3', bind: 'tier', tier: 'T3' });
+  let modelWrap = byLabel(dom.get('inspector'), 'Modelo');
+  let note = modelWrap.children.find((c) => String(c.className).includes('field-note'));
+  assert.match(note.textContent, /^2 modelos atendem à exigência deste grupo \(≥ 200,000 tokens\)/,
+    'the floor is applied and printed in requirementChips format');
+
+  // gpt-5.6-luna holds 1M, so a floor above every window is what zero means.
+  policy.tiers.T3.requirements = { min_context: 2000000 };
+  api.renderInspector({ id: 'tier:T3', name: 'T3', bind: 'tier', tier: 'T3' });
+  modelWrap = byLabel(dom.get('inspector'), 'Modelo');
+  note = modelWrap.children.find((c) => String(c.className).includes('field-note'));
+  assert.match(note.textContent, /^0 modelos atendem à exigência deste grupo/,
+    'zero is a rendered count, not a silent empty select');
+  assert.match(flat(modelWrap), /Nenhum modelo do seu catálogo declara 2,000,000 tokens ou mais/,
+    'the zero case names the two ways out (§3.4(d))');
+  assert.ok(modelWrap.children.find((c) => c.tagName === 'select'),
+    'the select remains a select even at zero eligible');
+});
+
+test('a model field without a catalogue falls back to free text with the §3.4(c) note', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = tierPolicy();
+  api.state.loading = false;
+  api.state.capabilities = null;
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const box = dom.get('inspector');
+  const modelWrap = byLabel(box, 'Modelo');
+  assert.ok(modelWrap, 'the model field exists');
+  const input = modelWrap.children.find((c) => c.tagName === 'input');
+  assert.ok(input, 'no catalogue: the model field is an input (text fallback)');
+  assert.match(flat(modelWrap), /Sem catálogo, não há lista para escolher\./,
+    'the §3.4(c) note is present');
+  assert.equal(box.children.filter((c) => c.tagName === 'select').length, 0,
+    'no select is born from a missing catalogue');
+  // and the ladder note says the §3.4(c) thing, not just "unverified"
+  api.renderLadder();
+  assert.match(dom.get('ladderNote').textContent, /não tem catálogo de modelos/,
+    'the ladder names the missing catalogue when the whole thing is absent');
+});
+
+test('choosing from the select syncs the provider rail from the catalogue entry', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = tierPolicy();
+  api.state.loading = false;
+  api.state.capabilities = {
+    'glm-4.7': { provider: 'zai', context_window: 200000 },
+    'gpt-5.6-luna': { provider: 'openai-codex', context_window: 1000000 },
+  };
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const modelWrap = byLabel(dom.get('inspector'), 'Modelo');
+  const select = modelWrap.children.find((c) => c.tagName === 'select');
+  assert.ok(select, 'the select exists');
+  select.value = 'gpt-5.6-luna';
+  select._listeners.change();
+  assert.equal(api.state.draft.tiers.T2.model, 'gpt-5.6-luna', 'the draft writes the id');
+  assert.equal(api.state.draft.tiers.T2.provider, 'openai-codex',
+    'choosing a model fills the provider rail from the catalogue');
+  select.value = 'glm-4.7';
+  select._listeners.change();
+  assert.equal(api.state.draft.tiers.T2.model, 'glm-4.7');
+  assert.equal(api.state.draft.tiers.T2.provider, 'zai',
+    'and re-choosing re-syncs the rail');
+});
+
+test('the escape hatch writes an off-catalogue id and says what the console stops knowing', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = tierPolicy();
+  api.state.loading = false;
+  api.state.capabilities = {
+    'glm-4.7': { provider: 'zai', context_window: 200000 },
+  };
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const modelWrap = byLabel(dom.get('inspector'), 'Modelo');
+  const escapeBtn = modelWrap.children.find((c) => /Usar um id que não está na lista/.test(c.textContent || ''));
+  assert.ok(escapeBtn, 'the escape hatch button exists');
+  escapeBtn._listeners.click();
+  const freeInput = modelWrap.children.find((c) => c.tagName === 'input' && c.hidden === false);
+  assert.ok(freeInput, 'clicking it reveals the free-text input');
+  freeInput.value = 'claude-999';
+  freeInput._listeners.input();
+  assert.equal(api.state.draft.tiers.T2.model, 'claude-999',
+    'the off-catalogue id is written to the draft');
+  assert.match(flat(modelWrap), /Este id não está no catálogo\. Ele vai rodar/,
+    'and the literal warning reads');
+});
+
+test('the show-all toggle widens the select and warns about runtime filtering', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  const policy = tierPolicy();
+  policy.tiers.T2.model = 'gpt-5.6-luna';
+  policy.tiers.T2.requirements = { min_context: 500000 };
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = {
+    'glm-4.7': { provider: 'zai', context_window: 200000 },
+    'gpt-5.6-luna': { provider: 'openai-codex', context_window: 1000000 },
+    'mimo-v2.5': { provider: 'xiaomi', context_window: 1048576 },
+  };
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const modelWrap = byLabel(dom.get('inspector'), 'Modelo');
+  const toggle = modelWrap.children.find((c) => /mostrar todos/.test(c.textContent || ''));
+  assert.ok(toggle, 'the toggle button exists');
+  assert.equal(toggle.hidden, false, 'visible while models are filtered out');
+  assert.match(toggle.textContent, /mostrar todos os 3/);
+  const warn = modelWrap.children.find((c) => /ficam de fora da fila/.test(c.textContent || ''));
+  assert.ok(warn, 'the runtime-filter warning exists under the count');
+  assert.equal(warn.hidden, true, 'hidden until show-all is used');
+  toggle._listeners.click();
+  assert.equal(warn.hidden, false, 'clicking show-all reveals the runtime warning');
+  const select = modelWrap.children.find((c) => c.tagName === 'select');
+  const values = [];
+  select.children.forEach((g) => (g.children || [g]).forEach((o) => values.push(o.value)));
+  assert.equal(values.length, 3, 'show-all lists every catalogue model');
+  assert.ok(values.indexOf('glm-4.7') !== -1, 'the ineligible one is reachable');
+});

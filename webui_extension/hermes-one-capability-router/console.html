@@ -777,6 +777,11 @@
       background: var(--host-input-bg, var(--surface)); color: var(--text); font: var(--t-body) var(--mono);
     }
     .field input:focus, .field select:focus { border-color: var(--accent); }
+    /* CA9 §2.5: the count line under a model <select> is part of the field's
+       answer — how many models can serve this group — so it reads as a note
+       inside the field, not as an error or a help bubble elsewhere. */
+    .field .btn { margin-top: 2px; }
+    .field-note { color: var(--muted); font: var(--t-small)/1.5 var(--sans); margin: 0; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
     .msg { margin-top: 12px; color: var(--muted); font-size: var(--t-body); }
     .msg.ok { color: var(--ok-text); }
@@ -3829,8 +3834,14 @@
         // The registry is what turns a model id into a context window. Without it
         // the chain still routes and still bills, so the honest report is which
         // elos are unchecked — not a note about a missing endpoint.
+        // §3.4(c): when the WHOLE catalogue is missing the ladder note says
+        // more than "unverified" — it says the queues are right and what is
+        // missing is capability and price per option — never a note about an
+        // endpoint (DESIGN.md:558-563).
         note.textContent = unverified
-          ? `${unverified} tentativa${unverified === 1 ? '' : 's'} sem capacidade verificada — sem registro no catálogo, o filtro não pode conferir.`
+          ? (state.capabilities
+            ? `${unverified} tentativa${unverified === 1 ? '' : 's'} sem capacidade verificada — sem registro no catálogo, o filtro não pode conferir.`
+            : 'Este serviço do roteador não tem catálogo de modelos. As filas acima estão certas; o que falta é a informação de capacidade e preço de cada opção. Não é erro de configuração.')
           : 'Todas as tentativas que um grupo pode fazer, e como ele escolhe a próxima.';
       }
 
@@ -4789,6 +4800,176 @@
         return full;
       }
 
+      // ── CA9 §2.5: the one model picker ───────────────────────────────
+      // A model field is not a place to type an id: it is a choice among the
+      // models the catalogue knows, pre-filtered by the requirements this
+      // group declares — because "which models CAN serve this group" is the
+      // question the operator is answering when they pick one. The component
+      // is one and the same everywhere a model is written (a group's first
+      // attempt, the classifier, the last-resort queue), so there are not
+      // three pickers with three behaviours.
+      //
+      // The count under the select is part of the answer, not decoration:
+      // zero is the fastest diagnosis of "I have no model that serves this
+      // group", so it renders like any other number — never a silent empty
+      // list.
+      //
+      // The catalogue is OPTIONAL (GET /capabilities, DESIGN.md §3c/§7).
+      // When it did not come, the field is an <input type="text"> with the
+      // §3.4(c) note — the only case where a model field is free text.
+      function modelMeetsRequirement(entry, requirements) {
+        const req = requirements && typeof requirements === 'object' ? requirements : {};
+        const floor = Number(req.min_context);
+        if (Number.isFinite(floor) && floor > 0) {
+          const window = Number(entry && entry.context_window);
+          if (!Number.isFinite(window) || window < floor) return false;
+        }
+        // Only a TRUE boolean constrains — the same reading the ladder and
+        // requirementChips apply; a false one is not a requirement.
+        const readsTrue = (v) => v === true || String(v).toLowerCase() === 'true';
+        if (req.vision === true && !readsTrue(entry && entry.vision)) return false;
+        if (req.tool_calling === true && !readsTrue(entry && entry.tool_calling)) return false;
+        if (req.structured_output === true && !readsTrue(entry && entry.structured_output)) return false;
+        return true;
+      }
+      function modelOptionLabel(id, entry) {
+        const bits = [id];
+        const provider = entry && entry.provider;
+        if (provider) bits.push(String(provider));
+        const window = ctxWindow(entry && entry.context_window);
+        if (window) bits.push(window + ' tokens');
+        const badge = billingBadge(entry && entry.billing_mode);
+        if (!badge.unknown) bits.push(badge.word);
+        return bits.join(' · ');
+      }
+      function modelField(box, label, get, set, requirements, onProvider) {
+        const registry = state.capabilities;
+        const wrap = el('div', 'field');
+        wrap.append(el('label', '', label));
+        if (!registry || typeof registry !== 'object') {
+          // §3.4(c): no catalogue, no list to choose from. Free text is the
+          // honest fallback, and the note says why without naming an endpoint.
+          const input = document.createElement('input');
+          input.value = get() == null ? '' : String(get());
+          input.addEventListener('input', () => set(input.value));
+          wrap.append(input);
+          wrap.append(el('p', 'field-note', 'Sem catálogo, não há lista para escolher.'));
+          box.append(wrap);
+          return { wrap, input };
+        }
+        const current = String(get() == null ? '' : get());
+        const eligible = Object.keys(registry)
+          .filter((id) => modelMeetsRequirement(registry[id], requirements));
+        const floor = Number(requirements && requirements.min_context);
+        const hasFloor = Number.isFinite(floor) && floor > 0;
+
+        const select = document.createElement('select');
+        let showAll = false;
+        const renderOptions = () => {
+          while (select.children.length) select.removeChild(select.children[0]);
+          if (!current) {
+            const blank = document.createElement('option');
+            blank.value = '';
+            blank.textContent = '—';
+            select.appendChild(blank);
+          }
+          const ids = showAll ? Object.keys(registry) : eligible.slice();
+          if (current && ids.indexOf(current) === -1) ids.push(current);
+          ids.forEach((id) => {
+            const entry = registry[id] || {};
+            const provider = entry && entry.provider ? String(entry.provider) : '';
+            const groupLabel = provider || 'Sem provedor informado';
+            let group = null;
+            for (let i = 0; i < select.children.length; i += 1) {
+              const kid = select.children[i];
+              if (kid.tagName === 'optgroup' && kid.label === groupLabel) { group = kid; break; }
+            }
+            if (!group) {
+              group = document.createElement('optgroup');
+              group.label = groupLabel;
+              select.appendChild(group);
+            }
+            const opt = document.createElement('option');
+            opt.value = id;
+            opt.textContent = modelOptionLabel(id, entry);
+            group.appendChild(opt);
+          });
+          select.value = current;
+        };
+        renderOptions();
+        select.addEventListener('change', () => {
+          set(select.value);
+          const entry = registry[select.value];
+          if (onProvider && entry && entry.provider) onProvider(String(entry.provider));
+        });
+        wrap.append(select);
+
+        // The count is always visible — including zero, which is a diagnosis
+        // (§3.4(d)), not an absence.
+        const countNote = el('p', 'field-note');
+        const renderCount = () => {
+          const n = eligible.length;
+          const suffix = hasFloor ? ` (≥ ${fmt(floor)} tokens)` : '';
+          countNote.textContent = n === 1
+            ? `1 modelo atende à exigência deste grupo${suffix}`
+            : `${n} modelos atendem à exigência deste grupo${suffix}`;
+        };
+        renderCount();
+        wrap.append(countNote);
+        if (eligible.length === 0 && hasFloor) {
+          wrap.append(el('p', 'field-note',
+            `Nenhum modelo do seu catálogo declara ${fmt(floor)} tokens ou mais. Duas saídas: baixar a exigência do grupo, ou escolher um modelo mesmo assim — nesse caso ele sai da fila em tempo de execução, e a fila do grupo pode ficar vazia.`));
+        }
+
+        // [mostrar todos os N] — the filter is a reading aid, not a gate:
+        // everything the catalogue knows stays reachable, and choosing
+        // outside the filter says what it means at run time.
+        const showAllNote = el('p', 'field-note',
+          'Modelos que não atendem à exigência do grupo ficam de fora da fila em tempo de execução, mesmo que você os escolha aqui.');
+        showAllNote.hidden = true;
+        const toggleBtn = el('button', 'btn', '');
+        toggleBtn.type = 'button';
+        const renderToggle = () => {
+          const total = Object.keys(registry).length;
+          const rest = total - eligible.length;
+          toggleBtn.hidden = rest <= 0;
+          toggleBtn.textContent = showAll
+            ? `mostrar só os que atendem (${eligible.length})`
+            : `mostrar todos os ${total}`;
+        };
+        renderToggle();
+        toggleBtn.addEventListener('click', () => {
+          showAll = !showAll;
+          renderOptions();
+          renderToggle();
+          showAllNote.hidden = !showAll;
+        });
+        wrap.append(toggleBtn);
+        wrap.append(showAllNote);
+
+        // Escape hatch — the registry can be behind the world. Free text is
+        // offered, and using it says exactly what the console stops knowing.
+        const escapeNote = el('p', 'field-note',
+          'Este id não está no catálogo. Ele vai rodar, mas a tela não sabe janela de contexto nem preço dele, e nada aqui vai conferir se ele atende à exigência do grupo.');
+        escapeNote.hidden = true;
+        const escapeInput = document.createElement('input');
+        escapeInput.hidden = true;
+        escapeInput.value = current;
+        escapeInput.addEventListener('input', () => set(escapeInput.value));
+        const escapeBtn = el('button', 'btn', 'Usar um id que não está na lista');
+        escapeBtn.type = 'button';
+        escapeBtn.addEventListener('click', () => {
+          escapeInput.hidden = false;
+          escapeNote.hidden = false;
+          escapeBtn.hidden = true;
+        });
+        wrap.append(escapeBtn);
+        wrap.append(escapeInput);
+        wrap.append(escapeNote);
+        box.append(wrap);
+        return { wrap, select, countNote };
+      }
+
       function renderInspector(node) {
         const box = $('inspector');
         clear(box);
@@ -4837,7 +5018,11 @@
         const d = state.draft;
         if (node.bind === 'tier') {
           const t = d.tiers[node.tier] = d.tiers[node.tier] || {};
-          field('Modelo', () => t.model, (v) => { t.model = v; });
+          // CA9 §2.5: the model is CHOSEN from the catalogue, pre-filtered by
+          // this group's own requirements; picking an entry fills the provider
+          // rail from the catalogue, because the two are one fact there.
+          modelField(box, 'Modelo', () => t.model, (v) => { t.model = v; },
+            t.requirements, (provider) => { t.provider = provider; });
           field('Provedor', () => t.provider, (v) => { t.provider = v; });
         } else if (node.bind === 'rule') {
           const r = d.rules[node.ruleIndex] = d.rules[node.ruleIndex] || {};
@@ -4886,7 +5071,8 @@
           box.append(ops);
         } else if (node.bind === 'classifier' || node.bind === 'fail_safe') {
           const f = d[node.bind] = d[node.bind] || {};
-          field('Modelo', () => f.model, (v) => { f.model = v; });
+          modelField(box, 'Modelo', () => f.model, (v) => { f.model = v; },
+            null, (provider) => { f.provider = provider; });
           field('Provedor', () => f.provider, (v) => { f.provider = v; });
         } else if (node.bind === 'default') {
           const def = d.default = d.default || {};
@@ -5653,6 +5839,10 @@
         // tests/test_router_nav_writespine.js used to pin an equivalent path in
         // router-nav.js, and that file is now only a mount.
         plan, doPreview, doApply, setMsg,
+        // CA9 §2.5: the one model picker, exported so its count line — the
+        // operator's fastest diagnosis of "no model serves this group" — and
+        // its escapes are pinned by tests rather than eyeballed.
+        modelField, modelMeetsRequirement, modelOptionLabel,
       };
     })();
   </script>
