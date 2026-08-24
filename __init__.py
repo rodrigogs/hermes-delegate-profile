@@ -272,6 +272,19 @@ def _list_known_profiles() -> list:
     return []
 
 
+def _profile_schema_enum() -> List[str]:
+    """Enum of accepted ``profile`` values for the tool schema.
+
+    Known on-disk profiles plus the two always-valid special values:
+    ``default`` (Hermes's implicit profile, never a physical directory) and
+    ``auto`` (the documented router sentinel). Computed at register() time, so
+    a profile created later simply isn't in the schema enum — the handler still
+    validates every call against the live profile set via ``_profile_exists``.
+    Never empty: the special values guarantee a usable JSON Schema enum.
+    """
+    return sorted(set(_list_known_profiles()) | {"default", "auto"})
+
+
 # ---------------------------------------------------------------------------
 # Process-tree lifecycle: spawn in own group, tree-kill on stall
 # ---------------------------------------------------------------------------
@@ -1220,14 +1233,16 @@ def _make_handler(
     classify_fn = _make_classify_fn(ctx) if ctx is not None else None
 
     def delegate_profile(args: dict, **_kwargs) -> str:
-        goal = (args.get("goal") or "").strip()
+        # `prompt` is the canonical field (delegate_profile contract); `goal`
+        # is kept as a legacy alias so existing callers keep working.
+        goal = (args.get("prompt") or args.get("goal") or "").strip()
         context = (args.get("context") or "").strip()
         profile = (args.get("profile") or "").strip()
         model = (args.get("model") or "").strip()
         hard_timeout = _resolve_timeout(args.get("timeout"))
 
         if not goal:
-            return json.dumps({"error": "goal is required", "failure_kind": "bad_args"})
+            return json.dumps({"error": "prompt is required", "failure_kind": "bad_args"})
 
         # The exact text the child will receive. Composed HERE, before routing,
         # because the router estimates context size from it.
@@ -1486,7 +1501,11 @@ def _on_post_tool_call(
     params: dict | None = None,
     **_kwargs: Any,
 ) -> None:
-    """Warn when delegate_task is called with a `profile` param.
+    """Record delegate_profile invocations; warn on delegate_task misuse.
+
+    Post-tool-call audit for this plugin's own tool: every delegate_profile
+    call is logged (profile + goal/prompt) so operators can trace subprocess
+    delegation from the parent session's log.
 
     Advisory only — never blocks. The built-in delegate_task *does* accept
     ``profile=`` for in-process delegation; the nudge is for callers who
@@ -1496,6 +1515,14 @@ def _on_post_tool_call(
     # documented in hermes_cli/hooks.py.  ``params`` is accepted as a legacy
     # alias so older callers and tests keep working.
     payload = args if args is not None else (params or {})
+    if tool_name == "delegate_profile":
+        if isinstance(payload, dict):
+            logger.info(
+                "delegate_profile invoked: profile=%r goal=%r",
+                payload.get("profile", "auto"),
+                payload.get("goal") or payload.get("prompt"),
+            )
+        return
     if tool_name != "delegate_task":
         return
     if payload and isinstance(payload, dict) and "profile" in payload:
@@ -1509,8 +1536,31 @@ def _on_post_tool_call(
 # ---------------------------------------------------------------------------
 # Plugin registration
 # ---------------------------------------------------------------------------
+# Contexts register() has already serviced, keyed by id(ctx). The host calls
+# register() once per plugin load, but the plugin contract (and the tester
+# card) requires repeated calls with the SAME ctx to be a no-op: the host's
+# register_hook appends callbacks without dedup, so a second pass would
+# register post_tool_call twice. Different ctx objects (a fresh plugin host, a
+# test's fake) register fresh.
+#
+# The value holds a STRONG reference to ctx: without it, a short-lived fake
+# ctx would be garbage-collected and CPython could hand its id to a later
+# ctx, wrongly skipping that registration.
+_REGISTERED_CTX: Dict[int, Any] = {}
+
+
 def register(ctx):
-    """Register the delegate_profile tool and post_tool_call hook."""
+    """Register the delegate_profile tool and post_tool_call hook.
+
+    Idempotent per context: calling register() again with the same ctx object
+    is a no-op, so a plugin reload / double-invocation never duplicates the
+    hook callbacks or shadows the tool registration.
+    """
+
+    ctx_id = id(ctx)
+    if ctx_id in _REGISTERED_CTX:
+        logger.debug("delegate-profile: register() already ran for ctx %s; skipping", ctx_id)
+        return
 
     current_profile = _get_active_profile_name()
 
@@ -1539,12 +1589,19 @@ def register(ctx):
         "parameters": {
             "type": "object",
             "properties": {
-                "goal": {
+                "prompt": {
                     "type": "string",
                     "description": (
                         "What the subagent should accomplish. Be specific and "
                         "self-contained — the subagent knows nothing about "
                         "your conversation history."
+                    ),
+                },
+                "goal": {
+                    "type": "string",
+                    "description": (
+                        "Legacy alias for `prompt`, kept for backward "
+                        "compatibility with earlier callers. Prefer `prompt`."
                     ),
                 },
                 "context": {
@@ -1556,6 +1613,7 @@ def register(ctx):
                 },
                 "profile": {
                     "type": "string",
+                    "enum": _profile_schema_enum(),
                     "description": (
                         "Hermes profile name to run the subagent under "
                         "(e.g., 'coder', 'reviewer', 'researcher-a'). The profile "
@@ -1583,7 +1641,7 @@ def register(ctx):
                     ),
                 },
             },
-            "required": ["goal"],
+            "required": ["prompt"],
         },
     }
 
@@ -1605,6 +1663,10 @@ def register(ctx):
     # Shadow mode is on by default so the measurement starts the moment the
     # plugin lands; `shadow: {enabled: false}` in router.yaml turns it off.
     ctx.register_hook("pre_kanban_dispatch", _on_pre_kanban_dispatch)
+
+    # Registration completed — mark this ctx as serviced. Added last so a
+    # mid-registration failure leaves the ctx unmarked and a retry re-runs.
+    _REGISTERED_CTX[ctx_id] = ctx
 
     logger.info(
         "delegate-profile plugin registered (profile=%s)", current_profile,

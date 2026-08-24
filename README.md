@@ -112,8 +112,8 @@ delegate_profile(
 
 | Parameter  | Type    | Required | Default | Notes |
 |------------|---------|----------|---------|-------|
-| `goal`     | string  | yes      | —       | What the subagent should accomplish. Be self-contained — the child has no context from your session. |
-| `profile`  | string  | no       | `auto`  | Target Hermes profile name. Must exist (`hermes profile list`). If omitted or `auto`, the capability router picks the best profile + model based on task difficulty. If it matches the active profile, routes to in-process `delegate_task`. |
+| `prompt`   | string  | yes      | —       | What the subagent should accomplish. Be self-contained — the child has no context from your session. (Legacy alias: `goal` — still accepted, prefer `prompt`.) |
+| `profile`  | string  | no       | `auto`  | Target Hermes profile name (schema enum: known profiles plus `default`/`auto`). Must exist (`hermes profile list`). If omitted or `auto`, the capability router picks the best profile + model based on task difficulty. If it matches the active profile, routes to in-process `delegate_task`. |
 | `context`  | string  | no       | —       | Background info: file paths, error messages, project structure, constraints. |
 | `model`    | string  | no       | profile default | Model override passed as `-m` to the child. |
 | `timeout`  | integer | no       | `300`   | Max seconds to wait for the subprocess. Override globally via `HERMES_DELEGATE_PROFILE_TIMEOUT`. |
@@ -157,7 +157,7 @@ For a missing or non-existent profile:
 }
 ```
 
-For missing required args, returns `{"error": "goal is required"}` or
+For missing required args, returns `{"error": "prompt is required"}` or
 `{"error": "profile is required"}`.
 
 ## How it works

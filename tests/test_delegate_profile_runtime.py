@@ -137,8 +137,81 @@ def test_register_exposes_schema_and_hook(monkeypatch):
     ctx = Ctx()
     _dp.register(ctx)
     assert ctx.tools[0]["name"] == "delegate_profile"
-    assert ctx.tools[0]["schema"]["parameters"]["required"] == ["goal"]
+    assert ctx.tools[0]["schema"]["parameters"]["required"] == ["prompt"]
     assert ctx.hooks
+
+
+def test_register_schema_accepts_prompt_and_enumerates_profiles(monkeypatch):
+    """The schema's canonical text field is `prompt`; `goal` remains an alias.
+
+    profile carries an enum of known profile names (plus the implicit
+    `default` and the `auto` router sentinel), never an empty list.
+    """
+    monkeypatch.setattr(_dp, "_get_active_profile_name", lambda: "parent")
+    monkeypatch.setattr(_dp, "_list_known_profiles", lambda: ["coder", "reviewer"])
+
+    class Ctx:
+        def __init__(self):
+            self.tools = []
+
+        def register_tool(self, **kwargs):
+            self.tools.append(kwargs)
+
+        def register_hook(self, *_args, **_kwargs):
+            pass
+
+    ctx = Ctx()
+    _dp.register(ctx)
+    props = ctx.tools[0]["schema"]["parameters"]["properties"]
+    assert "prompt" in props and "goal" in props
+    assert props["profile"]["enum"] == ["auto", "coder", "default", "reviewer"]
+
+
+def test_register_is_idempotent_per_context(monkeypatch):
+    """A second register() with the SAME ctx is a no-op — no duplicate hooks."""
+    monkeypatch.setattr(_dp, "_get_active_profile_name", lambda: "parent")
+
+    class Ctx:
+        def __init__(self):
+            self.tools = []
+            self.hooks = []
+
+        def dispatch_tool(self, name, args):
+            return f"{name}:{args['goal']}"
+
+        def register_tool(self, **kwargs):
+            self.tools.append(kwargs)
+
+        def register_hook(self, *args, **kwargs):
+            self.hooks.append((args, kwargs))
+
+    ctx = Ctx()
+    _dp.register(ctx)
+    first_hooks = list(ctx.hooks)
+    _dp.register(ctx)
+    assert ctx.hooks == first_hooks, "hooks must not be duplicated on re-register"
+    assert len(ctx.tools) == 1, "tool must not be re-registered"
+
+
+def test_register_serves_fresh_contexts(monkeypatch):
+    """A different ctx object registers fresh (host reload / test fake)."""
+    monkeypatch.setattr(_dp, "_get_active_profile_name", lambda: "parent")
+
+    class Ctx:
+        def __init__(self):
+            self.tools = []
+            self.hooks = []
+
+        def register_tool(self, **kwargs):
+            self.tools.append(kwargs)
+
+        def register_hook(self, *_args, **_kwargs):
+            self.hooks.append(True)
+
+    first, second = Ctx(), Ctx()
+    _dp.register(first)
+    _dp.register(second)
+    assert second.tools and second.hooks, "fresh ctx must be registered"
 
 
 def test_resolve_active_profile_and_profile_fallbacks(monkeypatch, tmp_path):

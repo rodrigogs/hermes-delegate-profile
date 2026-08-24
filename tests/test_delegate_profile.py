@@ -55,10 +55,10 @@ def _make_handler(current_profile="default", captured_dispatch=None):
 # ---------------------------------------------------------------------------
 # Arg validation
 # ---------------------------------------------------------------------------
-def test_missing_goal_returns_error():
+def test_missing_prompt_returns_error():
     h = _make_handler()
     out = json.loads(h({"profile": "coder"}))
-    assert out["error"] == "goal is required"
+    assert out["error"] == "prompt is required"
 
 
 def test_missing_profile_returns_error(monkeypatch):
@@ -128,6 +128,28 @@ def test_same_profile_routes_to_inline_dispatch(monkeypatch):
     assert out["success"] is True
     # delegate_task was called once with forwarded goal/context/model.
     assert captured == [{"goal": "g", "context": "c", "model": "m"}]
+
+
+def test_prompt_is_the_canonical_field(monkeypatch):
+    """`prompt` is accepted and takes precedence over the legacy `goal` alias."""
+    monkeypatch.setattr(dp, "_profile_exists", lambda p: True)
+    captured = []
+    h = _make_handler(current_profile="default", captured_dispatch=captured)
+    out = json.loads(
+        h({"prompt": "p", "goal": "g", "profile": "default"})
+    )
+    assert out["success"] is True
+    assert captured == [{"goal": "p"}], "prompt must win over goal"
+
+
+def test_goal_remains_a_working_alias(monkeypatch):
+    """Existing callers using only `goal` keep working after the rename."""
+    monkeypatch.setattr(dp, "_profile_exists", lambda p: True)
+    captured = []
+    h = _make_handler(current_profile="default", captured_dispatch=captured)
+    out = json.loads(h({"goal": "g", "profile": "default"}))
+    assert out["success"] is True
+    assert captured == [{"goal": "g"}]
 
 
 def test_inline_dispatch_failure_returns_error(monkeypatch):
