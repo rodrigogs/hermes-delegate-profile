@@ -643,6 +643,35 @@ def test_guard_default_resolution_degrades_where_hermes_cli_is_absent(monkeypatc
             assert resolved is None
 
 
+def test_default_warn_fn_resolves_guard_when_module_present(monkeypatch):
+    """A host WITH hermes_cli.model_selection_guards gets the real callable.
+
+    The sibling test above proves the absent case degrades to None; this one
+    proves the present case by injecting a fake module, so the return path of
+    ``_default_warn_fn`` is covered on every host. Before this test the 100%
+    gate got that line only from the local venv's real hermes_cli — CI has no
+    hermes_cli, so the coverage number was environment-shaped, not test-shaped
+    (the same disease as the router.yaml provenance, in a smaller organ).
+    """
+    import sys
+    import types
+
+    from router import adapter as adapter_mod
+
+    def sentinel(model, provider=None):
+        return []
+
+    fake_guards = types.ModuleType("hermes_cli.model_selection_guards")
+    setattr(fake_guards, "selection_warnings", sentinel)
+    fake_pkg = types.ModuleType("hermes_cli")
+    setattr(fake_pkg, "model_selection_guards", fake_guards)
+
+    monkeypatch.setitem(sys.modules, "hermes_cli", fake_pkg)
+    monkeypatch.setitem(sys.modules, "hermes_cli.model_selection_guards", fake_guards)
+
+    assert adapter_mod._default_warn_fn() is sentinel
+
+
 def test_selection_vetoes_degrades_to_no_veto_without_a_guard():
     """warn_fn=None (a host without hermes_cli) is a supported shape: not vetoed."""
     from router import adapter as adapter_mod

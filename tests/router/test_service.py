@@ -125,6 +125,25 @@ def test_status_reports_sidecar_injected_provenance(config_path):
     assert "config_mtime" in status
 
 
+def test_status_omits_config_mtime_when_config_is_unstatable(config_path):
+    """A config that cannot be stat'ed degrades, it does not crash /status.
+
+    config_mtime is stamped from the file's mtime; when the file is gone
+    (deleted after boot — an operator swapping the live policy) the field is
+    omitted and the endpoint still answers. This OSError path was covered only
+    by a fastapi-gated dashboard-parity test that skips on CI, so the 100%
+    gate leaned on an environment CI does not have — the same shape of defect
+    as the router.yaml provenance, on the same /status payload.
+    """
+    service = RouterService(config_path)
+    config_path.unlink()  # vanished between boot and /status
+
+    status = service.status()
+    assert "config_mtime" not in status
+    assert "process_started_at" not in status
+    assert "valid" in status
+
+
 def test_explain_is_deterministic_and_never_calls_classifier(config_path):
     service = RouterService(config_path)
 

@@ -17,6 +17,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The test job owns the 100% coverage gate, and pytest collects
+      # tests/test_js_suites_run.py (runs every tests/test_*.js suite) plus the
+      # node --check syntax tests in test_webui_extension.py. Without node
+      # those skip, so the gate that owns the coverage never exercises the JS
+      # suites — the rot-detector that exists precisely because they rotted
+      # unnoticed. Same node-version as the webui job so the two jobs agree.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
