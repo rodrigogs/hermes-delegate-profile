@@ -28,8 +28,7 @@ from typing import Dict, List
 import pytest
 
 
-@pytest.fixture(autouse=True, scope="session")
-def _seed_live_router_config():
+def _seed_live_router_config() -> None:
     """Reproduce the production seeding: live router.yaml is generated from
     router.example.yaml on first load (_load_router_config does the same).
 
@@ -43,7 +42,17 @@ def _seed_live_router_config():
     example = root / "router.example.yaml"
     if not live.exists() and example.exists():
         live.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
-    yield
+
+
+# Called at MODULE level, not as a session fixture. pytest imports this conftest
+# before any test module — and one_sidecar.py stamps _PROCESS_STARTED_AT at its
+# own import time, which is the provenance /status reports. A session-scoped
+# autouse fixture ran only AFTER collection, so on a fresh checkout (router.yaml
+# absent) the seed wrote the file AFTER the process-start stamp: config_mtime >
+# process_started_at, and test_status_requires_valid_token — which asserts the
+# exact invariant a stale service violates — failed on every clean CI run (and
+# dropped coverage below the 100% gate with it).
+_seed_live_router_config()
 
 
 class _FakeProc:
