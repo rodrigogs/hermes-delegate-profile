@@ -5125,8 +5125,22 @@ test('the tier chains price an elo with liveness\'s number, not their own arithm
 // syncing from the catalogue entry.
 
 function byLabel(node, label) {
-  return (node.children || []).find((c) => (c.children[0] || {}).textContent === label
-    && String(c.className || '').includes('field'));
+  // Recursive since §2.5: the tier editor nests every attempt's fields one
+  // level down in .chain-row, so a label is no longer always a direct child
+  // of the inspector box. First match in document order is the primary
+  // row's field; reserve rows come later.
+  const scan = (n) => {
+    const kids = n.children || [];
+    for (let i = 0; i < kids.length; i += 1) {
+      const c = kids[i];
+      if (String(c.className || '').includes('field')
+          && (c.children[0] || {}).textContent === label) return c;
+      const hit = scan(c);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  return scan(node);
 }
 
 test('a model field is a <select> grouped by provider, with the count always visible', () => {
@@ -5215,8 +5229,11 @@ test('a model field without a catalogue falls back to free text with the §3.4(c
   assert.ok(input, 'no catalogue: the model field is an input (text fallback)');
   assert.match(flat(modelWrap), /Sem catálogo, não há lista para escolher\./,
     'the §3.4(c) note is present');
-  assert.equal(box.children.filter((c) => c.tagName === 'select').length, 0,
-    'no select is born from a missing catalogue');
+  // Billing selects exist without a catalogue (a mode is policy, not
+  // registry), so the CA9 count is scoped to the MODEL field: no model
+  // select is born from a missing catalogue.
+  assert.equal(modelWrap.children.filter((c) => c.tagName === 'select').length, 0,
+    'no model select is born from a missing catalogue');
   // and the ladder note says the §3.4(c) thing, not just "unverified"
   api.renderLadder();
   assert.match(dom.get('ladderNote').textContent, /não tem catálogo de modelos/,
@@ -6545,4 +6562,349 @@ test('a rule already on a fixed model shows the warning at mount, with the picke
   const fixedWrap = wrap.children.find((c) => c.tagName !== 'label' && c.tagName !== 'select'
     && !String(c.className).includes('field-note'));
   assert.ok(byLabel(fixedWrap, 'Modelo'), 'the model picker is open for the fixed option');
+});
+
+// ── §2.5: the group's chain, edited as rows ──────────────────────────
+// Editing a group used to stop at the primary's model and provider; the
+// reserves were read-only, which contradicted §2.5. These tests pin the
+// chain editor: every attempt is a row (primary first, then each reserve)
+// with model/provider/billing_mode and ↑/↓/Remover, plus Adicionar
+// tentativa below the last row. Order on screen is the order saved; the
+// primary lives in tiers.<chave>.{model, provider, billing_mode} and never
+// leaks into fallback; removing the last reserve writes `fallback: []`.
+
+function rowField(row, label) {
+  return (row.children || []).find((c) => String(c.className || '').includes('field')
+    && (c.children[0] || {}).textContent === label);
+}
+function rowButtons(row) {
+  return (row.children || []).find((c) => String(c.className || '').includes('row-ops'));
+}
+function nodeMsg(box) {
+  return box.children.find((c) => c.id === 'nodeMsg');
+}
+function capModels() {
+  return {
+    'glm-4.7': { provider: 'zai', context_window: 200000 },
+    'gpt-5.6-luna': { provider: 'openai-codex', context_window: 1000000 },
+    'mimo-v2.5': { provider: 'xiaomi', context_window: 1048576 },
+    'glm-5.3': { provider: 'zai', context_window: 200000 },
+    'deepseek-v4-pro': { provider: 'deepseek', context_window: 200000 },
+    'gpt-5.5': { provider: 'openai-codex', context_window: 400000 },
+  };
+}
+
+test('the tier editor draws the queue as rows: primary first, then each reserve in order', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = tierPolicy();
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const box = dom.get('inspector');
+  const rows = findAll(box, 'chain-row');
+  assert.equal(rows.length, 3, 'T2 has a primary and two reserves — three rows');
+  assert.deepEqual(findAll(box, 'chain-head').map((n) => n.textContent),
+    ['Primeira tentativa', 'Reserva', 'Reserva'], 'the panel shows list order, not an invented numbering');
+  const models = rows.map((r) => rowField(r, 'Modelo').children.find((c) => c.tagName === 'select').value);
+  assert.deepEqual(models, ['glm-5.3', 'deepseek-v4-pro', 'gpt-5.5'],
+    'the rows read the file order — screen order is the queue order');
+  rows.forEach((r, i) => {
+    const ops = rowButtons(r);
+    assert.ok(ops, `row ${i} carries its controls`);
+    assert.deepEqual(ops.children.map((b) => b.textContent), ['↑', '↓', 'Remover'],
+      `row ${i} has the three controls of §2.5`);
+  });
+  const add = findAll(box, 'btn').find((b) => b.textContent === 'Adicionar tentativa');
+  assert.ok(add, 'Adicionar tentativa sits below the last row');
+  assert.ok(flat(box).includes(
+    "Como você paga por esta opção. Não é etiqueta: 'pelo mais barato agora' ordena por isso, e o teto de preço só tira da fila as opções pagas em dinheiro."),
+  'the §2.5 billing support text is literal');
+});
+
+test('Adicionar tentativa creates the fallback list with a blank reserve; the primary is not removable from an empty queue', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  const policy = tierPolicy();
+  delete policy.tiers.T1.fallback;
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+  const box = dom.get('inspector');
+  assert.equal(findAll(box, 'chain-row').length, 1, 'no fallback declared → one row');
+
+  // Removing the primary from a single-attempt group would leave the group
+  // with no first attempt at all — the button says so and moves nothing.
+  const primaryOps = rowButtons(findAll(box, 'chain-row')[0]);
+  primaryOps.children.find((b) => b.textContent === 'Remover')._listeners.click();
+  assert.match(nodeMsg(box).textContent, /sem nenhuma opção/);
+  assert.ok(!api.state.draft.tiers.T1.fallback, 'no list was born from a refused removal');
+
+  const add = findAll(box, 'btn').find((b) => b.textContent === 'Adicionar tentativa');
+  add._listeners.click();
+  const draft = api.state.draft.tiers.T1;
+  assert.ok(Array.isArray(draft.fallback), 'clicking add creates the fallback list');
+  assert.equal(draft.fallback.length, 1, 'with one reserve');
+  assert.deepEqual(Object.keys(draft.fallback[0]), [], 'the new reserve is blank — the operator fills it');
+  assert.equal(findAll(box, 'chain-row').length, 2, 'and the row renders');
+  assert.equal(findAll(box, 'chain-head')[1].textContent, 'Reserva');
+});
+
+test('removing the last reserve writes fallback: [] — a declaration, not absence', async () => {
+  const posted = [];
+  const policy = tierPolicy();
+  policy.tiers.T1.fallback = [{ model: 'mimo-v2.5', provider: 'xiaomi', billing_mode: 'metered' }];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.body) posted.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: JSON.parse(opts.body) });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+  const box = dom.get('inspector');
+  const rows = findAll(box, 'chain-row');
+  assert.equal(rows.length, 2, 'primary + one reserve');
+  const reserveOps = rowButtons(rows[1]);
+  reserveOps.children.find((b) => b.textContent === 'Remover')._listeners.click();
+  assert.deepEqual(api.state.draft.tiers.T1.fallback, [],
+    'the reserve is gone and the list is EXPLICITLY empty');
+  assert.equal(findAll(box, 'chain-row').length, 1, 'the row left the screen');
+
+  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Apply');
+  apply._listeners.click();
+  await tick();
+  const planCall = posted.find((c) => c.url === '/plan');
+  assert.ok(planCall, 'an /plan went out');
+  assert.ok('fallback' in planCall.body.policy.tiers.T1, 'fallback rides the patch');
+  assert.deepEqual(planCall.body.policy.tiers.T1.fallback, [],
+    'the empty list is what is written — not null, not absence');
+});
+
+test('↑ on the first row and ↓ on the last row move nothing and say so', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = tierPolicy();
+  api.state.loading = false;
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const box = dom.get('inspector');
+  const rows = findAll(box, 'chain-row');
+  assert.equal(rows.length, 3);
+  const before = plain(api.state.draft.tiers.T2);
+
+  rowButtons(rows[0]).children.find((b) => b.textContent === '↑')._listeners.click();
+  assert.match(nodeMsg(box).textContent, /nada a mover/,
+    'the head control says the row is already first');
+  assert.deepEqual(api.state.draft.tiers.T2, before,
+    '↑ on the head does not rotate the queue — no wrap-around');
+
+  rowButtons(rows[2]).children.find((b) => b.textContent === '↓')._listeners.click();
+  assert.match(nodeMsg(box).textContent, /nada a mover/,
+    'the tail control says the row is already last');
+  assert.deepEqual(api.state.draft.tiers.T2, before,
+    '↓ on the tail moves nothing either');
+});
+
+test('moving the first reserve up promotes it: order on screen is the order saved', async () => {
+  const posted = [];
+  const policy = tierPolicy();
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.body) posted.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: JSON.parse(opts.body) });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+  const box = dom.get('inspector');
+  const rows = findAll(box, 'chain-row');
+  rowButtons(rows[1]).children.find((b) => b.textContent === '↑')._listeners.click();
+
+  const draft = api.state.draft.tiers.T1;
+  assert.equal(draft.model, 'gpt-5.6-luna', 'the promoted reserve is now the primary');
+  assert.equal(draft.provider, 'openai-codex');
+  assert.equal(draft.billing_mode, 'subscription');
+  assert.deepEqual(draft.fallback, [
+    { model: 'glm-4.7', provider: 'zai', billing_mode: 'plan' },
+    { model: 'mimo-v2.5', provider: 'xiaomi', billing_mode: 'metered' },
+  ], 'the old primary became the first reserve');
+  const freshModels = findAll(box, 'chain-row')
+    .map((r) => rowField(r, 'Modelo').children.find((c) => c.tagName === 'select').value);
+  assert.deepEqual(freshModels, ['gpt-5.6-luna', 'glm-4.7', 'mimo-v2.5'],
+    'the rows re-render in the new order — screen order is the queue order');
+
+  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Apply');
+  apply._listeners.click();
+  await tick();
+  const planCall = posted.find((c) => c.url === '/plan');
+  assert.ok(planCall, 'an /plan went out');
+  const tier = planCall.body.policy.tiers.T1;
+  assert.equal(tier.model, 'gpt-5.6-luna', 'the promoted reserve is written as the primary');
+  assert.deepEqual(tier.fallback.map((e) => e.model), ['glm-4.7', 'mimo-v2.5'],
+    'the saved order is the on-screen order');
+});
+
+test('Remover on the primary promotes the first reserve instead of emptying the group', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = tierPolicy();
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+  const box = dom.get('inspector');
+  const rows = findAll(box, 'chain-row');
+  assert.equal(rows.length, 3, 'primary + two reserves');
+  rowButtons(rows[0]).children.find((b) => b.textContent === 'Remover')._listeners.click();
+  const draft = api.state.draft.tiers.T1;
+  assert.equal(draft.model, 'gpt-5.6-luna', 'the first reserve becomes the primary');
+  assert.deepEqual(draft.fallback.map((e) => e.model), ['mimo-v2.5'],
+    'the removed attempt LEAVES the queue — keeping it as the last reserve would be a rotation');
+  assert.equal(findAll(box, 'chain-row').length, 2, 'two rows remain');
+});
+
+test('the first attempt lives on the tier, never inside fallback', async () => {
+  const posted = [];
+  const policy = tierPolicy();
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.body) posted.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: JSON.parse(opts.body) });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const box = dom.get('inspector');
+  const rows = findAll(box, 'chain-row');
+  const primaryModel = rowField(rows[0], 'Modelo');
+  const select = primaryModel.children.find((c) => c.tagName === 'select');
+  select.value = 'gpt-5.6-luna';
+  select._listeners.change();
+  const draft = api.state.draft.tiers.T2;
+  assert.equal(draft.model, 'gpt-5.6-luna', 'the primary model edits the tier key');
+  assert.equal(draft.fallback.length, 2, 'fallback keeps its own two entries');
+  assert.ok(!draft.fallback.some((e) => e.model === 'gpt-5.6-luna'),
+    'the first attempt never leaks into the reserve list');
+
+  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Apply');
+  apply._listeners.click();
+  await tick();
+  const planCall = posted.find((c) => c.url === '/plan');
+  assert.ok(planCall, 'an /plan went out');
+  const tier = planCall.body.policy.tiers.T2;
+  assert.equal(tier.model, 'gpt-5.6-luna', 'the tier key carries the first attempt');
+  assert.ok(!('fallback' in tier), 'a primary edit never touches the reserve list in the patch');
+});
+
+test('a billing mode the console has not learned renders as written, and the select refuses out-of-vocabulary values', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  const policy = tierPolicy();
+  policy.tiers.T1.billing_mode = 'barter';
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+  const box = dom.get('inspector');
+  const rows = findAll(box, 'chain-row');
+  const billing = rowField(rows[0], 'Modo de pagamento');
+  const select = billing.children.find((c) => c.tagName === 'select');
+  const values = [];
+  select.children.forEach((o) => values.push(o.value));
+  assert.ok(values.indexOf('barter') !== -1, 'the unknown mode is an option, not swallowed');
+  assert.equal(select.value, 'barter', 'and it is the selected one — the file is shown as it is');
+  const note = billing.children.find((c) => String(c.className).includes('field-note'));
+  assert.match(note.textContent, /'pelo mais barato agora' ordena por isso/, 'the §2.5 support text is literal');
+
+  // The vocabulary is closed (capabilities.BILLING_MODES): a scripted select
+  // cannot push an invented mode into the draft.
+  select.value = 'credit_voucher';
+  select._listeners.change();
+  assert.equal(api.state.draft.tiers.T1.billing_mode, 'barter',
+    'a value outside the option set never lands in the draft');
+  select.value = 'metered';
+  select._listeners.change();
+  assert.equal(api.state.draft.tiers.T1.billing_mode, 'metered', 'choosing a known mode writes it');
+  select.value = '';
+  select._listeners.change();
+  assert.equal(api.state.draft.tiers.T1.billing_mode, null,
+    'clearing the mode is an explicit null — removing a key is a declaration (§2.1)');
+});
+
+test("choosing a model in a reserve row fills THAT entry's provider, not the primary's", () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = tierPolicy();
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const box = dom.get('inspector');
+  const rows = findAll(box, 'chain-row');
+  const reserveModel = rowField(rows[1], 'Modelo');
+  const select = reserveModel.children.find((c) => c.tagName === 'select');
+  select.value = 'mimo-v2.5';
+  select._listeners.change();
+  const entry = api.state.draft.tiers.T2.fallback[0];
+  assert.equal(entry.model, 'mimo-v2.5');
+  assert.equal(entry.provider, 'xiaomi', "the reserve entry's provider follows its model");
+  assert.equal(api.state.draft.tiers.T2.provider, 'zai', "the primary's provider is untouched");
+});
+
+test('editing a reserve\'s billing writes the WHOLE fallback list — lists replace wholesale', async () => {
+  const posted = [];
+  const policy = tierPolicy();
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.body) posted.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: JSON.parse(opts.body) });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const box = dom.get('inspector');
+  const rows = findAll(box, 'chain-row');
+  const billing = rowField(rows[2], 'Modo de pagamento');
+  const select = billing.children.find((c) => c.tagName === 'select');
+  select.value = 'free';
+  select._listeners.change();
+
+  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Apply');
+  apply._listeners.click();
+  await tick();
+  const planCall = posted.find((c) => c.url === '/plan');
+  assert.ok(planCall, 'an /plan went out');
+  const tier = planCall.body.policy.tiers.T2;
+  assert.ok('fallback' in tier, 'the list rides the patch');
+  assert.deepEqual(tier.fallback.map((e) => e.billing_mode), ['metered', 'free'],
+    'the whole list, with the edit in place');
+  assert.ok(!('model' in tier) && !('provider' in tier) && !('billing_mode' in tier),
+    'a reserve edit touches only the list — no primary keys ride along');
 });

@@ -782,6 +782,10 @@
        inside the field, not as an error or a help bubble elsewhere. */
     .field .btn { margin-top: 2px; }
     .field-note { color: var(--muted); font: var(--t-small)/1.5 var(--sans); margin: 0; }
+    .chain-row { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 2px; }
+    .chain-row:first-child { border-top: none; margin-top: 0; }
+    .chain-head { color: var(--muted); font: 600 var(--t-label) var(--sans); letter-spacing: .05em; text-transform: uppercase; margin-bottom: 8px; }
+    .row-ops { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
     .msg { margin-top: 12px; color: var(--muted); font-size: var(--t-body); }
     .msg.ok { color: var(--ok-text); }
@@ -5674,6 +5678,184 @@
         return { wrap, select, input };
       }
 
+      // ── §2.5: the group's chain, edited as rows ──────────────────────
+      // The queue is the primary (tiers.<chave>.{model, provider,
+      // billing_mode}) plus the reserves (tiers.<chave>.fallback[]), and the
+      // panel draws the WHOLE queue as editable rows in the order it is tried
+      // — the order on screen is the order saved, and the primary is NOT part
+      // of fallback: moving it down promotes the first reserve. The write
+      // sends the whole fallback list (lists replace wholesale,
+      // service.py:422-434), and removing the last reserve writes
+      // `fallback: []` — an empty list is a declaration, an absent key is
+      // another thing. Numbering (1ª/2ª/3ª) stays the ladder's job (§2.3):
+      // editing shows list order, one authority for the queue.
+      function editTierChain(box, t, touched, msg) {
+        const REQUIREMENTS = t.requirements;
+        const knownBilling = Object.keys(BILLING);
+        // A structural change can move the primary, the reserves, or both, so
+        // the patch keys it touches are all four at once.
+        const touchAll = () => {
+          touched.add('model'); touched.add('provider');
+          touched.add('billing_mode'); touched.add('fallback');
+        };
+        const touchList = () => touched.add('fallback');
+        // Swap the three editable fields of two attempts. billing_mode
+        // normalizes undefined to null so the patch can SAY the key was
+        // removed (§2.1: removing a key is an explicit null) — dropping it
+        // silently would leave the file's old mode behind a draft that shows
+        // none.
+        const swapFields = (a, b) => {
+          const model = a.model, provider = a.provider, billing = a.billing_mode;
+          a.model = b.model; a.provider = b.provider; a.billing_mode = b.billing_mode;
+          b.model = model; b.provider = provider; b.billing_mode = billing;
+          if (a.billing_mode === undefined) a.billing_mode = null;
+          if (b.billing_mode === undefined) b.billing_mode = null;
+        };
+        const fallback = () => (Array.isArray(t.fallback) ? t.fallback : []);
+        const setList = (list) => { t.fallback = list; };
+
+        const billingField = (rowBox, attempt, mark) => {
+          const wrap = el('div', 'field');
+          wrap.append(el('label', '', 'Modo de pagamento'));
+          const select = document.createElement('select');
+          // The vocabulary is the closed set of capabilities.BILLING_MODES,
+          // transcribed once in BILLING above. A mode the policy declares and
+          // this console has not learned is an OPTION here, shown as written
+          // (same rule as billingBadge): it stays selectable, because the
+          // operator may be keeping it on purpose. The change handler refuses
+          // anything outside the option set — a scripted select cannot push an
+          // invented mode into the draft.
+          const current = String(attempt.billing_mode == null ? '' : attempt.billing_mode);
+          const allowed = new Set(['']);
+          knownBilling.forEach((k) => allowed.add(k));
+          if (current && !allowed.has(current)) allowed.add(current);
+          const blank = document.createElement('option');
+          blank.value = ''; blank.textContent = '—';
+          select.appendChild(blank);
+          knownBilling.forEach((k) => {
+            const opt = document.createElement('option');
+            opt.value = k; opt.textContent = k;
+            select.appendChild(opt);
+          });
+          if (current && knownBilling.indexOf(current) === -1) {
+            const opt = document.createElement('option');
+            opt.value = current;
+            opt.textContent = billingBadge(current).word;
+            select.appendChild(opt);
+          }
+          select.value = current;
+          select.addEventListener('change', () => {
+            if (!allowed.has(String(select.value))) return;
+            mark();
+            attempt.billing_mode = select.value ? select.value : null;
+          });
+          wrap.append(select);
+          wrap.append(el('p', 'field-note',
+            "Como você paga por esta opção. Não é etiqueta: 'pelo mais barato agora' ordena por isso, e o teto de preço só tira da fila as opções pagas em dinheiro."));
+          rowBox.append(wrap);
+          return select;
+        };
+
+        // One editable row of the queue. `mark(tierKey)` records the tier key
+        // the edit touches: the primary's fields each have their own key,
+        // while ANY change to a reserve touches the whole list.
+        const attemptRow = (container, attempt, heading, isPrimary, rowIndex) => {
+          const mark = (tierKey) => touched.add(isPrimary ? tierKey : 'fallback');
+          const row = el('div', 'chain-row');
+          row.append(el('div', 'chain-head', heading));
+          modelField(row, 'Modelo', () => attempt.model,
+            (v) => { mark('model'); attempt.model = v; },
+            REQUIREMENTS,
+            (provider) => { mark('provider'); attempt.provider = provider; });
+          const provWrap = el('div', 'field');
+          provWrap.append(el('label', '', 'Provedor'));
+          const provInput = document.createElement('input');
+          provInput.value = attempt.provider == null ? '' : String(attempt.provider);
+          provInput.addEventListener('input', () => { mark('provider'); attempt.provider = provInput.value; });
+          provWrap.append(provInput);
+          row.append(provWrap);
+          billingField(row, attempt, () => mark('billing_mode'));
+          const ops = el('div', 'row-ops');
+          const up = el('button', 'btn', '↑');
+          up.type = 'button';
+          up.title = 'Mover esta tentativa para cima';
+          up.addEventListener('click', () => moveUp(rowIndex));
+          const down = el('button', 'btn', '↓');
+          down.type = 'button';
+          down.title = 'Mover esta tentativa para baixo';
+          down.addEventListener('click', () => moveDown(rowIndex));
+          const remove = el('button', 'btn warn', 'Remover');
+          remove.type = 'button';
+          remove.title = 'Remover esta tentativa';
+          remove.addEventListener('click', () => removeRow(rowIndex));
+          ops.append(up, down, remove);
+          row.append(ops);
+          container.append(row);
+        };
+
+        // An end control is not a silent no-op: it says the row is already at
+        // the end it asked to move toward, and the draft is untouched.
+        const moved = (verb) => setMsg(msg,
+          `${verb} no rascunho — Preview para ver o diff, Apply para escrever.`, 'ok');
+
+        const moveUp = (row) => {
+          if (row === 0) { setMsg(msg, 'Já é a primeira tentativa da fila — nada a mover.'); return; }
+          const f = fallback();
+          if (row === 1) { swapFields(t, f[0]); touchAll(); }
+          else { swapFields(f[row - 1], f[row - 2]); touchList(); }
+          moved('Movido');
+          render();
+        };
+        const moveDown = (row) => {
+          const f = fallback();
+          if (row === f.length) { setMsg(msg, 'Já é a última tentativa da fila — nada a mover.'); return; }
+          if (row === 0) { swapFields(t, f[0]); touchAll(); }
+          else { swapFields(f[row - 1], f[row]); touchList(); }
+          moved('Movido');
+          render();
+        };
+        const removeRow = (row) => {
+          const f = fallback();
+          if (row === 0) {
+            if (!f.length) {
+              setMsg(msg, 'Remover a primeira tentativa deixaria o grupo sem nenhuma opção — escolha uma reserva antes, ou deixe como está.');
+              return;
+            }
+            swapFields(t, f[0]);
+            setList(f.slice(1));
+            touchAll();
+          } else {
+            const next = f.slice();
+            next.splice(row - 1, 1);
+            setList(next);
+            touchList();
+          }
+          moved('Removido');
+          render();
+        };
+        const addAttempt = () => {
+          const next = fallback().slice();
+          next.push({});
+          setList(next);
+          touchList();
+          setMsg(msg, 'Tentativa adicionada no rascunho — escolha o modelo dela. Preview para ver o diff, Apply para escrever.', 'ok');
+          render();
+        };
+
+        const host = el('div', 'chain-editor');
+        box.append(host);
+        const render = () => {
+          while (host.children.length) host.removeChild(host.children[0]);
+          attemptRow(host, t, 'Primeira tentativa', true, 0);
+          fallback().forEach((entry, i) => attemptRow(host, entry, 'Reserva', false, i + 1));
+          const add = el('button', 'btn', 'Adicionar tentativa');
+          add.type = 'button';
+          add.addEventListener('click', addAttempt);
+          host.append(add);
+        };
+        render();
+      }
+
       function renderInspector(node) {
         const box = $('inspector');
         clear(box);
@@ -5734,10 +5916,12 @@
           // CA9 §2.5: the model is CHOSEN from the catalogue, pre-filtered by
           // this group's own requirements; picking an entry fills the provider
           // rail from the catalogue, because the two are one fact there —
-          // which is why picking a model counts BOTH keys as touched.
-          modelField(box, 'Modelo', () => t.model, (v) => { touched.add('model'); t.model = v; },
-            t.requirements, (provider) => { touched.add('provider'); t.provider = provider; });
-          field('Provedor', 'provider', () => t.provider, (v) => { t.provider = v; });
+          // which is why picking a model counts BOTH keys as touched. The
+          // chain editor (the §2.5 second half) draws the whole queue — the
+          // primary row plus one row per reserve — with ↑/↓/Remover and
+          // Adicionar tentativa: the primary's keys stay tier keys, and every
+          // reserve lives inside the fallback list.
+          editTierChain(box, t, touched, msg);
         } else if (node.bind === 'rule') {
           const r = d.rules[node.ruleIndex] = d.rules[node.ruleIndex] || {};
           r.then = r.then || {};
