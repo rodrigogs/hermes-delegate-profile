@@ -1717,3 +1717,52 @@ def test_plugin_makes_its_own_plugin_root_importable_in_the_flat_layout(monkeypa
     )
     assert reloaded.DecisionLog is DecisionLog
     assert reloaded._CONFIG_PATH == reloaded._PLUGIN_DIR / "router.yaml"
+
+
+def test_json_actions_markup_is_what_the_js_harness_mirrors():
+    """CA8: the write buttons live in ``#jsonActions``, and the JS test mirrors that.
+
+    ``tests/test_console_logic.js`` measures whether a ``Salvar`` exists **in the DOM**
+    while the file carries a lint error — absent, not disabled (DESIGN.md:435-463). Its
+    DOM stub has no markup, so the test seeds the box the way this file writes it
+    (``seedJsonActions``). That mirror is only honest while the markup really is this,
+    which is what this test pins: rename the container or move a button out of it and
+    the JS test would keep passing over a fiction until this one fails.
+    """
+    html = (EXTENSION / "console.html").read_text(encoding="utf-8")
+    assert '<div class="actions" id="jsonActions">' in html, (
+        "the write buttons need a named container for a test to ask what is inside it"
+    )
+    box = html.split('<div class="actions" id="jsonActions">', 1)[1].split("</div>", 1)[0]
+    for element_id, label in (
+        ("jsonApply", "Salvar"),
+        ("jsonPreview", "Ver o que muda"),
+        ("jsonRevert", "Voltar à versão anterior"),
+    ):
+        assert f'id="{element_id}"' in box, f"{element_id} must live inside #jsonActions"
+        assert label in box, f"{element_id} is labelled {label!r} in the markup"
+    # Salvar first in the file, so the console can put it back where it was after
+    # detaching it: the JS test asserts that order and it comes from here.
+    assert box.index('id="jsonApply"') < box.index('id="jsonPreview"'), (
+        "Salvar precedes Ver o que muda in the markup, which is the order the "
+        "console restores it to"
+    )
+
+
+def test_console_gates_the_save_button_on_the_lint_errors():
+    """The gate exists, and it DETACHES rather than disabling.
+
+    A static read, because the behaviour is measured dynamically in the JS suite: what
+    this pins is that the console never reaches for ``$('jsonApply')`` unguarded, which
+    would throw the moment the node is detached — the failure mode that turns a lint
+    error into a blank screen.
+    """
+    script = _console_inline_script()
+    assert "function syncSaveButtons()" in script
+    assert "removeChild(save)" in script, "absent, not disabled (DESIGN.md:435-463)"
+    assert "function saveButton()" in script, (
+        "one accessor for a node that may be detached; getElementById cannot find it then"
+    )
+    assert "$('jsonApply').disabled" not in script, (
+        "an unguarded read of a detachable node is the crash this accessor prevents"
+    )

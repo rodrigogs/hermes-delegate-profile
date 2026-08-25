@@ -1243,7 +1243,7 @@
                  is the SAME function as /apply — one_sidecar.py:346 and :353 both
                  return _commit_policy(body). Two buttons, one effect, and nothing
                  on screen said which to press or what the difference was. -->
-            <div class="actions">
+            <div class="actions" id="jsonActions">
               <button class="btn go" id="jsonApply" type="button">Salvar</button>
               <button class="btn" id="jsonPreview" type="button">Ver o que muda</button>
               <button class="btn warn" id="jsonRevert" type="button">Voltar à versão anterior</button>
@@ -2784,10 +2784,13 @@
         }
       }
 
-      // "Ver regra N": N is the row's ordinal on the sheet (1-based), which is
-      // what the operator reads down the Stage 0 column.
+      // "Ir para a regra N": N is the row's ordinal on the sheet (1-based), which is
+      // what the operator reads down the first column. ONE label for one action: the
+      // shadowed row's own button already said "Ir para a regra N" while this one said
+      // "Ver regra N", and two words for the same jump make the reader wonder which
+      // one does something else (§3.3, §3.4(a)).
       function verRuleButton(target) {
-        const btn = el('button', 'btn', `Ver regra ${target.later_index + 1}`);
+        const btn = el('button', 'btn', `Ir para a regra ${target.later_index + 1}`);
         btn.type = 'button';
         btn.addEventListener('click', () => showLintTarget(target));
         return btn;
@@ -2821,6 +2824,42 @@
         return targets.reduce((best, t) => (t.earlier_index < best.earlier_index ? t : best));
       }
 
+      // ── A destination that names a group the table does not have ─────
+      // §3.4(a). The lint refuses the file for it (rules.py: "references unknown
+      // tier"), and that message reaches the console as raw server text — which
+      // names the rule by its id and the concept by its English word. An operator
+      // reading it has to find which row that id is, and to know that a group and a
+      // model id are different things at that position.
+      //
+      // The console does not need the server to translate: it holds the policy and
+      // the tier table, so the finding is DERIVED here from the same test the sheet
+      // row uses to draw "⚠ Grupo T9 — não existe". No new endpoint, no new key
+      // (§6.1) — and the target shape is exactly the one showLintTarget already
+      // navigates, so the jump is the existing one.
+      function missingGroupFindings() {
+        const policy = state.policy;
+        if (!policy || typeof policy !== 'object') return [];
+        const tiers = (policy.tiers && typeof policy.tiers === 'object') ? policy.tiers : {};
+        const rules = Array.isArray(policy.rules) ? policy.rules : [];
+        const out = [];
+        rules.forEach((rule, index) => {
+          const then = (rule && typeof rule.then === 'object' && rule.then) || {};
+          const model = then.model == null ? '' : String(then.model);
+          // The same shape the row's own reader tests: a Tn alias, and no such key in
+          // the table. A concrete model id at this position is a different finding
+          // (it runs, with no reserve) and has its own text.
+          if (!/^T\d+$/.test(model)) return;
+          if (Object.prototype.hasOwnProperty.call(tiers, model)) return;
+          out.push({
+            later_index: index,
+            later_id: rule && rule.id == null ? '' : String(rule.id),
+            group: model,
+            title: ruleTitle(rule && rule.when),
+          });
+        });
+        return out;
+      }
+
       // The probe's answer BEFORE it asks: a disabled submit button still lets
       // Enter submit the form, so the result space carries the refusal and the
       // fix path preemptively, in the same line language as the banner.
@@ -2836,6 +2875,40 @@
           gate.append(verRuleButton(target));
         }
         box.append(gate);
+      }
+
+      // ── No Salvar while the file carries an error (§3.4(a), CA8) ─────
+      // ABSENT, not disabled (DESIGN.md:435-463). A disabled control still reads as
+      // "this is the thing to press", and pressing your way out of an error state is
+      // exactly the wrong lesson: nothing can be written until the file is fixed. The
+      // Editar control stays, with the support text saying you may edit and may not
+      // save yet.
+      //
+      // Detached rather than rebuilt: the button keeps ONE definition (the markup) and
+      // one listener wired at boot, so a rebuild cannot lose the handler. The
+      // reference is held here because getElementById does not find a detached node.
+      const detachedWrite = { jsonApply: null };
+      function saveButton() {
+        return detachedWrite.jsonApply || $('jsonApply');
+      }
+      function syncSaveButtons() {
+        const box = $('jsonActions');
+        const save = saveButton();
+        if (!box || !save) return;
+        const blocked = lintErrors().length > 0;
+        if (blocked && !detachedWrite.jsonApply) {
+          if (typeof box.removeChild === 'function') box.removeChild(save);
+          detachedWrite.jsonApply = save;
+          return;
+        }
+        if (!blocked && detachedWrite.jsonApply) {
+          // Back in its own place — before "Ver o que muda", which is the order the
+          // flow reads: see what changes, then save.
+          const before = $('jsonPreview');
+          if (before && typeof box.insertBefore === 'function') box.insertBefore(save, before);
+          else box.append(save);
+          detachedWrite.jsonApply = null;
+        }
       }
 
       function renderWarnings() {
@@ -2864,12 +2937,34 @@
         const probeResult = $('probeResult');
         if (errors.length) {
           const line = el('div', 'warn-line');
-          line.append(el('strong', '', `Não é possível salvar enquanto houver erro. ${errors.length} erro${errors.length === 1 ? '' : 's'} no arquivo.`),
-                      el('span', '', `A simulação é recusada enquanto o arquivo não passar no lint. Primeiro erro: ${String(errors[0])}`));
-          // The error shown is errors[0], so its target is the one worth a
-          // button. Without a target (a config-level error) the line stays the
-          // dead text it always was — there is no row to jump to.
-          const target = lintTargets()[0];
+          line.append(el('strong', '', `Não é possível salvar enquanto houver erro. ${errors.length} erro${errors.length === 1 ? '' : 's'} no arquivo.`));
+          // §3.4(a): when the error is a destination naming a group that is not in the
+          // table, the console says it in the operator's words — which rule, which
+          // group, and what actually happens at runtime — instead of forwarding the
+          // server's English. The consequence sentence is the part no raw message
+          // carries: "unknown tier" reads as ignored, and it is not.
+          // Aligned with the error the line is SHOWING (errors[0]), not merely with
+          // the policy: a file can carry a shadowed rule and a missing group at once,
+          // and translating the second while the first is the one being reported would
+          // put the wrong jump under the wrong sentence. The check is a substring of
+          // the server's own message — if that wording ever changes, this falls back to
+          // the raw line, which is the safe direction to fail in.
+          const first = String(errors[0] || '');
+          const missing = missingGroupFindings().find((f) => first.indexOf(f.group) >= 0
+            && (!f.later_id || first.indexOf(f.later_id) >= 0)) || null;
+          if (missing) {
+            line.append(el('span', '', `A regra “${missing.title}” manda para o Grupo ${missing.group}, que não existe na sua tabela de grupos.`));
+            line.append(el('span', '', `Isso não é ignorado em execução: o roteador tenta chamar um modelo chamado “${missing.group}”, a chamada falha, e a tarefa cai no último recurso.`));
+            line.append(verRuleButton(missing));
+          } else {
+            line.append(el('span', '', `A simulação é recusada enquanto o arquivo não passar no lint. Primeiro erro: ${String(errors[0])}`));
+          }
+          // The error shown is errors[0], so its target is the one worth a button.
+          // Without a target (a config-level error) the line stays the dead text it
+          // always was — there is no row to jump to. Skipped when the translated
+          // block above already carries its own jump: two buttons for one jump is the
+          // duplication DESIGN.md §2 rule 2 forbids.
+          const target = missing ? null : lintTargets()[0];
           if (target && typeof target.later_index === 'number') {
             line.append(verRuleButton(target));
           }
@@ -2894,6 +2989,10 @@
           // it survives a refresh untouched.
           clear(probeResult);
         }
+        // The gate rides the same render: every path that changes the error set
+        // already calls renderWarnings, so there is one place that decides whether a
+        // Salvar exists at all.
+        syncSaveButtons();
         if (state.mode === 'editing' && !csrf()) {
           const line = el('div', 'warn-line');
           line.append(el('strong', '', 'A edição não pode ser aplicada aqui.'),
@@ -5718,7 +5817,10 @@
         // editing, so jsonDraft() always parses and the "Nothing to apply" guard
         // could never fire on that path. Revert is the destructive one: it takes no
         // plan, shows no diff, and restores whatever the .bak holds.
-        $('jsonApply').disabled = !open;
+        // Through saveButton(): while the file carries an error the node is DETACHED
+        // (§3.4(a)), and getElementById does not find a detached node.
+        const save = saveButton();
+        if (save) save.disabled = !open;
         $('jsonRevert').disabled = !open;
         $('pipelineNote').textContent = open
           ? 'Modo edição ligado. Nada é gravado até você apertar “Salvar”, e a tela mostra o que muda antes.'
@@ -5946,7 +6048,7 @@
         hourBounds, weekdaySet,
         nextWindowChange, windowWords, railWindowRows, effectivePrices, money,
         priceWords, pricePublished, declaredPin, timePolicyMove, timeFlagIndex,
-        timeKnobWords, orderLineParts, orderLine, chipList, planWhen, timeCapOf, cappedEntries, renderClock, nowUtc,
+        timeKnobWords, orderLineParts, orderLine, chipList, missingGroupFindings, planWhen, timeCapOf, cappedEntries, renderClock, nowUtc,
         // The server's own numbers, and the two questions the console must answer
         // from the RUNNING path rather than from the declared config: which elos are
         // really out of the chain, and where this task actually goes.

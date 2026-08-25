@@ -39,6 +39,13 @@ function fakeDom() {
       append(...k) { node.children.push(...k); },
       appendChild(k) { node.children.push(k); return k; },
       removeChild(k) { node.children = node.children.filter((x) => x !== k); },
+      // A detached node comes back WHERE IT WAS, so a test can assert the order the
+      // flow reads (see what changes, then save) and not merely that it is present.
+      insertBefore(k, ref) {
+        const at = node.children.indexOf(ref);
+        if (at < 0) node.children.push(k); else node.children.splice(at, 0, k);
+        return k;
+      },
       addEventListener(type, fn) { node._listeners[type] = fn; },
       setAttribute(n, v) { node.attrs[n] = String(v); },
       getAttribute(n) { return node.attrs[n]; },
@@ -2704,14 +2711,14 @@ test('the invalid-policy line grows a jump button when the error names a rule', 
   api.renderWarnings();
   const text = flat(dom.get('warnings'));
   assert.match(text, /Não é possível salvar enquanto houver erro\. 1 erro no arquivo\./);
-  assert.match(text, /Ver regra 7/, 'the button names the row by its sheet ordinal (index 6 + 1)');
+  assert.match(text, /Ir para a regra 7/, 'the button names the row by its sheet ordinal (index 6 + 1), in the one label this jump has');
 });
 
 test('a config-level error (no target) stays dead text — no invented button', () => {
   const { api, dom } = loadConsole();
   api.state.status = { validation_errors: ["missing mandatory 'default' routing"], error_targets: [null] };
   api.renderWarnings();
-  assert.doesNotMatch(flat(dom.get('warnings')), /Ver regra/, 'no rule exists to jump to');
+  assert.doesNotMatch(flat(dom.get('warnings')), /Ir para a regra/, 'no rule exists to jump to');
 });
 
 test('an invalid policy disables Route it, says why, and gates the result space', () => {
@@ -2723,7 +2730,7 @@ test('an invalid policy disables Route it, says why, and gates the result space'
   assert.match(go.title, /Não é possível simular enquanto houver erro no arquivo/);
   const gate = flat(dom.get('probeResult'));
   assert.match(gate, /Não é possível simular enquanto houver erro no arquivo\. Corrija o erro:/);
-  assert.match(gate, /Ver regra 7/, 'the fix path rides in the result space too');
+  assert.match(gate, /Ir para a regra 7/, 'the fix path rides in the result space too');
 });
 
 test('a fixed policy re-enables Route it and clears the stale gate', () => {
@@ -2750,7 +2757,7 @@ test('a probe refuses locally when the policy is invalid — no round-trip', asy
   await api.probe('anything at all');
   assert.equal(called, false, 'the refusal is known before asking — Enter cannot bypass a disabled button');
   assert.match(flat(dom.get('probeResult')), /Não é possível simular enquanto houver erro no arquivo/);
-  assert.match(flat(dom.get('probeResult')), /Ver regra 7/);
+  assert.match(flat(dom.get('probeResult')), /Ir para a regra 7/);
 });
 
 test('selectTab flips the aria state and the visible screen', () => {
@@ -2779,7 +2786,7 @@ test('the jump button drives the whole fix path: tab, hit row, inspector, scroll
   api.state.status = shadowStatus();
   api.renderWarnings();
   const line = dom.get('warnings').children[0];
-  const btn = line.children.find((c) => c.textContent === 'Ver regra 7');
+  const btn = line.children.find((c) => c.textContent === 'Ir para a regra 7');
   assert.ok(btn, 'the warn-line carries the button');
   btn._listeners.click();
 
@@ -2814,7 +2821,7 @@ test('a probe that follows clears the lint mark — one accent, one answer', asy
   api.state.status = shadowStatus({ later_index: 2 });
   api.renderWarnings();
   dom.get('warnings').children[0]
-    .children.find((c) => c.textContent === 'Ver regra 3')._listeners.click();
+    .children.find((c) => c.textContent === 'Ir para a regra 3')._listeners.click();
   assert.equal(api.state.lintRule, 'review-request');
 
   // 2. The policy is fixed and refreshed; the mark survives the re-render,
@@ -5376,4 +5383,143 @@ test('a condition chip reads as one phrase, with the family in the class and not
   // sentence already containing the word.
   const chip = plain(api.predicateChip('est_input_tokens', { gt: 400000 }));
   assert.equal(flat(api.chipList([chip])), 'o contexto estimado passa de 400.000 tokens');
+});
+
+// ── CA8: a destination naming a group the table does not have ──────────────
+// §3.4(a). Three things at once, and the third is the one a screen usually gets
+// wrong: the warning in the operator's words, the row marked, and NO Salvar in the
+// DOM — absent, not disabled, because pressing your way out of an error state is
+// exactly the wrong lesson.
+// The DOM stub has no markup, so a test that measures what is IN the actions box has
+// to seed it the way console.html does. `test_webui_extension.py::test_json_actions_markup`
+// asserts the file really carries these three ids inside #jsonActions, so this mirror
+// cannot drift from the markup it stands for.
+function seedJsonActions(dom) {
+  const box = dom.get('jsonActions');
+  box.children = [];
+  [['jsonApply', 'Salvar'], ['jsonPreview', 'Ver o que muda'], ['jsonRevert', 'Voltar à versão anterior']]
+    .forEach(([id, label]) => {
+      const node = dom.get(id);
+      node.textContent = label;
+      box.append(node);
+    });
+  return box;
+}
+
+function missingGroupState(api) {
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [
+      { id: 'audit', when: { keywords: { contains: 'audit' } }, then: { model: 'T9', profile: 'reviewer' } },
+      { id: 'code', when: { has_code: { eq: true } }, then: { model: 'T2' } },
+    ],
+    default: { action: 'classify' },
+    classifier: { model: 'glm-4.7' },
+    fail_safe: { model: 'glm-4.7', provider: 'zai' },
+    tiers: { T2: { model: 'glm-5.3', provider: 'zai' } },
+  };
+  api.state.status = {
+    validation_errors: ["rule 'audit': 'then.model' references unknown tier 'T9'"],
+    error_targets: [null],
+    enabled: true,
+  };
+}
+
+test('a missing group is named in the operator words, with the jump and the consequence', () => {
+  const { api, dom } = loadConsole();
+  missingGroupState(api);
+  api.renderWarnings();
+  api.renderSheet();
+
+  const said = flat(dom.get('warnings'));
+  assert.match(said, /Não é possível salvar enquanto houver erro\. 1 erro no arquivo\./);
+  // WHICH rule and WHICH group, by the rule's own title rather than its id: the id is
+  // what the raw lint message already gave, and it is not what the row shows.
+  assert.match(said, /A regra “Pedido de auditoria” manda para o Grupo T9, que não existe na sua tabela de grupos\./);
+  // The consequence is the part no raw message carries: "unknown tier" reads as
+  // ignored, and it is not.
+  assert.match(said, /o roteador tenta chamar um modelo chamado “T9”, a chamada falha, e a tarefa cai no último recurso/);
+  // And the server's English is NOT forwarded when the console can say it in pt-BR.
+  assert.doesNotMatch(said, /unknown tier/);
+  // One jump, once — two buttons for one jump is the duplication DESIGN.md forbids.
+  const jumps = (dom.get('warnings').children || []).flatMap((line) => (line.children || [])
+    .filter((k) => /Ir para a regra/.test(String(k.textContent || ''))));
+  assert.equal(jumps.length, 1, 'exactly one jump button');
+  assert.equal(jumps[0].textContent, 'Ir para a regra 1', 'the ordinal the operator reads on the sheet');
+
+  // The row carries the fifth destination prefix of §4.3.
+  assert.match(flat(dom.get('sheet')), /⚠ Grupo T9 — não existe/);
+});
+
+test('while the file carries an error there is NO Salvar in the DOM, and it comes back in its place', () => {
+  const { api, dom } = loadConsole();
+  seedJsonActions(dom);
+  missingGroupState(api);
+  api.setMode('editing');
+  api.renderWarnings();
+
+  const labels = () => (dom.get('jsonActions').children || []).map((k) => String(k.textContent || ''));
+  assert.equal(labels().indexOf('Salvar'), -1,
+    `Salvar must be ABSENT while the file has an error, got ${JSON.stringify(labels())}`);
+  // The other two stay: seeing what would change writes nothing, and Voltar à versão
+  // anterior restores a backup rather than saving a draft.
+  assert.ok(labels().indexOf('Ver o que muda') >= 0);
+  assert.ok(labels().some((l) => /Voltar à versão anterior/.test(l)));
+
+  // Errors cleared: the button is back, BEFORE "Ver o que muda"… no — after it, in the
+  // order the flow reads: see what changes, then save.
+  api.state.status = { validation_errors: [], error_targets: [], enabled: true };
+  api.renderWarnings();
+  const back = labels();
+  assert.ok(back.indexOf('Salvar') >= 0, 'a fixed file gets its Salvar back');
+  assert.ok(back.indexOf('Salvar') < back.indexOf('Ver o que muda'),
+    `Salvar returns to its own place, got ${JSON.stringify(back)}`);
+  // And it is the SAME node it always was — detached and re-attached, never rebuilt.
+  // A rebuilt button is a button whose click handler (wired once at boot) can quietly
+  // go missing, and the failure would be a Salvar that looks alive and writes nothing.
+  const box = dom.get('jsonActions');
+  assert.equal(box.children[box.children.map((k) => k.textContent).indexOf('Salvar')],
+    dom.get('jsonApply'), 'the button that came back is the button that left');
+});
+
+test('renderWarnings is the ONE place that decides whether a Salvar exists', () => {
+  // The gate rides the render every path already calls, so a new caller cannot forget
+  // it. Toggling only the error set — no mode change — has to move the button.
+  const { api, dom } = loadConsole();
+  seedJsonActions(dom);
+  missingGroupState(api);
+  api.state.status = { validation_errors: [], error_targets: [], enabled: true };
+  api.renderWarnings();
+  const labels = () => (dom.get('jsonActions').children || []).map((k) => String(k.textContent || ''));
+  assert.ok(labels().indexOf('Salvar') >= 0, 'clean file, button present');
+  missingGroupState(api);
+  api.renderWarnings();
+  assert.equal(labels().indexOf('Salvar'), -1, 'error appears, button leaves');
+});
+
+test('a concrete model id at a destination is NOT a missing group — it is the fixed-model case', () => {
+  // §4.3 has five destination prefixes and these are two different ones: a `Tn` the
+  // table does not have is an error the lint refuses, while a model id is legal and
+  // runs (with no reserve, which is its own warning). Reading the second as the first
+  // would tell an operator to fix a file the router accepts.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [{ id: 'fixed', when: { has_code: { eq: true } }, then: { model: 'glm-5.3', provider: 'zai' } }],
+    default: { action: 'classify' }, classifier: { model: 'm' }, fail_safe: { model: 'm' },
+    tiers: { T2: { model: 'glm-5.3', provider: 'zai' } },
+  };
+  // plain(): the array comes from the VM realm, and strict deepEqual compares prototypes.
+  assert.deepEqual(plain(api.missingGroupFindings()), [], 'a model id names no group');
+
+  // And with an unrelated error on the file, the banner keeps the server's own message
+  // instead of inventing a missing group for it.
+  api.state.status = {
+    validation_errors: ["tier 'T2': 'model' must be a non-empty string"],
+    error_targets: [null], enabled: true,
+  };
+  api.renderWarnings();
+  const said = flat(dom.get('warnings'));
+  assert.doesNotMatch(said, /não existe na sua tabela de grupos/);
+  assert.match(said, /Primeiro erro: tier 'T2'/, 'the raw path is what an untranslated error gets');
 });
