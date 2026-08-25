@@ -4246,6 +4246,126 @@
       // the three things that decide whether the chain is any good: how it picks
       // the next hop, whether its hops share an upstream, and what each elo costs
       // and can hold.
+      // ── §2.8: the warnings that name the consequence, never the block ──
+      // None of them disables or hides a write: the only gate that blocks
+      // saving is the server's lint, and these rows exist to say what happens
+      // if the group as configured fails. Each warning lives next to the group
+      // it describes, once (DESIGN.md §2 rule 2); a group whose chain triggers
+      // no condition gains no frame, no empty line and no "no warnings" line.
+      // The texts are the §2.8 table's own words; where the spec writes a
+      // fixed number ("as 3 opções"), the rendered number is the group's real
+      // count — a sentence saying 3 over a group of 2 would be a false
+      // statement, and the spec does not authorize that.
+      function tierWarnings(tier, hops, options) {
+        const o = options || {};
+        const list = Array.isArray(hops) ? hops : [];
+        const N = list.length;
+        const out = [];
+
+        // Fewer than two attempts. One option is the §2.8 row; zero options
+        // gets its own line because "só uma opção" over no option at all
+        // would be a false claim.
+        if (N === 1) {
+          out.push('Este grupo tem só uma opção. Se ela falhar, a tarefa vai direto para o último recurso.');
+        } else if (N === 0) {
+          out.push('Sem reserva declarada — este grupo não tem para onde ir. Acrescente uma tentativa em outro provedor.');
+        }
+
+        if (N >= 2) {
+          // Every attempt on one upstream. Counted the same way the head
+          // counts ("N provedores independentes"), so this line and the count
+          // can never disagree about what independence means. A hop with no
+          // provider is not evidence of a shared upstream — "do mesmo
+          // provedor" over an unattributable hop would be a guess.
+          const allHaveProvider = list.every(
+            (hop) => String((hop && hop.provider) || '').trim() !== '');
+          if (allHaveProvider && independentRails(list) < 2) {
+            out.push(`As ${N} opções são do mesmo provedor. Uma cota ou uma queda dele provavelmente derruba o grupo inteiro.`);
+          } else {
+            // The first pair that shares an upstream, when NOT every attempt
+            // does: the all-same line above is the whole fact when it fires,
+            // so this pair note exists only where it adds one.
+            const shared = sharedUpstream(list);
+            if (shared && shared.first === 1 && shared.second === 2) {
+              out.push(`As tentativas 1 e 2 caem as duas em ${shared.group}, então a primeira reserva não sobrevive a nada que a primeira opção também não sobreviva. Reordene para a 2ª tentativa ficar em outro provedor.`);
+            } else if (shared) {
+              out.push(`As tentativas ${shared.first} e ${shared.second} caem as duas em ${shared.group} — uma queda desse provedor derruba as duas.`);
+            }
+          }
+
+          // Every attempt paid the same way, resolved exactly as eloRow
+          // resolves a hop's mode (own declaration, then the registry, then
+          // the policy index). A hop whose mode nobody knows blocks the
+          // claim: "pagas do mesmo jeito" over a mode the console cannot
+          // read would be a guess.
+          const registry = o.registry;
+          const billing = o.billing || {};
+          const modes = list.map((hop) => {
+            const caps = hopCaps(hop, registry).caps;
+            const model = String((hop && hop.model) || '');
+            return (hop && hop.billing_mode !== undefined) ? hop.billing_mode
+              : (caps.billing_mode !== undefined ? caps.billing_mode : billing[model]);
+          });
+          const known = modes.filter(
+            (m) => m !== undefined && m !== null && String(m) !== '');
+          if (known.length === N && new Set(known).size === 1) {
+            out.push(`As ${N} opções são pagas do mesmo jeito. Um limite de cota provavelmente atinge as ${N} juntas.`);
+          }
+
+          // Two attempts that are the same model@provider. The first pair in
+          // chain order wins the row, and the later of the two is the
+          // repeated one — the one the line names as never used. Comparing
+          // only the model would call two rails two copies of the same
+          // option; the identity is model AND provider.
+          for (let i = 0; i < N - 1; i += 1) {
+            let pair = null;
+            for (let j = i + 1; j < N; j += 1) {
+              const a = list[i], b = list[j];
+              const am = String((a && a.model) || '');
+              const bm = String((b && b.model) || '');
+              if (am && am === bm
+                  && String((a && a.provider) || '') === String((b && b.provider) || '')) {
+                pair = { later: j + 1, earlier: i + 1 };
+                break;
+              }
+            }
+            if (pair) {
+              out.push(`A opção ${pair.later} é igual à opção ${pair.earlier}. A repetida nunca vai ser usada.`);
+              break;
+            }
+          }
+
+          // A model the catalogue never described. Without a catalogue at all
+          // (state.capabilities null) there is no way to claim "the catalogue
+          // does not know this id" — the endpoint answered 404, not "no".
+          // The SAME verified flag the chain row uses marks it, so the row's
+          // "sem capacidade verificada" and this line can never disagree; a
+          // hop that declares its own window is verifiable without the
+          // catalogue and gets no warning.
+          if (o.registry) {
+            const unknown = [];
+            list.forEach((hop) => {
+              const model = String((hop && hop.model) || '');
+              if (model && !hopCaps(hop, o.registry).verified && unknown.indexOf(model) < 0) {
+                unknown.push(model);
+              }
+            });
+            unknown.forEach((model) => {
+              out.push(`O catálogo não conhece este id: ${model}. Ele vai rodar, mas nada aqui confere capacidade, janela ou preço dele.`);
+            });
+          }
+
+          // pin_primary true with random. Needs at least two attempts — with
+          // one, there are no reserves to sort and the "só uma opção" row is
+          // already the fact.
+          if (o.pinSort) {
+            out.push('Com a ordem sorteada e o primeiro fixo, só as reservas são sorteadas.');
+          }
+        }
+
+        return out;
+      }
+
       function renderLadder() {
         const box = $('ladder');
         clear(box);
@@ -4278,8 +4398,14 @@
           const strategy = strategyWords(t.fallback_strategy, {
             pinPrimary: declaredPin(t.pin_primary), when,
           });
+          // §2.8: this group's warning rows, next to the group, once. The
+          // pin+random row is the same fact the strategy note would otherwise
+          // say in other words, so when it fires the generic note yields —
+          // the same pinSort flag drives both, one computation, one fact.
+          const pinSort = strategy.key === 'random'
+            && declaredPin(t.pin_primary) === true && hops.length >= 2;
+          const warnings = tierWarnings(t, hops, { registry, billing, pinSort });
           const rails = independentRails(hops);
-          const shared = sharedUpstream(hops);
           hops.forEach((hop) => { if (!hopCaps(hop, registry).verified) unverified += 1; });
 
           const block = el('div', 'tier');
@@ -4310,7 +4436,7 @@
           // The strategy word used to be a chip in the head; it lives here now, so the
           // value of each knob is stated in exactly one place (DESIGN.md §2 rule 2).
           block.append(el('div', 'tier-fact', orderLine(t, { when })));
-          if (strategy.note) block.append(el('div', 'tier-fact', strategy.note));
+          if (strategy.note && !pinSort) block.append(el('div', 'tier-fact', strategy.note));
           // A per-tier floor is a condition on every elo in the chain, so it is
           // said in the same chips a rule's own conditions use.
           if (floorChips.length) block.append(chipList(floorChips));
@@ -4321,16 +4447,7 @@
             showPrice: strategy.timeRelative,
           }));
 
-          if (hops.length < 2) {
-            block.append(el('div', 'tier-note',
-              `Sem reserva declarada — se ${hops.length ? (hops[0].provider || 'este provedor') : 'este grupo'} recusar, o grupo não tem para onde ir. Acrescente uma tentativa em outro provedor.`));
-          } else if (shared && shared.first === 1 && shared.second === 2) {
-            block.append(el('div', 'tier-note',
-              `As tentativas 1 e 2 caem as duas em ${shared.group}, então a primeira reserva não sobrevive a nada que a primeira opção também não sobreviva. Reordene para a 2ª tentativa ficar em outro provedor.`));
-          } else if (shared) {
-            block.append(el('div', 'tier-note',
-              `As tentativas ${shared.first} e ${shared.second} caem as duas em ${shared.group} — uma queda desse provedor derruba as duas.`));
-          }
+          warnings.forEach((warn) => block.append(el('div', 'tier-note', warn)));
           box.append(block);
         });
 
@@ -5877,6 +5994,13 @@
           else if (node.bind) fragment = policy[node.bind];
           if (node.runtime) box.append(el('p', 'nothing', 'Estado de execução — refeito a cada chamada, não há o que configurar.'));
           else box.append(Object.assign(el('pre', 'code', pretty(fragment || {})), {}));
+          // §4.7: in reading mode the editable surface names the one gesture
+          // that unlocks it — a phrase where the controls would be, not a new
+          // block. A node that can never be edited (runtime state) would read
+          // the instruction as a promise, so only EDITABLE binds get it.
+          if (state.mode !== 'editing' && node.bind && EDITABLE.has(node.bind)) {
+            box.append(el('p', 'nothing', 'Só leitura. Aperte "Editar" no topo para poder mudar algo.'));
+          }
           return;
         }
 
@@ -6846,7 +6970,7 @@
         whenWords, ruleTitle, condNotes, destWords,
         billingBadge, billsInDollars, ctxWindow, rejectWhy, contextShortfall, strategyWords,
         upstreamGroup, independentRails, sharedUpstream, hopCaps, billingIndex,
-        capabilityRegistry, tierChain, renderChainPlan,
+        capabilityRegistry, tierChain, tierWarnings, renderChainPlan,
         // The vocabulary this console added: which tiers an elo serves and where
         // (tierRoles), the chain a tier destination points at (renderSheet's
         // chip), and the definition of an off-rule cause (causeTitle). Each is

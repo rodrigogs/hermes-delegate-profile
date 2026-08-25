@@ -2372,15 +2372,14 @@ test('every elo shows the rail it runs on, how it is billed and what it can hold
     'and the group head counts them, so the gap is visible without reading every row');
 });
 
-test('a tier with one elo and no fallback says what to do about it', () => {
+test('a tier with one elo and no fallback names the consequence (§2.8)', () => {
   const { api, dom } = loadConsole();
   api.state.loading = false;
   api.state.policy = { rules: [], default: {}, tiers: { T1: { model: 'glm-4.7', provider: 'zai', billing_mode: 'plan' } } };
   api.renderLadder();
   const text = flat(dom.get('ladder'));
-  assert.match(text, /Sem reserva declarada/);
-  assert.match(text, /zai/, 'it names the rail whose outage takes the tier down');
-  assert.match(text, /Acrescente uma tentativa em outro provedor/, 'an empty state that teaches the next action');
+  assert.match(text, /Este grupo tem só uma opção\. Se ela falhar, a tarefa vai direto para o último recurso\./);
+  assert.match(text, /zai/, 'the chain row still shows the rail');
   assert.match(text, /1 provedor independente em 1 tentativa/);
 });
 
@@ -6907,4 +6906,245 @@ test('editing a reserve\'s billing writes the WHOLE fallback list — lists repl
     'the whole list, with the edit in place');
   assert.ok(!('model' in tier) && !('provider' in tier) && !('billing_mode' in tier),
     'a reserve edit touches only the list — no primary keys ride along');
+});
+
+// ── §2.8: the warnings that name the consequence, never the block ─────
+
+test('a group with a single option warns that a failure goes to the last resort', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: { T1: { model: 'glm-4.7', provider: 'zai' } } };
+  api.renderLadder();
+  assert.match(flat(dom.get('ladder')),
+    /Este grupo tem só uma opção\. Se ela falhar, a tarefa vai direto para o último recurso\./);
+});
+
+test('a group with not-exactly-one option never claims it has one', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  // Zero options: "só uma opção" over no option at all would be a false claim,
+  // so the degenerate group keeps the older, accurate line instead.
+  api.state.policy = { rules: [], default: {}, tiers: { T1: {} } };
+  api.renderLadder();
+  assert.doesNotMatch(flat(dom.get('ladder')), /só uma opção/);
+  assert.match(flat(dom.get('ladder')), /Sem reserva declarada/);
+  // Two options: the row is simply absent — render nothing for nothing.
+  api.state.policy = { rules: [], default: {}, tiers: { T1: { model: 'glm-4.7', provider: 'zai', fallback: [{ model: 'mimo-v2.5', provider: 'xiaomi' }] } } };
+  api.renderLadder();
+  assert.doesNotMatch(flat(dom.get('ladder')), /só uma opção/);
+});
+
+test('all attempts on one provider warn that the whole group falls with it', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: { T1: {
+    model: 'glm-4.7', provider: 'zai',
+    fallback: [{ model: 'glm-5.3', provider: 'zai' }, { model: 'glm-5.5', provider: 'zai' }],
+  } } };
+  api.renderLadder();
+  const text = flat(dom.get('ladder'));
+  assert.match(text, /As 3 opções são do mesmo provedor\. Uma cota ou uma queda dele provavelmente derruba o grupo inteiro\./);
+  assert.doesNotMatch(text, /As tentativas 1 e 2 caem as duas/,
+    'one fact, one line — the pair note yields to the all-same row');
+});
+
+test('two names on one upstream are still one provider (nous resells openrouter)', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: { T1: {
+    model: 'kimi-k3', provider: 'nous',
+    fallback: [{ model: 'glm-5.3', provider: 'openrouter' }],
+  } } };
+  api.renderLadder();
+  assert.match(flat(dom.get('ladder')), /As 2 opções são do mesmo provedor\./);
+});
+
+test('distinct providers do not get the one-provider warning', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: { T1: {
+    model: 'glm-4.7', provider: 'zai',
+    fallback: [{ model: 'mimo-v2.5', provider: 'xiaomi' }],
+  } } };
+  api.renderLadder();
+  assert.doesNotMatch(flat(dom.get('ladder')), /mesmo provedor/);
+});
+
+test('all attempts paid the same way warn with the real count in both sentences', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: { T1: {
+    model: 'glm-4.7', provider: 'zai', billing_mode: 'metered',
+    fallback: [{ model: 'mimo-v2.5', provider: 'xiaomi', billing_mode: 'metered' }],
+  } } };
+  api.renderLadder();
+  // The fixed "3" of the §2.8 text would be a false statement over 2 options.
+  assert.match(flat(dom.get('ladder')),
+    /As 2 opções são pagas do mesmo jeito\. Um limite de cota provavelmente atinge as 2 juntas\./);
+});
+
+test('the same-way warning stays silent when it cannot be affirmed', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  // Mixed modes.
+  api.state.policy = { rules: [], default: {}, tiers: { T1: {
+    model: 'glm-4.7', provider: 'zai', billing_mode: 'plan',
+    fallback: [{ model: 'mimo-v2.5', provider: 'xiaomi', billing_mode: 'metered' }],
+  } } };
+  api.renderLadder();
+  assert.doesNotMatch(flat(dom.get('ladder')), /pagas do mesmo jeito/);
+  // One attempt: the single-option row is already the fact (§2.8 decision 4).
+  api.state.policy = { rules: [], default: {}, tiers: { T1: { model: 'glm-4.7', provider: 'zai', billing_mode: 'plan' } } };
+  api.renderLadder();
+  const one = flat(dom.get('ladder'));
+  assert.doesNotMatch(one, /pagas do mesmo jeito/);
+  assert.match(one, /só uma opção/);
+  // A mode nobody knows: "pagas do mesmo jeito" over an unreadable mode is a guess.
+  api.state.policy = { rules: [], default: {}, tiers: { T1: {
+    model: 'glm-4.7', provider: 'zai',
+    fallback: [{ model: 'mimo-v2.5', provider: 'xiaomi' }],
+  } } };
+  api.state.capabilities = { 'glm-4.7': {}, 'mimo-v2.5': {} };
+  api.renderLadder();
+  assert.doesNotMatch(flat(dom.get('ladder')), /pagas do mesmo jeito/);
+});
+
+test('a repeated model@provider names the later option as the one never used', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: { T1: {
+    model: 'glm-4.7', provider: 'zai',
+    fallback: [{ model: 'mimo-v2.5', provider: 'xiaomi' }, { model: 'glm-4.7', provider: 'zai' }],
+  } } };
+  api.renderLadder();
+  assert.match(flat(dom.get('ladder')),
+    /A opção 3 é igual à opção 1\. A repetida nunca vai ser usada\./);
+});
+
+test('a duplicate is model AND provider, never one of them alone', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  // Same model, different rails: two real options.
+  api.state.policy = { rules: [], default: {}, tiers: { T1: {
+    model: 'glm-4.7', provider: 'zai',
+    fallback: [{ model: 'glm-4.7', provider: 'deepseek' }],
+  } } };
+  api.renderLadder();
+  assert.doesNotMatch(flat(dom.get('ladder')), /nunca vai ser usada/);
+  // Same rail, different models: also two real options.
+  api.state.policy = { rules: [], default: {}, tiers: { T1: {
+    model: 'glm-4.7', provider: 'zai',
+    fallback: [{ model: 'glm-5.3', provider: 'zai' }],
+  } } };
+  api.renderLadder();
+  assert.doesNotMatch(flat(dom.get('ladder')), /nunca vai ser usada/);
+});
+
+test('a model the catalogue never described warns, naming the id', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: { T1: {
+    model: 'glm-4.7', provider: 'zai',
+    fallback: [{ model: 'mystery-model', provider: 'xiaomi' }],
+  } } };
+  api.state.capabilities = { 'glm-4.7': { context_window: 200000 } };
+  api.renderLadder();
+  assert.match(flat(dom.get('ladder')),
+    /O catálogo não conhece este id: mystery-model\. Ele vai rodar, mas nada aqui confere capacidade, janela ou preço dele\./);
+});
+
+test('the unknown-id warning needs a catalogue to exist — 404 is not "no"', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: { T1: {
+    model: 'glm-4.7', provider: 'zai',
+    fallback: [{ model: 'mystery-model', provider: 'xiaomi' }],
+  } } };
+  // /capabilities answered 404: without a catalogue there is no way to affirm
+  // that the catalogue does not know the id — do not warn.
+  api.state.capabilities = null;
+  api.renderLadder();
+  assert.doesNotMatch(flat(dom.get('ladder')), /não conhece este id/);
+  // Every model known: nothing to say.
+  api.state.capabilities = { 'glm-4.7': { context_window: 200000 }, 'mystery-model': { context_window: 128000 } };
+  api.renderLadder();
+  assert.doesNotMatch(flat(dom.get('ladder')), /não conhece este id/);
+});
+
+test('random without pin_primary sorts only the reserves — the router default is a pin', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  const policy = tierPolicy();
+  policy.tiers.T1.fallback_strategy = 'random';
+  // pin_primary ABSENT: rules._pin_primary_of defaults it to true, and the
+  // console reads the same file the router does.
+  api.state.policy = policy;
+  api.renderLadder();
+  const text = flat(dom.get('ladder'));
+  assert.match(text, /Com a ordem sorteada e o primeiro fixo, só as reservas são sorteadas\./);
+  assert.doesNotMatch(text, /a primeira fica fixa; as outras/, 'the generic note yields to the §2.8 row');
+});
+
+test('the pin+random row needs pin_primary true and a draw', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  // pin_primary false: the primary is sorted too, so "só as reservas" is false.
+  const policy = tierPolicy();
+  policy.tiers.T1.fallback_strategy = 'random';
+  policy.tiers.T1.pin_primary = false;
+  api.state.policy = policy;
+  api.renderLadder();
+  const unpinned = flat(dom.get('ladder'));
+  assert.doesNotMatch(unpinned, /só as reservas são sorteadas/);
+  assert.match(unpinned, /todas as tentativas são sorteadas/, 'the generic note still tells the truth for the unpinned draw');
+  // Sequential: there is no draw to sort.
+  api.state.policy = tierPolicy();
+  api.renderLadder();
+  assert.doesNotMatch(flat(dom.get('ladder')), /só as reservas são sorteadas/);
+});
+
+test('reading mode names the gesture that unlocks editing (§4.7)', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.setMode('reading');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  assert.match(flat(dom.get('inspector')),
+    /Só leitura\. Aperte "Editar" no topo para poder mudar algo\./);
+});
+
+test('editing mode never claims the surface is read-only', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  assert.doesNotMatch(flat(dom.get('inspector')), /Só leitura/);
+});
+
+test('a §2.8 warning never disables or hides the write controls', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: { T1: { model: 'glm-4.7', provider: 'zai' } } };
+  api.setMode('editing');
+  api.renderLadder();
+  assert.match(flat(dom.get('ladder')), /só uma opção/, 'the warning is on screen');
+  assert.equal(dom.get('jsonApply').disabled, false,
+    'Salvar stays enabled — avisar nunca é bloquear, the only gate is the server lint');
+});
+
+test('tierWarnings returns exactly the rows a group deserves — nothing for nothing', () => {
+  const { api } = loadConsole();
+  const good = api.tierWarnings(
+    { model: 'glm-4.7', provider: 'zai', fallback: [{ model: 'mimo-v2.5', provider: 'xiaomi' }] },
+    [{ model: 'glm-4.7', provider: 'zai' }, { model: 'mimo-v2.5', provider: 'xiaomi' }], {});
+  assert.deepEqual(plain(good), [], 'a healthy two-provider chain gains no frame, no line, no warning');
+  const one = api.tierWarnings(
+    { model: 'glm-4.7', provider: 'zai' },
+    [{ model: 'glm-4.7', provider: 'zai' }], {});
+  assert.deepEqual(plain(one), ['Este grupo tem só uma opção. Se ela falhar, a tarefa vai direto para o último recurso.']);
+  const pin = api.tierWarnings(
+    { model: 'a', provider: 'zai', fallback: [{ model: 'b', provider: 'xiaomi' }] },
+    [{ model: 'a', provider: 'zai' }, { model: 'b', provider: 'xiaomi' }], { pinSort: true });
+  assert.deepEqual(plain(pin), ['Com a ordem sorteada e o primeiro fixo, só as reservas são sorteadas.']);
 });
