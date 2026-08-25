@@ -5523,3 +5523,327 @@ test('a concrete model id at a destination is NOT a missing group — it is the 
   assert.doesNotMatch(said, /não existe na sua tabela de grupos/);
   assert.match(said, /Primeiro erro: tier 'T2'/, 'the raw path is what an untranslated error gets');
 });
+
+// ── CA5 + CA6: the write path of the presets, and the one write that asks ───
+// CA6: the body of the POST /plan a preset fires has EXACTLY ONE top-level key in
+// `policy`, and it is `tiers`. CA5: no POST /apply without a POST /plan immediately
+// before it in the same interaction, except /apply/revert, which only goes out after
+// a confirmation.
+function presetPolicy() {
+  return {
+    rules: [{ id: 'code', when: { has_code: { eq: true } }, then: { model: 'T2' } }],
+    default: { action: 'classify' },
+    classifier: { model: 'glm-4.7', provider: 'zai' },
+    fail_safe: { model: 'glm-4.7', provider: 'zai' },
+    tiers: {
+      T1: { model: 'glm-4.7', provider: 'zai', billing_mode: 'plan', fallback: [{ model: 'gpt-5.6-luna', provider: 'openai-codex' }] },
+      T2: { model: 'glm-5.3', provider: 'zai', billing_mode: 'metered' },
+      T3: { model: 'deepseek-v4-pro', provider: 'deepseek', billing_mode: 'metered' },
+      T4: { model: 'gpt-5.6-luna', provider: 'openai-codex', billing_mode: 'subscription' },
+      // A group of the operator's own: legal (rules.py accepts a key outside T1..T4)
+      // and the factory preset must not touch it.
+      Titan: { model: 'titan-70b', provider: 'local', billing_mode: 'free' },
+    },
+  };
+}
+
+test('every preset plans a body with exactly ONE top-level key, and it is tiers', () => {
+  const { api } = loadConsole();
+  const policy = presetPolicy();
+  api.state.policy = policy;
+  plain(api.PRESETS).forEach((preset) => {
+    const patch = plain(api.presetPatch(preset.key, policy));
+    assert.deepEqual(Object.keys(patch), ['tiers'],
+      `${preset.key} must write groups and nothing else: the order of rules is the semantics, and a preset that rewrote rules could create or delete dead rules invisibly`);
+  });
+});
+
+test('Economizar pins the first option only where the group is paid from an allowance', () => {
+  // A plan or a subscription is drawn off something already bought, so reordering it
+  // by dollar price buys nothing and loses the option the operator put first.
+  const { api } = loadConsole();
+  const patch = plain(api.presetPatch('economizar', presetPolicy())).tiers;
+  assert.equal(patch.T1.pin_primary, true, 'plan');
+  assert.equal(patch.T4.pin_primary, true, 'subscription');
+  assert.equal(patch.T2.pin_primary, false, 'metered');
+  Object.keys(patch).forEach((name) => {
+    assert.equal(patch[name].fallback_strategy, 'cheapest_now');
+    assert.deepEqual(patch[name].time_cap, { max_multiplier: 1.5 });
+    // It never touches what a model IS or which models are in the queue.
+    assert.deepEqual(Object.keys(patch[name]).sort(), ['fallback_strategy', 'pin_primary', 'time_cap']);
+  });
+  // Every group in the file, including the operator's own.
+  assert.ok(Object.keys(patch).indexOf('Titan') >= 0);
+});
+
+test('Equilíbrio restores the four factory groups and leaves an extra one alone', () => {
+  const { api } = loadConsole();
+  const patch = plain(api.presetPatch('equilibrio', presetPolicy())).tiers;
+  assert.deepEqual(Object.keys(patch).sort(), ['T1', 'T2', 'T3', 'T4'],
+    'a group the arquivo de exemplo never described is not something a preset may reset');
+  assert.equal(patch.T2.fallback_strategy, 'cheapest_now');
+  assert.equal(patch.T2.pin_primary, true);
+  assert.deepEqual(patch.T1.time_cap, { max_multiplier: 1.5 });
+  assert.deepEqual(patch.T3.time_policy, { avoid_peak: ['deepseek', 'zai'] });
+  assert.deepEqual(patch.T3.requirements, { min_context: 200000 });
+  // A key the factory leaves undeclared is sent as null — the server's own way of
+  // removing a key (service.py: a null removes, {} removes nothing).
+  assert.equal(patch.T4.fallback_strategy, null);
+  assert.equal(patch.T1.pin_primary, null);
+});
+
+test('Priorizar qualidade only ever loosens: order kept, no ceiling', () => {
+  const { api } = loadConsole();
+  const patch = plain(api.presetPatch('qualidade', presetPolicy())).tiers;
+  Object.keys(patch).forEach((name) => {
+    assert.deepEqual(patch[name], { fallback_strategy: 'sequential', pin_primary: null, time_cap: null });
+  });
+});
+
+test('the preset in force is READ off the groups, with no key remembering it', () => {
+  // §5.1 adds nothing to router.yaml, so "which preset is active" is content, not a
+  // marker. A→B→C is the order that resolves a tie, and no match is a real answer.
+  const { api } = loadConsole();
+  const policy = presetPolicy();
+  assert.equal(api.activePreset(policy), null, 'a hand-written file matches none of the three');
+
+  const applied = (key) => {
+    const next = JSON.parse(JSON.stringify(policy));
+    const patch = plain(api.presetPatch(key, policy)).tiers;
+    Object.keys(patch).forEach((name) => Object.assign(next.tiers[name], patch[name]));
+    return next;
+  };
+  assert.equal(api.activePreset(applied('economizar')), 'economizar');
+  assert.equal(api.activePreset(applied('qualidade')), 'qualidade');
+  // Equilíbrio is detected on the four factory groups; the extra group is untouched
+  // and must not stop the detection.
+  assert.equal(api.activePreset(applied('equilibrio')), 'equilibrio');
+  assert.equal(api.activePreset({ tiers: {} }), null, 'no groups, no preset');
+});
+
+test('a preset writes NOTHING until a plan for that same choice is on screen (CA5)', async () => {
+  const calls = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      // The console posts to the sidecar path; the ROUTE is its tail, and that is what
+      // the criterion is about (which endpoint, in which order).
+      calls.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: opts && opts.body ? JSON.parse(opts.body) : null });
+      const planned = { valid: true, diff: '-a\n+b', policy: { tiers: { T2: { fallback_strategy: 'cheapest_now' } } } };
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(planned)) });
+    },
+  });
+  api.state.loading = false;
+  api.state.policy = presetPolicy();
+  api.state.preset = 'economizar';
+  api.renderPresets();
+
+  const labels = () => (dom.get('presetActions').children || []).map((k) => String(k.textContent || ''));
+  assert.ok(labels().indexOf('Ver o que muda') >= 0, 'the preview is always offered');
+  assert.equal(labels().indexOf('Salvar'), -1, 'and nothing can be written before it');
+
+  // Clicking Salvar before a plan is refused by the function itself, not only hidden.
+  await api.applyPreset();
+  assert.deepEqual(calls, [], 'no request at all without a plan');
+  assert.match(dom.get('presetMsg').textContent, /Veja o que muda antes de salvar/);
+
+  await api.previewPreset();
+  assert.deepEqual(calls.map((c) => c.url), ['/plan'], 'the preview plans, and writes nothing');
+  assert.deepEqual(Object.keys(calls[0].body.policy), ['tiers'], 'CA6, on the wire');
+  assert.match(dom.get('presetMsg').textContent, /Isto vai mudar 2 linhas do arquivo/);
+  assert.ok(labels().indexOf('Salvar') >= 0, 'only now does a Salvar exist');
+
+  await api.applyPreset();
+  /*
+   * CA5, read off the wire: every /apply has a /plan immediately before it. doApply
+   * re-plans for the base_hash the server refuses to write without, so the sequence is
+   * plan, plan, apply — and after a successful write the console reloads its reads,
+   * which is why the assertion is about the ORDER of the write pair and not the tail
+   * of the whole list.
+   */
+  const routes = calls.map((c) => c.url);
+  const applyAt = routes.indexOf('/apply');
+  assert.ok(applyAt > 0, `an /apply went out, got ${JSON.stringify(routes)}`);
+  assert.equal(routes[applyAt - 1], '/plan', 'the plan immediately before it');
+  assert.equal(routes.filter((r) => r === '/apply').length, 1, 'written once');
+  // And what gets planned for the write is the SAME body the operator previewed. A
+  // patch rebuilt at click time would read the policy again — so a file that changed
+  // under the screen (a CLI edit, another tab) would be written from a patch nobody
+  // saw, with the diff on screen describing the previous one.
+  // What is planned for the write is the policy the PREVIEW's plan handed back — not a
+   // patch rebuilt at click time. A rebuilt patch reads the policy again, so a file that
+   // changed under the screen (a CLI edit, another tab) would be written from a body
+   // nobody saw, with the diff on screen describing the previous one.
+  assert.deepEqual(calls[applyAt - 1].body.policy, { tiers: { T2: { fallback_strategy: 'cheapest_now' } } },
+    'the write plans the planned policy, not a fresh patch');
+  assert.deepEqual(Object.keys(calls[0].body.policy), ['tiers'], 'and the preview planned the preset patch');
+  // The write itself carries the planned policy the server handed back.
+  assert.deepEqual(calls[applyAt].body.policy, { tiers: { T2: { fallback_strategy: 'cheapest_now' } } });
+});
+
+test('a preset already in force refuses to save instead of writing a no-op', async () => {
+  // Applying a no-op destroys the only copy "Voltar à versão anterior" could restore
+  // (the server snapshots to .bak before every write), so the screen refuses.
+  const calls = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      calls.push(String(url).replace(/^.*\/sidecar/, ''));
+      return Promise.resolve({
+        ok: true, status: 200,
+        text: () => Promise.resolve(JSON.stringify({ valid: true, diff: '', policy: {} })),
+      });
+    },
+  });
+  api.state.loading = false;
+  api.state.policy = presetPolicy();
+  api.state.preset = 'qualidade';
+  api.renderPresets();
+  await api.previewPreset();
+
+  assert.match(dom.get('presetMsg').textContent, /Este preset já está em vigor\. Nada a salvar\./);
+  const labels = (dom.get('presetActions').children || []).map((k) => String(k.textContent || ''));
+  assert.equal(labels.indexOf('Salvar'), -1, 'no Salvar for a no-op');
+  await api.applyPreset();
+  assert.deepEqual(calls, ['/plan'], 'and nothing was written');
+});
+
+test('choosing another preset drops the plan the diff on screen belonged to', async () => {
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: () => Promise.resolve({
+      ok: true, status: 200,
+      text: () => Promise.resolve(JSON.stringify({ valid: true, diff: '-a\n+b', policy: { tiers: {} } })),
+    }),
+  });
+  api.state.loading = false;
+  api.state.policy = presetPolicy();
+  api.state.preset = 'economizar';
+  api.renderPresets();
+  await api.previewPreset();
+  const labels = () => (dom.get('presetActions').children || []).map((k) => String(k.textContent || ''));
+  assert.ok(labels().indexOf('Salvar') >= 0);
+
+  // The other preset's button: the diff below it is not this preset's, so a Salvar
+  // left over from the first would write a body the operator is no longer reading.
+  const other = (dom.get('presetOptions').children || [])
+    .flatMap((row) => row.children || [])
+    .find((k) => String(k.dataset && k.dataset.preset) === 'qualidade');
+  assert.ok(other, 'each preset has its own control');
+  other._listeners.click();
+  assert.equal(labels().indexOf('Salvar'), -1, 'the plan went with the choice');
+  assert.equal(dom.get('presetDiff').hidden, true);
+  // And the plan is really GONE, not merely unreachable from this box: doApply falls
+  // back to `state.plan.policy` when it is handed no draft, so a plan left behind here
+  // is a body the JSON editor's own Salvar would write without anybody previewing it.
+  assert.equal(api.state.plan, null, 'a dropped choice leaves no plan for another surface to write');
+});
+
+test('Voltar à versão anterior asks first, and says what is missing: the preview', async () => {
+  // CA5's exception. It is the one write with nothing to diff against — the server
+  // restores whatever the .bak holds — so the question names that rather than being a
+  // generic "are you sure".
+  const calls = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      calls.push(String(url).replace(/^.*\/sidecar/, ''));
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
+    },
+  });
+  api.state.loading = false;
+
+  await api.requestRevert();
+  assert.deepEqual(calls, [], 'the first click writes nothing');
+  assert.match(dom.get('jsonMsg').textContent,
+    /Isto substitui o arquivo atual pela cópia que o roteador guardou antes da última gravação\. Diferente de Salvar, aqui não há prévia: você não vê o que vai mudar antes\. Continuar\?/);
+  assert.equal(dom.get('jsonRevert').textContent, 'Confirmar: voltar à versão anterior',
+    'the button says what the next click does');
+
+  await api.requestRevert();
+  // A successful write reloads the eight reads, so the claim is about the WRITES.
+  const writes = () => calls.filter((c) => /^\/apply/.test(c));
+  assert.deepEqual(writes(), ['/apply/revert'], 'the second click is the one that acts');
+  assert.equal(dom.get('jsonRevert').textContent, 'Voltar à versão anterior', 'and it disarms');
+
+  // Leaving edit mode disarms too: an armed destructive button that outlives the
+  // question on screen is a button the next click executes silently.
+  await api.requestRevert();
+  api.setMode('reading');
+  assert.equal(dom.get('jsonRevert').textContent, 'Voltar à versão anterior');
+  await api.requestRevert();
+  assert.deepEqual(writes(), ['/apply/revert'], 'still one write: the arming was dropped');
+});
+
+test('the preset box names the metric and the consequence of each option, and what is in force', () => {
+  // §2.4: a preset named without its metric asks the operator to trust a number nobody
+  // showed them, and one without its consequence hides that a cost control can take an
+  // option out of the queue.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = presetPolicy();
+  api.renderPresets();
+
+  const said = flat(dom.get('presetOptions'));
+  assert.match(said, /Economizar/);
+  assert.match(said, /Escolhe pelo menor preço de saída por 1M de tokens na hora atual\./);
+  assert.match(said, /Se isso deixasse o grupo sem nenhuma opção, o teto se desliga sozinho e a fila original volta\./,
+    'a cost control that could cause an outage is the one thing this must not be');
+  assert.match(said, /Equilíbrio \(o que veio de fábrica\)/);
+  assert.match(said, /Sem métrica: são os valores que vieram no arquivo de exemplo\./);
+  assert.match(said, /Priorizar qualidade/);
+  assert.match(said, /nunca tira uma opção da fila por causa de preço\./);
+
+  // A hand-written file matches none of the three, and that is said as an answer.
+  assert.equal(dom.get('presetActive').textContent, 'Em vigor agora: Personalizado');
+  assert.match(dom.get('presetNote').textContent, /Escolher um substitui as suas em todos os grupos/);
+
+  // With a preset in force, the note is the other one: no preset ever adds a model.
+  const next = JSON.parse(JSON.stringify(api.state.policy));
+  const patch = plain(api.presetPatch('qualidade', next)).tiers;
+  Object.keys(patch).forEach((name) => Object.assign(next.tiers[name], patch[name]));
+  api.state.policy = next;
+  api.renderPresets();
+  assert.equal(dom.get('presetActive').textContent, 'Em vigor agora: Priorizar qualidade');
+  assert.match(dom.get('presetNote').textContent, /Nenhum preset adiciona um modelo que você não tem/);
+  assert.match(dom.get('presetNote').textContent, /Nenhum preset mexe em qual grupo cada tarefa usa/);
+});
+
+test('doApply plans immediately before every write, whichever surface called it (CA5)', async () => {
+  // The guarantee is structural rather than per-button: all three write surfaces (the
+  // presets, the per-rule inspector, the JSON editor) go through this one function, so
+  // a new surface cannot forget the plan. The plan is not a courtesy either — it
+  // returns the base_hash the server refuses to write without.
+  const routes = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      routes.push(String(url).replace(/^.*\/sidecar/, ''));
+      return Promise.resolve({
+        ok: true, status: 200,
+        text: () => Promise.resolve(JSON.stringify({ valid: true, diff: '-a\n+b', policy: { tiers: {} } })),
+      });
+    },
+  });
+  api.state.loading = false;
+
+  await api.doApply('/apply', dom.get('jsonMsg'), { tiers: { T2: { pin_primary: true } } }, dom.get('jsonDiff'));
+  assert.equal(routes[0], '/plan', 'the plan comes first');
+  assert.equal(routes[1], '/apply', 'and the write immediately after it');
+
+  // A plan that says the draft is invalid stops there: no write at all.
+  const refused = [];
+  const second = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      refused.push(String(url).replace(/^.*\/sidecar/, ''));
+      return Promise.resolve({
+        ok: true, status: 200,
+        text: () => Promise.resolve(JSON.stringify({ valid: false, errors: ['nope'], diff: '-a' })),
+      });
+    },
+  });
+  second.api.state.loading = false;
+  await second.api.doApply('/apply', second.dom.get('jsonMsg'), { tiers: {} }, second.dom.get('jsonDiff'));
+  assert.deepEqual(refused, ['/plan'], 'an invalid draft never reaches /apply');
+});

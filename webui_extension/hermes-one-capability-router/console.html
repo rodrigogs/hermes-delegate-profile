@@ -1133,6 +1133,24 @@
           <div class="facts" id="healthFacts"></div>
         </div>
 
+        <!-- §2.4: "Melhor modelo por tarefa". A preset only ever writes `tiers` —
+             which models each group uses and in what order — and never `rules`,
+             because the order of rules IS the semantics (first match decides) and the
+             lint's shadowed-rule detection depends on it: a preset that rewrote rules
+             could create or delete dead rules without the operator seeing it. Which
+             group a task uses stays manual, one line at a time.
+
+             There is no Salvar in this markup: it is BUILT after a plan comes back, so
+             an /apply can never be one click away from a body nobody previewed (CA5). -->
+        <div class="group" id="presetBox">
+          <div class="group-head"><h2>Melhor modelo por tarefa</h2><span class="screen-note" id="presetActive"></span></div>
+          <div id="presetOptions"></div>
+          <p class="lede-answer is-quiet" id="presetNote"></p>
+          <div class="actions" id="presetActions"></div>
+          <p class="msg" id="presetMsg" aria-live="polite"></p>
+          <pre class="code" id="presetDiff" hidden></pre>
+        </div>
+
         <div id="models"></div>
 
         <div class="group" id="bansGroup" hidden>
@@ -1312,6 +1330,10 @@
         mode: 'reading',   // 'reading' or 'editing'
         health: null, status: null, policy: null, blocklist: null,
         liveness: null, compaction: null, routes: [],
+        // Which preset the operator is looking at, and which one the plan on screen
+        // belongs to. Neither is persisted anywhere: §5.1 adds no key to router.yaml,
+        // and "which preset is in force" is read back off the groups themselves.
+        preset: null, presetPlanned: null,
         // The rule a lint "Ver regra N" jump pointed at. Like probeRule, it is
         // what renderSheet's line() marks .hit + aria-current from — but it is
         // a SEPARATE answer to a SEPARATE question ("which row is broken?"),
@@ -3021,6 +3043,223 @@
           });
         });
         return out;
+      }
+
+      // ── "Melhor modelo por tarefa": three presets over `tiers` alone ─────
+      // §2.4. Each preset declares its METRIC and its consequence in words, because a
+      // preset that only says "Economizar" is asking the operator to trust a number
+      // nobody showed them.
+      //
+      // The scope is the whole point: a preset writes `tiers` and nothing else. The
+      // order of `rules` is the semantics (first match decides) and the lint's
+      // shadowed-rule detection reads it, so a preset that rewrote rules could create
+      // or delete dead rules invisibly. And no preset ever introduces a model id: all
+      // three only reorder and reprice what is already in the groups.
+      const PRESET_KEYS = ['fallback_strategy', 'pin_primary', 'time_cap', 'time_policy', 'requirements'];
+      const FACTORY_TIERS = {
+        T1: { fallback_strategy: 'sequential', pin_primary: null, time_cap: { max_multiplier: 1.5 }, time_policy: null, requirements: null },
+        T2: { fallback_strategy: 'cheapest_now', pin_primary: true, time_cap: null, time_policy: null, requirements: null },
+        T3: { fallback_strategy: 'sequential', pin_primary: null, time_cap: null, time_policy: { avoid_peak: ['deepseek', 'zai'] }, requirements: { min_context: 200000 } },
+        T4: { fallback_strategy: null, pin_primary: null, time_cap: null, time_policy: { avoid_peak: ['deepseek', 'zai'] }, requirements: null },
+      };
+      const PRESETS = [
+        {
+          key: 'economizar',
+          label: 'Economizar',
+          metric: 'Escolhe pelo menor preço de saída por 1M de tokens na hora atual.',
+          // router.yaml documents the release valve, and it is the sentence that makes
+          // a cost control safe to try: a ceiling that could cause an outage is the one
+          // thing this must not be.
+          consequence: 'Pode tirar uma opção da fila enquanto ela estiver em hora cara. Se isso deixasse o grupo sem nenhuma opção, o teto se desliga sozinho e a fila original volta.',
+          patchFor: (tier) => ({
+            fallback_strategy: 'cheapest_now',
+            // A group paid by plan or subscription keeps its first option fixed: those
+            // are drawn off an allowance already bought, so reordering them by dollar
+            // price buys nothing and loses the option the operator chose first.
+            pin_primary: ['plan', 'subscription'].indexOf(String((tier && tier.billing_mode) || '').toLowerCase()) >= 0,
+            time_cap: { max_multiplier: 1.5 },
+          }),
+        },
+        {
+          key: 'equilibrio',
+          label: 'Equilíbrio (o que veio de fábrica)',
+          metric: 'Sem métrica: são os valores que vieram no arquivo de exemplo.',
+          consequence: 'Cada grupo volta ao que o arquivo de fábrica declarava, chave por chave.',
+          factory: true,
+        },
+        {
+          key: 'qualidade',
+          label: 'Priorizar qualidade',
+          metric: 'Mantém a ordem que você escreveu e nunca tira uma opção da fila por causa de preço.',
+          consequence: 'Nenhuma opção sai da fila por hora cara. Se um provedor estiver caro agora, a tarefa vai para ele do mesmo jeito.',
+          patchFor: () => ({ fallback_strategy: 'sequential', pin_primary: null, time_cap: null }),
+        },
+      ];
+      const presetByKey = (key) => PRESETS.filter((one) => one.key === key)[0] || null;
+
+      // The patch a preset would post. EXACTLY ONE top-level key — `tiers` — which is
+      // CA6, and it is the shape that makes the claim above checkable rather than
+      // promised: a body with a second key would be a preset touching something else.
+      function presetPatch(key, policy) {
+        const preset = presetByKey(key);
+        if (!preset) return null;
+        const tiers = (policy && typeof policy === 'object' && policy.tiers
+          && typeof policy.tiers === 'object') ? policy.tiers : {};
+        const patch = {};
+        if (preset.factory) {
+          // Only the four factory keys. An extra group of the operator's own is left
+          // exactly as it is — a preset that silently reset it would be editing
+          // something the arquivo de exemplo never described.
+          Object.keys(FACTORY_TIERS).forEach((name) => {
+            if (Object.prototype.hasOwnProperty.call(tiers, name)) {
+              patch[name] = JSON.parse(JSON.stringify(FACTORY_TIERS[name]));
+            }
+          });
+        } else {
+          Object.keys(tiers).forEach((name) => { patch[name] = preset.patchFor(tiers[name] || {}); });
+        }
+        return { tiers: patch };
+      }
+
+      // WHICH preset is in force, without storing anything to remember it. No new key
+      // in router.yaml (§5.1): the answer is read back off the five knobs of every
+      // group the preset would touch, and "no match" is a real answer — Personalizado.
+      // A→B→C resolves any tie, which is the order §2.4 fixes.
+      function activePreset(policy) {
+        const tiers = (policy && typeof policy === 'object' && policy.tiers
+          && typeof policy.tiers === 'object') ? policy.tiers : {};
+        if (!Object.keys(tiers).length) return null;
+        const same = (a, b) => JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b);
+        for (const preset of PRESETS) {
+          const patch = presetPatch(preset.key, policy);
+          const names = Object.keys(patch.tiers);
+          if (!names.length) continue;
+          const fits = names.every((name) => {
+            const tier = tiers[name] || {};
+            return PRESET_KEYS.every((knob) => !Object.prototype.hasOwnProperty.call(patch.tiers[name], knob)
+              || same(tier[knob], patch.tiers[name][knob]));
+          });
+          if (fits) return preset.key;
+        }
+        return null;
+      }
+
+      // The preset box, rendered. Choosing a preset writes NOTHING: it plans, shows the
+      // diff, and only then does a Salvar exist (§2.4, CA5). The button is built here
+      // rather than sitting in the markup precisely so that an /apply cannot be one
+      // click away from a body nobody previewed — and while the file carries a lint
+      // error there is no Salvar at all (§3.4(a), CA8).
+      function renderPresets() {
+        const box = $('presetOptions');
+        if (!box) return;
+        clear(box);
+        const policy = state.policy;
+        const active = activePreset(policy);
+        const activeLine = $('presetActive');
+        if (activeLine) {
+          activeLine.textContent = policy
+            ? `Em vigor agora: ${active ? presetByKey(active).label : 'Personalizado'}`
+            : '';
+        }
+        const note = $('presetNote');
+        if (note) {
+          note.textContent = active
+            ? 'Nenhum preset adiciona um modelo que você não tem. Todos os três só mudam a ordem e as regras de preço dos modelos que já estão nos grupos. Nenhum preset mexe em qual grupo cada tarefa usa.'
+            : 'Suas configurações não batem com nenhum dos três presets. Escolher um substitui as suas em todos os grupos — a tela mostra o que muda antes de salvar.';
+        }
+        if (!policy) {
+          box.append(el('p', 'nothing', absence('Este serviço do roteador não tem tabela de grupos.')));
+          return;
+        }
+        PRESETS.forEach((preset) => {
+          const row = el('div', `preset${state.preset === preset.key ? ' is-chosen' : ''}`);
+          const pick = el('button', 'btn', `${preset.key === active ? '(•) ' : '( ) '}${preset.label}`);
+          pick.type = 'button';
+          pick.dataset.preset = preset.key;
+          pick.addEventListener('click', () => {
+            // A new choice invalidates the plan that was on screen: the diff below
+            // belonged to the other preset, and a Salvar left over from it would write
+            // a body the operator is no longer reading.
+            state.preset = preset.key;
+            state.plan = null;
+            const diff = $('presetDiff');
+            if (diff) { diff.hidden = true; diff.textContent = ''; }
+            setMsg($('presetMsg'), '');
+            renderPresets();
+          });
+          row.append(pick);
+          // The METRIC and the CONSEQUENCE, always both: a preset named without its
+          // metric is asking for trust in a number nobody showed.
+          row.append(el('div', 'preset-metric', preset.metric));
+          row.append(el('div', 'preset-consequence', preset.consequence));
+          box.append(row);
+        });
+        renderPresetActions();
+      }
+
+      // The two-step write, as a rendered pair: "Ver o que muda" always, "Salvar" only
+      // after a plan for the CURRENT choice came back with something to write.
+      function renderPresetActions() {
+        const actions = $('presetActions');
+        if (!actions) return;
+        clear(actions);
+        const chosen = state.preset ? presetByKey(state.preset) : null;
+        if (!chosen) {
+          actions.append(el('span', 'hint', 'Escolha um preset para ver o que ele mudaria.'));
+          return;
+        }
+        const preview = el('button', 'btn', 'Ver o que muda');
+        preview.type = 'button';
+        preview.id = 'presetPreview';
+        preview.addEventListener('click', () => { void previewPreset(); });
+        actions.append(preview);
+        // CA5: the Salvar exists only while a plan for THIS choice is on screen, and
+        // CA8: never while the file carries an error.
+        if (state.presetPlanned === state.preset && state.plan && lintErrors().length === 0) {
+          const save = el('button', 'btn go', 'Salvar');
+          save.type = 'button';
+          save.id = 'presetApply';
+          save.addEventListener('click', () => { void applyPreset(); });
+          actions.append(save);
+        }
+      }
+
+      async function previewPreset() {
+        const msg = $('presetMsg');
+        const patch = presetPatch(state.preset, state.policy);
+        if (!patch) { setMsg(msg, 'Escolha um preset primeiro.', 'bad'); return; }
+        if (!writable(msg, 'simular')) return;
+        state.presetPlanned = null;
+        setMsg(msg, 'Vendo o que muda…');
+        const ok = await plan(patch, msg, $('presetDiff'));
+        if (!ok) { renderPresetActions(); return; }
+        if (state.plan && state.plan.diff === '') {
+          // §2.4: applying a no-op destroys the only copy "Voltar à versão anterior"
+          // could restore, so the screen refuses instead of offering a Salvar.
+          setMsg(msg, 'Este preset já está em vigor. Nada a salvar.', 'ok');
+          state.plan = null;
+          renderPresetActions();
+          return;
+        }
+        const lines = String((state.plan && state.plan.diff) || '').split('\n').filter(Boolean).length;
+        setMsg(msg, `Isto vai mudar ${lines} linha${lines === 1 ? '' : 's'} do arquivo.`, 'ok');
+        state.presetPlanned = state.preset;
+        renderPresetActions();
+      }
+
+      async function applyPreset() {
+        const msg = $('presetMsg');
+        // The plan on screen is the body that gets written — never a patch rebuilt at
+        // click time, which is how a screen ends up writing something other than the
+        // diff the operator read.
+        if (state.presetPlanned !== state.preset || !state.plan) {
+          setMsg(msg, 'Veja o que muda antes de salvar.', 'bad');
+          renderPresetActions();
+          return;
+        }
+        await doApply('/apply', msg, state.plan.policy, $('presetDiff'));
+        state.presetPlanned = null;
+        renderPresets();
       }
 
       function renderHealth() {
@@ -5440,6 +5679,35 @@
         }
       }
 
+      // ── The one write with no preview asks first (§4.7, CA5) ─────────
+      // Every other write goes plan → diff → apply, so the operator reads what will
+      // change before it changes. Revert cannot: the server restores whatever the .bak
+      // holds and there is nothing to diff against it. So it is the one action that
+      // asks, and the question says exactly what is missing — that there is no preview
+      // here — rather than a generic "are you sure".
+      //
+      // Two clicks in the DOM rather than window.confirm: this console renders inside
+      // an iframe srcdoc, where a native dialog covers the screen the operator is
+      // reading, and a native dialog cannot be exercised by a test.
+      let revertArmed = false;
+      function disarmRevert() {
+        revertArmed = false;
+        const button = $('jsonRevert');
+        if (button) button.textContent = 'Voltar à versão anterior';
+      }
+      function requestRevert() {
+        const msg = $('jsonMsg');
+        const button = $('jsonRevert');
+        if (!revertArmed) {
+          revertArmed = true;
+          if (button) button.textContent = 'Confirmar: voltar à versão anterior';
+          setMsg(msg, 'Isto substitui o arquivo atual pela cópia que o roteador guardou antes da última gravação. Diferente de Salvar, aqui não há prévia: você não vê o que vai mudar antes. Continuar?', 'bad');
+          return Promise.resolve(false);
+        }
+        disarmRevert();
+        return doApply('/apply/revert', msg).then(() => true);
+      }
+
       async function doCompaction() {
         const msg = $('compactMsg');
         if (!writable(msg, 'Recalculate')) return;
@@ -5825,6 +6093,7 @@
         $('pipelineNote').textContent = open
           ? 'Modo edição ligado. Nada é gravado até você apertar “Salvar”, e a tela mostra o que muda antes.'
           : 'Leia de cima para baixo — a primeira regra que casar decide.';
+        disarmRevert();
         renderWarnings();
         renderRail();
         renderInspector(null);
@@ -5867,6 +6136,7 @@
         renderWarnings();
         renderRail();
         renderHealth();
+        renderPresets();
         renderCompaction();
         renderRoutes();
         renderSheet();
@@ -5978,7 +6248,7 @@
           const draft = jsonDraft();
           if (draft.ok) doPreview(draft.value, $('jsonMsg'), $('jsonDiff'));
         });
-        $('jsonRevert').addEventListener('click', () => doApply('/apply/revert', $('jsonMsg')));
+        $('jsonRevert').addEventListener('click', () => { void requestRevert(); });
         $('probeForm').addEventListener('submit', (e) => { e.preventDefault(); probe($('probeTask').value.trim()); });
         $('routesFilter').addEventListener('input', (e) => { state.query = e.target.value; renderRoutes(); });
         const setScope = (scope) => { state.scope = scope; renderRoutes(); };
@@ -6048,7 +6318,10 @@
         hourBounds, weekdaySet,
         nextWindowChange, windowWords, railWindowRows, effectivePrices, money,
         priceWords, pricePublished, declaredPin, timePolicyMove, timeFlagIndex,
-        timeKnobWords, orderLineParts, orderLine, chipList, missingGroupFindings, planWhen, timeCapOf, cappedEntries, renderClock, nowUtc,
+        timeKnobWords, orderLineParts, orderLine, chipList, missingGroupFindings,
+        PRESETS, presetPatch, activePreset, renderPresets, previewPreset, applyPreset,
+        requestRevert, disarmRevert,
+        planWhen, timeCapOf, cappedEntries, renderClock, nowUtc,
         // The server's own numbers, and the two questions the console must answer
         // from the RUNNING path rather than from the declared config: which elos are
         // really out of the chain, and where this task actually goes.
