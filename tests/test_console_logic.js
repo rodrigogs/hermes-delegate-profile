@@ -6302,3 +6302,247 @@ test('a refused write rebuilds the inspector from the reloaded policy, dropping 
   const fresh = byLabel(dom.get('inspector'), 'Provedor').children.find((c) => c.tagName === 'input');
   assert.equal(fresh.value, 'zai', 'the rebuilt panel shows the reloaded value, not the stale draft');
 });
+
+// ── §2.2: one destination control, five closed options ──────────────────
+// The rule's destination and the default's used to be different controls
+// with different vocabularies: a <select> of tiers keys for the rule, two
+// free-text fields (Destino/Ação) for the default. §2.2 makes it ONE
+// component with five closed options — the four classifier anchors (then
+// every other tiers key alphabetically), the classifier, a refusal, and a
+// fixed model — and every option writes EXACTLY the three keys of §2.2,
+// the other two as null.
+
+function destPolicy() {
+  return {
+    rules: [
+      { id: 'r1', when: {}, then: { model: 'T4' } },
+      { id: 'r2', when: {}, then: { model: 'glm-5.3', provider: 'zai' } },
+      { id: 'r3', when: {}, then: { action: 'classify' } },
+      { id: 'r4', when: {}, then: { deny: true } },
+      { id: 'r5', when: {}, then: { model: 'T9' } },
+    ],
+    default: { action: 'classify' },
+    fail_safe: { model: 'glm-4.7', provider: 'zai' },
+    tiers: {
+      T1: { model: 'a', provider: 'zai' },
+      T2: { model: 'b', provider: 'zai', fallback: [{ model: 'c', provider: 'zai' }, { model: 'd', provider: 'zai' }] },
+      T3: { model: 'e', provider: 'zai' },
+      T4: { model: 'f', provider: 'zai', fallback: [{ model: 'g', provider: 'zai' }] },
+      zeta: { model: 'h', provider: 'zai' },
+      alpha: { model: 'i', provider: 'zai' },
+    },
+  };
+}
+
+const DEST_OPTION_VALUES = ['T1', 'T2', 'T3', 'T4', 'alpha', 'zeta', '', '__classify', '__deny', '__fixed'];
+
+test('the destination control offers the five closed options of §2.2, in order', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = destPolicy();
+  api.state.capabilities = { 'glm-5.3': { provider: 'zai' } };
+  api.setMode('editing');
+  api.renderInspector({ id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 });
+  const wrap = byLabel(dom.get('inspector'), 'Destino');
+  const select = wrap.children.find((c) => c.tagName === 'select');
+  assert.ok(select, 'the destination is a <select>, not free text');
+  const values = select.children.map((o) => o.value);
+  assert.deepEqual(values, DEST_OPTION_VALUES,
+    'the four anchors, the other keys alphabetically, the separator, then the three remaining options');
+  const texts = select.children.map((o) => o.textContent);
+  assert.equal(texts[0], 'Grupo T1 · Trivial');
+  assert.equal(texts[3], 'Grupo T4 · Difícil');
+  assert.equal(texts[4], 'Grupo alpha · sem descrição');
+  assert.equal(texts[5], 'Grupo zeta · sem descrição');
+  assert.equal(select.children[6].disabled, true, 'the separator cannot be picked');
+  assert.equal(texts[7], 'Perguntar ao classificador qual grupo usar');
+  assert.equal(texts[8], 'Recusar a tarefa');
+  assert.equal(texts[9], 'Um modelo fixo, sem reserva (avançado)');
+  assert.equal(select.value, 'T4', 'the current destination is selected');
+
+  // A destination the table no longer names still shows — the lint finds
+  // the missing group, the select must not blank the value.
+  api.renderInspector({ id: 'rule:r5', name: 'r5', bind: 'rule', ruleIndex: 4 });
+  const wrap5 = byLabel(dom.get('inspector'), 'Destino');
+  const select5 = wrap5.children.find((c) => c.tagName === 'select');
+  assert.equal(select5.value, 'T9', 'the missing group stays selected');
+  assert.equal(select5.children.map((o) => o.value)[6], 'T9',
+    'and it is present as an option, appended after the table keys, before the separator');
+});
+
+test('each destination option writes exactly the three §2.2 keys, the others null', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = destPolicy();
+  api.state.capabilities = { 'gpt-5.6-luna': { provider: 'openai-codex', context_window: 1000000 } };
+  api.setMode('editing');
+  api.renderInspector({ id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 });
+  const wrap = byLabel(dom.get('inspector'), 'Destino');
+  const select = wrap.children.find((c) => c.tagName === 'select');
+  const then = () => api.state.draft.rules[0].then;
+
+  select.value = 'T2'; select._listeners.change();
+  assert.deepEqual(plain(then()), { model: 'T2', action: null, deny: null },
+    'grupo → then.model, and action/deny as null');
+
+  // Picked straight from a model-bearing state, so a "keeps the model"
+  // mutation cannot hide behind a previous option having already nulled it.
+  select.value = '__deny'; select._listeners.change();
+  assert.deepEqual(plain(then()), { model: null, action: null, deny: true },
+    'recusar → then.deny, and model/action as null — no model left behind');
+
+  select.value = 'T2'; select._listeners.change();
+  select.value = '__classify'; select._listeners.change();
+  assert.deepEqual(plain(then()), { model: null, action: 'classify', deny: null },
+    'classificador → then.action, and model/deny as null — no model left behind');
+
+  select.value = '__fixed'; select._listeners.change();
+  assert.deepEqual(plain(then()), { model: null, action: null, deny: null },
+    'fixo → nothing written until a model is picked');
+  const fixedWrap = wrap.children.find((c) => c.tagName !== 'label' && c.tagName !== 'select'
+    && !String(c.className).includes('field-note'));
+  const modelWrap = byLabel(fixedWrap, 'Modelo');
+  assert.ok(modelWrap, 'the fixed option reveals the one model picker');
+  const modelSelect = modelWrap.children.find((c) => c.tagName === 'select');
+  modelSelect.value = 'gpt-5.6-luna'; modelSelect._listeners.change();
+  assert.deepEqual(plain(then()), { model: 'gpt-5.6-luna', provider: 'openai-codex', action: null, deny: null },
+    'fixo → model + provider come from the catalogue entry');
+});
+
+test('the default line uses the SAME destination control as a rule', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = destPolicy();
+  api.setMode('editing');
+  api.renderInspector({ id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 });
+  const ruleWrap = byLabel(dom.get('inspector'), 'Destino');
+  const ruleSelect = ruleWrap.children.find((c) => c.tagName === 'select');
+
+  api.renderInspector({ id: 'default', name: 'default', bind: 'default' });
+  const box = dom.get('inspector');
+  const defWrap = byLabel(box, 'Destino');
+  assert.ok(defWrap, 'the default has a destination field');
+  const defSelect = defWrap.children.find((c) => c.tagName === 'select');
+  assert.ok(defSelect, 'and it is a <select> — the free-text Destino is gone');
+  assert.deepEqual(defSelect.children.map((o) => o.value), ruleSelect.children.map((o) => o.value),
+    'identical options to the rule\'s control — the same component');
+  assert.equal(defSelect.value, '__classify', 'the current action:classify maps to the classifier option');
+  assert.ok(!box.children.some((c) => (c.children[0] || {}).textContent === 'Ação'),
+    'the free-text Ação field is gone — classify is one of the five options now');
+  assert.equal(box.children.filter((c) => c.tagName === 'input').length, 0,
+    'no free-text field remains in the default panel');
+});
+
+test('a default destination edit writes the three keys through the same patch path', async () => {
+  const posted = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.body) posted.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: JSON.parse(opts.body) });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(destPolicy())) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = destPolicy();
+  api.setMode('editing');
+  api.renderInspector({ id: 'default', name: 'default', bind: 'default' });
+  const wrap = byLabel(dom.get('inspector'), 'Destino');
+  const select = wrap.children.find((c) => c.tagName === 'select');
+  select.value = 'T2';
+  select._listeners.change();
+  const apply = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Apply');
+  apply._listeners.click();
+  await tick();
+
+  const planCall = posted.find((c) => c.url === '/plan');
+  assert.ok(planCall, 'an /plan went out');
+  assert.deepEqual(planCall.body.policy, { default: { model: 'T2', action: null, deny: null } },
+    'the default patch carries exactly the three §2.2 keys, nothing else');
+});
+
+test('profile is a <select> with the policy union plus Outro papel… (§2.2)', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  const policy = destPolicy();
+  policy.rules[0].then.profile = 'coder';
+  policy.rules[1].then.profile = 'reviewer';
+  policy.fail_safe.profile = 'coder';
+  api.state.policy = policy;
+  api.setMode('editing');
+  api.renderInspector({ id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 });
+  const wrap = byLabel(dom.get('inspector'), 'Papel');
+  assert.ok(wrap, 'the Papel field exists');
+  const select = wrap.children.find((c) => c.tagName === 'select');
+  assert.ok(select, 'Papel is a <select>, not a text input');
+  const values = select.children.map((o) => o.value);
+  assert.ok(values.includes('coder') && values.includes('reviewer'),
+    'the union of the profile values present in the policy');
+  assert.equal(values.filter((v) => v === 'coder').length, 1, 'union, no duplicates');
+  assert.ok(values.includes('__other'), 'Outro papel… is the escape hatch');
+  assert.equal(select.value, 'coder', 'the current profile is selected');
+
+  select.value = 'reviewer'; select._listeners.change();
+  assert.equal(api.state.draft.rules[0].then.profile, 'reviewer', 'picking a union value writes it');
+
+  select.value = '__other'; select._listeners.change();
+  const input = wrap.children.find((c) => c.tagName === 'input');
+  assert.ok(input && input.hidden === false, 'Outro papel… reveals a text input');
+  input.value = 'security'; input._listeners.input();
+  assert.equal(api.state.draft.rules[0].then.profile, 'security', 'typing writes the new role');
+
+  select.value = ''; select._listeners.change();
+  assert.equal(api.state.draft.rules[0].then.profile, null, 'the blank option removes the role');
+});
+
+test('fixo-sem-reserva shows only on the fixed option, with the N of the group being left', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = destPolicy();
+  api.state.capabilities = { 'glm-5.3': { provider: 'zai' } };
+  api.setMode('editing');
+  api.renderInspector({ id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 });
+  const wrap = byLabel(dom.get('inspector'), 'Destino');
+  const select = wrap.children.find((c) => c.tagName === 'select');
+  const note = wrap.children.find((c) => String(c.className).includes('field-note'));
+  assert.equal(note.hidden, true, 'no warning while a group is selected');
+
+  select.value = '__fixed'; select._listeners.change();
+  assert.equal(note.hidden, false, 'the warning appears when the fixed option is chosen');
+  assert.match(note.textContent, /Um grupo, no lugar dele, teria 2 tentativas\./,
+    'N is the chain length of the group the rule was leaving (T4: primary + 1 reserve)');
+
+  select.value = '__deny'; select._listeners.change();
+  assert.equal(note.hidden, true, 'the warning is NOT rendered on the deny option');
+
+  select.value = 'T2'; select._listeners.change();
+  assert.equal(note.hidden, true, 'nor on a group option');
+
+  select.value = '__fixed'; select._listeners.change();
+  assert.equal(note.hidden, false);
+  assert.match(note.textContent, /teria 3 tentativas\./,
+    'leaving T2 (chain of 3), the N follows the group actually in use');
+
+  select.value = '__classify'; select._listeners.change();
+  assert.equal(note.hidden, true, 'nor on the classifier option');
+
+  select.value = '__fixed'; select._listeners.change();
+  assert.equal(note.hidden, false);
+  assert.doesNotMatch(note.textContent, /teria \d+ tentativas?\./,
+    'leaving a non-group option: the short phrase, no N invented');
+  assert.match(note.textContent, /sem tentar mais nada\./, 'the head sentence is the §4.7 literal');
+});
+
+test('a rule already on a fixed model shows the warning at mount, with the picker open', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = destPolicy();
+  api.state.capabilities = { 'glm-5.3': { provider: 'zai', context_window: 200000 } };
+  api.setMode('editing');
+  api.renderInspector({ id: 'rule:r2', name: 'r2', bind: 'rule', ruleIndex: 1 });
+  const wrap = byLabel(dom.get('inspector'), 'Destino');
+  const select = wrap.children.find((c) => c.tagName === 'select');
+  assert.equal(select.value, '__fixed', 'a concrete model id maps to the fixed option');
+  const note = wrap.children.find((c) => String(c.className).includes('field-note'));
+  assert.equal(note.hidden, false, 'the warning is present at mount, not only after a change');
+  assert.match(note.textContent, /^Um modelo fixo aqui não tem reserva:/, 'the §4.7 head, literal');
+  assert.doesNotMatch(note.textContent, /teria \d+ tentativas?\./, 'no N invented without a reference group');
+  const fixedWrap = wrap.children.find((c) => c.tagName !== 'label' && c.tagName !== 'select'
+    && !String(c.className).includes('field-note'));
+  assert.ok(byLabel(fixedWrap, 'Modelo'), 'the model picker is open for the fixed option');
+});

@@ -5469,6 +5469,211 @@
         return { wrap, select, countNote };
       }
 
+      // ── §2.2: the ONE destination control ─────────────────────────────
+      // A destination is one of five closed options: a group (the four
+      // classifier anchors first, then every other tiers key alphabetically),
+      // the classifier, a refusal, or a fixed model. The same component
+      // renders a rule's destination and the default's — two implementations
+      // of this control is how the four lines diverge again. Every option
+      // writes EXACTLY the three keys of §2.2 and nulls the other two; only
+      // the fixed-model option touches provider, and only from the catalogue
+      // entry, through modelField.
+      function destOptionList(tiers) {
+        const names = tiers && typeof tiers === 'object' ? Object.keys(tiers) : [];
+        const anchors = ['T1', 'T2', 'T3', 'T4'];
+        return anchors.concat(names.filter((k) => anchors.indexOf(k) < 0).sort());
+      }
+      function destTierLabel(key) {
+        const m = TIER_MEANING[key];
+        return `Grupo ${key} · ${m ? m.label : 'sem descrição'}`;
+      }
+      // The select value for a `then`: the tier key it names, the classifier
+      // or refusal sentinel, or the fixed-model sentinel. '' is "no
+      // destination", which the lint refuses — the blank option exists only
+      // to show that state, exactly like the model picker's '—'. A Tn alias
+      // the table no longer has is still a GROUP reference (destWords' "não
+      // existe" case), not a fixed model: only a real catalogue id maps to
+      // the fixed option.
+      function destValue(then, tiers) {
+        const t = then && typeof then === 'object' ? then : {};
+        if (t.deny === true) return '__deny';
+        if (t.action === 'classify') return '__classify';
+        const model = t.model == null ? null : String(t.model);
+        if (model == null) return '';
+        const names = tiers && typeof tiers === 'object' ? Object.keys(tiers) : [];
+        if (names.indexOf(model) >= 0) return model;
+        if (/^T\d+$/.test(model)) return model;
+        return '__fixed';
+      }
+      // §4.7 fixo-sem-reserva: the N is the number of attempts of the group
+      // the rule would use — the tier it is leaving, when it is leaving one.
+      // With no reference group the sentence drops its last clause; N is
+      // never rendered as an invented zero.
+      function fixedReserveWords(tierKey, tiers) {
+        const head = 'Um modelo fixo aqui não tem reserva: se ele falhar, a tarefa vai direto para o último recurso, sem tentar mais nada.';
+        const tier = tierKey && tiers && typeof tiers === 'object' ? tiers[tierKey] : null;
+        if (!tier) return head;
+        const n = tierChain(tier).length;
+        if (!(n > 0)) return head;
+        return `${head} Um grupo, no lugar dele, teria ${n} tentativa${n === 1 ? '' : 's'}.`;
+      }
+      function destField(box, then, touched, tiers) {
+        const wrap = el('div', 'field');
+        wrap.append(el('label', '', 'Destino'));
+        const select = document.createElement('select');
+        const names = destOptionList(tiers);
+        const current = destValue(then, tiers);
+        const isTier = (v) => v !== '' && v !== '__classify' && v !== '__deny' && v !== '__fixed';
+        if (!current) {
+          const blank = document.createElement('option');
+          blank.value = ''; blank.textContent = '—';
+          select.appendChild(blank);
+        }
+        names.forEach((key) => {
+          const opt = document.createElement('option');
+          opt.value = key; opt.textContent = destTierLabel(key);
+          select.appendChild(opt);
+        });
+        // A destination the table no longer names still shows — the lint
+        // finds the missing group, the select must not blank the value. The
+        // sentinels are never appended: they are already options.
+        if (current && names.indexOf(current) < 0
+            && current !== '__classify' && current !== '__deny' && current !== '__fixed') {
+          const opt = document.createElement('option');
+          opt.value = current; opt.textContent = destTierLabel(current);
+          select.appendChild(opt);
+        }
+        // The separator: a disabled option, so nothing between the groups and
+        // the two actions is selectable (§2.2).
+        const sep = document.createElement('option');
+        sep.disabled = true; sep.value = ''; sep.textContent = '──────────';
+        select.appendChild(sep);
+        const classifyOpt = document.createElement('option');
+        classifyOpt.value = '__classify'; classifyOpt.textContent = 'Perguntar ao classificador qual grupo usar';
+        select.appendChild(classifyOpt);
+        const denyOpt = document.createElement('option');
+        denyOpt.value = '__deny'; denyOpt.textContent = 'Recusar a tarefa';
+        select.appendChild(denyOpt);
+        const fixedOpt = document.createElement('option');
+        fixedOpt.value = '__fixed'; fixedOpt.textContent = 'Um modelo fixo, sem reserva (avançado)';
+        select.appendChild(fixedOpt);
+        select.value = current;
+        wrap.append(select);
+
+        // The fixed-model option reveals the one model picker (§2.5) and the
+        // fixo-sem-reserva warning (§4.7). The picker is mounted lazily, so
+        // it reads `then` at the moment the option is chosen, not the value
+        // the field was born with.
+        const fixedWrap = el('div');
+        fixedWrap.hidden = true;
+        wrap.append(fixedWrap);
+        const note = el('p', 'field-note');
+        note.hidden = true;
+        wrap.append(note);
+        let fixedRendered = false;
+        let prev = current;
+        // The group the rule would use, for the warning's N: the tier it is
+        // leaving when the operator moves to the fixed option. Leaving a
+        // non-group option leaves no reference group.
+        let refTier = isTier(current) ? current : null;
+        const revealFixed = () => {
+          if (!fixedRendered) {
+            fixedRendered = true;
+            modelField(fixedWrap, 'Modelo', () => then.model,
+              (v) => { touched.add('model'); then.model = v; },
+              null, (provider) => { touched.add('provider'); then.provider = provider; });
+          }
+          fixedWrap.hidden = false;
+        };
+        const renderNote = () => {
+          const v = select.value;
+          note.hidden = v !== '__fixed';
+          if (v === '__fixed') note.textContent = fixedReserveWords(refTier, tiers);
+        };
+        const setThree = (model, action, deny) => {
+          touched.add('model'); touched.add('action'); touched.add('deny');
+          then.model = model; then.action = action; then.deny = deny;
+        };
+        select.addEventListener('change', () => {
+          const v = select.value;
+          const leaving = prev;
+          prev = v;
+          refTier = isTier(leaving) ? leaving : null;
+          if (v === '__classify') setThree(null, 'classify', null);
+          else if (v === '__deny') setThree(null, null, true);
+          else if (v === '__fixed') { setThree(null, null, null); revealFixed(); }
+          else if (v === '') setThree(null, null, null);
+          else setThree(v, null, null);
+          renderNote();
+        });
+        if (current === '__fixed') revealFixed();
+        renderNote();
+        box.append(wrap);
+        return { wrap, select, note };
+      }
+
+      // §2.2: profile has no closed vocabulary — adapter.py knows only the
+      // default 'coder' — so the select is the union of the profile values
+      // already present in the policy, plus "Outro papel…" revealing a text
+      // input. The screen never invents a role list.
+      function profileUnion(policy) {
+        const p = policy && typeof policy === 'object' ? policy : {};
+        const out = [];
+        const add = (v) => {
+          if (v == null || v === '') return;
+          const s = String(v);
+          if (out.indexOf(s) < 0) out.push(s);
+        };
+        (Array.isArray(p.rules) ? p.rules : []).forEach((r) => {
+          if (r && r.then && typeof r.then === 'object') add(r.then.profile);
+        });
+        add(p.default && p.default.profile);
+        add(p.fail_safe && p.fail_safe.profile);
+        return out;
+      }
+      function profileField(box, then, touched, policy) {
+        const wrap = el('div', 'field');
+        wrap.append(el('label', '', 'Papel'));
+        const select = document.createElement('select');
+        const union = profileUnion(policy);
+        const current = then.profile == null ? '' : String(then.profile);
+        const blank = document.createElement('option');
+        blank.value = ''; blank.textContent = '—';
+        select.appendChild(blank);
+        union.forEach((v) => {
+          const opt = document.createElement('option');
+          opt.value = v; opt.textContent = v;
+          select.appendChild(opt);
+        });
+        // A profile the union no longer contains still shows — the select
+        // must not blank a value that is really in the file.
+        if (current && union.indexOf(current) < 0) {
+          const opt = document.createElement('option');
+          opt.value = current; opt.textContent = current;
+          select.appendChild(opt);
+        }
+        const other = document.createElement('option');
+        other.value = '__other'; other.textContent = 'Outro papel…';
+        select.appendChild(other);
+        select.value = current;
+        wrap.append(select);
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.hidden = true;
+        input.value = current;
+        input.addEventListener('input', () => { touched.add('profile'); then.profile = input.value; });
+        wrap.append(input);
+        select.addEventListener('change', () => {
+          const v = select.value;
+          touched.add('profile');
+          if (v === '__other') { input.hidden = false; }
+          else if (v === '') { then.profile = null; }
+          else { then.profile = v; }
+        });
+        box.append(wrap);
+        return { wrap, select, input };
+      }
+
       function renderInspector(node) {
         const box = $('inspector');
         clear(box);
@@ -5536,9 +5741,10 @@
         } else if (node.bind === 'rule') {
           const r = d.rules[node.ruleIndex] = d.rules[node.ruleIndex] || {};
           r.then = r.then || {};
-          const tiers = Object.keys(d.tiers || {});
-          field('Destino', 'model', () => r.then.model, (v) => { r.then.model = v; }, tiers.concat(['']));
-          field('Papel', 'profile', () => r.then.profile, (v) => { r.then.profile = v; });
+          // §2.2: the destination is the one control — five closed options,
+          // and the Papel field is the profile union, never free text.
+          destField(box, r.then, touched, (d.tiers || {}));
+          profileField(box, r.then, touched, d);
           // Position and state are the two knobs that resolve the shadow class
           // this screen reports in amber WITHOUT touching `when` — the lint
           // finding names the shadower, and disabling is dead-by-declaration
@@ -5585,8 +5791,9 @@
           field('Provedor', 'provider', () => f.provider, (v) => { f.provider = v; });
         } else if (node.bind === 'default') {
           const def = d.default = d.default || {};
-          field('Destino', 'model', () => def.model, (v) => { def.model = v; });
-          field('Ação', 'action', () => def.action, (v) => { def.action = v; });
+          // §2.2: the default's destination is the SAME control as a rule's —
+          // the free-text Destino/Ação pair was the asymmetry the spec names.
+          destField(box, def, touched, (d.tiers || {}));
         }
 
         // Apply leads, because applying is the intention; Preview is for the
@@ -6500,6 +6707,11 @@
         // operator's fastest diagnosis of "no model serves this group" — and
         // its escapes are pinned by tests rather than eyeballed.
         modelField, modelMeetsRequirement, modelOptionLabel,
+        // §2.2: the one destination control and the one profile control —
+        // exported so the five closed options, the per-option write
+        // semantics, and the fixo-sem-reserva N are pinned by tests.
+        destField, destOptionList, destValue, fixedReserveWords,
+        profileField, profileUnion,
       };
     })();
   </script>
