@@ -369,6 +369,76 @@ def _console_rendered_text() -> list[tuple[str, int, str]]:
     return prose
 
 
+def _console_ui_strings() -> list[tuple[str, int, str]]:
+    """Every string this console can put on screen, single tokens included.
+
+    ``_console_rendered_text`` deliberately drops single-token literals (keys,
+    classes, paths). This guard needs them: ``el('button', 'btn go', 'Apply')``
+    is a single token and exactly the label the §4.7 rule forbids. Comments and
+    the ``<style>`` block are skipped for the same reasons the shared extractor
+    skips them — this file keeps its rationale in comments, and a comment is
+    not something the reader is shown.
+    """
+
+    import re
+
+    html = (EXTENSION / "console.html").read_text(encoding="utf-8")
+    script = re.search(r"<script>\n?(.*?)\n?\s*</script>", html, re.S)
+    assert script, "the console must carry exactly one inline <script>"
+
+    def blank(mo):
+        return "\n" * mo.group(0).count("\n")
+
+    markup = html[: script.start()] + html[script.end():]
+    markup = re.sub(r"<style>.*?</style>", blank, markup, flags=re.S)
+    markup = re.sub(r"<!--.*?-->", blank, markup, flags=re.S)
+
+    out: list[tuple[str, int, str]] = []
+    for attr in ("placeholder", "title", "aria-label"):
+        for mo in re.finditer(attr + r'="([^"]+)"', markup):
+            out.append(("markup", markup[: mo.start()].count("\n") + 1, mo.group(1)))
+    for number, line in enumerate(markup.split("\n"), 1):
+        stripped = re.sub(r"<[^>]*>", " ", line).strip()
+        if stripped:
+            out.append(("markup", number, stripped))
+
+    body = script.group(1)
+    start_line = html[: script.start(1)].count("\n") + 1
+    index, size, line_number = 0, len(body), start_line
+    while index < size:
+        char = body[index]
+        if char == "\n":
+            line_number += 1
+            index += 1
+        elif char == "/" and body[index + 1:index + 2] == "/":
+            while index < size and body[index] != "\n":
+                index += 1
+        elif char == "/" and body[index + 1:index + 2] == "*":
+            index += 2
+            while index + 1 < size and body[index:index + 2] != "*/":
+                line_number += body[index] == "\n"
+                index += 1
+            index += 2
+        elif char in "'\"`":
+            quote, opened, buffer = char, line_number, []
+            index += 1
+            while index < size:
+                if body[index] == "\\":
+                    buffer.append(body[index:index + 2])
+                    index += 2
+                    continue
+                if body[index] == quote:
+                    index += 1
+                    break
+                line_number += body[index] == "\n"
+                buffer.append(body[index])
+                index += 1
+            out.append(("script", opened, "".join(buffer)))
+        else:
+            index += 1
+    return out
+
+
 def test_console_vocabulario():
     """CA7: the words the screen says are the glossary's, and nobody else's.
 
@@ -401,7 +471,7 @@ def test_console_vocabulario():
         )
 
     for word in ("tier", "breaker", "fail-safe", "blocklist", "profile"):
-        pattern = re.compile(r"(?<![\w-])" + re.escape(word) + r"(?![\w-])", re.I)
+        pattern = re.compile(r"(?<![\w-])" + re.escape(word) + r"(?![-\w])", re.I)
         glossed = re.compile(r"\(\s*" + re.escape(word) + r"\s*\)", re.I)
         bare = [
             (w, ln, t) for w, ln, t in prose
@@ -411,6 +481,36 @@ def test_console_vocabulario():
             f"'{word}' is a domain word §4.6 allows only as a gloss in parentheses "
             f"after the Portuguese term, and it stands alone in {len(bare)} place(s): "
             + "; ".join(f"{w}:{ln} {t[:70]!r}" for w, ln, t in bare[:6])
+        )
+
+
+def test_console_write_surface_speaks_one_pt_br_vocabulary():
+    """§4.7/§6.10: the write surface has no English labels or messages.
+
+    The same write used to carry two vocabularies on one screen: the editor and
+    the presets said the §4.7 literals while the inspector said Apply/Preview/
+    Revert with Rejected/Invalid/Checking…/Written. messages. Every one of the
+    seven English forms is pinned here as a label or a UI message, so the second
+    vocabulary cannot come back as a rename or a copy.
+
+    Matching is whole-word and case-sensitive: ``/apply`` is a route and
+    ``doPreview`` a symbol — neither is rendered — while the words as the spec's
+    table spells them (capitalised) are what the operator would read. The plural
+    check covers every surface: ``el()`` labels, ``setMsg`` messages, markup
+    text and placeholders alike, single tokens included.
+    """
+
+    import re
+
+    strings = _console_ui_strings()
+    assert len(strings) > 100, "the extractor stopped seeing the console's strings"
+    for word in ("Apply", "Preview", "Revert", "Rejected", "Invalid", "Checking", "Written"):
+        pattern = re.compile(r"(?<![\w-])" + re.escape(word) + r"(?![-\w])")
+        found = [(w, ln, t) for w, ln, t in strings if pattern.search(t)]
+        assert not found, (
+            f"'{word}' is not this screen's write vocabulary (§4.7/§6.10), and it "
+            f"reaches the reader in {len(found)} place(s): "
+            + "; ".join(f"{w}:{ln} {t[:70]!r}" for w, ln, t in found[:6])
         )
 
 
@@ -1720,7 +1820,7 @@ def test_plugin_makes_its_own_plugin_root_importable_in_the_flat_layout(monkeypa
 
 
 def test_json_actions_markup_is_what_the_js_harness_mirrors():
-    """CA8: the write buttons live in ``#jsonActions``, and the JS test mirrors that.
+    """CA8: the write buttons live in ``#jsonActions``, UNLABELLED — the labels are the map's.
 
     ``tests/test_console_logic.js`` measures whether a ``Salvar`` exists **in the DOM**
     while the file carries a lint error — absent, not disabled (DESIGN.md:435-463). Its
@@ -1728,25 +1828,39 @@ def test_json_actions_markup_is_what_the_js_harness_mirrors():
     (``seedJsonActions``). That mirror is only honest while the markup really is this,
     which is what this test pins: rename the container or move a button out of it and
     the JS test would keep passing over a fiction until this one fails.
+
+    §4.7 decision 2: the LABELS are not in the markup at all. They live in the WRITE
+    map — the single source — and boot stamps them (``stampWriteLabels``); a label in
+    the markup would be the second copy the rule exists to prevent, and the JS mirror
+    seeds the very labels the map spells.
     """
     html = (EXTENSION / "console.html").read_text(encoding="utf-8")
     assert '<div class="actions" id="jsonActions">' in html, (
         "the write buttons need a named container for a test to ask what is inside it"
     )
     box = html.split('<div class="actions" id="jsonActions">', 1)[1].split("</div>", 1)[0]
-    for element_id, label in (
-        ("jsonApply", "Salvar"),
-        ("jsonPreview", "Ver o que muda"),
-        ("jsonRevert", "Voltar à versão anterior"),
-    ):
+    for element_id in ("jsonApply", "jsonPreview", "jsonRevert"):
         assert f'id="{element_id}"' in box, f"{element_id} must live inside #jsonActions"
-        assert label in box, f"{element_id} is labelled {label!r} in the markup"
-    # Salvar first in the file, so the console can put it back where it was after
+    # §4.7: no write vocabulary in the markup — the WRITE map is the only copy,
+    # and stampWriteLabels hands the labels to these very buttons at boot.
+    for label in ("Salvar", "Ver o que muda", "Voltar à versão anterior"):
+        assert label not in box, (
+            f"{label!r} is a §4.7 literal; hardcoded in the markup it would be a "
+            "second copy of the map the console stamps from"
+        )
+    # jsonApply first in the file, so the console can put it back where it was after
     # detaching it: the JS test asserts that order and it comes from here.
     assert box.index('id="jsonApply"') < box.index('id="jsonPreview"'), (
-        "Salvar precedes Ver o que muda in the markup, which is the order the "
-        "console restores it to"
+        "Salvar precedes Ver o que muda in the restored order, and the markup is "
+        "the order the console restores it to"
     )
+    script = _console_inline_script()
+    assert "function stampWriteLabels()" in script, (
+        "boot stamps the static buttons from the map; without it the editor's "
+        "buttons would render empty"
+    )
+    for key in ("WRITE.save", "WRITE.plan", "WRITE.revert"):
+        assert key in script, f"the map must be the source of {key}"
 
 
 def test_console_gates_the_save_button_on_the_lint_errors():

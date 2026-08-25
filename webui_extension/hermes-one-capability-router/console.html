@@ -1273,11 +1273,13 @@
             <!-- No Confirm button. It POSTed /apply/confirm, which on the server
                  is the SAME function as /apply — one_sidecar.py:346 and :353 both
                  return _commit_policy(body). Two buttons, one effect, and nothing
-                 on screen said which to press or what the difference was. -->
+                 on screen said which to press or what the difference was.
+                 The labels are not here: §4.7 keeps the write vocabulary in the
+                 WRITE map, and boot stamps these three from it (stampWriteLabels). -->
             <div class="actions" id="jsonActions">
-              <button class="btn go" id="jsonApply" type="button">Salvar</button>
-              <button class="btn" id="jsonPreview" type="button">Ver o que muda</button>
-              <button class="btn warn" id="jsonRevert" type="button">Voltar à versão anterior</button>
+              <button class="btn go" id="jsonApply" type="button"></button>
+              <button class="btn" id="jsonPreview" type="button"></button>
+              <button class="btn warn" id="jsonRevert" type="button"></button>
             </div>
             <p class="msg" id="jsonMsg" aria-live="polite"></p>
             <pre class="code" id="jsonDiff" hidden></pre>
@@ -2917,6 +2919,46 @@
         box.append(gate);
       }
 
+      // ── §4.7: the write vocabulary, one map ─────────────────────────────
+      // Every phrase the write surfaces say lives HERE and nowhere else: the
+      // inspector, the text editor, the presets and the messages they share
+      // read from this object. A second copy of any of these sentences is how
+      // one of them drifts — the conflict text was THREE copies, and the two
+      // lint gates each invented their own. The {N}-style placeholders are the
+      // spec's own notation; fill() replaces them with the real value.
+      const WRITE = {
+        plan: 'Ver o que muda',
+        save: 'Salvar',
+        saving: 'Salvando…',
+        revert: 'Voltar à versão anterior',
+        revertConfirm: 'Confirmar: voltar à versão anterior',
+        checking: 'Verificando…',
+        noDraft: 'Não há o que salvar.',
+        noop: 'Nada mudou em relação ao arquivo atual, então não há o que salvar. Salvar do mesmo jeito apagaria a cópia que "Voltar à versão anterior" restauraria.',
+        lintError: 'Não é possível salvar enquanto houver erro. {N} erro(s) no arquivo.',
+        conflict: 'O arquivo mudou por fora desde que esta tela leu. Recarreguei tudo; confira e tente de novo.',
+        inFlight: 'Uma gravação já está em andamento.',
+        saved: 'Salvo. Vale para as próximas tarefas. Tarefas já em execução continuam no modelo que já escolheram. Não precisa reiniciar nada.',
+        httpError: 'Falhou (HTTP {st}).',
+        invalid: 'Não é possível salvar: {reasons}.',
+        missingPlan: 'Este serviço do roteador não sabe simular uma gravação.',
+        missingAction: 'Este serviço do roteador não tem essa ação.',
+        noCredential: 'Não é possível {action} com esta tela aberta fora do Hermes One: o navegador não manda a credencial da sessão. Abra o Hermes One e volte aqui pelo menu lateral.',
+      };
+      function fill(template, vars) {
+        return String(template).replace(/\{(\w+)\}/g, (m, k) =>
+          (vars && Object.prototype.hasOwnProperty.call(vars, k)) ? String(vars[k]) : m);
+      }
+      // §4.7: the text editor's three buttons are static markup, so their labels
+      // cannot live there — the map is the only copy. Boot stamps them once.
+      function stampWriteLabels() {
+        [['jsonApply', WRITE.save], ['jsonPreview', WRITE.plan], ['jsonRevert', WRITE.revert]]
+          .forEach(([id, label]) => { const n = $(id); if (n) n.textContent = label; });
+      }
+      // The draft-edited hint, naming the two buttons by the map's labels so it
+      // cannot drift from the buttons.
+      const draftHint = (verb) => `${verb} no rascunho — ${WRITE.plan} para ver o diff, ${WRITE.save} para escrever.`;
+
       // ── No Salvar while the file carries an error (§3.4(a), CA8) ─────
       // ABSENT, not disabled (DESIGN.md:435-463). A disabled control still reads as
       // "this is the thing to press", and pressing your way out of an error state is
@@ -3036,7 +3078,7 @@
         if (state.mode === 'editing' && !csrf()) {
           const line = el('div', 'warn-line');
           line.append(el('strong', '', 'A edição não pode ser aplicada aqui.'),
-                      el('span', '', 'Não é possível salvar com esta tela aberta fora do Hermes One: o navegador não manda a credencial da sessão. Abra o Hermes One e volte aqui pelo menu lateral.'));
+                      el('span', '', fill(WRITE.noCredential, { action: 'salvar' })));
           box.append(line);
         }
       }
@@ -3234,7 +3276,7 @@
           actions.append(el('span', 'hint', 'Escolha um preset para ver o que ele mudaria.'));
           return;
         }
-        const preview = el('button', 'btn', 'Ver o que muda');
+        const preview = el('button', 'btn', WRITE.plan);
         preview.type = 'button';
         preview.id = 'presetPreview';
         preview.addEventListener('click', () => { void previewPreset(); });
@@ -3242,7 +3284,7 @@
         // CA5: the Salvar exists only while a plan for THIS choice is on screen, and
         // CA8: never while the file carries an error.
         if (state.presetPlanned === state.preset && state.plan && lintErrors().length === 0) {
-          const save = el('button', 'btn go', 'Salvar');
+          const save = el('button', 'btn go', WRITE.save);
           save.type = 'button';
           save.id = 'presetApply';
           save.addEventListener('click', () => { void applyPreset(); });
@@ -3263,7 +3305,9 @@
         // written anyway.
         const lint = await lintGate();
         if (lint.blocked) {
-          setMsg(msg, `Não é possível ver o que muda enquanto houver erro no arquivo. Primeiro erro: ${String(lint.errors[0])}`, 'bad');
+          // §4.7: the count, not the first raw error — the banner carries the
+          // errors and the [ Ir para a regra ] jump.
+          setMsg(msg, fill(WRITE.lintError, { N: lint.errors.length }), 'bad');
           renderWarnings();
           renderPresetActions();
           return;
@@ -3294,7 +3338,7 @@
           renderPresetActions();
           return;
         }
-        await doApply('/apply', msg, state.plan.policy, $('presetDiff'));
+        await doApply('/apply', msg, state.plan.policy, $('presetDiff'), $('presetApply'));
         state.presetPlanned = null;
         renderPresets();
       }
@@ -5912,8 +5956,7 @@
 
         // An end control is not a silent no-op: it says the row is already at
         // the end it asked to move toward, and the draft is untouched.
-        const moved = (verb) => setMsg(msg,
-          `${verb} no rascunho — Preview para ver o diff, Apply para escrever.`, 'ok');
+        const moved = (verb) => setMsg(msg, draftHint(verb), 'ok');
 
         const moveUp = (row) => {
           if (row === 0) { setMsg(msg, 'Já é a primeira tentativa da fila — nada a mover.'); return; }
@@ -5955,7 +5998,7 @@
           next.push({});
           setList(next);
           touchList();
-          setMsg(msg, 'Tentativa adicionada no rascunho — escolha o modelo dela. Preview para ver o diff, Apply para escrever.', 'ok');
+          setMsg(msg, 'Tentativa adicionada no rascunho — escolha o modelo dela. ' + WRITE.plan + ' para ver o diff, ' + WRITE.save + ' para escrever.', 'ok');
           render();
         };
 
@@ -6077,7 +6120,7 @@
               rules.splice(to, 0, rule);
               move.disabled = true;
               move.textContent = 'Movido no rascunho';
-              setMsg(msg, 'Movido no rascunho — Preview para ver o diff, Apply para escrever.', 'ok');
+              setMsg(msg, draftHint('Movido'), 'ok');
             });
             ops.append(move);
           }
@@ -6087,8 +6130,7 @@
             if (r.enabled === false) delete r.enabled;
             else r.enabled = false;
             toggle.textContent = r.enabled === false ? 'Ativar esta regra' : 'Desativar esta regra';
-            setMsg(msg, (r.enabled === false ? 'Desativada' : 'Ativada')
-              + ' no rascunho — Preview para ver o diff, Apply para escrever.', 'ok');
+            setMsg(msg, draftHint(r.enabled === false ? 'Desativada' : 'Ativada'), 'ok');
           });
           ops.append(toggle);
           box.append(ops);
@@ -6104,13 +6146,16 @@
           destField(box, def, touched, (d.tiers || {}));
         }
 
-        // Apply leads, because applying is the intention; Preview is for the
-        // operator who wants to see the diff first. Apply no longer depends on
-        // Preview having been pressed — it plans for itself.
+        // Salvar leads, because writing is the intention; Ver o que muda is for
+        // the operator who wants to see the diff first. Salvar no longer
+        // depends on Ver o que muda having been pressed — it plans for itself.
+        // The three labels are the WRITE map's (§4.7): the inspector, the text
+        // editor and the presets call the same actions by the same names.
         const actions = el('div', 'actions');
-        const applyBtn = el('button', 'btn go', 'Apply');
-        const previewBtn = el('button', 'btn', 'Preview');
-        const revertBtn = el('button', 'btn warn', 'Revert');
+        const applyBtn = el('button', 'btn go', WRITE.save);
+        applyBtn.id = 'nodeApply';
+        const previewBtn = el('button', 'btn', WRITE.plan);
+        const revertBtn = el('button', 'btn warn', WRITE.revert);
         actions.append(applyBtn, previewBtn, revertBtn);
         box.append(actions);
         box.append(msg);
@@ -6121,7 +6166,7 @@
         // itself (§5.2): the draft is a working copy of the whole snapshot, and
         // sending it would carry every untouched field — and every untouched
         // list — back to the server on the snapshot's stale values.
-        applyBtn.addEventListener('click', () => doApply('/apply', msg, surfacePatch(node, touched), diff));
+        applyBtn.addEventListener('click', () => doApply('/apply', msg, surfacePatch(node, touched), diff, applyBtn));
         previewBtn.addEventListener('click', () => doPreview(surfacePatch(node, touched), msg, diff));
         revertBtn.addEventListener('click', () => doApply('/apply/revert', msg));
       }
@@ -6169,9 +6214,13 @@
       // Both remaining tests describe an obstacle the operator can DO something
       // about, and each names the fix.
       function writable(msg, action) {
-        if (state.unreachable) { setMsg(msg, `Não é possível ${action}: não consegui falar com o roteador.`, 'bad'); return false; }
+        // The action name is the button's own, lowercased into the sentence —
+        // "Não é possível salvar…", "Não é possível ver o que muda…" — so the
+        // message and the control never disagree about which gesture was refused.
+        const what = String(action).toLowerCase();
+        if (state.unreachable) { setMsg(msg, fill('Não é possível {action}: não consegui falar com o roteador.', { action: what }), 'bad'); return false; }
         if (!csrf()) {
-          setMsg(msg, `Não é possível ${action} com esta tela aberta fora do Hermes One: o navegador não manda a credencial da sessão. Abra o Hermes One e volte aqui pelo menu lateral.`, 'bad');
+          setMsg(msg, fill(WRITE.noCredential, { action: what }), 'bad');
           return false;
         }
         return true;
@@ -6217,7 +6266,7 @@
         const fresh = await call('/policy');
         if (!fresh.error && !fresh.missing && fresh.data && typeof fresh.data === 'object'
             && !samePolicy(fresh.data, state.policy)) {
-          setMsg(msg, 'O arquivo mudou por fora desde que esta tela leu. Recarreguei tudo; confira e tente de novo.', 'bad');
+          setMsg(msg, WRITE.conflict, 'bad');
           state.plan = null;
           // The draft dies with the refusal: re-applying it would write the
           // stale snapshot the guard just refused. The open inspector (if any)
@@ -6230,19 +6279,19 @@
           await load();
           if (openNode) renderInspector(openNode);
           const freshMsg = $('nodeMsg');
-          if (freshMsg) setMsg(freshMsg, 'O arquivo mudou por fora desde que esta tela leu. Recarreguei tudo; confira e tente de novo.', 'bad');
+          if (freshMsg) setMsg(freshMsg, WRITE.conflict, 'bad');
           return false;
         }
         const res = await call('/plan', { method: 'POST', body: { policy } });
-        if (res.missing) { setMsg(msg, 'Este serviço do roteador não sabe simular uma gravação.', 'bad'); return false; }
-        if (res.error) { setMsg(msg, `Rejected (HTTP ${res.status || 'network'}).`, 'bad'); return false; }
+        if (res.missing) { setMsg(msg, WRITE.missingPlan, 'bad'); return false; }
+        if (res.error) { setMsg(msg, fill(WRITE.httpError, { st: res.status || 'rede' }), 'bad'); return false; }
         state.plan = res.data;
         if (diffNode) {
           diffNode.hidden = false;
           diffNode.textContent = res.data.diff || pretty(res.data.preview || {});
         }
         if (!res.data.valid) {
-          setMsg(msg, `Invalid: ${(res.data.errors || []).join('; ')}`, 'bad');
+          setMsg(msg, fill(WRITE.invalid, { reasons: (res.data.errors || []).join('; ') }), 'bad');
           return false;
         }
         return true;
@@ -6269,13 +6318,15 @@
       // it". A different intention from Apply, so it keeps its own control — and
       // it is the one that renders the diff.
       async function doPreview(policy, msg, diffNode) {
-        if (!writable(msg, 'Preview')) return;
-        setMsg(msg, 'Checking…');
+        if (!writable(msg, WRITE.plan)) return;
+        setMsg(msg, WRITE.checking);
         const lint = await lintGate();
         if (lint.blocked) {
           // The error is the file's, not this draft's: the banner carries it
           // with the [ Ir para a regra ] jump when the target exists (§2.8).
-          setMsg(msg, `Não é possível ver o que muda enquanto houver erro no arquivo. Primeiro erro: ${String(lint.errors[0])}`, 'bad');
+          // What this line says is the COUNT — the operator's question is how
+          // bad, and the banner names the errors.
+          setMsg(msg, fill(WRITE.lintError, { N: lint.errors.length }), 'bad');
           renderWarnings();
           return;
         }
@@ -6284,16 +6335,16 @@
         }
       }
 
-      // Apply plans for itself.
+      // Salvar plans for itself.
       //
       // /plan is not optional: it returns the base_hash that /apply refuses to
       // write without (router/service.py:357, the optimistic-concurrency pin). But
       // that is the machine's bookkeeping, and it used to be the operator's chore —
-      // click Validate, read "Valid — apply to write it", click Apply. Two clicks
+      // click Validate, read "Valid — apply to write it", click Salvar. Two clicks
       // for one intention, and a middle state whose only content was an
       // instruction to press the next button.
       //
-      // Now Apply plans first and stops on the plan's own verdict. An invalid draft
+      // Now Salvar plans first and stops on the plan's own verdict. An invalid draft
       // never reaches /apply, exactly as before; the difference is that the
       // operator learns WHY from one click instead of two.
       // In flight, so a second click cannot start a second plan+apply pair. Two
@@ -6302,45 +6353,61 @@
       // click.
       let applying = false;
 
-      async function doApply(path, msg, draft, diffNode) {
-        if (!writable(msg, 'Apply')) return;
-        if (applying) { setMsg(msg, 'Uma gravação já está em andamento.', 'bad'); return; }
+      async function doApply(path, msg, draft, diffNode, saveBtn) {
+        if (!writable(msg, WRITE.save)) return;
+        if (applying) { setMsg(msg, WRITE.inFlight, 'bad'); return; }
         applying = true;
         try {
         if (path !== '/apply/revert') {
           const policy = draft !== undefined ? draft : (state.draft || (state.plan && state.plan.policy));
-          if (policy === undefined || policy === null) { setMsg(msg, 'Não há o que salvar.', 'bad'); return; }
-          setMsg(msg, 'Checking…');
+          if (policy === undefined || policy === null) { setMsg(msg, WRITE.noDraft, 'bad'); return; }
+          setMsg(msg, WRITE.checking);
           // The diff is passed through, not discarded. Folding Validate into Apply
           // removed the step that used to render it, and with it the guarantee that
           // an operator SAW a concurrent edit being removed before the write: /plan
           // deep-merges the draft over whatever is on disk now and replaces lists
           // wholesale (router/service.py:50), so a rule added by a CLI edit or
-          // another tab since page load is deleted by the next Apply. The diff
+          // another tab since page load is deleted by the next Salvar. The diff
           // contains that deletion; it was being computed and thrown away.
           const planned = await plan(policy, msg, diffNode);
           if (!planned) return;
           // A plan with no diff changes nothing on disk — but the server snapshots
           // the current file to .bak before every write (service.py:415), so
-          // applying a no-op destroys the only thing Revert can restore. The JSON
-          // twisty makes this one click away: renderAll() refills that textarea
-          // with the live policy whenever the console is not in editing mode, so in
-          // the default state its Apply is a guaranteed no-op write.
+          // applying a no-op destroys the only thing Voltar à versão anterior can
+          // restore. The JSON twisty makes this one click away: renderAll() refills
+          // that textarea with the live policy whenever the console is not in
+          // editing mode, so in the default state its Salvar is a guaranteed no-op
+          // write.
           if (state.plan && state.plan.diff === '') {
-            setMsg(msg, 'Nada mudou em relação ao arquivo atual, então não há o que salvar.', 'ok');
+            setMsg(msg, WRITE.noop, 'ok');
             return;
           }
+          // The button that pressed says what the write is doing, from the
+          // moment the plan is approved until the write is over. It travels in
+          // as a reference, not a re-lookup: the caller knows which surface
+          // pressed it, and a detached node cannot be found by id.
+          if (saveBtn) saveBtn.textContent = WRITE.saving;
         }
         const body = path === '/apply/revert' ? {} : { plan: state.plan, policy: state.plan.policy };
         const res = await call(path, { method: 'POST', body });
-        if (res.missing) { setMsg(msg, 'Este serviço do roteador não tem essa ação.', 'bad'); return; }
-        if (res.status === 409) { setMsg(msg, 'O arquivo mudou por fora desde que esta tela leu. Recarreguei tudo; confira e tente de novo.', 'bad'); state.plan = null; await load(); return; }
-        if (res.error) { setMsg(msg, `Falhou (HTTP ${res.status || 'rede'}).`, 'bad'); return; }
-        setMsg(msg, 'Written.', 'ok');
+        if (res.missing) { setMsg(msg, WRITE.missingAction, 'bad'); return; }
+        if (res.status === 409) { setMsg(msg, WRITE.conflict, 'bad'); state.plan = null; await load(); return; }
+        if (res.error) { setMsg(msg, fill(WRITE.httpError, { st: res.status || 'rede' }), 'bad'); return; }
+        // §2.7: the saved line, and the eight seconds it spends in the button's
+        // place. The timer's clock is read by no other function — the text is
+        // assertable the moment the write lands, and the restore is the timer's
+        // alone. After that the line stays as the message until the next write
+        // or read replaces it.
+        setMsg(msg, WRITE.saved, 'ok');
         state.plan = null; state.draft = null;
         await load();
+        if (saveBtn && path !== '/apply/revert') {
+          saveBtn.hidden = true;
+          setTimeout(() => { saveBtn.hidden = false; }, 8000);
+        }
         } finally {
           applying = false;
+          if (saveBtn && saveBtn.textContent === WRITE.saving) saveBtn.textContent = WRITE.save;
         }
       }
 
@@ -6358,14 +6425,14 @@
       function disarmRevert() {
         revertArmed = false;
         const button = $('jsonRevert');
-        if (button) button.textContent = 'Voltar à versão anterior';
+        if (button) button.textContent = WRITE.revert;
       }
       function requestRevert() {
         const msg = $('jsonMsg');
         const button = $('jsonRevert');
         if (!revertArmed) {
           revertArmed = true;
-          if (button) button.textContent = 'Confirmar: voltar à versão anterior';
+          if (button) button.textContent = WRITE.revertConfirm;
           setMsg(msg, 'Isto substitui o arquivo atual pela cópia que o roteador guardou antes da última gravação. Diferente de Salvar, aqui não há prévia: você não vê o que vai mudar antes. Continuar?', 'bad');
           return Promise.resolve(false);
         }
@@ -6882,6 +6949,9 @@
       }
 
       function wire() {
+        // §4.7: the JSON editor's static buttons get their labels from the map
+        // once, at boot — the markup itself carries no write vocabulary.
+        stampWriteLabels();
         const tabs = [...document.querySelectorAll('.tab')];
         const select = (tab) => selectTab(tab.dataset.tab);
         tabs.forEach((tab, i) => {
@@ -6911,7 +6981,7 @@
         };
         $('jsonApply').addEventListener('click', () => {
           const draft = jsonDraft();
-          if (draft.ok) doApply('/apply', $('jsonMsg'), draft.value, $('jsonDiff'));
+          if (draft.ok) doApply('/apply', $('jsonMsg'), draft.value, $('jsonDiff'), $('jsonApply'));
         });
         $('jsonPreview').addEventListener('click', () => {
           const draft = jsonDraft();
@@ -7011,6 +7081,9 @@
         // tests/test_router_nav_writespine.js used to pin an equivalent path in
         // router-nav.js, and that file is now only a mount.
         plan, doPreview, doApply, setMsg, surfacePatch, samePolicy,
+        // §4.7: the write vocabulary and its interpolator, exported so the map
+        // being the single source is asserted rather than eyeballed.
+        WRITE, fill,
         // CA9 §2.5: the one model picker, exported so its count line — the
         // operator's fastest diagnosis of "no model serves this group" — and
         // its escapes are pinned by tests rather than eyeballed.

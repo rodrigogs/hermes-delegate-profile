@@ -97,6 +97,57 @@ function loadConsole({ width = 1440, embedded = false, csrfToken, fetch: fetchSt
   return { api: context.globalThis.__router, dom };
 }
 
+// Comment-free view of console.html for the single-source literal count: string
+// literals are preserved WHOLE (a literal may legitimately contain "//"), while
+// JS comments, HTML comments and the <style> block go away. The console keeps
+// its design rationale in comments — several discuss the write labels on
+// purpose — so a count over the raw file would flag those, not a real copy.
+function stripCommentsForCounting(src) {
+  let out = '';
+  let i = 0;
+  const size = src.length;
+  while (i < size) {
+    const c = src[i];
+    const n = src[i + 1];
+    if (c === '<' && n === '!' && src.slice(i, i + 4) === '<!--') {
+      i += 4;
+      while (i + 2 < size && !(src[i] === '-' && src[i + 1] === '-' && src[i + 2] === '>')) i += 1;
+      i += 3;
+      continue;
+    }
+    if (c === '<' && src.slice(i, i + 7) === '<style>') {
+      const end = src.indexOf('</style>', i);
+      i = end < 0 ? size : end + 8;
+      continue;
+    }
+    if (c === '/' && n === '/') {
+      while (i < size && src[i] !== '\n') i += 1;
+      continue;
+    }
+    if (c === '/' && n === '*') {
+      i += 2;
+      while (i + 1 < size && !(src[i] === '*' && src[i + 1] === '/')) i += 1;
+      i += 2;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      const q = c;
+      out += c;
+      i += 1;
+      while (i < size) {
+        if (src[i] === '\\') { out += src[i] + (src[i + 1] || ''); i += 2; continue; }
+        out += src[i];
+        if (src[i] === q) { i += 1; break; }
+        i += 1;
+      }
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
 test('a replay step lights the node that actually made the decision', () => {
   const { api } = loadConsole();
   // A rules step names the rule that fired; replay must highlight THAT rule, or
@@ -612,7 +663,7 @@ test('a valid draft is planned and written in one action', async () => {
   const paths = posted.map((u) => u.replace(/^.*sidecar/, ''));
   assert.equal(paths[1], '/plan', 'the plan comes first, unasked');
   assert.equal(paths[2], '/apply', 'and the write follows it immediately');
-  assert.match(msg.textContent, /Written/);
+  assert.match(msg.textContent, /Vale para as próximas tarefas/, '§2.7: a written save says the temporal scope');
 });
 
 test('a conflict tells the operator to try again instead of overwriting', async () => {
@@ -5440,8 +5491,9 @@ test('a condition chip reads as one phrase, with the family in the class and not
 // exactly the wrong lesson.
 // The DOM stub has no markup, so a test that measures what is IN the actions box has
 // to seed it the way console.html does. `test_webui_extension.py::test_json_actions_markup`
-// asserts the file really carries these three ids inside #jsonActions, so this mirror
-// cannot drift from the markup it stands for.
+// asserts the file really carries these three ids inside #jsonActions — unlabelled,
+// because §4.7 keeps the labels in the WRITE map and boot stamps them — so this mirror
+// cannot drift from the markup (or the map) it stands for.
 function seedJsonActions(dom) {
   const box = dom.get('jsonActions');
   box.children = [];
@@ -6092,7 +6144,7 @@ test('a write proceeds when the file is exactly the snapshot the screen shows', 
   await api.doApply('/apply', msg, { rules: [{ id: 'mine' }] });
 
   assert.equal(applied.length, 1, 'the write happens when nothing changed underneath');
-  assert.match(msg.textContent, /Written/);
+  assert.match(msg.textContent, /Vale para as próximas tarefas/, '§2.7: the write names its scope');
 });
 
 test('the inspector Apply sends the touched fragment, never the whole policy (§5.2)', async () => {
@@ -6120,7 +6172,7 @@ test('the inspector Apply sends the touched fragment, never the whole policy (§
   provider.value = 'deepseek';
   provider._listeners.input();
 
-  const apply = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Apply');
+  const apply = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Salvar');
   apply._listeners.click();
   await tick();
 
@@ -6164,7 +6216,7 @@ test('a classifier edit never carries read-only keys back to the server (§5.2)'
   model.value = 'gpt-5.6-luna';
   model._listeners.change();
 
-  const apply = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Apply');
+  const apply = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Salvar');
   apply._listeners.click();
   await tick();
 
@@ -6197,7 +6249,7 @@ test('a rule edit sends the WHOLE rules list, because lists replace wholesale (�
 
   const toggle = findAll(dom.get('inspector'), 'btn').find((b) => /Desativar/.test(b.textContent || ''));
   toggle._listeners.click();
-  const apply = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Apply');
+  const apply = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Salvar');
   apply._listeners.click();
   await tick();
 
@@ -6254,7 +6306,8 @@ test('a preview is refused when /lint finds an error in the CURRENT file, with t
   const diff = { hidden: true, textContent: '' };
   return api.doPreview({ rules: [] }, msg, diff).then(() => {
     assert.deepEqual(planned, [], 'no plan for a file that fails lint');
-    assert.match(msg.textContent, /Não é possível ver o que muda enquanto houver erro no arquivo\. Primeiro erro: rule references unknown tier T9/);
+    assert.equal(msg.textContent, 'Não é possível salvar enquanto houver erro. 1 erro(s) no arquivo.',
+      '§4.7: the lint gate says the count, not the first raw error');
     assert.match(msg.className, /bad/);
     assert.equal(diff.hidden, true, 'no diff is shown for a plan that was never made');
     assert.match(flat(dom.get('warnings')), /Ir para a regra 1/, 'the banner carries the jump');
@@ -6280,7 +6333,8 @@ test('a preset preview is refused by the same lint gate, before any plan', async
   await api.previewPreset();
 
   assert.deepEqual(planned, [], 'no plan while the file fails lint');
-  assert.match(dom.get('presetMsg').textContent, /Não é possível ver o que muda enquanto houver erro no arquivo\. Primeiro erro: fail_safe missing/);
+  assert.equal(dom.get('presetMsg').textContent, 'Não é possível salvar enquanto houver erro. 1 erro(s) no arquivo.',
+    '§4.7: the preset gate says the count, not the first raw error');
   const labels = (dom.get('presetActions').children || []).map((k) => String(k.textContent || ''));
   assert.equal(labels.indexOf('Salvar'), -1, 'no Salvar while the file carries an error (CA8)');
 });
@@ -6307,7 +6361,7 @@ test('a refused write rebuilds the inspector from the reloaded policy, dropping 
   provider._listeners.input();
   assert.equal(api.state.draft.tiers.T2.provider, 'deepseek', 'the draft accepted the edit');
 
-  const apply = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Apply');
+  const apply = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Salvar');
   apply._listeners.click();
   await tick();
 
@@ -6317,6 +6371,145 @@ test('a refused write rebuilds the inspector from the reloaded policy, dropping 
     'the reload replaced the snapshot');
   const fresh = byLabel(dom.get('inspector'), 'Provedor').children.find((c) => c.tagName === 'input');
   assert.equal(fresh.value, 'zai', 'the rebuilt panel shows the reloaded value, not the stale draft');
+});
+
+// ── §4.7 + §2.7: one vocabulary, one map, one temporal scope ─────────────
+// The write surfaces used to speak two languages on one screen: the inspector
+// said Apply/Preview/Revert with Rejected/Invalid/Checking…/Written. while the
+// editor and the presets said the §4.7 literals. Every phrase now lives in the
+// WRITE map; these tests pin the exact literals, that the map is the only
+// copy, and the §2.7 line that follows a written save (and only a written one).
+
+test('the §4.7 write literals are exact, and each lives in exactly one place: the WRITE map', () => {
+  const { api } = loadConsole();
+  assert.equal(api.WRITE.plan, 'Ver o que muda');
+  assert.equal(api.WRITE.save, 'Salvar');
+  assert.equal(api.WRITE.saving, 'Salvando…');
+  assert.equal(api.WRITE.revert, 'Voltar à versão anterior');
+  assert.equal(api.WRITE.revertConfirm, 'Confirmar: voltar à versão anterior');
+  assert.equal(api.WRITE.checking, 'Verificando…');
+  assert.equal(api.WRITE.noDraft, 'Não há o que salvar.');
+  assert.equal(api.WRITE.noop, 'Nada mudou em relação ao arquivo atual, então não há o que salvar. Salvar do mesmo jeito apagaria a cópia que "Voltar à versão anterior" restauraria.');
+  assert.equal(api.WRITE.lintError, 'Não é possível salvar enquanto houver erro. {N} erro(s) no arquivo.');
+  assert.equal(api.WRITE.conflict, 'O arquivo mudou por fora desde que esta tela leu. Recarreguei tudo; confira e tente de novo.');
+  assert.equal(api.WRITE.inFlight, 'Uma gravação já está em andamento.');
+  assert.equal(api.WRITE.saved, 'Salvo. Vale para as próximas tarefas. Tarefas já em execução continuam no modelo que já escolheram. Não precisa reiniciar nada.');
+  assert.equal(api.WRITE.httpError, 'Falhou (HTTP {st}).');
+  assert.equal(api.WRITE.invalid, 'Não é possível salvar: {reasons}.');
+
+  // The map is the ONLY copy: no surface re-spells a literal. The short labels
+  // are counted in their quoted form so the no-op's internal quote of
+  // "Voltar à versão anterior" does not read as a duplicate — it is the spec's
+  // own sentence, quoting the button it refuses to press.
+  const code = stripCommentsForCounting(fs.readFileSync(sourcePath, 'utf8'));
+  const once = [
+    `'${api.WRITE.plan}'`, `'${api.WRITE.save}'`, `'${api.WRITE.saving}'`,
+    `'${api.WRITE.revert}'`, `'${api.WRITE.revertConfirm}'`, `'${api.WRITE.checking}'`,
+    `'${api.WRITE.noDraft}'`, `'${api.WRITE.noop}'`, `'${api.WRITE.lintError}'`,
+    `'${api.WRITE.conflict}'`, `'${api.WRITE.inFlight}'`, `'${api.WRITE.saved}'`,
+    `'${api.WRITE.httpError}'`, `'${api.WRITE.invalid}'`,
+    'Não é possível {action} com esta tela aberta fora do Hermes One: o navegador não manda a credencial da sessão. Abra o Hermes One e volte aqui pelo menu lateral.',
+  ];
+  once.forEach((lit) => {
+    const n = code.split(lit).length - 1;
+    assert.equal(n, 1, `the literal ${lit.slice(0, 44)}… must appear exactly once (the map), found ${n}`);
+  });
+});
+
+test('the save button says Salvando… in flight and returns to Salvar (§4.7)', async () => {
+  let releaseWrite;
+  const gate = new Promise((resolve) => { releaseWrite = resolve; });
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+      }
+      if (url.endsWith('/plan')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+      }
+      if (url.endsWith('/apply')) {
+        return gate.then(() => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) }));
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
+    },
+  });
+  api.state.policy = {};
+  const msg = { textContent: '', className: '' };
+  const btn = dom.get('jsonApply');
+  const run = api.doApply('/apply', msg, { rules: [] }, null, btn);
+  await tick();
+  assert.equal(btn.textContent, 'Salvando…', 'the button that pressed says what the write is doing');
+  releaseWrite();
+  await run;
+  assert.equal(btn.textContent, 'Salvar', 'and returns to the §4.7 label when the write is over');
+  assert.equal(btn.hidden, true, '§2.7: the line takes the button’s place for eight seconds');
+  assert.match(msg.textContent, /Vale para as próximas tarefas/);
+});
+
+test('a no-op save says both §4.7 sentences, and never claims the §2.7 scope', async () => {
+  const { api } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = {};
+  const msg = { textContent: '', className: '' };
+  await api.doApply('/apply', msg, { rules: [] });
+  assert.match(msg.textContent, /Nada mudou em relação ao arquivo atual, então não há o que salvar\./);
+  assert.match(msg.textContent, /Salvar do mesmo jeito apagaria a cópia que "Voltar à versão anterior" restauraria\./,
+    '§4.7: the no-op says the whole consequence — the second sentence is the reason there is no Salvar');
+  assert.match(msg.className, /ok/);
+  assert.doesNotMatch(msg.textContent, /Vale para as próximas tarefas/,
+    '§2.7: nothing was written, so nothing claims a temporal scope');
+});
+
+test('a failed write never shows the §2.7 line, and the button is back to Salvar', async () => {
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+      }
+      if (url.endsWith('/plan')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: false, status: 500, text: () => Promise.resolve('{}') });
+    },
+  });
+  api.state.policy = {};
+  const msg = { textContent: '', className: '' };
+  const btn = dom.get('jsonApply');
+  await api.doApply('/apply', msg, { rules: [] }, null, btn);
+  assert.match(msg.textContent, /Falhou \(HTTP 500\)/);
+  assert.match(msg.className, /bad/);
+  assert.doesNotMatch(msg.textContent, /Vale para as próximas tarefas/,
+    'a failed write must not claim the §2.7 scope');
+  assert.equal(btn.textContent, 'Salvar',
+    'the button is back to the label after the refusal');
+  assert.equal(btn.hidden, false, 'and nothing sits in its place');
+});
+
+test('the lint gate counts the real N instead of quoting the first error raw', async () => {
+  const { api } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      if (url.endsWith('/lint')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: false, errors: ['one', 'two'], error_targets: [] })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
+    },
+  });
+  const msg = { textContent: '', className: '' };
+  await api.doPreview({ rules: [] }, msg, null);
+  assert.equal(msg.textContent, 'Não é possível salvar enquanto houver erro. 2 erro(s) no arquivo.',
+    'the {N} is the real count — a hard-coded 1 would pass a single-error test');
+  assert.equal(msg.textContent.indexOf('one'), -1, 'the raw error text is not forwarded');
+  assert.equal(msg.textContent.indexOf('two'), -1);
 });
 
 // ── §2.2: one destination control, five closed options ──────────────────
@@ -6465,7 +6658,7 @@ test('a default destination edit writes the three keys through the same patch pa
   const select = wrap.children.find((c) => c.tagName === 'select');
   select.value = 'T2';
   select._listeners.change();
-  const apply = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Apply');
+  const apply = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Salvar');
   apply._listeners.click();
   await tick();
 
@@ -6678,7 +6871,7 @@ test('removing the last reserve writes fallback: [] — a declaration, not absen
     'the reserve is gone and the list is EXPLICITLY empty');
   assert.equal(findAll(box, 'chain-row').length, 1, 'the row left the screen');
 
-  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Apply');
+  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Salvar');
   apply._listeners.click();
   await tick();
   const planCall = posted.find((c) => c.url === '/plan');
@@ -6747,7 +6940,7 @@ test('moving the first reserve up promotes it: order on screen is the order save
   assert.deepEqual(freshModels, ['gpt-5.6-luna', 'glm-4.7', 'mimo-v2.5'],
     'the rows re-render in the new order — screen order is the queue order');
 
-  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Apply');
+  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Salvar');
   apply._listeners.click();
   await tick();
   const planCall = posted.find((c) => c.url === '/plan');
@@ -6806,7 +6999,7 @@ test('the first attempt lives on the tier, never inside fallback', async () => {
   assert.ok(!draft.fallback.some((e) => e.model === 'gpt-5.6-luna'),
     'the first attempt never leaks into the reserve list');
 
-  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Apply');
+  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Salvar');
   apply._listeners.click();
   await tick();
   const planCall = posted.find((c) => c.url === '/plan');
@@ -6895,7 +7088,7 @@ test('editing a reserve\'s billing writes the WHOLE fallback list — lists repl
   select.value = 'free';
   select._listeners.change();
 
-  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Apply');
+  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Salvar');
   apply._listeners.click();
   await tick();
   const planCall = posted.find((c) => c.url === '/plan');
