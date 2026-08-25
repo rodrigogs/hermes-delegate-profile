@@ -1354,7 +1354,12 @@
         // at all — so the console shows what it can verify and says so where it
         // cannot.
         capabilities: null, chainPlan: null,
-        plan: null, draft: null, selected: null, replay: null,
+        plan: null, draft: null, selected: null,
+        // The node object behind `selected`. The staleness guard re-renders the
+        // inspector from it after a refused write: once the reload lands, the
+        // panel must show the policy that was actually read, never the draft the
+        // refusal just discarded.
+        selectedNode: null, replay: null,
         pending: new Set(), unreachable: false, checkedAt: null,
         // Until the first response lands, "nothing here" is not a fact yet.
         loading: true, query: '',
@@ -3248,6 +3253,17 @@
         if (!writable(msg, 'simular')) return;
         state.presetPlanned = null;
         setMsg(msg, 'Vendo o que muda…');
+        // §5.5: the preview revalidates the CURRENT file before planning. A lint
+        // error is the file's, not this choice's — the banner carries it and the
+        // jump — and planning would merge the patch into a file that cannot be
+        // written anyway.
+        const lint = await lintGate();
+        if (lint.blocked) {
+          setMsg(msg, `Não é possível ver o que muda enquanto houver erro no arquivo. Primeiro erro: ${String(lint.errors[0])}`, 'bad');
+          renderWarnings();
+          renderPresetActions();
+          return;
+        }
         const ok = await plan(patch, msg, $('presetDiff'));
         if (!ok) { renderPresetActions(); return; }
         if (state.plan && state.plan.diff === '') {
@@ -5456,6 +5472,10 @@
       function renderInspector(node) {
         const box = $('inspector');
         clear(box);
+        // The node object behind `selected`: the staleness guard re-renders the
+        // inspector from it after a refused write, so the panel cannot keep
+        // showing a draft the refusal just discarded.
+        state.selectedNode = node || null;
         // Nothing selected is not a condition to report: the sheet above already
         // shows every rule and the ladder every tier, and the screen note already
         // says how to edit. DESIGN.md §2.1.
@@ -5474,11 +5494,16 @@
         }
 
         state.draft = fullPolicy();
+        // Which editable keys the operator actually touched. The patch that goes
+        // to the server carries ONLY these (§5.2): a field nobody touched must
+        // not ride along on the snapshot's value — that is how a write reverts a
+        // concurrent edit in silence.
+        const touched = new Set();
         // Created here, before the fields, because the rule position/state
         // controls below write their feedback to it; appended once, after the
         // actions, so the message reads where the buttons are.
         const msg = el('p', 'msg'); msg.id = 'nodeMsg'; msg.setAttribute('aria-live', 'polite');
-        const field = (label, get, set, options) => {
+        const field = (label, key, get, set, options) => {
           const wrap = el('div', 'field');
           wrap.append(el('label', '', label));
           let input;
@@ -5493,7 +5518,7 @@
             input = document.createElement('input');
           }
           input.value = get() == null ? '' : String(get());
-          input.addEventListener('input', () => set(input.value));
+          input.addEventListener('input', () => { touched.add(key); set(input.value); });
           wrap.append(input);
           box.append(wrap);
         };
@@ -5503,16 +5528,17 @@
           const t = d.tiers[node.tier] = d.tiers[node.tier] || {};
           // CA9 §2.5: the model is CHOSEN from the catalogue, pre-filtered by
           // this group's own requirements; picking an entry fills the provider
-          // rail from the catalogue, because the two are one fact there.
-          modelField(box, 'Modelo', () => t.model, (v) => { t.model = v; },
-            t.requirements, (provider) => { t.provider = provider; });
-          field('Provedor', () => t.provider, (v) => { t.provider = v; });
+          // rail from the catalogue, because the two are one fact there —
+          // which is why picking a model counts BOTH keys as touched.
+          modelField(box, 'Modelo', () => t.model, (v) => { touched.add('model'); t.model = v; },
+            t.requirements, (provider) => { touched.add('provider'); t.provider = provider; });
+          field('Provedor', 'provider', () => t.provider, (v) => { t.provider = v; });
         } else if (node.bind === 'rule') {
           const r = d.rules[node.ruleIndex] = d.rules[node.ruleIndex] || {};
           r.then = r.then || {};
           const tiers = Object.keys(d.tiers || {});
-          field('Destino', () => r.then.model, (v) => { r.then.model = v; }, tiers.concat(['']));
-          field('Papel', () => r.then.profile, (v) => { r.then.profile = v; });
+          field('Destino', 'model', () => r.then.model, (v) => { r.then.model = v; }, tiers.concat(['']));
+          field('Papel', 'profile', () => r.then.profile, (v) => { r.then.profile = v; });
           // Position and state are the two knobs that resolve the shadow class
           // this screen reports in amber WITHOUT touching `when` — the lint
           // finding names the shadower, and disabling is dead-by-declaration
@@ -5554,13 +5580,13 @@
           box.append(ops);
         } else if (node.bind === 'classifier' || node.bind === 'fail_safe') {
           const f = d[node.bind] = d[node.bind] || {};
-          modelField(box, 'Modelo', () => f.model, (v) => { f.model = v; },
-            null, (provider) => { f.provider = provider; });
-          field('Provedor', () => f.provider, (v) => { f.provider = v; });
+          modelField(box, 'Modelo', () => f.model, (v) => { touched.add('model'); f.model = v; },
+            null, (provider) => { touched.add('provider'); f.provider = provider; });
+          field('Provedor', 'provider', () => f.provider, (v) => { f.provider = v; });
         } else if (node.bind === 'default') {
           const def = d.default = d.default || {};
-          field('Destino', () => def.model, (v) => { def.model = v; });
-          field('Ação', () => def.action, (v) => { def.action = v; });
+          field('Destino', 'model', () => def.model, (v) => { def.model = v; });
+          field('Ação', 'action', () => def.action, (v) => { def.action = v; });
         }
 
         // Apply leads, because applying is the intention; Preview is for the
@@ -5576,9 +5602,43 @@
         const diff = el('pre', 'code'); diff.id = 'nodeDiff'; diff.hidden = true;
         box.append(diff);
 
-        applyBtn.addEventListener('click', () => doApply('/apply', msg, state.draft, diff));
-        previewBtn.addEventListener('click', () => doPreview(state.draft, msg, diff));
+        // The write body is the PATCH derived from the draft, never the draft
+        // itself (§5.2): the draft is a working copy of the whole snapshot, and
+        // sending it would carry every untouched field — and every untouched
+        // list — back to the server on the snapshot's stale values.
+        applyBtn.addEventListener('click', () => doApply('/apply', msg, surfacePatch(node, touched), diff));
+        previewBtn.addEventListener('click', () => doPreview(surfacePatch(node, touched), msg, diff));
         revertBtn.addEventListener('click', () => doApply('/apply/revert', msg));
+      }
+
+      // §5.2: the minimal patch for the surface the operator edited. A field
+      // that was never touched does not enter the patch — the server deep-merges
+      // dictionaries (service.py:422-428), so an absent key is an untouched key.
+      // `rules` is the ONE exception: lists replace wholesale on the server
+      // (service.py:422-434), so there is no partial rules patch — the whole
+      // list goes, and that is exactly why the staleness guard in plan() is
+      // mandatory, not optional. A null value rides through untouched: removing
+      // a key is an explicit null (§2.1).
+      function surfacePatch(node, touched) {
+        const d = state.draft;
+        if (!d) return null;
+        const pick = (surface, keys) => {
+          const out = {};
+          (keys || []).forEach((k) => {
+            if (surface && Object.prototype.hasOwnProperty.call(surface, k)) out[k] = surface[k];
+          });
+          return out;
+        };
+        if (node.bind === 'rule') {
+          // The sheet only opens a rule inspector from an array row, but a
+          // draft is a snapshot — defend the write: sending {rules: []} here
+          // would REPLACE a malformed-but-present field with an empty list.
+          return Array.isArray(d.rules) ? { rules: d.rules } : null;
+        }
+        if (node.bind === 'tier') {
+          return { tiers: { [node.tier]: pick((d.tiers || {})[node.tier], [...touched]) } };
+        }
+        return { [node.bind]: pick(d[node.bind], [...touched]) };
       }
 
       // ── write path ──────────────────────────────────────────────────
@@ -5607,9 +5667,57 @@
         node.className = `msg${kind ? ` ${kind}` : ''}`;
       }
 
+      // The staleness comparison: the same route and the same format on both
+      // sides (the snapshot fetchAll stored and the guard's fresh read), so
+      // "equal" means the file has not moved since this screen read it. No
+      // invented client hash. Object key order does not matter — the JSON
+      // serializer can reorder and the file is still the same file — but array
+      // order does, because list order IS the semantics (first match wins).
+      function samePolicy(a, b) {
+        if (a === b) return true;
+        if (Array.isArray(a) && Array.isArray(b)) {
+          return a.length === b.length && a.every((v, i) => samePolicy(v, b[i]));
+        }
+        if (a && b && typeof a === 'object' && typeof b === 'object') {
+          const ka = Object.keys(a);
+          const kb = Object.keys(b);
+          if (ka.length !== kb.length) return false;
+          return ka.every((k) => Object.prototype.hasOwnProperty.call(b, k)
+            && samePolicy(a[k], b[k]));
+        }
+        return false;
+      }
+
       // Plan a policy and record it. Returns true only if the result is safe to
       // write, and leaves the reason in `msg` when it is not.
+      //
+      // The freshness guard runs before anything plans against the file. The
+      // base_hash /plan returns anchors to the plan's OWN read of the disk — it
+      // can never see the snapshot this screen renders — so a CLI edit or
+      // another tab since load() would be merged under the operator's draft and
+      // erased by the following /apply without a word. Refusal is the §4.7 text;
+      // there is no "are you sure" because a second gesture over a diff the
+      // operator may not read is not a guarantee, the re-read is.
       async function plan(policy, msg, diffNode) {
+        const fresh = await call('/policy');
+        if (!fresh.error && !fresh.missing && fresh.data && typeof fresh.data === 'object'
+            && !samePolicy(fresh.data, state.policy)) {
+          setMsg(msg, 'O arquivo mudou por fora desde que esta tela leu. Recarreguei tudo; confira e tente de novo.', 'bad');
+          state.plan = null;
+          // The draft dies with the refusal: re-applying it would write the
+          // stale snapshot the guard just refused. The open inspector (if any)
+          // is rebuilt from the reloaded policy — the node is captured BEFORE
+          // the reload because renderAll clears the selection when none is
+          // marked — so the panel cannot keep showing (or re-applying) a draft
+          // the refusal discarded.
+          const openNode = state.selectedNode;
+          state.draft = null;
+          await load();
+          if (openNode) renderInspector(openNode);
+          const freshMsg = $('nodeMsg');
+          if (freshMsg) setMsg(freshMsg, 'O arquivo mudou por fora desde que esta tela leu. Recarreguei tudo; confira e tente de novo.', 'bad');
+          return false;
+        }
         const res = await call('/plan', { method: 'POST', body: { policy } });
         if (res.missing) { setMsg(msg, 'Este serviço do roteador não sabe simular uma gravação.', 'bad'); return false; }
         if (res.error) { setMsg(msg, `Rejected (HTTP ${res.status || 'network'}).`, 'bad'); return false; }
@@ -5625,12 +5733,37 @@
         return true;
       }
 
+      // §5.5: "Ver o que muda" revalidates against the CURRENT file before
+      // planning, so the operator is never shown a diff computed from a lint
+      // state the file already left behind. /lint is the same validation
+      // /status carries, so the response lands in the same two fields the
+      // banner and the probe gate read — one vocabulary, no second parser. A
+      // failed read is not a lint finding: the /plan that follows surfaces its
+      // own error.
+      async function lintGate() {
+        const res = await call('/lint');
+        if (res.error || res.missing) return { blocked: false, errors: [] };
+        const data = res.data || {};
+        const st = state.status = state.status || {};
+        st.validation_errors = Array.isArray(data.errors) ? data.errors : [];
+        st.error_targets = Array.isArray(data.error_targets) ? data.error_targets : [];
+        return { blocked: st.validation_errors.length > 0, errors: st.validation_errors };
+      }
+
       // The explicit preview: "show me what this would change, without changing
       // it". A different intention from Apply, so it keeps its own control — and
       // it is the one that renders the diff.
       async function doPreview(policy, msg, diffNode) {
         if (!writable(msg, 'Preview')) return;
         setMsg(msg, 'Checking…');
+        const lint = await lintGate();
+        if (lint.blocked) {
+          // The error is the file's, not this draft's: the banner carries it
+          // with the [ Ir para a regra ] jump when the target exists (§2.8).
+          setMsg(msg, `Não é possível ver o que muda enquanto houver erro no arquivo. Primeiro erro: ${String(lint.errors[0])}`, 'bad');
+          renderWarnings();
+          return;
+        }
         if (await plan(policy, msg, diffNode)) {
           setMsg(msg, 'Nenhum problema encontrado — isto é o que muda.', 'ok');
         }
@@ -6362,7 +6495,7 @@
         // real work. It is exported so its refusals can be tested directly —
         // tests/test_router_nav_writespine.js used to pin an equivalent path in
         // router-nav.js, and that file is now only a mount.
-        plan, doPreview, doApply, setMsg,
+        plan, doPreview, doApply, setMsg, surfacePatch, samePolicy,
         // CA9 §2.5: the one model picker, exported so its count line — the
         // operator's fastest diagnosis of "no model serves this group" — and
         // its escapes are pinned by tests rather than eyeballed.

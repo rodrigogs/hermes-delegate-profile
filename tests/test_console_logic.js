@@ -15,6 +15,9 @@ const vm = require('node:vm');
 // The VM context stubs setTimeout to a no-op so the console's own timers do not
 // fire during tests; the concurrency test needs a real one to interleave with.
 const setTimeoutReal = setTimeout;
+// Button-driven async flows (renderInspector's Apply) do not return the promise
+// they start, so a test drains the microtask+macrotask queue before asserting.
+const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 const sourcePath = 'webui_extension/hermes-one-capability-router/console.html';
 
@@ -571,10 +574,13 @@ test('applying plans first, so an invalid draft never reaches the write', async 
     },
   });
   const msg = { textContent: '', className: '' };
+  // The screen shows a snapshot the file still matches, so the plan is reached.
+  api.state.policy = { valid: false, errors: ['fail_safe missing'] };
   await api.doApply('/apply', msg, { rules: [] });
 
-  assert.equal(posted.length, 1, 'exactly one request: the plan');
-  assert.match(posted[0], /\/plan$/);
+  assert.equal(posted.length, 2, 'the staleness read, then the plan — nothing else');
+  assert.match(posted[0], /\/policy$/, 'the freshness guard reads before planning');
+  assert.match(posted[1], /\/plan$/);
   assert.match(msg.textContent, /fail_safe missing/, 'the reason comes from the plan');
   assert.match(msg.className, /bad/);
 });
@@ -585,12 +591,17 @@ test('a valid draft is planned and written in one action', async () => {
     csrfToken: 'tok',
     fetch: (url) => {
       posted.push(url);
+      if (url.endsWith('/policy')) {
+        // The disk matches the snapshot the screen rendered.
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+      }
       const body = url.endsWith('/plan')
         ? { valid: true, policy: { rules: [] }, base_hash: 'abc' }
         : { ok: true };
       return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(body)) });
     },
   });
+  api.state.policy = {};
   const msg = { textContent: '', className: '' };
   await api.doApply('/apply', msg, { rules: [] });
 
@@ -599,8 +610,8 @@ test('a valid draft is planned and written in one action', async () => {
   // two that matter rather than the whole traffic — pinning the full list would
   // make this test fail the next time a screen is added.
   const paths = posted.map((u) => u.replace(/^.*sidecar/, ''));
-  assert.equal(paths[0], '/plan', 'the plan comes first, unasked');
-  assert.equal(paths[1], '/apply', 'and the write follows it immediately');
+  assert.equal(paths[1], '/plan', 'the plan comes first, unasked');
+  assert.equal(paths[2], '/apply', 'and the write follows it immediately');
   assert.match(msg.textContent, /Written/);
 });
 
@@ -662,18 +673,25 @@ test('preview shows the diff without writing anything', async () => {
     csrfToken: 'tok',
     fetch: (url) => {
       posted.push(url);
+      if (url.endsWith('/policy')) {
+        // The disk matches the snapshot the screen rendered.
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+      }
       return Promise.resolve({
         ok: true, status: 200,
         text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '- old\n+ new' })),
       });
     },
   });
+  api.state.policy = {};
   const msg = { textContent: '', className: '' };
   const diff = { hidden: true, textContent: '' };
   await api.doPreview({ rules: [] }, msg, diff);
 
-  assert.equal(posted.length, 1, 'preview must not write');
-  assert.match(posted[0], /\/plan$/);
+  assert.equal(posted.length, 3, 'preview must not write: lint, freshness, plan');
+  assert.match(posted[0], /\/lint$/, '§5.5: the preview revalidates first');
+  assert.match(posted[1], /\/policy$/, 'then the staleness guard reads');
+  assert.match(posted[2], /\/plan$/);
   assert.equal(diff.hidden, false);
   assert.match(diff.textContent, /\+ new/, 'the diff is the point of previewing');
   assert.match(msg.className, /ok/);
@@ -1274,17 +1292,23 @@ test('a no-op apply is refused, because writing it destroys the undo', async () 
     csrfToken: 'tok',
     fetch: (url) => {
       posted.push(url);
+      if (url.endsWith('/policy')) {
+        // The disk matches the snapshot the screen rendered.
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+      }
       return Promise.resolve({
         ok: true, status: 200,
         text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '', base_hash: 'h' })),
       });
     },
   });
+  api.state.policy = {};
   const msg = { textContent: '', className: '' };
   await api.doApply('/apply', msg, { rules: [] });
 
-  assert.equal(posted.length, 1, 'the plan happens; the write must not');
-  assert.match(posted[0], /\/plan$/);
+  assert.equal(posted.length, 2, 'the staleness read, then the plan; the write must not');
+  assert.match(posted[0], /\/policy$/);
+  assert.match(posted[1], /\/plan$/);
   assert.match(msg.textContent, /não há o que salvar/);
   assert.match(msg.className, /ok/, 'nothing to do is not an error');
 });
@@ -1301,12 +1325,15 @@ test('applying shows what it is about to change', async () => {
     fetch: (url) => Promise.resolve({
       ok: true, status: 200,
       text: () => Promise.resolve(JSON.stringify(
-        url.endsWith('/plan')
-          ? { valid: true, policy: {}, base_hash: 'h', diff: '-  - id: URGENT-block-prod\n' }
-          : { ok: true },
+        url.endsWith('/policy')
+          ? {} // the disk matches the snapshot the screen rendered
+          : (url.endsWith('/plan')
+            ? { valid: true, policy: {}, base_hash: 'h', diff: '-  - id: URGENT-block-prod\n' }
+            : { ok: true }),
       )),
     }),
   });
+  api.state.policy = {};
   await api.doApply('/apply', { textContent: '', className: '' }, { rules: [] }, diff);
 
   assert.equal(diff.hidden, false, 'the operator must see the diff they authorised');
@@ -1327,6 +1354,10 @@ test('a double-clicked apply does not race itself', async () => {
     csrfToken: 'tok',
     fetch: (url) => {
       if (/\/apply$/.test(url)) writes.push(url);
+      if (url.endsWith('/policy')) {
+        // The disk matches the snapshot the screen rendered.
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+      }
       return new Promise((resolve) => {
         setTimeoutReal(() => resolve({
           ok: true, status: 200,
@@ -1335,6 +1366,7 @@ test('a double-clicked apply does not race itself', async () => {
       });
     },
   });
+  api.state.policy = {};
   const msg = { textContent: '', className: '' };
   const second = { textContent: '', className: '' };
   const first = api.doApply('/apply', msg, { rules: [] });
@@ -5629,6 +5661,10 @@ test('a preset writes NOTHING until a plan for that same choice is on screen (CA
       // The console posts to the sidecar path; the ROUTE is its tail, and that is what
       // the criterion is about (which endpoint, in which order).
       calls.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: opts && opts.body ? JSON.parse(opts.body) : null });
+      if (url.endsWith('/policy')) {
+        // The disk matches the snapshot the screen rendered.
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(presetPolicy())) });
+      }
       const planned = { valid: true, diff: '-a\n+b', policy: { tiers: { T2: { fallback_strategy: 'cheapest_now' } } } };
       return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(planned)) });
     },
@@ -5648,8 +5684,10 @@ test('a preset writes NOTHING until a plan for that same choice is on screen (CA
   assert.match(dom.get('presetMsg').textContent, /Veja o que muda antes de salvar/);
 
   await api.previewPreset();
-  assert.deepEqual(calls.map((c) => c.url), ['/plan'], 'the preview plans, and writes nothing');
-  assert.deepEqual(Object.keys(calls[0].body.policy), ['tiers'], 'CA6, on the wire');
+  // §5.5 first: the preview revalidates, then the staleness guard reads, then it plans.
+  assert.deepEqual(calls.map((c) => c.url), ['/lint', '/policy', '/plan'], 'the preview revalidates and plans, and writes nothing');
+  const planCall = calls.find((c) => c.url === '/plan');
+  assert.deepEqual(Object.keys(planCall.body.policy), ['tiers'], 'CA6, on the wire');
   assert.match(dom.get('presetMsg').textContent, /Isto vai mudar 2 linhas do arquivo/);
   assert.ok(labels().indexOf('Salvar') >= 0, 'only now does a Salvar exist');
 
@@ -5676,7 +5714,7 @@ test('a preset writes NOTHING until a plan for that same choice is on screen (CA
    // nobody saw, with the diff on screen describing the previous one.
   assert.deepEqual(calls[applyAt - 1].body.policy, { tiers: { T2: { fallback_strategy: 'cheapest_now' } } },
     'the write plans the planned policy, not a fresh patch');
-  assert.deepEqual(Object.keys(calls[0].body.policy), ['tiers'], 'and the preview planned the preset patch');
+  assert.deepEqual(Object.keys(planCall.body.policy), ['tiers'], 'and the preview planned the preset patch');
   // The write itself carries the planned policy the server handed back.
   assert.deepEqual(calls[applyAt].body.policy, { tiers: { T2: { fallback_strategy: 'cheapest_now' } } });
 });
@@ -5689,6 +5727,10 @@ test('a preset already in force refuses to save instead of writing a no-op', asy
     csrfToken: 'tok',
     fetch: (url) => {
       calls.push(String(url).replace(/^.*\/sidecar/, ''));
+      if (url.endsWith('/policy')) {
+        // The disk matches the snapshot the screen rendered.
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(presetPolicy())) });
+      }
       return Promise.resolve({
         ok: true, status: 200,
         text: () => Promise.resolve(JSON.stringify({ valid: true, diff: '', policy: {} })),
@@ -5705,16 +5747,22 @@ test('a preset already in force refuses to save instead of writing a no-op', asy
   const labels = (dom.get('presetActions').children || []).map((k) => String(k.textContent || ''));
   assert.equal(labels.indexOf('Salvar'), -1, 'no Salvar for a no-op');
   await api.applyPreset();
-  assert.deepEqual(calls, ['/plan'], 'and nothing was written');
+  assert.deepEqual(calls, ['/lint', '/policy', '/plan'], 'and nothing was written');
 });
 
 test('choosing another preset drops the plan the diff on screen belonged to', async () => {
   const { api, dom } = loadConsole({
     csrfToken: 'tok',
-    fetch: () => Promise.resolve({
-      ok: true, status: 200,
-      text: () => Promise.resolve(JSON.stringify({ valid: true, diff: '-a\n+b', policy: { tiers: {} } })),
-    }),
+    fetch: (url) => {
+      if (url.endsWith('/policy')) {
+        // The disk matches the snapshot the screen rendered.
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(presetPolicy())) });
+      }
+      return Promise.resolve({
+        ok: true, status: 200,
+        text: () => Promise.resolve(JSON.stringify({ valid: true, diff: '-a\n+b', policy: { tiers: {} } })),
+      });
+    },
   });
   api.state.loading = false;
   api.state.policy = presetPolicy();
@@ -5819,6 +5867,10 @@ test('doApply plans immediately before every write, whichever surface called it 
     csrfToken: 'tok',
     fetch: (url) => {
       routes.push(String(url).replace(/^.*\/sidecar/, ''));
+      if (url.endsWith('/policy')) {
+        // The disk matches the snapshot the screen rendered.
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+      }
       return Promise.resolve({
         ok: true, status: 200,
         text: () => Promise.resolve(JSON.stringify({ valid: true, diff: '-a\n+b', policy: { tiers: {} } })),
@@ -5826,10 +5878,11 @@ test('doApply plans immediately before every write, whichever surface called it 
     },
   });
   api.state.loading = false;
+  api.state.policy = {};
 
   await api.doApply('/apply', dom.get('jsonMsg'), { tiers: { T2: { pin_primary: true } } }, dom.get('jsonDiff'));
-  assert.equal(routes[0], '/plan', 'the plan comes first');
-  assert.equal(routes[1], '/apply', 'and the write immediately after it');
+  assert.equal(routes[1], '/plan', 'the staleness read comes first, then the plan');
+  assert.equal(routes[2], '/apply', 'and the write immediately after it');
 
   // A plan that says the draft is invalid stops there: no write at all.
   const refused = [];
@@ -5837,6 +5890,10 @@ test('doApply plans immediately before every write, whichever surface called it 
     csrfToken: 'tok',
     fetch: (url) => {
       refused.push(String(url).replace(/^.*\/sidecar/, ''));
+      if (url.endsWith('/policy')) {
+        // The disk matches the snapshot the screen rendered.
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+      }
       return Promise.resolve({
         ok: true, status: 200,
         text: () => Promise.resolve(JSON.stringify({ valid: false, errors: ['nope'], diff: '-a' })),
@@ -5844,8 +5901,9 @@ test('doApply plans immediately before every write, whichever surface called it 
     },
   });
   second.api.state.loading = false;
+  second.api.state.policy = {};
   await second.api.doApply('/apply', second.dom.get('jsonMsg'), { tiers: {} }, second.dom.get('jsonDiff'));
-  assert.deepEqual(refused, ['/plan'], 'an invalid draft never reaches /apply');
+  assert.deepEqual(refused, ['/policy', '/plan'], 'an invalid draft never reaches /apply');
 });
 
 // ── CA2: the list is complete, and no row has an empty destination ──────────
@@ -5952,4 +6010,295 @@ test('an armed Voltar à versão anterior does not survive a refresh', async () 
   await api.requestRevert();
   assert.deepEqual(routes.filter((r) => /^\/apply/.test(r)), [],
     'the click after a refresh asks again instead of writing');
+});
+// ── write path: the patch is minimal, and the staleness guard is the gate ──
+// The audit t_873f43b9 blocked the redesign with a HIGH data-integrity defect:
+// a write erased a concurrent CLI/other-tab edit in silence, because the screen
+// sent its whole stale snapshot to /plan and the base_hash anchored to the
+// plan's own read — never to the read the screen was showing. Two halves close
+// it (§5.2 + §4.7): the inspector sends ONLY the touched fragment, and plan()
+// refuses (with a reload) when GET /policy no longer matches state.policy.
+
+test('the staleness comparison is JSON-deep: reordered keys are equal, different values are not', () => {
+  const { api } = loadConsole();
+  assert.equal(api.samePolicy({ a: 1, b: 2 }, { b: 2, a: 1 }), true, 'key order is serializer noise');
+  assert.equal(api.samePolicy({ a: 1 }, { a: 2 }), false);
+  assert.equal(api.samePolicy([1, 2], [2, 1]), false, 'array order is the semantics');
+  assert.equal(api.samePolicy({ rules: [{ id: 'a' }] }, { rules: [{ id: 'a' }] }), true);
+  assert.equal(api.samePolicy(null, {}), false);
+  assert.equal(api.samePolicy({ tiers: { T2: { model: 'x' } } }, { tiers: { T2: { model: 'x', provider: 'zai' } } }), false);
+});
+
+test('a write is refused when the file changed since the screen read it', async () => {
+  // The disk now carries a rule this screen has never seen (a CLI edit or
+  // another tab since load()). The refusal is a reload, not a "are you sure":
+  // the message is the §4.7 literal and the /apply never fires.
+  const applied = [];
+  const { api } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      if (/\/apply$/.test(url)) applied.push(url);
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ rules: [{ id: 'concurrent' }] })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = { rules: [] };
+  const msg = { textContent: '', className: '' };
+  await api.doApply('/apply', msg, { rules: [{ id: 'mine' }] });
+
+  assert.match(msg.textContent, /O arquivo mudou por fora desde que esta tela leu\. Recarreguei tudo; confira e tente de novo\./);
+  assert.match(msg.className, /bad/);
+  assert.deepEqual(applied, [], 'a refused write must not reach /apply');
+  assert.equal(api.state.plan, null, 'the stale plan must not survive to be applied');
+  assert.equal(api.state.draft, null, 'the stale draft must not survive to be re-applied');
+  // And the reload really happened: the snapshot is now the file as it is.
+  assert.deepEqual(api.state.policy, { rules: [{ id: 'concurrent' }] });
+});
+
+test('a write proceeds when the file is exactly the snapshot the screen shows', async () => {
+  // The guard's other polarity: refusing on "nothing changed" would turn every
+  // save into a conflict. Same read, same file, write goes through.
+  const applied = [];
+  const { api } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      if (/\/apply$/.test(url)) applied.push(url);
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ rules: [] })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = { rules: [] };
+  const msg = { textContent: '', className: '' };
+  await api.doApply('/apply', msg, { rules: [{ id: 'mine' }] });
+
+  assert.equal(applied.length, 1, 'the write happens when nothing changed underneath');
+  assert.match(msg.textContent, /Written/);
+});
+
+test('the inspector Apply sends the touched fragment, never the whole policy (§5.2)', async () => {
+  // Mutation 1 + 2, on the wire: the /plan body is the minimal patch — exactly
+  // the keys the operator touched, and nothing else. Sending fullPolicy()
+  // again would fail this on the body, not merely on the effect.
+  const posted = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.body) posted.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: JSON.parse(opts.body) });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(tierPolicy())) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = tierPolicy();
+  api.state.capabilities = { 'glm-5.3': { provider: 'zai', context_window: 200000 } };
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+
+  // The operator changes ONLY the provider; the model select is never touched.
+  const provider = byLabel(dom.get('inspector'), 'Provedor').children.find((c) => c.tagName === 'input');
+  provider.value = 'deepseek';
+  provider._listeners.input();
+
+  const apply = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Apply');
+  apply._listeners.click();
+  await tick();
+
+  const planCall = posted.find((c) => c.url === '/plan');
+  assert.ok(planCall, `an /plan went out, got ${JSON.stringify(posted.map((p) => p.url))}`);
+  assert.deepEqual(planCall.body.policy, { tiers: { T2: { provider: 'deepseek' } } },
+    'the body is the fragment, not the snapshot');
+  assert.deepEqual(Object.keys(planCall.body.policy.tiers.T2), ['provider'],
+    'a field the operator never touched does not ride along');
+  assert.ok(!('fallback' in planCall.body.policy.tiers.T2), 'no untouched list travels with the patch');
+});
+
+test('a classifier edit never carries read-only keys back to the server (§5.2)', async () => {
+  // classifier.temperature / max_tokens / timeout_seconds / chain are read and
+  // never rewritten; a write of the whole block would put the snapshot's value
+  // back over whatever a CLI edit set meanwhile.
+  const posted = [];
+  const policy = {
+    rules: [], tiers: {},
+    classifier: { model: 'glm-4.7', provider: 'zai', temperature: 0.2, max_tokens: 128, timeout_seconds: 15 },
+  };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.body) posted.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: JSON.parse(opts.body) });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.capabilities = {
+    'glm-4.7': { provider: 'zai' },
+    'gpt-5.6-luna': { provider: 'openai-codex' },
+  };
+  api.setMode('editing');
+  api.renderInspector({ id: 'classifier', name: 'classifier', bind: 'classifier' });
+
+  const model = byLabel(dom.get('inspector'), 'Modelo').children.find((c) => c.tagName === 'select');
+  model.value = 'gpt-5.6-luna';
+  model._listeners.change();
+
+  const apply = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Apply');
+  apply._listeners.click();
+  await tick();
+
+  const planCall = posted.find((c) => c.url === '/plan');
+  assert.ok(planCall, 'an /plan went out');
+  assert.deepEqual(planCall.body.policy, { classifier: { model: 'gpt-5.6-luna', provider: 'openai-codex' } },
+    'only the two editable keys leave the screen');
+  assert.ok(!('temperature' in planCall.body.policy.classifier), 'temperature is read-only');
+  assert.ok(!('max_tokens' in planCall.body.policy.classifier), 'max_tokens is read-only');
+});
+
+test('a rule edit sends the WHOLE rules list, because lists replace wholesale (§5.2)', async () => {
+  // Mutation 5: there is no partial rules patch — the server replaces the list
+  // (service.py:422-434), so a patch with one rule missing would delete it on
+  // disk. This is exactly why the staleness guard is mandatory, not optional.
+  const posted = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.body) posted.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: JSON.parse(opts.body) });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(rulePolicy())) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = rulePolicy();
+  api.setMode('editing');
+  api.renderInspector({ id: 'rule:dead', name: 'dead', bind: 'rule', ruleIndex: 1 });
+
+  const toggle = findAll(dom.get('inspector'), 'btn').find((b) => /Desativar/.test(b.textContent || ''));
+  toggle._listeners.click();
+  const apply = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Apply');
+  apply._listeners.click();
+  await tick();
+
+  const planCall = posted.find((c) => c.url === '/plan');
+  assert.ok(planCall, 'an /plan went out');
+  assert.deepEqual(Object.keys(planCall.body.policy), ['rules'], 'the list is the only surface a rule edit touches');
+  assert.deepEqual(planCall.body.policy.rules.map((r) => r.id), ['broad', 'dead', 'r3'],
+    'the WHOLE list, every rule — a partial list would delete the rest');
+  assert.equal(planCall.body.policy.rules[1].enabled, false, 'the toggle rides the list');
+});
+
+test('"Ver o que muda" revalidates /lint exactly once before planning (§5.5)', async () => {
+  // Mutation 6: one lint read per preview click — zero means the console plans
+  // against a lint state the file left behind, two means it lints twice for one
+  // question.
+  const lints = [];
+  const { api } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      if (url.endsWith('/lint')) lints.push(url);
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, errors: [], error_targets: [], policy: {}, diff: '-a\n+b', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = {};
+  const msg = { textContent: '', className: '' };
+  const diff = { hidden: true, textContent: '' };
+  await api.doPreview({ rules: [] }, msg, diff);
+
+  assert.equal(lints.length, 1, 'exactly one lint read per preview click');
+  assert.equal(diff.hidden, false, 'and the plan still renders its diff');
+  assert.match(msg.textContent, /Nenhum problema encontrado/);
+});
+
+test('a preview is refused when /lint finds an error in the CURRENT file, with the jump (§5.5)', () => {
+  // The lint error is the file's, not this draft's: the preview does not plan,
+  // the banner carries the error, and the [ Ir para a regra ] jump exists when
+  // the error names a row.
+  const planned = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      if (/\/plan$/.test(url)) planned.push(url);
+      if (url.endsWith('/lint')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: false, errors: ['rule references unknown tier T9'], error_targets: [{ later_index: 0, later_id: 'r1' }] })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+    },
+  });
+  api.state.policy = {};
+  const msg = { textContent: '', className: '' };
+  const diff = { hidden: true, textContent: '' };
+  return api.doPreview({ rules: [] }, msg, diff).then(() => {
+    assert.deepEqual(planned, [], 'no plan for a file that fails lint');
+    assert.match(msg.textContent, /Não é possível ver o que muda enquanto houver erro no arquivo\. Primeiro erro: rule references unknown tier T9/);
+    assert.match(msg.className, /bad/);
+    assert.equal(diff.hidden, true, 'no diff is shown for a plan that was never made');
+    assert.match(flat(dom.get('warnings')), /Ir para a regra 1/, 'the banner carries the jump');
+  });
+});
+
+test('a preset preview is refused by the same lint gate, before any plan', async () => {
+  const planned = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      if (/\/plan$/.test(url)) planned.push(url);
+      if (url.endsWith('/lint')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: false, errors: ['fail_safe missing'], error_targets: [] })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+    },
+  });
+  api.state.loading = false;
+  api.state.policy = presetPolicy();
+  api.state.preset = 'economizar';
+  api.renderPresets();
+  await api.previewPreset();
+
+  assert.deepEqual(planned, [], 'no plan while the file fails lint');
+  assert.match(dom.get('presetMsg').textContent, /Não é possível ver o que muda enquanto houver erro no arquivo\. Primeiro erro: fail_safe missing/);
+  const labels = (dom.get('presetActions').children || []).map((k) => String(k.textContent || ''));
+  assert.equal(labels.indexOf('Salvar'), -1, 'no Salvar while the file carries an error (CA8)');
+});
+
+test('a refused write rebuilds the inspector from the reloaded policy, dropping the stale draft', async () => {
+  // The refusal reloads AND re-renders the open panel: a stale draft left in
+  // place would be exactly the stale list the guard just refused, one click
+  // away from being applied against the fresh snapshot.
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ tiers: { T2: { model: 'new', provider: 'zai' } } })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = { tiers: { T2: { model: 'old', provider: 'zai' } } };
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+
+  const provider = byLabel(dom.get('inspector'), 'Provedor').children.find((c) => c.tagName === 'input');
+  provider.value = 'deepseek';
+  provider._listeners.input();
+  assert.equal(api.state.draft.tiers.T2.provider, 'deepseek', 'the draft accepted the edit');
+
+  const apply = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Apply');
+  apply._listeners.click();
+  await tick();
+
+  assert.match(dom.get('nodeMsg').textContent, /mudou por fora/,
+    'the rebuilt panel carries the conflict text on its message line');
+  assert.deepEqual(api.state.policy, { tiers: { T2: { model: 'new', provider: 'zai' } } },
+    'the reload replaced the snapshot');
+  const fresh = byLabel(dom.get('inspector'), 'Provedor').children.find((c) => c.tagName === 'input');
+  assert.equal(fresh.value, 'zai', 'the rebuilt panel shows the reloaded value, not the stale draft');
 });
