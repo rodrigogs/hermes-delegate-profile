@@ -1766,3 +1766,46 @@ def test_console_gates_the_save_button_on_the_lint_errors():
     assert "$('jsonApply').disabled" not in script, (
         "an unguarded read of a detachable node is the crash this accessor prevents"
     )
+
+
+def _panel(html: str, name: str) -> str:
+    """The markup of one screen, from its <section> to the next one."""
+    start = html.index(f'id="panel-{name}"')
+    rest = html[start:]
+    end = rest.index("</section>")
+    return rest[:end]
+
+
+def test_console_reads_in_the_order_the_spec_fixes():
+    """§1.2: each tab carries its own subject, in the order the reader needs it.
+
+    Two moves this pins, both measured as reading problems before they were made:
+
+    * **The groups of models live on Modelos, under the presets.** They were on Tarefas,
+      below the rule list, which put "which models exist and in what order each group
+      tries them" as a second subject under "where does a task land". CA4 is verified by
+      opening Modelos, so the placement is part of the criterion and not decoration.
+    * **On Tarefas the list comes before the probe.** With the probe first the screen
+      opened with an empty box above the answer, which reads as "type something to see
+      anything" — and the list is what the tab is for.
+    """
+    html = (EXTENSION / "console.html").read_text(encoding="utf-8")
+    health = _panel(html, "health")
+    pipeline = _panel(html, "pipeline")
+
+    assert 'id="ladder"' in health, "the groups of models are read on Modelos"
+    assert 'id="ladder"' not in pipeline, "and are not a second subject under the rule list"
+    assert 'id="presetBox"' in health, "the presets are the first control on Modelos"
+    assert health.index('id="presetBox"') < health.index('id="ladder"'), (
+        "choose the strategy, then read what it produced"
+    )
+
+    assert 'id="sheet"' in pipeline
+    assert pipeline.index('id="sheet"') < pipeline.index('id="probeForm"'), (
+        "the ordered list of task types is the answer; the probe checks one case against it"
+    )
+
+    # The ids themselves are the contract router-nav.js and the JS suite match on, so
+    # a move must never be a rename.
+    for element_id in ("sheet", "probeTask", "ladder", "routesTable", "replayPath", "chainPlan", "clockbar"):
+        assert f'id="{element_id}"' in html, f"{element_id} keeps its historic id"

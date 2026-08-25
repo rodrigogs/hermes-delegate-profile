@@ -1151,6 +1151,15 @@
           <pre class="code" id="presetDiff" hidden></pre>
         </div>
 
+        <!-- §1.2 item 4. The groups moved here from Tarefas: this tab answers "which
+             models are there, and in what order does each group try them", and CA4 is
+             verified by opening Modelos. On the Tarefas tab the same blocks were a
+             second subject under the rule list. -->
+        <div class="group">
+          <div class="group-head"><h2>Grupos de modelos</h2><span class="screen-note" id="ladderNote"></span></div>
+          <div id="ladder"></div>
+        </div>
+
         <div id="models"></div>
 
         <div class="group" id="bansGroup" hidden>
@@ -1169,6 +1178,13 @@
         <div class="lede">
           <p class="lede-answer is-quiet" id="pipelineNote">Leia de cima para baixo — a primeira regra que casar decide.</p>
         </div>
+
+        <!-- §1.2: the LIST first, the probe after it. The list is what the tab is for
+             — the ordered types of task, first match decides — and the probe is a tool
+             for checking one case against it. With the probe first the screen opened
+             with an empty box above the answer, which reads as "type something to see
+             anything". -->
+        <ol class="sheet" id="sheet"></ol>
 
         <form class="probe" id="probeForm">
           <input id="probeTask" class="probe-input" autocomplete="off"
@@ -1221,13 +1237,6 @@
              router.yaml on disk (or the window is older than STALE_WINDOW_DAYS,
              or nothing is recorded at all). Not a warning — a disclosure. -->
         <div class="window-stale" id="windowStale" hidden></div>
-
-        <ol class="sheet" id="sheet"></ol>
-
-        <div class="group">
-          <div class="group-head"><h2>Grupos de modelos</h2><span class="screen-note" id="ladderNote"></span></div>
-          <div id="ladder"></div>
-        </div>
 
         <!-- Compaction is a PIPELINE fact (DESIGN.md §1: Blocklist lives in
              Health, Compaction in Pipeline), and it follows the Blocked group's
