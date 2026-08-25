@@ -56,6 +56,22 @@
 #     can never show a promotion that a later filter silently removed.
 enabled: true
 
+# Kanban-dispatch mode — how the pre_kanban_dispatch hook treats each board
+# card (full semantics in the section comment of __init__.py).
+#   enabled: true (or the whole section absent) = SHADOW mode, the default:
+#     every dispatched card is routed and the decision recorded in the durable
+#     trace, but the hook returns None, so the dispatcher behaves as if no hook
+#     subscribed. This is the measurement mode — shadow_gate_rate reads it.
+#   enabled: false = LIVE mode: the same hook also RETURNS {"model", "provider"}
+#     for the decisions dispatch may apply (the head of the planned chain), so
+#     the router takes control of the model each card's worker runs on. Live
+#     entries are written with shadow: False and never count in the gate.
+# The router master switch `enabled` above gates BOTH modes: false means no
+# routing and no trace at all. Decisions that change the card's profile are
+# refused in both modes (dispatch cannot move the worker's role).
+shadow:
+  enabled: true
+
 # Stage 1 classifier. It sits on the critical path of EVERY delegation, so it
 # gets a chain rather than a single model: one outage on a lone classifier sends
 # every ambiguous task to the heuristic.

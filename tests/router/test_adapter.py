@@ -643,6 +643,13 @@ def test_guard_default_resolution_degrades_where_hermes_cli_is_absent(monkeypatc
             assert resolved is None
 
 
+def test_selection_vetoes_degrades_to_no_veto_without_a_guard():
+    """warn_fn=None (a host without hermes_cli) is a supported shape: not vetoed."""
+    from router import adapter as adapter_mod
+
+    assert adapter_mod._selection_vetoes(None, "glm-4.7", "zai") is False
+
+
 def test_classifier_tier_without_provider_drops_stale_provider():
     """A tier that names no provider must not pair a stale provider with its model."""
     from router.adapter import route

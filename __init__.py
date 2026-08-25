@@ -820,14 +820,25 @@ def _route_task(
 
 
 # ---------------------------------------------------------------------------
-# Kanban-dispatch shadow routing (pre_kanban_dispatch hook)
+# Kanban-dispatch routing (pre_kanban_dispatch hook) — shadow and live modes
 # ---------------------------------------------------------------------------
 #
-# The capability router is now a model-selection surface for kanban cards: a
+# The capability router is a model-selection surface for kanban cards: a
 # ``pre_kanban_dispatch`` hook, fired by the dispatcher AFTER a task is claimed
-# and BEFORE the worker spawns (ready and review lanes). It runs in SHADOW
-# MODE — the decision is recorded in the durable trace but the model/provider
-# field is NEVER written, so dispatch behaves exactly as if no hook subscribed.
+# and BEFORE the worker spawns (ready and review lanes). The ``shadow:``
+# section of router.yaml picks the mode:
+#
+#   * shadow mode (default; ``shadow.enabled`` true or the section absent) —
+#     the decision is recorded in the durable trace but the model/provider
+#     field is NEVER returned, so dispatch behaves exactly as if no hook
+#     subscribed. This is the measurement mode.
+#   * live mode (``shadow.enabled: false``) — the SAME hook also returns
+#     ``{"model", "provider"}`` for the decisions dispatch may apply (the head
+#     of the planned chain, see _kanban_live_override); the dispatcher applies
+#     it to that worker's spawn. Live entries are written with ``shadow: False``
+#     and so never count in shadow_gate_rate.
+#   * the router master ``enabled:`` gates BOTH modes — false means no routing
+#     and no trace at all.
 #
 # Two properties of this path are deliberate:
 #
@@ -851,33 +862,47 @@ _SHADOW_MAX_FALLTHROUGH_RATE = 0.20
 
 try:
     from .router.durable_decision_log import DurableDecisionLog, read_entries
-    from .router.decision_log import DecisionLog
+    from .router.decision_log import DecisionLog, plan_head_of
 except ImportError:  # pragma: no cover - flat layout used by the test harness
     from router.durable_decision_log import DurableDecisionLog, read_entries
-    from router.decision_log import DecisionLog
+    from router.decision_log import DecisionLog, plan_head_of
 
 
 class _KanbanShadowLog(DurableDecisionLog):
-    """Durable trace log for the shadow dispatch path — one entry per card.
+    """Durable trace log for the kanban dispatch path — one entry per card.
 
-    Two duties, both applied BEFORE the entry is persisted so the disk line
-    carries them:
+    The ``shadow`` key on every persisted entry is the mode marker:
 
-    * ``shadow: True`` — the delegate_profile tool writes the SAME routes.jsonl,
-      and the exit gate (:func:`shadow_gate_rate`) must count only REAL cards.
-    * the profile constraint — the kanban dispatch path cannot change the
-      worker's profile. A decision whose profile differs from the card's
-      assignee is REFUSED here: the cause is rewritten to ``profile_ignored``
-      and the model/provider half is dropped from the recorded output, because
-      executing only the model half of a rule that also moved the role is how
-      a reviewer-only rule runs on a coder identity. The planned chain is
-      still recorded, so the operator sees what the policy wanted and why it
-      could not run.
+    * ``shadow: True`` — shadow mode (the default; ``shadow.enabled`` true or
+      absent in router.yaml): the decision is recorded but NEVER returned to
+      the dispatcher. The exit gate (:func:`shadow_gate_rate`) counts exactly
+      these entries — the measurement of how well Stage 0 covers REAL cards.
+    * ``shadow: False`` — live mode (``shadow.enabled: false``): the same
+      trace entry, written by a hook that ALSO returns the decision. Live
+      entries stay out of the gate measurement because the gate counts
+      ``is True``; the gate function itself does not change.
+
+    The profile constraint — the kanban dispatch path cannot change the
+    worker's profile. A decision whose profile differs from the card's
+    assignee is REFUSED here: the cause is rewritten to ``profile_ignored``
+    and the model/provider half is dropped from the recorded output, because
+    executing only the model half of a rule that also moved the role is how
+    a reviewer-only rule runs on a coder identity. The planned chain is
+    still recorded, so the operator sees what the policy wanted and why it
+    could not run. The refusal check itself is :func:`_kanban_profile_refused`,
+    the one authority shared with the live return path — two implementations
+    of \"refused by profile\" is how the trace and dispatch come to disagree.
     """
 
-    def __init__(self, allowed_profile: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        allowed_profile: Optional[str] = None,
+        *,
+        live: bool = False,
+    ) -> None:
         super().__init__()
         self._allowed_profile = allowed_profile
+        self._live = live
 
     def record(
         self,
@@ -889,11 +914,7 @@ class _KanbanShadowLog(DurableDecisionLog):
         steps: Optional[List[Dict[str, Any]]] = None,
         chain_plan: Optional[Dict[str, Any]] = None,
     ) -> None:
-        if (
-            self._allowed_profile
-            and output.get("profile")
-            and output["profile"] != self._allowed_profile
-        ):
+        if _kanban_profile_refused(output, self._allowed_profile):
             cause = "profile_ignored"
             output = dict(output)
             for key in ("model", "provider", "fallback", "chain"):
@@ -905,8 +926,66 @@ class _KanbanShadowLog(DurableDecisionLog):
             steps=steps, chain_plan=chain_plan,
         )
         entry = self._entries[-1]
-        entry["shadow"] = True
+        entry["shadow"] = not self._live
         self._persist(entry)
+
+
+def _kanban_profile_refused(
+    output: Dict[str, Any],
+    allowed_profile: Optional[str],
+) -> bool:
+    """True when a decision moves the worker's ROLE, which dispatch cannot honor.
+
+    The ONE definition of the kanban profile constraint, shared by the durable
+    trace (``_KanbanShadowLog.record`` rewrites the cause and drops the model
+    half of a refused decision) and the live return path (:func:`_kanban_live_override`
+    returns None for a refused decision). Two implementations of \"refused by
+    profile\" is how the trace and the dispatcher come to disagree about the
+    same card.
+    """
+    return bool(
+        allowed_profile
+        and output.get("profile")
+        and output["profile"] != allowed_profile
+    )
+
+
+def _kanban_live_override(
+    decision: Dict[str, Any],
+    allowed_profile: Optional[str],
+) -> Optional[Dict[str, str]]:
+    """The ``{"model", "provider"}`` a LIVE hook may hand the dispatcher, or None.
+
+    A decision drives dispatch only when BOTH constraints hold:
+
+    * the profile constraint — see :func:`_kanban_profile_refused`. A rule that
+      wants to move the worker's role cannot be honored by dispatch, which only
+      passes -m/--provider.
+    * a complete head. The head is :func:`plan_head_of` — the first hop of the
+      planned chain, the one definition of \"head\" in the repo. When the
+      decision carries no ``chain``, the plan IS the declared order (the
+      adapter's documented semantics, ``_with_chain``), so the head is the
+      declared ``model``/``provider`` pair. Either way both fields must be
+      non-empty: a model without a provider is the classic mis-set that strands
+      a board (kanban_db._resolve_pre_dispatch_model_override), so it is
+      refused with None.
+    """
+    if _kanban_profile_refused(decision, allowed_profile):
+        return None
+    head = plan_head_of(decision)
+    if head is None:
+        model = decision.get("model")
+        provider = decision.get("provider")
+        if not model or not provider:
+            return None
+        head = (str(model), str(provider))
+    model, provider = head
+    # ``model`` is guaranteed non-empty here (plan_head_of only returns hops
+    # with one, the fallback above checked it); the provider is the field a
+    # half-set decision actually misses.
+    if not provider:
+        return None
+    return {"model": model, "provider": provider}
 
 
 def _kanban_task_text(task: Any) -> str:
@@ -956,14 +1035,17 @@ def _on_pre_kanban_dispatch(
     assignee: Optional[str] = None,
     run_id: Optional[int] = None,
     **_kwargs: Any,
-) -> None:
-    """``pre_kanban_dispatch`` subscriber — SHADOW MODE.
+) -> Optional[Dict[str, str]]:
+    """``pre_kanban_dispatch`` subscriber — shadow or LIVE, per ``shadow.enabled``.
 
     Routes the card through the capability router and records the decision in
-    the durable trace, but NEVER returns a model/provider dict: the field is
-    not written, so the dispatcher behaves exactly as if no hook subscribed.
-    The gate for leaving shadow mode is :func:`shadow_gate_rate` measured on
-    REAL cards (the ``shadow: True`` entries this hook writes).
+    the durable trace. In shadow mode (default; ``shadow.enabled`` true or
+    absent) the hook NEVER returns a model/provider dict — the dispatcher
+    behaves exactly as if no hook subscribed. In live mode
+    (``shadow.enabled: false``) it returns the head of the planned chain as
+    ``{"model", "provider"}`` when the decision may drive dispatch (see
+    :func:`_kanban_live_override`), and the dispatcher applies it to that
+    worker's spawn. See the section comment for the two modes.
 
     Best-effort by contract — a broken callback can never corrupt dispatch, so
     every failure path returns None. The hook is consulted only while the
@@ -978,15 +1060,16 @@ def _on_pre_kanban_dispatch(
     if not config.get("enabled", False):
         return None
     shadow = config.get("shadow") or {}
-    if shadow.get("enabled") is False:
-        return None
+    live = shadow.get("enabled") is False
 
     task = _read_kanban_task(task_id, board)
     if task is None:
         return None
     goal = _kanban_task_text(task)
 
-    # No classifier on this path — see the section comment.
+    # No classifier on this path — see the section comment. Everything below
+    # stays inside the try: a broken route (or a malformed decision) degrades
+    # to None, byte-identical to having no subscriber.
     try:
         if _LOADED_AS_PACKAGE:
             from .router.adapter import route
@@ -996,8 +1079,8 @@ def _on_pre_kanban_dispatch(
             from router.blocklist import Blocklist
 
         blocklist = Blocklist(config)
-        log = _KanbanShadowLog(allowed_profile=assignee)
-        route(
+        log = _KanbanShadowLog(allowed_profile=assignee, live=live)
+        decision = route(
             task=goal,
             config=config,
             requested_model=str(getattr(task, "model_override", None) or ""),
@@ -1007,10 +1090,13 @@ def _on_pre_kanban_dispatch(
             decision_log=log,
             prompt_text=goal,
         )
+        if not live:
+            return None
+        return _kanban_live_override(decision, assignee)
     except Exception:
-        logger.debug("delegate-profile: shadow dispatch failed for %s", task_id,
+        logger.debug("delegate-profile: kanban dispatch failed for %s", task_id,
                      exc_info=True)
-    return None
+        return None
 
 
 def shadow_gate_rate(limit: Optional[int] = None) -> Optional[float]:
@@ -1658,10 +1744,11 @@ def register(ctx):
 
     ctx.register_hook("post_tool_call", _on_post_tool_call)
 
-    # Kanban dispatch shadow routing: records what the capability router WOULD
-    # choose for each dispatched card, without writing the model/provider field.
-    # Shadow mode is on by default so the measurement starts the moment the
-    # plugin lands; `shadow: {enabled: false}` in router.yaml turns it off.
+    # Kanban dispatch routing: shadow mode by default — records what the
+    # capability router WOULD choose for each dispatched card, without writing
+    # the model/provider field. `shadow: {enabled: false}` in router.yaml
+    # switches the SAME hook to live mode, where it also RETURNS the model
+    # decision for the dispatcher to apply to that worker's spawn.
     ctx.register_hook("pre_kanban_dispatch", _on_pre_kanban_dispatch)
 
     # Registration completed — mark this ctx as serviced. Added last so a

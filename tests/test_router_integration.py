@@ -209,6 +209,21 @@ def test_package_loader_executes_relative_router_import_paths(monkeypatch, tmp_p
     assert module._route_task("Rename helper in utils.py", "", None)["profile"] == "coder"
     module._record_breaker_outcome("coder", "glm-5.2-fast", None)
 
+    # The kanban-dispatch hook takes the same relative-import path; route a card
+    # through the package copy so its hook branch is exercised too. Shadow mode
+    # (no shadow section in this config) — the hook must return None.
+    monkeypatch.setattr(
+        module, "_read_kanban_task",
+        lambda task_id, board: types.SimpleNamespace(
+            title="Rename helper in utils.py", body="",
+            model_override=None, provider_override=None,
+        ),
+    )
+    assert module._on_pre_kanban_dispatch(
+        task_id="t1", profile_name="x", board="default",
+        assignee="coder", run_id=1,
+    ) is None
+
 
 # ---------------------------------------------------------------------------
 # _route_task tests

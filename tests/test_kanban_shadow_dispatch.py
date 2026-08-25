@@ -124,6 +124,81 @@ def test_shadow_log_without_assignee_constrains_nothing(trace_home):
 
 
 # ---------------------------------------------------------------------------
+# _kanban_profile_refused — the ONE profile constraint
+# ---------------------------------------------------------------------------
+
+def test_profile_refused_false_for_a_matching_profile():
+    assert dp._kanban_profile_refused({"profile": "coder"}, "coder") is False
+
+
+def test_profile_refused_true_for_a_role_change():
+    assert dp._kanban_profile_refused({"profile": "reviewer"}, "coder") is True
+
+
+def test_profile_refused_false_without_an_assignee():
+    assert dp._kanban_profile_refused({"profile": "reviewer"}, None) is False
+
+
+def test_profile_refused_false_when_the_decision_names_no_profile():
+    assert dp._kanban_profile_refused({"model": "glm-4.7"}, "coder") is False
+
+
+# ---------------------------------------------------------------------------
+# _kanban_live_override — what a live hook may hand the dispatcher
+# ---------------------------------------------------------------------------
+
+def test_live_override_uses_the_plan_head_when_a_chain_is_attached():
+    decision = {
+        "profile": "coder", "model": "glm-5.3", "provider": "zai",
+        "chain": [{"model": "gpt-5.6-luna", "provider": "openai-codex"}],
+    }
+    assert dp._kanban_live_override(decision, "coder") == {
+        "model": "gpt-5.6-luna", "provider": "openai-codex",
+    }
+
+
+def test_live_override_refuses_a_chain_head_without_provider():
+    decision = {
+        "profile": "coder", "model": "glm-5.3", "provider": "zai",
+        "chain": [{"model": "gpt-5.6-luna"}],
+    }
+    assert dp._kanban_live_override(decision, "coder") is None
+
+
+def test_live_override_falls_back_to_the_declared_pair_without_a_chain():
+    decision = {"profile": "coder", "model": "glm-4.7", "provider": "zai"}
+    assert dp._kanban_live_override(decision, "coder") == {
+        "model": "glm-4.7", "provider": "zai",
+    }
+
+
+def test_live_override_refuses_a_declared_model_without_provider():
+    decision = {"profile": "coder", "model": "glm-4.7"}
+    assert dp._kanban_live_override(decision, "coder") is None
+
+
+def test_live_override_refuses_a_decision_with_no_model():
+    decision = {"profile": "coder", "action": "classify"}
+    assert dp._kanban_live_override(decision, "coder") is None
+
+
+def test_live_override_refuses_a_profile_changing_decision():
+    decision = {
+        "profile": "reviewer", "model": "gpt-5.5", "provider": "openai-codex",
+    }
+    assert dp._kanban_live_override(decision, "coder") is None
+
+
+def test_live_override_without_an_assignee_constrains_nothing():
+    decision = {
+        "profile": "reviewer", "model": "gpt-5.5", "provider": "openai-codex",
+    }
+    assert dp._kanban_live_override(decision, None) == {
+        "model": "gpt-5.5", "provider": "openai-codex",
+    }
+
+
+# ---------------------------------------------------------------------------
 # _read_kanban_task — board DB read, guarded like every hermes_cli access
 # ---------------------------------------------------------------------------
 
@@ -151,6 +226,25 @@ def test_read_kanban_task_returns_the_card(monkeypatch):
 
 def test_read_kanban_task_empty_id_short_circuits():
     assert dp._read_kanban_task("", None) is None
+
+
+def test_read_kanban_task_returns_none_when_the_board_read_raises(monkeypatch):
+    fake_cli = types.ModuleType("hermes_cli")
+    fake_kb = types.ModuleType("hermes_cli.kanban_db")
+
+    class _Conn:
+        def close(self):
+            pass
+
+    def _boom(conn, task_id):
+        raise RuntimeError("db locked")
+
+    fake_kb.connect = lambda board=None: _Conn()
+    fake_kb.get_task = _boom
+    fake_cli.kanban_db = fake_kb
+    monkeypatch.setitem(sys.modules, "hermes_cli", fake_cli)
+    monkeypatch.setitem(sys.modules, "hermes_cli.kanban_db", fake_kb)
+    assert dp._read_kanban_task("t1", "board") is None
 
 
 # ---------------------------------------------------------------------------
@@ -209,16 +303,108 @@ def test_shadow_hook_is_silent_when_router_is_disabled(trace_home, monkeypatch):
     assert _read_trace() == []
 
 
-def test_shadow_hook_honors_shadow_disabled_switch(trace_home, monkeypatch):
+def test_live_hook_routes_records_and_returns_the_decision(trace_home, monkeypatch):
+    """shadow.enabled: false is LIVE mode, not off: same routing and trace,
+    but the hook now returns the model decision for the dispatcher to apply."""
     monkeypatch.setattr(
         dp, "_read_kanban_task",
-        lambda task_id, board: _card("Rename getCwd in src/utils.py"),
+        lambda task_id, board: _card(
+            "Rename getCwd in src/utils.py", "small mechanical change",
+        ),
     )
     monkeypatch.setattr(
         dp, "_load_router_config",
         lambda: {"enabled": True, "shadow": {"enabled": False}},
     )
-    assert dp._on_pre_kanban_dispatch(task_id="t4", assignee="coder") is None
+    result = dp._on_pre_kanban_dispatch(
+        task_id="t4", profile_name="trama-engineer", board="default",
+        assignee="coder", run_id=4,
+    )
+    # Live: both fields set — the head of the (declared-order) chain, which for
+    # a fail-safe decision is the declared pair itself.
+    assert result == {"model": "deepseek-v4-pro", "provider": "deepseek"}
+    entries = _read_trace()
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["shadow"] is False
+    assert entry["cause"] == "fail_safe_strong"
+
+
+def test_live_hook_refuses_a_rule_that_changes_profile(trace_home, monkeypatch):
+    """LIVE mode applies the SAME refusal the trace records: a reviewer-role
+    decision must not drive a coder card's dispatch, and the trace says so."""
+    monkeypatch.setattr(
+        dp, "_read_kanban_task",
+        lambda task_id, board: _card("Review this PR for security issues"),
+    )
+    monkeypatch.setattr(
+        dp, "_load_router_config",
+        lambda: {
+            "enabled": True,
+            "shadow": {"enabled": False},
+            "rules": [
+                {"id": "review-request", "status": "stable",
+                 "when": {"keywords": {"contains": "review"}},
+                 "then": {"profile": "reviewer", "model": "T1"}},
+            ],
+            "tiers": {"T1": {"model": "glm-4.7", "provider": "zai"}},
+        },
+    )
+    result = dp._on_pre_kanban_dispatch(
+        task_id="t6", profile_name="x", board="default",
+        assignee="coder", run_id=6,
+    )
+    assert result is None
+    entry = _read_trace()[0]
+    assert entry["shadow"] is False
+    assert entry["cause"] == "profile_ignored"
+    assert entry["output"]["profile"] == "reviewer"
+    assert "model" not in entry["output"]
+
+
+def test_live_entries_never_count_in_the_gate(trace_home, monkeypatch):
+    """shadow_gate_rate counts ``shadow is True`` only — a live-only trace is
+    an empty sample even when the live decision fell through Stage 0."""
+    monkeypatch.setattr(
+        dp, "_read_kanban_task",
+        lambda task_id, board: _card("Some ambiguous task with no rule"),
+    )
+    monkeypatch.setattr(
+        dp, "_load_router_config",
+        lambda: {"enabled": True, "shadow": {"enabled": False}},
+    )
+    result = dp._on_pre_kanban_dispatch(task_id="t7", assignee="coder")
+    assert result is not None  # live: the fail-safe decision was returned
+    entries = _read_trace()
+    assert len(entries) == 1
+    assert entries[0]["shadow"] is False
+    # The only entry is live — the sample is empty, so the gate reads unmet.
+    assert dp.shadow_gate_rate() is None
+    assert dp._shadow_gate_ok() is False
+
+
+def test_shadow_hook_never_breaks_dispatch_when_routing_raises(trace_home, monkeypatch):
+    """A broken router call is a no-op — byte-identical to no subscriber."""
+    import router.adapter as adapter_mod
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("route exploded")
+
+    monkeypatch.setattr(
+        dp, "_read_kanban_task",
+        lambda task_id, board: _card("Rename getCwd in src/utils.py"),
+    )
+    monkeypatch.setattr(adapter_mod, "route", _boom)
+    assert dp._on_pre_kanban_dispatch(task_id="t9", assignee="coder") is None
+    assert _read_trace() == []
+
+
+def test_shadow_hook_is_silent_when_the_config_load_raises(trace_home, monkeypatch):
+    def _boom():
+        raise RuntimeError("yaml broken")
+
+    monkeypatch.setattr(dp, "_load_router_config", _boom)
+    assert dp._on_pre_kanban_dispatch(task_id="t8", assignee="coder") is None
     assert _read_trace() == []
 
 
@@ -303,6 +489,22 @@ def test_gate_profile_ignored_still_counts_as_fallthrough(trace_home):
     entry = _shadow_entry("profile_ignored", "no_classifier", shadow=True)
     path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
     assert dp.shadow_gate_rate() == 1.0
+
+
+def test_gate_ignores_steps_that_are_not_a_fail_safe_fallthrough(trace_home):
+    """A step that is not a fail_safe stage (or not a dict) is not a fallthrough."""
+    from router.durable_decision_log import routes_path
+    path = routes_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = _shadow_entry("has_code_rule", shadow=True)
+    entry["steps"] = [{"stage": "rules", "in": {}, "out": {}, "cause": "hard_rule"}]
+    path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    assert dp.shadow_gate_rate() == 0.0
+
+
+def test_gate_ok_honors_an_explicit_rate():
+    assert dp._shadow_gate_ok(0.0) is True
+    assert dp._shadow_gate_ok(0.5) is False
 
 
 # ---------------------------------------------------------------------------

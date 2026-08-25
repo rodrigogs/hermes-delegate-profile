@@ -373,6 +373,20 @@ def test_hook_no_op_for_other_tools(caplog):
     # Should not warn for non-delegate_task tools.
 
 
+def test_hook_logs_delegate_profile_invocations(caplog):
+    caplog.set_level("INFO")
+    dp._on_post_tool_call(
+        "delegate_profile", {"profile": "coder", "goal": "g"}, "ok",
+    )
+    assert any("delegate_profile invoked" in r.message for r in caplog.records)
+
+
+def test_hook_silent_for_delegate_profile_with_a_non_dict_payload(caplog):
+    caplog.set_level("INFO")
+    dp._on_post_tool_call("delegate_profile", "not-a-dict", "ok")
+    assert not caplog.records
+
+
 def test_hook_warns_on_delegate_task_with_profile(caplog):
     caplog.set_level("WARNING")
     dp._on_post_tool_call("delegate_task", {"profile": "coder", "goal": "x"}, "ok")
