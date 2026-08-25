@@ -5847,3 +5847,68 @@ test('doApply plans immediately before every write, whichever surface called it 
   await second.api.doApply('/apply', second.dom.get('jsonMsg'), { tiers: {} }, second.dom.get('jsonDiff'));
   assert.deepEqual(refused, ['/plan'], 'an invalid draft never reaches /apply');
 });
+
+// ── CA2: the list is complete, and no row has an empty destination ──────────
+// `#sheet` has `rules.length + 3` items when there is a manual ban and
+// `rules.length + 2` when there is not — the two synthetic rows are "when no rule
+// matches" and "when everything fails", and the ban row exists only when it has
+// something in it (render nothing for nothing). And every row's destination begins
+// with one of the five prefixes of §4.3: a row whose destination is blank is a row
+// that tells the operator nothing about where the work goes.
+const DEST_PREFIXES = [
+  /^→\s*Grupo \S+ · /,
+  /^→\s*Perguntar ao classificador/,
+  /^→\s*Recusar a tarefa/,
+  /^→\s*.+ @ .+ — modelo fixo, sem reserva/,
+  /^→\s*⚠ Grupo \S+ — não existe/,
+];
+
+function sheetPolicy(extra) {
+  return Object.assign({
+    rules: [
+      { id: 'audit', when: { keywords: { contains: 'audit' } }, then: { model: 'T4', profile: 'reviewer' } },
+      { id: 'ask', when: { keywords: { contains: 'review' } }, then: { action: 'classify' } },
+      { id: 'no', when: { has_code: { eq: false } }, then: { deny: true } },
+      { id: 'fixed', when: { needs_vision: { eq: true } }, then: { model: 'glm-5.3', provider: 'zai' } },
+      { id: 'gone', when: { num_files: { gte: 3 } }, then: { model: 'T9' } },
+    ],
+    default: { action: 'classify' },
+    classifier: { model: 'glm-4.7', provider: 'zai' },
+    fail_safe: { model: 'glm-4.7', provider: 'zai' },
+    tiers: { T2: { model: 'glm-5.3', provider: 'zai' }, T4: { model: 'gpt-5.6-luna', provider: 'openai-codex' } },
+  }, extra || {});
+}
+
+test('the sheet counts rules + the two synthetic rows, plus the ban row only when there is a ban', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = sheetPolicy();
+  api.renderSheet();
+  const rows = () => (dom.get('sheet').children || []).length;
+  const rules = api.state.policy.rules.length;
+  assert.equal(rows(), rules + 2, 'no manual ban, so no ban row: render nothing for nothing');
+
+  api.state.policy = sheetPolicy({ blocklist: { manual_ban: [{ model: 'deepseek-v4-pro', provider: 'deepseek' }] } });
+  api.renderSheet();
+  assert.equal(rows(), rules + 3, 'a ban is the first thing that decides, so it is the first row');
+});
+
+test('every row on the sheet has a destination, and it is one of the five (CA2)', () => {
+  // The fixture exercises all five on purpose: a group, the classifier, a refusal, a
+  // fixed model id, and a group that does not exist.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = sheetPolicy({ blocklist: { manual_ban: [{ model: 'deepseek-v4-pro', provider: 'deepseek' }] } });
+  api.renderSheet();
+
+  const dests = findAll(dom.get('sheet'), 'step-dest').map((node) => flat(node).replace(/\s+/g, ' ').trim());
+  assert.ok(dests.length >= 6, `every row draws a destination, got ${dests.length}`);
+  dests.forEach((text) => {
+    assert.notEqual(text, '', 'a row with no destination says nothing about where the work goes');
+    assert.ok(DEST_PREFIXES.some((prefix) => prefix.test(text)),
+      `"${text}" is not one of the five destinations of §4.3`);
+  });
+  // And all five really appear, so the test is not passing on one prefix five times.
+  const hit = DEST_PREFIXES.filter((prefix) => dests.some((text) => prefix.test(text)));
+  assert.equal(hit.length, 5, `all five prefixes exercised, got ${hit.length}`);
+});
