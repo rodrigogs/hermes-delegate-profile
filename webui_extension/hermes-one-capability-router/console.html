@@ -3113,7 +3113,13 @@
         const list = el('ul', 'whens');
         chips.forEach((chip) => {
           const item = el('li', `chip ${chip.family}`);
-          if (chip.kind) item.append(el('span', 'chip-kind', chip.kind));
+          // The FAMILY is not printed in front of the text any more. It was a one-word
+          // label from when a chip's text was a fragment ("400.000 tokens"); the text
+          // is a whole sentence in pt-BR now, so the label produced "contexto contexto
+          // estimado passa de 400.000 tokens" — the word twice, once in English. The
+          // family survives where it is read: `chip.kind` is still in the data (its own
+          // test pins it) and the family is still the item's CLASS, which is what
+          // colours it.
           item.append(el('span', 'chip-val', chip.text));
           list.append(item);
         });
@@ -3374,14 +3380,39 @@
         return { stale: false, reason: null, days };
       }
 
-      // A count is only true of the window it was counted over. Naming that
-      // window is what separates "16×" from a claim about right now — the sheet
-      // showed 34% fail-safe long after the cause had been fixed.
+      // A count is only true of the window it was counted over. Naming that window
+      // is what separates "16×" from a claim about right now — the sheet showed 34%
+      // fail-safe long after the cause had been fixed.
+      //
+      // This used to be a legend ABOVE the list and had no caller at all after the
+      // legend was removed: spec §3.3 moved the period into each row's own count and
+      // §1.2 gave #pipelineNote another job, so the function was left exported and
+      // dead. It now produces the phrase the rows use — the same reading, in the
+      // fewest words that fit inside a row.
+      //
+      // The period is read from the DATA (the span of the decisions actually read)
+      // and never from STALE_WINDOW_DAYS: the constant decides whether the window can
+      // describe the policy at all, while this says what was counted. Two hundred
+      // decisions from this morning are "nas últimas 4h", and calling them "nos
+      // últimos 7 dias" because the freshness gate uses 7 would be a claim about days
+      // nobody counted.
       function hitsWindow() {
-        const routes = state.routes || [];
-        if (!routes.length) return '';
-        const span = windowSpan(routes);
-        return `contagens sobre as últimas ${routes.length} decisões — ${span}`;
+        const list = Array.isArray(state.routes) ? state.routes : [];
+        const ts = list.map((r) => Number(r && r.ts))
+          .filter((t) => Number.isFinite(t) && t > 0);
+        if (!ts.length) return '';
+        const seconds = Math.max(...ts) - Math.min(...ts);
+        // Agreement matters because this phrase is read INSIDE a sentence: "disparou
+        // 2× nas últimas 1h" is the kind of half-translated string an operator reads
+        // as a machine talking, and every other phrase on this screen is written pt-BR.
+        const days = Math.round(seconds / 86400);
+        if (days > 1) return `nos últimos ${days} dias`;
+        if (days === 1) return 'no último dia';
+        const hours = Math.round(seconds / 3600);
+        if (hours > 1) return `nas últimas ${hours}h`;
+        if (hours === 1) return 'na última hora';
+        const minutes = Math.max(1, Math.round(seconds / 60));
+        return minutes === 1 ? 'no último minuto' : `nos últimos ${minutes}min`;
       }
 
       function renderSheet() {
@@ -3514,8 +3545,16 @@
             // counted window. On a stale sheet every count becomes a muted
             // disclosure about the DATA rather than an amber verdict on the rule.
             const cls = opts.stale ? ' empty' : (opts.hits === 0 ? ' zero' : '');
-            const words = opts.stale ? 'sem dados nesta janela'
-              : (opts.hits === 0 ? 'nunca disparou' : `disparou ${opts.hits}×`);
+            // A count with no period is a number about nothing: "disparou 2×" reads as
+            // a claim about now, and the reader has no way to know whether the log
+            // covers an hour or a month (spec §3.3). The stale case says what is
+            // actually wrong — the record does not cover the period — instead of
+            // "sem dados nesta janela", which named a window the row never showed.
+            const period = hitsWindow();
+            const since = period ? ` ${period}` : '';
+            const words = opts.stale
+              ? 'sem histórico: o registro de decisões não cobre este período'
+              : (opts.hits === 0 ? `nunca disparou${since}` : `disparou ${opts.hits}×${since}`);
             const h = el('span', `step-hits${cls}`, words);
             to.append(h);
           }
@@ -5907,7 +5946,7 @@
         hourBounds, weekdaySet,
         nextWindowChange, windowWords, railWindowRows, effectivePrices, money,
         priceWords, pricePublished, declaredPin, timePolicyMove, timeFlagIndex,
-        timeKnobWords, orderLineParts, orderLine, planWhen, timeCapOf, cappedEntries, renderClock, nowUtc,
+        timeKnobWords, orderLineParts, orderLine, chipList, planWhen, timeCapOf, cappedEntries, renderClock, nowUtc,
         // The server's own numbers, and the two questions the console must answer
         // from the RUNNING path rather than from the declared config: which elos are
         // really out of the chain, and where this task actually goes.

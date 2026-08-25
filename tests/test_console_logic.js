@@ -1903,13 +1903,28 @@ test('windowSpan names the window by its endpoints, never by the oldest age', ()
   assert.equal(api.windowSpan([]), '');
 });
 
-test('hitsWindow names the counted window instead of the oldest decision age', () => {
+test('hitsWindow names the period a count is true of, read from the data', () => {
+  // It used to return the legend that sat ABOVE the list, and after spec §3.3 moved
+  // the period into each row it had no caller at all. Same reading, now in the
+  // fewest words that fit inside a row — and read from the SPAN of the decisions
+  // actually recorded, never from STALE_WINDOW_DAYS: 40 decisions over one evening
+  // are not "os últimos 7 dias" just because the freshness gate uses 7.
   const { api } = loadConsole();
   const t0 = Date.UTC(2026, 7, 1, 22, 12, 11) / 1000;
   const t1 = Date.UTC(2026, 7, 2, 1, 51, 38) / 1000;
   api.state.routes = Array.from({ length: 40 }, (_, i) => ({ ts: t0 + (t1 - t0) * i / 39 }));
-  assert.equal(api.hitsWindow(),
-    'contagens sobre as últimas 40 decisões — de 01/08 22:12 a 02/08 01:51 UTC');
+  assert.equal(api.hitsWindow(), 'nas últimas 4h');
+  // A week of decisions reads in days, with agreement, and a single day is singular.
+  const day = 86400;
+  api.state.routes = [{ ts: t1 - 7 * day }, { ts: t1 }];
+  assert.equal(api.hitsWindow(), 'nos últimos 7 dias');
+  api.state.routes = [{ ts: t1 - day }, { ts: t1 }];
+  assert.equal(api.hitsWindow(), 'no último dia', 'one of anything is singular');
+  api.state.routes = [{ ts: t1 - 3600 }, { ts: t1 }];
+  assert.equal(api.hitsWindow(), 'na última hora');
+  // Under an hour it says minutes rather than rounding a real window down to zero.
+  api.state.routes = [{ ts: t1 - 300 }, { ts: t1 }];
+  assert.equal(api.hitsWindow(), 'nos últimos 5min');
   api.state.routes = [];
   assert.equal(api.hitsWindow(), '', 'no window, no claim');
 });
@@ -1988,7 +2003,7 @@ test('a window older than the policy demotes every count and says why', () => {
   // 2 rules + classifier: no blocklist row, because this policy declares no
   // manual ban (spec 1.3).
   assert.ok(hits.length >= 3, '2 rules + classifier carry hits');
-  assert.ok(hits.every((n) => n.textContent === 'sem dados nesta janela'),
+  assert.ok(hits.every((n) => n.textContent === 'sem histórico: o registro de decisões não cobre este período'),
     `every count demoted, got ${JSON.stringify(hits.map((n) => n.textContent))}`);
   assert.ok(hits.every((n) => /empty/.test(n.className)), 'all demoted rows carry the muted class');
   assert.ok(hits.every((n) => !/zero/.test(n.className)), 'no amber zero survives on a stale sheet');
@@ -1997,13 +2012,11 @@ test('a window older than the policy demotes every count and says why', () => {
   // rule; stale means the plain sentence, never a percentage about old data.
   assert.doesNotMatch(flat(dom.get('sheet')), /% of the decisions/);
   // The window is still NAMED — by the disclosure banner asserted above, which
-  // spells out "de 01/08 22:12 a 02/08 01:51 UTC, não o presente". The single
-  // legend that used to sit above the list is gone on purpose: spec 3.3 moves the
-  // period into each row's own count, and 1.2 gives #pipelineNote a different job.
-  // PENDENTE (spec 3.3): the per-row phrasing does not carry the period yet — it
-  // says "sem dados nesta janela" where the spec asks for "sem histórico: o
-  // registro de decisões não cobre este período". Three passing tests pin the
-  // current strings, so absorbing the period is its own change.
+  // spells out "de 01/08 22:12 a 02/08 01:51 UTC, não o presente". The single legend
+  // that used to sit above the list is gone on purpose: spec §3.3 moved the period
+  // into each row's own count, and §1.2 gave #pipelineNote a different job. On a
+  // stale sheet the row says what is actually wrong — the record does not cover the
+  // period — instead of naming a window the row never showed.
   // The sheet wears the widening class.
   assert.ok(dom.get('sheet').classList.contains('stale'));
 });
@@ -2035,8 +2048,12 @@ test('a covering window keeps the amber "never fired" finding', () => {
   assert.match(text, /2×/, 'a rule that fired keeps its count');
   assert.match(text, /nunca disparou/,
     'a rule that existed and never fired keeps the finding');
-  assert.doesNotMatch(text, /sem dados nesta janela/);
+  assert.doesNotMatch(text, /sem histórico/);
   assert.doesNotMatch(text, /% of the decisions/);
+  // §3.3: the count carries its PERIOD. Two hours of decisions is "nas últimas 2h" —
+  // a number with no period reads as a claim about now.
+  assert.match(text, /disparou 2× na última hora/, 'the count says what it counted over');
+  assert.match(text, /nunca disparou na última hora/, 'and so does the zero');
   // Both zero-hit rows (never-caught, fail-safe) are amber: the window covers the
   // policy, so every zero is a genuine finding. There is no blocklist row — this
   // policy declares no manual ban (spec 1.3).
@@ -2046,8 +2063,7 @@ test('a covering window keeps the amber "never fired" finding', () => {
   assert.ok(!dom.get('sheet').classList.contains('stale'));
   // No disclosure banner here (the window covers the policy) and no global legend
   // either — see the note in the stale-window test above. What this window earns is
-  // the per-row counts asserted at the top of this test: "2×" and "nunca disparou".
-  // PENDENTE (spec 3.3): neither of those names the period yet.
+  // the per-row counts asserted above, each carrying the period it was counted over.
 });
 
 test('an empty log demotes every count and says nothing is recorded yet', () => {
@@ -2065,7 +2081,7 @@ test('an empty log demotes every count and says nothing is recorded yet', () => 
   assert.match(flat(dom.get('windowStale')), /Nenhuma decisão registrada ainda/);
   const words = findAll(dom.get('sheet'), 'step-hits').map((n) => n.textContent);
   assert.ok(words.length >= 2, 'every rule-bearing row renders a hits cell');
-  assert.ok(words.every((w) => w === 'sem dados nesta janela'));
+  assert.ok(words.every((w) => w === 'sem histórico: o registro de decisões não cobre este período'));
   assert.doesNotMatch(flat(dom.get('sheet')), /never fired/);
   // No window exists, so no window is claimed.
   assert.doesNotMatch(flat(dom.get('sheet')), /counts over/);
@@ -5338,4 +5354,26 @@ test('the multiplier is stated once: the Ordem line owns it, the cap sentence ex
   assert.match(said, /acima do teto/, 'the sentence says what the ceiling does');
   assert.doesNotMatch(said, /1\.5×/, 'and leaves the value to the line that owns it');
   assert.match(api.orderLine(tier), /teto de preço 1\.5×/);
+});
+
+// ── The chip prints its own sentence once ──────────────────────────────────
+// The family used to be printed as a one-word label in front of the text, from
+// when a chip's text was a fragment ("400.000 tokens"). With the text a whole
+// sentence in pt-BR the label produced "contexto contexto estimado passa de
+// 400.000 tokens" — the word twice, and once in English.
+test('a condition chip reads as one phrase, with the family in the class and not in the text', () => {
+  const { api } = loadConsole();
+  const chips = plain(api.requirementChips({ min_context: 200000 }));
+  const list = api.chipList(chips);
+  const item = list.children[0];
+  assert.equal(flat(list), 'pelo menos 200,000 tokens', 'the text, once, with no label in front of it');
+  assert.match(String(item.className), /context/, 'the family survives where it is read: the class');
+  // And the DATA keeps the family word — its own test pins it, and the plan's
+  // rejection reasons read it.
+  assert.equal(chips[0].kind, 'context');
+
+  // The case the duplication was measured on: a rule condition whose text is a
+  // sentence already containing the word.
+  const chip = plain(api.predicateChip('est_input_tokens', { gt: 400000 }));
+  assert.equal(flat(api.chipList([chip])), 'o contexto estimado passa de 400.000 tokens');
 });
