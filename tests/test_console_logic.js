@@ -5246,3 +5246,96 @@ test('the show-all toggle widens the select and warns about runtime filtering', 
   assert.equal(values.length, 3, 'show-all lists every catalogue model');
   assert.ok(values.indexOf('glm-4.7') !== -1, 'the ineligible one is reachable');
 });
+
+// ── CA4: the "Ordem:" line — five knobs of a group, none of them blank ──────
+// The criterion: opening Modelos with no click inside the panel, each group block
+// lists `1 + tier.fallback.length` attempts AND prints an effective value for the
+// five strategy keys, with `(padrão do motor)` on every key the policy does not
+// declare. What it protects against is a screen that prints a knob only when the
+// file declares one — silence then reads as "this group has no ceiling", while it
+// means "the router's default applies". They are different facts.
+
+test('the Ordem line names all FIVE knobs, and marks every one the policy left out', () => {
+  const { api } = loadConsole();
+  // A group that declares nothing: every part must still carry a value, and every
+  // part must say the value came from the engine.
+  const parts = api.orderLineParts({});
+  assert.equal(parts.length, 5, 'five keys is the contract, not four');
+  parts.forEach((part, i) => {
+    assert.notEqual(String(part).trim(), '', `part ${i} is blank, which is what CA4 forbids`);
+    assert.match(part, /\(padrão do motor\)$/,
+      `part ${i} came from the engine and has to say so — "sem teto de preço" alone reads as a fact about the file`);
+  });
+  // And the words are the router's own defaults: declared order, first one fixed.
+  assert.match(parts[0], /na ordem escrita/);
+  assert.match(parts[1], /o primeiro fica fixo/);
+  assert.match(parts[2], /sem teto de preço/);
+  assert.match(parts[3], /sem política de horário/);
+  assert.match(parts[4], /sem exigência de contexto/);
+});
+
+test('a fully declared group prints its own values and claims no default', () => {
+  const { api } = loadConsole();
+  const parts = api.orderLineParts({
+    fallback_strategy: 'cheapest_now',
+    pin_primary: false,
+    time_cap: { max_multiplier: 1.5 },
+    time_policy: { avoid_peak: ['deepseek', 'zai'] },
+    requirements: { min_context: 200000 },
+  }, { when: { hour: 9, weekday: 2 } });
+  assert.equal(parts.length, 5);
+  parts.forEach((part, i) => assert.doesNotMatch(part, /padrão do motor/,
+    `part ${i} is declared in the file, so crediting the engine would be a lie`));
+  assert.match(parts[0], /pelo mais barato agora/);
+  assert.match(parts[1], /o primeiro pode ser trocado/, 'pin_primary false is a value, not an absence');
+  assert.match(parts[2], /teto de preço 1\.5×/);
+  assert.match(parts[3], /evita pico de deepseek e zai/);
+  assert.match(parts[4], /pelo menos 200,000 tokens/, 'the floor is said in the same chips a rule uses');
+});
+
+test('a ceiling written in a form the router cannot read says THAT, not "no ceiling"', () => {
+  // `time_cap: 1.5` is a form the lint refuses (§5.4). Printing "sem teto de preço"
+  // for it would tell an operator the file is fine while nothing can be saved.
+  const { api } = loadConsole();
+  const parts = api.orderLineParts({ time_cap: 1.5 });
+  assert.match(parts[2], /formato que o roteador não lê/);
+  assert.doesNotMatch(parts[2], /sem teto de preço/);
+  assert.doesNotMatch(parts[2], /padrão do motor/, 'a declared value is not a default');
+});
+
+test('renderLadder prints one Ordem line per group, with 1 + fallback.length attempts', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.renderLadder();
+
+  const blocks = findAll(dom.get('ladder'), 'tier');
+  assert.equal(blocks.length, 2, 'two groups in the fixture');
+  const names = Object.keys(api.state.policy.tiers);
+  blocks.forEach((block, i) => {
+    const tier = api.state.policy.tiers[names[i]];
+    const text = flat(block);
+    const line = (text.match(/Ordem: [^]*?(?=Sem reserva|As tentativas|$)/) || [''])[0];
+    assert.match(text, /Ordem: /, `group ${names[i]} has no Ordem line`);
+    // The five parts survive the join: four separators between five values.
+    const head = line.split('Ordem: ')[1] || '';
+    assert.ok(head.split(' · ').length >= 5,
+      `group ${names[i]} prints ${head.split(' · ').length} knobs, and the contract is five`);
+    // CA4's other half, counted rather than assumed.
+    const attempts = findAll(block, 'hop');
+    assert.equal(attempts.length, 1 + (tier.fallback || []).length,
+      `group ${names[i]} must list the primary plus every reserve`);
+  });
+});
+
+test('the multiplier is stated once: the Ordem line owns it, the cap sentence explains it', () => {
+  // DESIGN.md §2 rule 2 — one authority per fact. The consequence sentence used to
+  // repeat the number ("acima de 1,5×"), so an operator reading two numbers had to
+  // check they were the same one.
+  const { api } = loadConsole();
+  const tier = { model: 'x', provider: 'p', billing_mode: 'metered', time_cap: { max_multiplier: 1.5 } };
+  const said = plain(api.timeKnobWords(tier)).join(' ');
+  assert.match(said, /acima do teto/, 'the sentence says what the ceiling does');
+  assert.doesNotMatch(said, /1\.5×/, 'and leaves the value to the line that owns it');
+  assert.match(api.orderLine(tier), /teto de preço 1\.5×/);
+});

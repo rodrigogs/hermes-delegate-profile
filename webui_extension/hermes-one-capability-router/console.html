@@ -3678,7 +3678,10 @@
         const words = [];
         const cap = t.time_cap && typeof t.time_cap === 'object' ? Number(t.time_cap.max_multiplier) : NaN;
         if (Number.isFinite(cap)) {
-          words.push(`recusa uma tentativa paga por token ou por assinatura acima de ${times(cap)} — o teto se desliga se isso fosse deixar a fila vazia`);
+          // The MULTIPLIER is not repeated here: the "Ordem:" line states the value
+          // of every knob, and this sentence states what the ceiling DOES. Saying
+          // 1,5× twice is the second authority DESIGN.md §2 rule 2 forbids.
+          words.push('recusa uma tentativa paga por token ou por assinatura acima do teto — o teto se desliga se isso fosse deixar a fila vazia');
           // WHICH OF THIS TIER'S HOPS THE CEILING CANNOT REACH. The mode is resolved
           // exactly as eloRow resolves it — the elo's own declaration first, then the
           // registry — so the sentence names the same rails apply_time_cap exempts.
@@ -3723,6 +3726,88 @@
         if (prefer.length) words.push(`prefere ${prefer.join(' e ')} enquanto estiverem fora do pico`);
         return words;
       }
+
+      // ── The "Ordem:" line: the five knobs of a group, none of them blank ──
+      // A group's strategy IS five keys: the order the attempts are tried in
+      // (fallback_strategy), whether the first is fixed (pin_primary), the price
+      // ceiling (time_cap), the peak-hour policy (time_policy) and the capability
+      // floor (requirements). Before this line the screen printed a knob only when
+      // the policy declared one, so four of the five could be silent — and silence
+      // read as "this group has no ceiling" when what it means is "the ROUTER's
+      // default applies". The two are different facts and an operator acts on them
+      // differently.
+      //
+      // Every part therefore carries its effective value, and a value that comes
+      // from the engine says so: rules._pin_primary_of defaults pin_primary to
+      // true and rules._strategy_of defaults the order to the declared one, and
+      // both are read out of the same file this console reads. The suffix is the
+      // whole point of the line — a blank is what CA4 forbids.
+      const ENGINE_DEFAULT = ' (padrão do motor)';
+      function orderLineParts(tier, options) {
+        const t = tier && typeof tier === 'object' ? tier : {};
+        const o = options || {};
+        const parts = [];
+
+        // 1. THE ORDER. Its words come from strategyWords, which is also what the
+        //    chain list is drawn from, so the line and the queue under it cannot
+        //    disagree about what "cheapest now" means at this hour.
+        const strategy = strategyWords(t.fallback_strategy, {
+          pinPrimary: declaredPin(t.pin_primary), when: o.when || null,
+        });
+        const strategyDeclared = t.fallback_strategy !== undefined && t.fallback_strategy !== null;
+        parts.push(strategyDeclared ? strategy.label : `${strategy.label}${ENGINE_DEFAULT}`);
+
+        // 2. WHETHER THE FIRST IS FIXED. A non-boolean is coerced to true by the
+        //    router, and declaredPin is the console's reader of that same rule.
+        const pinWords = declaredPin(t.pin_primary) === true
+          ? 'o primeiro fica fixo' : 'o primeiro pode ser trocado';
+        parts.push(typeof t.pin_primary === 'boolean' ? pinWords : `${pinWords}${ENGINE_DEFAULT}`);
+
+        // 3. THE CEILING. Declared-but-unreadable is its own answer: `time_cap: 1.5`
+        //    is a form the lint refuses, and reporting it as "no ceiling" would tell
+        //    an operator the file is fine when nothing can be saved.
+        const capDeclared = t.time_cap !== undefined && t.time_cap !== null;
+        const cap = t.time_cap && typeof t.time_cap === 'object'
+          ? Number(t.time_cap.max_multiplier) : NaN;
+        if (Number.isFinite(cap)) {
+          parts.push(`teto de preço ${times(cap)}`);
+        } else if (!capDeclared) {
+          parts.push(`sem teto de preço${ENGINE_DEFAULT}`);
+        } else {
+          parts.push('teto de preço escrito num formato que o roteador não lê, e o lint recusa o arquivo assim');
+        }
+
+        // 4. THE PEAK POLICY, in the same words the group's own facts use.
+        const policy = t.time_policy && typeof t.time_policy === 'object' ? t.time_policy : {};
+        const avoid = Array.isArray(policy.avoid_peak)
+          ? policy.avoid_peak.map((one) => String(one)).filter(Boolean) : [];
+        const prefer = Array.isArray(policy.prefer)
+          ? policy.prefer.map((one) => String(one)).filter(Boolean) : [];
+        const moves = [];
+        if (avoid.length) moves.push(`evita pico de ${avoid.join(' e ')}`);
+        if (prefer.length) moves.push(`prefere ${prefer.join(' e ')}`);
+        if (moves.length) {
+          parts.push(moves.join(' e '));
+        } else if (t.time_policy === undefined || t.time_policy === null) {
+          parts.push(`sem política de horário${ENGINE_DEFAULT}`);
+        } else {
+          parts.push('política de horário declarada sem nenhum provedor dentro, então ela não muda a fila');
+        }
+
+        // 5. THE CAPABILITY FLOOR, read through the same chips a rule's conditions
+        //    use — one vocabulary for one fact.
+        const chips = requirementChips(t.requirements);
+        if (chips.length) {
+          parts.push(`exige ${chips.map((chip) => chip.text).join(' e ')}`);
+        } else if (t.requirements === undefined || t.requirements === null) {
+          parts.push(`sem exigência de contexto${ENGINE_DEFAULT}`);
+        } else {
+          parts.push('exigência declarada sem nenhuma condição dentro, então ela não tira nada da fila');
+        }
+
+        return parts;
+      }
+      const orderLine = (tier, options) => `Ordem: ${orderLineParts(tier, options).join(' · ')}`;
 
       // ── What the four groups mean ───────────────────────────────────
       // T1..T4 are the classifier's OWN rubric, not this screen's invention:
@@ -3788,7 +3873,6 @@
           const meaning = TIER_MEANING[name] || null;
           head.append(el('span', 'tier-name',
                           meaning ? `Grupo ${name} · ${meaning.label}` : `Grupo ${name} · sem descrição`));
-          head.append(el('span', 'tier-fact', hops.length > 1 ? strategy.label : 'uma só tentativa, nada a escolher'));
           // Redundancy in the only terms that mean anything: distinct upstreams. A
           // count of vendors would call two OpenRouter resellers two rails.
           head.append(el('span', `tier-fact${rails < 2 ? ' thin' : ''}`,
@@ -3807,6 +3891,11 @@
           // which work lands here. The rubric's own words go directly under the
           // name, before any fact about the chain.
           block.append(el('div', 'tier-fact', meaning ? meaning.what : TIER_UNKNOWN_WHAT));
+          // The five knobs, always all five, right under what the group is FOR: the
+          // order a reader needs is "what work lands here" and then "how it is tried".
+          // The strategy word used to be a chip in the head; it lives here now, so the
+          // value of each knob is stated in exactly one place (DESIGN.md §2 rule 2).
+          block.append(el('div', 'tier-fact', orderLine(t, { when })));
           if (strategy.note) block.append(el('div', 'tier-fact', strategy.note));
           // A per-tier floor is a condition on every elo in the chain, so it is
           // said in the same chips a rule's own conditions use.
@@ -5818,7 +5907,7 @@
         hourBounds, weekdaySet,
         nextWindowChange, windowWords, railWindowRows, effectivePrices, money,
         priceWords, pricePublished, declaredPin, timePolicyMove, timeFlagIndex,
-        timeKnobWords, planWhen, timeCapOf, cappedEntries, renderClock, nowUtc,
+        timeKnobWords, orderLineParts, orderLine, planWhen, timeCapOf, cappedEntries, renderClock, nowUtc,
         // The server's own numbers, and the two questions the console must answer
         // from the RUNNING path rather than from the declared config: which elos are
         // really out of the chain, and where this task actually goes.
