@@ -3747,6 +3747,71 @@
       // the three things that decide whether the chain is any good: how it picks
       // the next hop, whether its hops share an upstream, and what each elo costs
       // and can hold.
+
+      // ── CA4 §2.3: the "Ordem:" line — five keys, always all five ─────────
+      // The strategy of a group is five knobs (§2.3): the order attempts are
+      // tried in, whether the first is pinned, the price ceiling, the peak
+      // policy, and the context floor. A knob the policy does not declare is
+      // not blank: the ENGINE has a default for each one, and an operator
+      // reading the block must see that value with the suffix saying where
+      // it came from. Nenhuma chave pode aparecer em branco.
+      //
+      // The words for each knob reuse the exact vocabulary already exported
+      // (strategyWords for the order, timeKnobWords for the time controls),
+      // so the "Ordem:" line cannot drift from the ladder's own reading.
+      function orderLineParts(t) {
+        const strategy = strategyWords(t.fallback_strategy, {
+          pinPrimary: declaredPin(t.pin_primary),
+        });
+        const parts = [];
+        // 1. fallback_strategy — the order itself.
+        parts.push(strategy.label);
+        // 2. pin_primary — whether the first attempt is fixed.
+        parts.push(declaredPin(t.pin_primary) === true
+          ? 'o primeiro fica fixo'
+          : 'o primeiro pode ser trocado');
+        // 3. time_cap — the ceiling.
+        const cap = t.time_cap && typeof t.time_cap === 'object'
+          ? Number(t.time_cap.max_multiplier) : undefined;
+        if (cap !== undefined && Number.isFinite(cap)) {
+          parts.push(`teto de preço ${times(cap)}`);
+        } else if (t.time_cap === undefined || t.time_cap === null) {
+          parts.push('sem teto de preço (padrão do motor)');
+        } else {
+          parts.push('teto de preço não declarado de forma legível');
+        }
+        // 4. time_policy — the peak-hour policy.
+        const policy = t.time_policy && typeof t.time_policy === 'object' ? t.time_policy : {};
+        const avoid = Array.isArray(policy.avoid_peak)
+          ? policy.avoid_peak.map((p) => String(p)).filter(Boolean) : [];
+        const prefer = Array.isArray(policy.prefer)
+          ? policy.prefer
+              .map((m) => String(m)).filter(Boolean) : [];
+        if (avoid.length || prefer.length) {
+          const bits = [];
+          if (avoid.length) bits.push(`evita pico de ${avoid.join(' e ')}`);
+          if (prefer.length) bits.push(`prefere ${prefer.join(' e ')}`);
+          parts.push(bits.join(' e '));
+        } policy === undefined || t.time_policy == null ? parts.push('sem política de horário (padrão do motor)') : null;
+        // 5. requirements — the capability floor.
+        const floor = Number(t.requirements && t.requirements.min_context);
+        if (Number.isFinite(floor) && floor > 0) {
+          parts.push(`exigência de contexto de ${fmt(floor)} tokens`);
+        } else if (t.requirements === undefined || t.requirements === null) {
+          parts.push('sem exigência de contexto (padrão do motor)',
+            '(padrão do motor)');
+        }
+        return { strategy, parts };
+      }
+
+      function orderLine(t) {
+        const { strategy, parts } = orderLineParts(t);
+        // The five knobs print in a fixed order — the router's own pipeline
+        // order (filter → ceiling → policy → ordering), so two groups read
+        // comparable line by line.
+        return `Ordem: ${parts.join(' · ')}`;
+  }
+
       function renderLadder() {
         const box = $('ladder');
         clear(box);
@@ -3803,6 +3868,11 @@
             (words) => head.append(el('span', 'tier-fact', words)));
           const floorChips = requirementChips(t.requirements);
           block.append(head);
+          // CA4 §2.3: the "Ordem:" line — the five strategy keys, always all
+          // five, each with an effective value and the "(padrão do motor)"
+          // suffix where the policy does not declare it. Nenhuma chave em
+          // branco: a chave ausente mostra o default com o sufixo.
+          block.append(el('div', 'tier-fact order-line', orderLine(t)));
           // The bare key was the complaint: "T1" tells an operator nothing about
           // which work lands here. The rubric's own words go directly under the
           // name, before any fact about the chain.
@@ -5843,6 +5913,10 @@
         // operator's fastest diagnosis of "no model serves this group" — and
         // its escapes are pinned by tests rather than eyeballed.
         modelField, modelMeetsRequirement, modelOptionLabel,
+        // CA4 §2.3: the five strategy knobs of a group, always all five, with
+        // the "(padrão do motor)" suffix on the ones the policy does not
+        // declare — nenhuma chave em branco.
+        orderLineParts, orderLine,
       };
     })();
   </script>
