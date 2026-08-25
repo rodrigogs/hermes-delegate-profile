@@ -3185,6 +3185,14 @@
           const pick = el('button', 'btn', `${preset.key === active ? '(•) ' : '( ) '}${preset.label}`);
           pick.type = 'button';
           pick.dataset.preset = preset.key;
+          // Drawn as a radio ("( )" / "(•)"): DESIGN.md allows no svg here and no markup
+          // injection, so the shape is characters. The STATE therefore has to reach
+          // assistive technology as state rather than as two of those characters — found
+          // reviewing this slice.
+          //
+          // (The forbidden-token guard in test_webui_extension.py greps this whole script
+          // for the names of the APIs it bans, so a comment cannot spell them either.)
+          pick.setAttribute('aria-pressed', String(preset.key === active));
           pick.addEventListener('click', () => {
             // A new choice invalidates the plan that was on screen: the diff below
             // belonged to the other preset, and a Salvar left over from it would write
@@ -6161,6 +6169,10 @@
       }
 
       async function load() {
+        // An armed Voltar à versão anterior does not survive a re-read: the question is
+        // about the file the screen was showing, and after a refresh that is a different
+        // file. Found reviewing this slice — the arming only came down on a mode change.
+        disarmRevert();
         const button = $('refresh');
         button.disabled = true;
         button.textContent = 'Refreshing…';

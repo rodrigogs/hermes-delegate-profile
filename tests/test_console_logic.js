@@ -5912,3 +5912,44 @@ test('every row on the sheet has a destination, and it is one of the five (CA2)'
   const hit = DEST_PREFIXES.filter((prefix) => dests.some((text) => prefix.test(text)));
   assert.equal(hit.length, 5, `all five prefixes exercised, got ${hit.length}`);
 });
+
+test('the preset control says its state to assistive technology, not only in ASCII', () => {
+  // It is drawn as a radio — "( )" and "(•)" — because DESIGN.md allows no svg and no
+  // innerHTML. Two characters of text are not state: aria-pressed is.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  const next = JSON.parse(JSON.stringify(presetPolicy()));
+  const patch = plain(api.presetPatch('qualidade', next)).tiers;
+  Object.keys(patch).forEach((name) => Object.assign(next.tiers[name], patch[name]));
+  api.state.policy = next;
+  api.renderPresets();
+
+  const buttons = (dom.get('presetOptions').children || []).flatMap((row) => (row.children || [])
+    .filter((k) => k.dataset && k.dataset.preset));
+  assert.equal(buttons.length, 3, 'one control per preset');
+  const pressed = buttons.filter((b) => b.getAttribute('aria-pressed') === 'true');
+  assert.deepEqual(pressed.map((b) => b.dataset.preset), ['qualidade'],
+    'exactly the one in force is pressed');
+});
+
+test('an armed Voltar à versão anterior does not survive a refresh', async () => {
+  // The question is about the file the screen was showing; after a re-read that is a
+  // different file, and a button still armed from before would write against it.
+  const routes = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      routes.push(String(url).replace(/^.*\/sidecar/, ''));
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
+    },
+  });
+  api.state.loading = false;
+  await api.requestRevert();
+  assert.equal(dom.get('jsonRevert').textContent, 'Confirmar: voltar à versão anterior');
+
+  await api.load();
+  assert.equal(dom.get('jsonRevert').textContent, 'Voltar à versão anterior', 'the refresh disarmed it');
+  await api.requestRevert();
+  assert.deepEqual(routes.filter((r) => /^\/apply/.test(r)), [],
+    'the click after a refresh asks again instead of writing');
+});
