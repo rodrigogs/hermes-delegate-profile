@@ -708,7 +708,10 @@ class TestExportedFeatureVocabulary:
         # The clock is a parameter supplied at the edge, never read in this
         # module, so `extract()` must not emit these — but a rule may key on
         # them, which is why they are named and exported.
-        assert INJECTED_FEATURE_NAMES == frozenset({"utc_hour", "utc_weekday"})
+        # Membership, not the whole set: the clock is no longer the only injected
+        # feature (the role the caller fixes arrives the same way), and the
+        # invariant this test protects is that NOTHING injected is produced here.
+        assert {"utc_hour", "utc_weekday"} <= INJECTED_FEATURE_NAMES
         assert not INJECTED_FEATURE_NAMES & EXTRACTED_FEATURE_NAMES
         for task in self.TURNS:
             assert not set(extract(task)) & INJECTED_FEATURE_NAMES
@@ -743,3 +746,12 @@ class TestExportedFeatureVocabulary:
         }
         # No IO, no state, no network: the import list is the proof.
         assert imported <= {"__future__", "math", "re", "typing"}
+
+def test_assignee_is_injected_and_never_extracted():
+    """The role is an INPUT the caller fixes; extract() is pure and never sees it."""
+    assert "assignee" in INJECTED_FEATURE_NAMES
+    assert "assignee" in KNOWN_FEATURE_NAMES
+    assert "assignee" not in EXTRACTED_FEATURE_NAMES
+    assert "assignee" not in signals_module.extract(
+        "Assign this to the reviewer profile please"
+    )

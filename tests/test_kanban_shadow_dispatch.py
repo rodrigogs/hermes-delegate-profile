@@ -99,8 +99,12 @@ def test_shadow_log_keeps_a_matching_profile_decision_untouched(trace_home):
     assert entry["output"]["model"] == "glm-4.7"
 
 
-def test_shadow_log_refuses_a_profile_changing_decision(trace_home):
-    """A rule that moves the ROLE cannot run on the kanban dispatch path."""
+def test_shadow_log_keeps_the_model_half_when_the_role_is_out_of_scope(trace_home):
+    """The role axis is not this path's to move; the model axis is.
+
+    Until 2026-08-26 this dropped the model half too, and 135 of 158 measured
+    decisions therefore contributed nothing.
+    """
     log = dp._KanbanShadowLog(allowed_profile="coder")
     log.record(
         "review-request", {"profile": "reviewer", "model": "gpt-5.5"},
@@ -109,11 +113,11 @@ def test_shadow_log_refuses_a_profile_changing_decision(trace_home):
                 "cause": "keyword_match"}],
     )
     entry = _read_trace()[0]
-    assert entry["cause"] == "profile_ignored"
-    # The model half is dropped — executing it would run half the rule.
-    assert "model" not in entry["output"]
-    assert "provider" not in entry["output"]
-    # The refused profile stays, so the operator sees WHICH role was wanted.
+    assert entry["cause"] == "role_out_of_scope"
+    # The model half is what this path can apply, so it stays.
+    assert entry["output"]["model"] == "gpt-5.5"
+    # And the role the policy wanted stays too: the operator can tell "chose this
+    # model" from "also wanted another role, which this path never moves".
     assert entry["output"]["profile"] == "reviewer"
 
 
@@ -124,23 +128,23 @@ def test_shadow_log_without_assignee_constrains_nothing(trace_home):
 
 
 # ---------------------------------------------------------------------------
-# _kanban_profile_refused — the ONE profile constraint
+# _kanban_role_out_of_scope — the ONE role question
 # ---------------------------------------------------------------------------
 
-def test_profile_refused_false_for_a_matching_profile():
-    assert dp._kanban_profile_refused({"profile": "coder"}, "coder") is False
+def test_role_in_scope_when_the_decision_names_the_same_role():
+    assert dp._kanban_role_out_of_scope({"profile": "coder"}, "coder") is False
 
 
-def test_profile_refused_true_for_a_role_change():
-    assert dp._kanban_profile_refused({"profile": "reviewer"}, "coder") is True
+def test_role_out_of_scope_when_the_decision_names_another_role():
+    assert dp._kanban_role_out_of_scope({"profile": "reviewer"}, "coder") is True
 
 
-def test_profile_refused_false_without_an_assignee():
-    assert dp._kanban_profile_refused({"profile": "reviewer"}, None) is False
+def test_role_in_scope_when_the_caller_fixed_no_role():
+    assert dp._kanban_role_out_of_scope({"profile": "reviewer"}, None) is False
 
 
-def test_profile_refused_false_when_the_decision_names_no_profile():
-    assert dp._kanban_profile_refused({"model": "glm-4.7"}, "coder") is False
+def test_role_in_scope_when_the_decision_names_no_role():
+    assert dp._kanban_role_out_of_scope({"model": "glm-4.7"}, "coder") is False
 
 
 # ---------------------------------------------------------------------------
@@ -182,11 +186,15 @@ def test_live_override_refuses_a_decision_with_no_model():
     assert dp._kanban_live_override(decision, "coder") is None
 
 
-def test_live_override_refuses_a_profile_changing_decision():
+def test_live_override_hands_the_model_over_when_the_role_is_out_of_scope():
+    """The role was the operator's to choose and stays theirs; the model is the
+    one axis this hook can apply, so a role mismatch no longer voids it."""
     decision = {
         "profile": "reviewer", "model": "gpt-5.5", "provider": "openai-codex",
     }
-    assert dp._kanban_live_override(decision, "coder") is None
+    assert dp._kanban_live_override(decision, "coder") == {
+        "model": "gpt-5.5", "provider": "openai-codex",
+    }
 
 
 def test_live_override_without_an_assignee_constrains_nothing():
@@ -277,8 +285,9 @@ def test_shadow_hook_records_the_decision_and_never_writes_the_field(
     assert "steps" in entry
 
 
-def test_shadow_hook_refuses_a_rule_that_changes_profile(trace_home, monkeypatch):
-    """review-request wants a reviewer; a coder card cannot become one."""
+def test_shadow_hook_records_the_model_half_of_a_reviewer_rule(trace_home, monkeypatch):
+    """review-request wants a reviewer; the card stays a coder card and still
+    gets the model the policy chose for that task shape."""
     monkeypatch.setattr(
         dp, "_read_kanban_task",
         lambda task_id, board: _card("Review this PR for security issues"),
@@ -288,9 +297,9 @@ def test_shadow_hook_refuses_a_rule_that_changes_profile(trace_home, monkeypatch
         assignee="coder", run_id=2,
     )
     entry = _read_trace()[0]
-    assert entry["cause"] == "profile_ignored"
+    assert entry["cause"] == "role_out_of_scope"
     assert entry["output"]["profile"] == "reviewer"
-    assert "model" not in entry["output"]
+    assert entry["output"]["model"]
 
 
 def test_shadow_hook_is_silent_when_router_is_disabled(trace_home, monkeypatch):
@@ -330,9 +339,9 @@ def test_live_hook_routes_records_and_returns_the_decision(trace_home, monkeypat
     assert entry["cause"] == "fail_safe_strong"
 
 
-def test_live_hook_refuses_a_rule_that_changes_profile(trace_home, monkeypatch):
-    """LIVE mode applies the SAME refusal the trace records: a reviewer-role
-    decision must not drive a coder card's dispatch, and the trace says so."""
+def test_live_hook_applies_the_model_of_a_rule_that_named_another_role(trace_home, monkeypatch):
+    """LIVE mode and the trace agree, as they must: the model half drives the
+    dispatch and the trace says the role half was out of scope."""
     monkeypatch.setattr(
         dp, "_read_kanban_task",
         lambda task_id, board: _card("Review this PR for security issues"),
@@ -354,12 +363,12 @@ def test_live_hook_refuses_a_rule_that_changes_profile(trace_home, monkeypatch):
         task_id="t6", profile_name="x", board="default",
         assignee="coder", run_id=6,
     )
-    assert result is None
+    assert result == {"model": "glm-4.7", "provider": "zai"}
     entry = _read_trace()[0]
     assert entry["shadow"] is False
-    assert entry["cause"] == "profile_ignored"
+    assert entry["cause"] == "role_out_of_scope"
     assert entry["output"]["profile"] == "reviewer"
-    assert "model" not in entry["output"]
+    assert entry["output"]["model"] == "glm-4.7"
 
 
 def test_live_entries_never_count_in_the_gate(trace_home, monkeypatch):
@@ -481,8 +490,18 @@ def test_gate_boundary_at_the_agreed_limit(trace_home):
     assert dp._shadow_gate_ok() is True
 
 
+def test_gate_role_out_of_scope_still_counts_as_fallthrough(trace_home):
+    """A rewritten cause never hides a fallthrough: the steps keep the truth."""
+    from router.durable_decision_log import routes_path
+    path = routes_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = _shadow_entry("role_out_of_scope", "no_classifier", shadow=True)
+    path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    assert dp.shadow_gate_rate() == 1.0
+
+
 def test_gate_profile_ignored_still_counts_as_fallthrough(trace_home):
-    """The cause may be rewritten to profile_ignored; the steps keep the truth."""
+    """Traces written before 2026-08-26 carry the retired cause and still count."""
     from router.durable_decision_log import routes_path
     path = routes_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -532,3 +551,80 @@ def test_register_subscribes_the_pre_kanban_dispatch_hook(monkeypatch):
     names = [args[0] for args, _ in ctx.hooks]
     assert "pre_kanban_dispatch" in names
     assert "post_tool_call" in names
+
+def test_a_card_of_any_role_gets_the_model_the_policy_chose(trace_home, monkeypatch):
+    """The measured regression, as a test.
+
+    On 2026-08-26 every card of this board ran as ``trama-engineer`` while every
+    rule of the shipped policy named ``coder`` or ``reviewer``: 135 of 158
+    decisions were recorded as refused and contributed nothing. A role nobody
+    wrote a rule for must still get the model its task shape earned.
+    """
+    monkeypatch.setattr(
+        dp, "_read_kanban_task",
+        lambda task_id, board: _card("Rename getCwd in src/utils.py"),
+    )
+    monkeypatch.setattr(
+        dp, "_load_router_config",
+        lambda: {
+            "enabled": True,
+            "shadow": {"enabled": False},
+            "rules": [
+                {"id": "standard-implementation", "status": "stable",
+                 "when": {"has_code": {"eq": True}},
+                 "then": {"profile": "coder", "model": "T2"}},
+            ],
+            "tiers": {"T2": {"model": "glm-5.3", "provider": "zai"}},
+        },
+    )
+    result = dp._on_pre_kanban_dispatch(
+        task_id="t99", profile_name="x", board="capability-router",
+        assignee="trama-engineer", run_id=99,
+    )
+    assert result == {"model": "glm-5.3", "provider": "zai"}
+    assert _read_trace()[0]["cause"] == "role_out_of_scope"
+
+
+def test_a_role_scoped_rule_does_not_fire_for_another_role(trace_home, monkeypatch):
+    """The protection the old veto gave, kept where it belongs: on the input side.
+
+    A reviewer-tuned row that buys the strongest tier must not fire for a card
+    that is not a reviewer. It says so in ``when``, and the row is simply not the
+    one that matches.
+    """
+    monkeypatch.setattr(
+        dp, "_read_kanban_task",
+        lambda task_id, board: _card("Please audit this diff for security holes"),
+    )
+    monkeypatch.setattr(
+        dp, "_load_router_config",
+        lambda: {
+            "enabled": True,
+            "shadow": {"enabled": False},
+            "rules": [
+                {"id": "adversarial-review", "status": "stable",
+                 "when": {"keywords": {"contains": "audit"},
+                          "assignee": {"eq": "reviewer"}},
+                 "then": {"profile": "reviewer", "model": "T4"}},
+                {"id": "standard-implementation", "status": "stable",
+                 "when": {"has_code": {"eq": True}},
+                 "then": {"profile": "coder", "model": "T2"}},
+            ],
+            "tiers": {
+                "T4": {"model": "gpt-5.6-terra", "provider": "openai-codex"},
+                "T2": {"model": "glm-5.3", "provider": "zai"},
+            },
+        },
+    )
+    result = dp._on_pre_kanban_dispatch(
+        task_id="t100", profile_name="x", board="capability-router",
+        assignee="coder", run_id=100,
+    )
+    assert result != {"model": "gpt-5.6-terra", "provider": "openai-codex"}
+
+    # The same text, for a reviewer, DOES buy the strongest tier.
+    result = dp._on_pre_kanban_dispatch(
+        task_id="t101", profile_name="x", board="capability-router",
+        assignee="reviewer", run_id=101,
+    )
+    assert result == {"model": "gpt-5.6-terra", "provider": "openai-codex"}

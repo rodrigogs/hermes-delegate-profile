@@ -847,11 +847,26 @@ def _route_task(
 #     cost the design keeps out of the hot path. The shadow therefore measures
 #     how well Stage 0 alone covers REAL cards; that measurement IS the gate
 #     for leaving shadow mode (shadow_gate_rate).
-#   * NO PROFILE CHANGE. The worker is ``hermes -p <assignee>`` and the
-#     dispatcher only passes -m/--provider — a rule whose destination changes
-#     profile cannot be honored. It is refused with cause=profile_ignored
-#     rather than half-applied (see _KanbanShadowLog), so the policy says to
-#     the face what this path cannot do.
+#   * THE ROLE IS AN INPUT HERE, NOT AN OUTPUT. The worker is
+#     ``hermes -p <assignee>`` and the dispatcher's hook applies only
+#     ("model", "provider") — measured in hermes_cli/kanban_db.py, where
+#     _PRE_DISPATCH_MUTABLE_FIELDS names exactly those two. So no decision on
+#     this path can move a role, and a rule's ``then.profile`` is not a
+#     destination here: it is an annotation about the role the policy had in mind.
+#
+#     Until 2026-08-26 a mismatch refused the WHOLE decision and dropped the
+#     model half with it. Measured on 158 real cards: 135 (85%) died that way,
+#     because every rule in the shipped policy names coder or reviewer while the
+#     cards run as trama-engineer. The model half is the only thing this path can
+#     contribute, so it now applies, and the trace records
+#     cause=role_out_of_scope — the operator sees that an axis was left alone
+#     instead of guessing that the router had nothing to say.
+#
+#     A rule that must NOT fire for a given role scopes itself on the input side:
+#     ``when: {assignee: {eq: reviewer}}``. Same shape the clock uses, and it
+#     keeps the old protection (a reviewer-tuned row buying the strongest tier for
+#     every coder card) available as a policy statement instead of as a silent
+#     veto over every decision.
 
 # The agreed gate for leaving shadow mode: the fraction of real cards that fell
 # through Stage 0 (no_classifier or fallthrough) must be at or below this.
@@ -882,16 +897,15 @@ class _KanbanShadowLog(DurableDecisionLog):
       entries stay out of the gate measurement because the gate counts
       ``is True``; the gate function itself does not change.
 
-    The profile constraint — the kanban dispatch path cannot change the
-    worker's profile. A decision whose profile differs from the card's
-    assignee is REFUSED here: the cause is rewritten to ``profile_ignored``
-    and the model/provider half is dropped from the recorded output, because
-    executing only the model half of a rule that also moved the role is how
-    a reviewer-only rule runs on a coder identity. The planned chain is
-    still recorded, so the operator sees what the policy wanted and why it
-    could not run. The refusal check itself is :func:`_kanban_profile_refused`,
-    the one authority shared with the live return path — two implementations
-    of \"refused by profile\" is how the trace and dispatch come to disagree.
+    The role axis — this path cannot change the worker's role, so a decision
+    whose ``profile`` differs from the card's assignee has its cause stamped
+    ``role_out_of_scope`` and KEEPS the model half, which is the only half this
+    path can apply. Nothing is dropped: the recorded output still carries the
+    role the policy wanted, so the operator can tell "the router chose this
+    model" from "the router also wanted another role, which this path never
+    moves". The predicate is :func:`_kanban_role_out_of_scope`, the one authority
+    shared with the live return path — two implementations of the same question
+    is how the trace and dispatch come to disagree about the same card.
     """
 
     def __init__(
@@ -914,11 +928,8 @@ class _KanbanShadowLog(DurableDecisionLog):
         steps: Optional[List[Dict[str, Any]]] = None,
         chain_plan: Optional[Dict[str, Any]] = None,
     ) -> None:
-        if _kanban_profile_refused(output, self._allowed_profile):
-            cause = "profile_ignored"
-            output = dict(output)
-            for key in ("model", "provider", "fallback", "chain"):
-                output.pop(key, None)
+        if _kanban_role_out_of_scope(output, self._allowed_profile):
+            cause = "role_out_of_scope"
         # In-memory append (NOT the parent's record, which would persist the
         # unstamped entry), then stamp, then persist once.
         DecisionLog.record(
@@ -930,18 +941,22 @@ class _KanbanShadowLog(DurableDecisionLog):
         self._persist(entry)
 
 
-def _kanban_profile_refused(
+def _kanban_role_out_of_scope(
     output: Dict[str, Any],
     allowed_profile: Optional[str],
 ) -> bool:
-    """True when a decision moves the worker's ROLE, which dispatch cannot honor.
+    """True when a decision names a ROLE other than the one the caller fixed.
 
-    The ONE definition of the kanban profile constraint, shared by the durable
-    trace (``_KanbanShadowLog.record`` rewrites the cause and drops the model
-    half of a refused decision) and the live return path (:func:`_kanban_live_override`
-    returns None for a refused decision). Two implementations of \"refused by
-    profile\" is how the trace and the dispatcher come to disagree about the
-    same card.
+    The ONE definition of the kanban role question, shared by the durable trace
+    (``_KanbanShadowLog.record`` stamps ``role_out_of_scope``) and the live return
+    path (:func:`_kanban_live_override`, which still hands over the model half).
+    Two implementations of the same question is how the trace and the dispatcher
+    come to disagree about the same card.
+
+    Out of scope is not refusal: the role axis was never this path's to move, the
+    dispatcher's hook applying only model and provider. A rule that should not
+    fire for a role at all belongs on the input side, as
+    ``when: {assignee: {eq: <role>}}``.
     """
     return bool(
         allowed_profile
@@ -956,11 +971,14 @@ def _kanban_live_override(
 ) -> Optional[Dict[str, str]]:
     """The ``{"model", "provider"}`` a LIVE hook may hand the dispatcher, or None.
 
-    A decision drives dispatch only when BOTH constraints hold:
+    A decision drives dispatch when it carries a complete head. The role axis is
+    NOT a condition: the caller already fixed the role and this path applies only
+    model/provider, so a decision whose ``profile`` differs still hands over its
+    model half (:func:`_kanban_role_out_of_scope` names that case for the trace).
+    A rule that must not fire for a role scopes itself in ``when.assignee``.
 
-    * the profile constraint — see :func:`_kanban_profile_refused`. A rule that
-      wants to move the worker's role cannot be honored by dispatch, which only
-      passes -m/--provider.
+    The one condition:
+
     * a complete head. The head is :func:`plan_head_of` — the first hop of the
       planned chain, the one definition of \"head\" in the repo. When the
       decision carries no ``chain``, the plan IS the declared order (the
@@ -970,8 +988,6 @@ def _kanban_live_override(
       a board (kanban_db._resolve_pre_dispatch_model_override), so it is
       refused with None.
     """
-    if _kanban_profile_refused(decision, allowed_profile):
-        return None
     head = plan_head_of(decision)
     if head is None:
         model = decision.get("model")
@@ -1089,6 +1105,7 @@ def _on_pre_kanban_dispatch(
             blocklist=blocklist,
             decision_log=log,
             prompt_text=goal,
+            assignee=str(assignee or ""),
         )
         if not live:
             return None
@@ -1107,8 +1124,9 @@ def shadow_gate_rate(limit: Optional[int] = None) -> Optional[float]:
     fraction of ``shadow: True`` trace entries whose steps show a fail_safe
     stage with reason ``no_classifier`` or ``fallthrough`` — the two outcomes
     the shadow exists to measure. The cause field alone cannot be counted:
-    ``_KanbanShadowLog`` may have rewritten it to ``profile_ignored``, but the
-    steps keep the pipeline's own record.
+    ``_KanbanShadowLog`` may have rewritten it (``role_out_of_scope`` today,
+    ``profile_ignored`` in traces written before 2026-08-26), but the steps keep
+    the pipeline's own record.
 
     ``limit`` bounds the trace entries READ (shadow entries among the last N
     mixed delegate+shadow entries); None reads everything.

@@ -70,10 +70,19 @@ VALID_CAUSES: set[str] = {
     "session_pin",
     "default_fallthrough",
     "fail_safe_strong",
-    # The kanban dispatch path cannot change the worker's profile (it only
-    # passes -m/--provider), so a rule that routes to a different profile is
-    # refused there with this cause rather than half-applied.
+    # HISTORICAL, no longer produced. Until 2026-08-26 the kanban dispatch path
+    # refused a decision whose ``then.profile`` differed from the card's assignee
+    # and dropped the model half with it — which is how 135 of 158 measured
+    # decisions came to contribute nothing. Kept in the closed set because trace
+    # files written before that change still carry it, and a screen that cannot
+    # name what it reads is worse than one naming a retired value.
     "profile_ignored",
+    # The rule's role half does not apply here: the caller already fixed the role
+    # (a kanban card's assignee) and this path cannot change it, so only the model
+    # half was applied. NOT a refusal — the decision ran, minus an axis that was
+    # never this path's to move. A rule that should not fire for a role at all
+    # says so on the input side, ``when: {assignee: {eq: <role>}}``.
+    "role_out_of_scope",
     # The selection guard (cost/data-policy) refused the chosen rail AND the
     # fallback chain offered no clean replacement — a denial, not a substitution.
     "selection_vetoed",

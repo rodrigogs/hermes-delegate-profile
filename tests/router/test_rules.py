@@ -4762,3 +4762,27 @@ def test_rules_module_never_reads_the_wall_clock():
         "", "__future__", "adapter", "datetime", "inspect", "random", "re",
         "router", "typing",
     }
+
+def test_the_lint_knows_the_injected_role_field():
+    """`when.assignee` must not be reported as an unknown signal at the write gate.
+
+    The authority is signals.KNOWN_FEATURE_NAMES, imported and never mirrored.
+    """
+    from router import rules as _rules
+    fields = _rules._known_when_fields()
+    assert fields is not None
+    assert "assignee" in fields
+
+
+def test_a_role_scoped_row_matches_only_when_the_role_is_present():
+    from router.rules import match
+    rows = [{"id": "reviewer-only", "status": "stable",
+             "when": {"assignee": {"eq": "reviewer"}},
+             "then": {"profile": "reviewer", "model": "T4"}}]
+    tiers = {"T4": {"model": "gpt-5.6-terra", "provider": "openai-codex"}}
+
+    _out, rid = match({"has_code": True}, False, rows, {}, tiers)
+    assert rid is None
+
+    _out, rid = match({"has_code": True, "assignee": "reviewer"}, False, rows, {}, tiers)
+    assert rid == "reviewer-only"

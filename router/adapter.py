@@ -144,6 +144,7 @@ def route(
     rng: Optional[random.Random] = None,
     now: Optional[datetime] = None,
     warn_fn: Optional[Callable[..., List[Any]]] = None,
+    assignee: str = "",
 ) -> Dict[str, Any]:
     """Route a task, and hold the CHOSEN CHAIN to the blocklist.
 
@@ -315,6 +316,12 @@ def route(
     # utc_hour/utc_weekday is therefore live in production, and inert (never
     # spuriously matching) anywhere no clock is supplied.
     features.update(_clock_features(when))
+    # The role is the other per-turn INPUT: whoever created the work already
+    # chose it, and nothing here can change it — the dispatcher's hook applies
+    # only model/provider. Injecting it lets a rule that is only correct for one
+    # role SAY so in `when`, which is where an input belongs, instead of naming
+    # the role in `then` where this path can never honor it.
+    features.update(_role_features(assignee))
     steps.append({"stage": "signals", "in": {"task": task[:120], "seed": seed},
                   "out": dict(features), "cause": None})
 
@@ -470,6 +477,21 @@ def _turn_seed(task: str) -> int:
         (task or "").encode("utf-8", "replace"), digest_size=8,
     ).digest()
     return int.from_bytes(digest, "big")
+
+
+def _role_features(assignee: str) -> Dict[str, Any]:
+    """The injected role feature, or {} when the caller fixed no role.
+
+    Named ``assignee`` after the field the dispatcher hands the hook, and NOT
+    ``profile``, because ``then.profile`` in the same policy file is the other
+    axis — the role a rule had in mind. One word for both would make a config
+    where ``when.profile`` and ``then.profile`` point in opposite directions.
+
+    Empty means the key is absent, and a `when` clause whose field is absent
+    never matches — so a role-scoped rule is inert wherever no role was fixed,
+    the same property the clock features have.
+    """
+    return {"assignee": assignee} if assignee else {}
 
 
 def _clock_features(when: Optional[datetime]) -> Dict[str, Any]:

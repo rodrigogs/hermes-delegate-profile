@@ -2181,3 +2181,50 @@ class TestAnOutOfStepPlanner:
         # What RUNS is the named survivor alone, and it agrees with the plan on
         # which elo that is.
         assert _targets(result) == [("mimo-v2.5", "xiaomi")]
+
+_ROLE_CFG = {
+    "enabled": True,
+    "rules": [{"id": "reviewer-only", "status": "stable",
+               "when": {"assignee": {"eq": "reviewer"}},
+               "then": {"profile": "reviewer", "model": "T4"}}],
+    "tiers": {"T4": {"model": "gpt-5.6-terra", "provider": "openai-codex"}},
+}
+
+
+def test_role_features_is_absent_when_no_role_was_fixed():
+    """Absent, not empty-string: a `when` field that is absent never matches."""
+    assert adapter._role_features("") == {}
+    assert adapter._role_features("coder") == {"assignee": "coder"}
+
+
+def test_route_matches_a_role_scoped_rule_only_for_that_role():
+    hit = route(task="anything at all", config=copy.deepcopy(_ROLE_CFG),
+                assignee="reviewer")
+    assert hit["model"] == "gpt-5.6-terra"
+
+    miss = route(task="anything at all", config=copy.deepcopy(_ROLE_CFG),
+                 assignee="coder")
+    assert miss.get("model") != "gpt-5.6-terra"
+
+
+def test_a_role_scoped_rule_is_inert_where_no_role_is_injected():
+    """The delegation path fixes no role, so a role-keyed row must not match
+    there — the same property the clock features have."""
+    inert = route(task="anything at all", config=copy.deepcopy(_ROLE_CFG))
+    assert inert.get("model") != "gpt-5.6-terra"
+
+
+def test_the_injected_role_does_not_disturb_derived_requirements():
+    """The role is one more feature; nothing downstream may read it as a need."""
+    cfg = {
+        "enabled": True,
+        "rules": [{"id": "code", "status": "stable",
+                   "when": {"has_code": {"eq": True}},
+                   "then": {"profile": "coder", "model": "T2"}}],
+        "tiers": {"T2": {"model": "glm-5.3", "provider": "zai"}},
+    }
+    task = "Rename getCwd in src/utils.py\n\n```py\ndef getCwd(): pass\n```"
+    with_role = route(task=task, config=copy.deepcopy(cfg), assignee="trama-engineer")
+    without = route(task=task, config=copy.deepcopy(cfg))
+    assert with_role.get("requirements") == without.get("requirements")
+    assert with_role.get("model") == without.get("model")

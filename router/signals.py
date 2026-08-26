@@ -244,6 +244,17 @@ EXTRACTED_FEATURE_NAMES: frozenset[str] = frozenset({
 INJECTED_FEATURE_NAMES: frozenset[str] = frozenset({
     "utc_hour",
     "utc_weekday",
+    # The role the CALLER already fixed — a kanban card's assignee, injected by
+    # the dispatch hook the same way the clock is. It is an INPUT to the decision
+    # and never an output of it: the dispatcher's hook applies only
+    # ("model", "provider"), so no decision can move a worker's role, and a rule
+    # that is only correct for one role says so in `when` instead of naming the
+    # role in `then` and being unhonorable there.
+    #
+    # Absent means absent: a `when` clause on a field the features do not carry
+    # never matches, so a role-scoped rule is inert on every path that fixes no
+    # role rather than matching arbitrarily there.
+    "assignee",
 })
 
 KNOWN_FEATURE_NAMES: frozenset[str] = EXTRACTED_FEATURE_NAMES | INJECTED_FEATURE_NAMES
