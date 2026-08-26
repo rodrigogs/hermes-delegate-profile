@@ -1094,7 +1094,7 @@
            the mode button reads as the thing to press and the error as the
            reason it does nothing. -->
       <span class="edit-note" id="editNote" hidden>Você pode editar; só não é possível salvar até o erro acima ser corrigido.</span>
-      <button class="btn" id="refresh" type="button">Recarregar</button>
+      <button class="btn" id="refresh" type="button"></button>
     </div>
   </header>
 
@@ -1270,6 +1270,11 @@
         <div class="group">
           <details>
             <summary>Editar como texto</summary>
+            <!-- §4.7: the whole-file editor's warning. It names "Ver o que
+                 muda" and "Salvar", so it cannot re-spell them — the words
+                 ride the map and boot stamps this line from it, like the
+                 three buttons below. -->
+            <p class="field-note" id="jsonNote"></p>
             <textarea id="policyEditor" class="editor" spellcheck="false" readonly aria-label="Política como texto"></textarea>
             <!-- No Confirm button. It POSTed /apply/confirm, which on the server
                  is the SAME function as /apply — one_sidecar.py:346 and :353 both
@@ -1420,8 +1425,8 @@
 
       // Booleans and enums become operator words; DESIGN.md §2.5.
       const say = (v, fallback = '—') => {
-        if (v === true) return 'yes';
-        if (v === false) return 'no';
+        if (v === true) return 'sim';
+        if (v === false) return 'não';
         if (v === undefined || v === null || v === '') return fallback;
         if (typeof v === 'object') return Array.isArray(v) ? String(v.length) : pretty(v);
         return String(v);
@@ -1429,10 +1434,10 @@
       const ago = (ts) => {
         if (!ts) return '—';
         const s = Math.max(0, Math.round(Date.now() / 1000 - Number(ts)));
-        if (s < 60) return `${s}s ago`;
-        if (s < 3600) return `${Math.round(s / 60)}m ago`;
-        if (s < 86400) return `${Math.round(s / 3600)}h ago`;
-        return `${Math.round(s / 86400)}d ago`;
+        if (s < 60) return `há ${s}s`;
+        if (s < 3600) return `há ${Math.round(s / 60)}m`;
+        if (s < 86400) return `há ${Math.round(s / 3600)}h`;
+        return `há ${Math.round(s / 86400)}d`;
       };
       // The clock of a TIMESTAMP, in UTC — the unit every window is declared in.
       // `ago` answers "how long since"; this answers "at what hour", which is the
@@ -1464,7 +1469,7 @@
       // to tell them apart: we have not asked yet, we cannot ask, or we asked and
       // there is genuinely nothing. Claiming the third while the first is true is
       // the most common lie a console tells.
-      const absence = (empty) => state.loading ? 'Loading…'
+      const absence = (empty) => state.loading ? WRITE.loading
         : state.unreachable ? 'Indisponível enquanto não for possível falar com o roteador.'
         : empty;
 
@@ -2999,6 +3004,38 @@
         missingPlan: 'Este serviço do roteador não sabe simular uma gravação.',
         missingAction: 'Este serviço do roteador não tem essa ação.',
         noCredential: 'Não é possível {action} com esta tela aberta fora do Hermes One: o navegador não manda a credencial da sessão. Abra o Hermes One e volte aqui pelo menu lateral.',
+        // §4.1: the refresh button's two labels. load() overwrites the button
+        // on every read, so the markup cannot own either label — the English
+        // pair this replaces ('Refreshing…'/'Refresh') lived only in load(),
+        // which is exactly how it escaped §4.7. Boot stamps the resting one.
+        refresh: 'Recarregar',
+        refreshing: 'Recarregando…',
+        // §4.1: the mode button names what it does NEXT. The resting labels
+        // ('Editar', 'Editar a política de roteamento') predate the map; the
+        // two words that exist only while armed are new, so they live here.
+        done: 'Concluir',
+        stopEditing: 'Parar de editar',
+        // §3.2: the routing fact — its label and its two words. The value is
+        // what an operator reads in the Health column, so 'on'/'off' had to
+        // go; 'Roteando…' is the probe verdict while the sidecar answers.
+        routing: 'Roteamento',
+        routingOn: 'ligado',
+        routingOff: 'desligado',
+        routingVerdict: 'Roteando…',
+        // §3.3: the state word of a manually banned rail, and the breaker
+        // cooldown's remaining time with the unit the spec spells — "faltam
+        // 300s" reads as time still owed; "300s left" read as a label.
+        banned: 'banido',
+        cooldownLeft: 'faltam {N}s',
+        // §4.7: the whole-file editor's warning, the sentence the literal
+        // scan found missing inside the <details>. It names "Ver o que muda"
+        // and "Salvar" — the words in double quotes are the spec's own — so
+        // the sentence rides the map like the buttons it quotes.
+        textEdit: 'Aqui você edita o arquivo de política inteiro. O que você escrever aqui substitui qualquer coisa que você tenha mexido nos campos das outras abas e ainda não salvo. O caminho de gravação é o mesmo: "Ver o que muda" e depois "Salvar".',
+        // The "nothing here yet" word — unreachable in today's flow, but an
+        // unreachable English string is a landmine: the day the flow reaches
+        // it, it ships.
+        loading: 'Carregando…',
       };
       function fill(template, vars) {
         return String(template).replace(/\{(\w+)\}/g, (m, k) =>
@@ -3006,8 +3043,12 @@
       }
       // §4.7: the text editor's three buttons are static markup, so their labels
       // cannot live there — the map is the only copy. Boot stamps them once.
+      // The refresh button and the whole-file warning ride the same rule: load()
+      // overwrites the button on every read, and the warning quotes the buttons,
+      // so neither can own its words in the markup.
       function stampWriteLabels() {
-        [['jsonApply', WRITE.save], ['jsonPreview', WRITE.plan], ['jsonRevert', WRITE.revert]]
+        [['jsonApply', WRITE.save], ['jsonPreview', WRITE.plan], ['jsonRevert', WRITE.revert],
+         ['refresh', WRITE.refresh], ['jsonNote', WRITE.textEdit]]
           .forEach(([id, label]) => { const n = $(id); if (n) n.textContent = label; });
       }
       // The draft-edited hint, naming the two buttons by the map's labels so it
@@ -3080,7 +3121,7 @@
         const probeResult = $('probeResult');
         if (errors.length) {
           const line = el('div', 'warn-line');
-          line.append(el('strong', '', `Não é possível salvar enquanto houver erro. ${errors.length} erro${errors.length === 1 ? '' : 's'} no arquivo.`));
+          line.append(el('strong', '', fill(WRITE.lintError, { N: errors.length })));
           // §3.4(a): when the error is a destination naming a group that is not in the
           // table, the console says it in the operator's words — which rule, which
           // group, and what actually happens at runtime — instead of forwarding the
@@ -3445,7 +3486,7 @@
         clear(facts);
         const st = state.status || {};
         // Mono is for machine facts — a model id, a count, something an operator
-        // would copy — and sans for words. "on" is a word; "deepseek-v3.2" is not.
+        // would copy — and sans for words. "ligado" is a word; "deepseek-v3.2" is not.
         const fact = (label, value, mono) => {
           const f = el('div', 'fact');
           f.append(el('span', 'fact-label', label),
@@ -3457,7 +3498,7 @@
         // now removed), and the invalid count echoed the lint banner's "Policy
         // invalid — N errors" 72px above — both were a second chip repeating a
         // state something else already owns (DESIGN.md §2.2).
-        fact('routing', say(st.enabled === undefined ? undefined : st.enabled, '—') === 'yes' ? 'on' : 'off');
+        fact(WRITE.routing, st.enabled ? WRITE.routingOn : WRITE.routingOff);
         const classifier = (st.classifier && st.classifier.model) || (state.policy && state.policy.classifier && state.policy.classifier.model);
         if (classifier) fact('classifier', classifier, true);
 
@@ -3557,7 +3598,7 @@
           name.append(el('div', 'row-name', b.model || say(b)));
           if (b.reason) name.append(el('div', 'row-note', b.reason));
           const right = el('div');
-          right.append(el('span', 'state', 'banned'));
+          right.append(el('span', 'state', WRITE.banned));
           if (state.mode === 'editing') {
             const btn = el('button', 'btn', WRITE.remove);
             btn.type = 'button';
@@ -3574,7 +3615,7 @@
           name.append(el('div', 'row-name', b.model_key || '—'));
           if (b.last_failure_kind) name.append(el('div', 'row-note', b.last_failure_kind));
           row.append(name);
-          row.append(el('span', 'row-value', `${Math.ceil(Number(b.cooldown_remaining_s) || 0)}s left`));
+          row.append(el('span', 'row-value', fill(WRITE.cooldownLeft, { N: Math.ceil(Number(b.cooldown_remaining_s) || 0) })));
           banBox.append(row);
         });
         // §2.6: the substitute queue. Its label is the spec's own word for
@@ -5078,7 +5119,7 @@
         if (outcome.capBypassed) {
           const line = el('div', 'warn-line bad');
           line.append(el('strong', '', 'Teto de preço ignorado.'),
-                      el('span', '', `Toda tentativa passou do teto de preço do grupo${cap !== null ? ` of ${times(cap)}` : ''} às ${when ? hourLabel(when.hour) : 'esta hora'}, então o teto foi desligado em vez de deixar a tarefa sem nenhum provedor. `
+                      el('span', '', `Toda tentativa passou do teto de preço do grupo${cap !== null ? ` de ${times(cap)}` : ''} às ${when ? hourLabel(when.hour) : 'esta hora'}, então o teto foi desligado em vez de deixar a tarefa sem nenhum provedor. `
                                    + 'Este pedido paga preço de pico. Acrescente um provedor que esteja fora do pico nesta hora, aumente o teto, ou passe o trabalho para uma hora fora do pico.'));
           box.append(line);
         }
@@ -5405,7 +5446,7 @@
         state.lintRule = null;
         renderChainPlan(null);
         if (!task) return;
-        // The gate BEFORE 'Routing…': renderWarnings already disables the
+        // The gate BEFORE 'Roteando…': renderWarnings already disables the
         // button, but Enter in the input submits the form no matter what a
         // disabled button says, and the sidecar would refuse anyway — so the
         // round-trip would only replace this message with the same refusal.
@@ -5423,7 +5464,7 @@
             + 'rotear só a linha do objetivo.'));
           return;
         }
-        box.append(el('div', 'verdict', 'Routing…'));
+        box.append(el('div', 'verdict', WRITE.routingVerdict));
         const res = await call(req.path, req.options);
         clear(box);
         if (res.missing || res.error) {
@@ -7319,8 +7360,8 @@
         button.setAttribute('aria-pressed', String(open));
         // The label names what the button DOES next, so the operator never has to
         // work out whether a state word is a description or an instruction.
-        button.title = open ? 'Stop editing' : 'Editar a política de roteamento';
-        $('editLabel').textContent = open ? 'Done' : 'Edit';
+        button.title = open ? WRITE.stopEditing : 'Editar a política de roteamento';
+        $('editLabel').textContent = open ? WRITE.done : 'Editar';
         $('policyEditor').readOnly = !open;
         // The JSON twisty's write buttons follow the read-only default too. They are
         // static markup, so unlike the inspector's — which renderInspector simply
@@ -7407,10 +7448,10 @@
         disarmRevert();
         const button = $('refresh');
         button.disabled = true;
-        button.textContent = 'Refreshing…';
+        button.textContent = WRITE.refreshing;
         try { await fetchAll(); } finally {
           button.disabled = false;
-          button.textContent = 'Refresh';
+          button.textContent = WRITE.refresh;
         }
       }
 

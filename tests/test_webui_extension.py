@@ -515,6 +515,109 @@ def test_console_write_surface_speaks_one_pt_br_vocabulary():
         )
 
 
+def test_console_english_terms_of_this_card_stay_out():
+    """§4.1/§3.2/§3.3/§6.10: the eight English forms this card removed never
+    come back as rendered text.
+
+    Each term is matched the way an operator would read it, and the two
+    extractors already say what is NOT rendered: comments and the ``<style>``
+    block are stripped, and identifiers are never string literals.
+
+    * Single-token labels (``Refresh``, ``Refreshing``, ``Edit``, ``Done``,
+      ``banned``, ``left``, ``Routing``) are matched whole-word and
+      case-sensitive over ``_console_ui_strings()`` — the extractor that keeps
+      single tokens. ``_console_rendered_text`` drops them, and a bare
+      ``'banned'`` returning as ``el('span', 'state', 'banned')`` is exactly
+      the regression to catch. Whole-word, case-sensitive matching is what
+      keeps ``editMode``/``refresh`` (identifiers), ``Editar`` (a different
+      word) and ``ArrowLeft`` (capital L) out of the result.
+    * ``Stop editing`` is a phrase, matched as such.
+    * ``on``/``off`` count only as EXACT standalone script literals — the
+      shape the routing fact's value had. The same letters legitimately build
+      CSS classes (``' on'``/``' off'`` fragments) and the ``autocomplete``
+      attribute, so a substring or whole-word sweep would ban innocent uses;
+      the fact value is an exact string, and that is the position pinned.
+    * ``ago`` is whole-word: the pt-BR form this replaced ("há 5m") carries
+      no English word to trip on, and "5m ago" has the word standing alone.
+
+    The one location this test cannot see is the `` of `` inside the
+    cap-bypass sentence: it sits in a nested template inside a template
+    interpolation, which both extractors stop at — that preposition is pinned
+    by the render test in test_console_logic.js (the "de 1,5×" sentence).
+    """
+
+    import re
+
+    strings = _console_ui_strings()
+    assert len(strings) > 100, "the extractor stopped seeing the console's strings"
+    for word in ("Refresh", "Refreshing", "Edit", "Done", "banned", "left", "Routing", "ago"):
+        pattern = re.compile(r"(?<![\w-])" + re.escape(word) + r"(?![\w-])")
+        found = [(w, ln, t) for w, ln, t in strings if pattern.search(t)]
+        assert not found, (
+            f"'{word}' is English an operator would read (§4.1/§3.2/§6.10), and it "
+            f"reaches the reader in {len(found)} place(s): "
+            + "; ".join(f"{w}:{ln} {t[:70]!r}" for w, ln, t in found[:6])
+        )
+    phrase = re.compile(r"(?<![\w-])Stop editing(?![\w-])")
+    found = [(w, ln, t) for w, ln, t in strings if phrase.search(t)]
+    assert not found, (
+        "'Stop editing' is English an operator would read (§4.1), and it reaches "
+        f"the reader in {len(found)} place(s): "
+        + "; ".join(f"{w}:{ln} {t[:70]!r}" for w, ln, t in found[:6])
+    )
+    exact = [(w, ln, t) for w, ln, t in strings if w == "script" and t in ("on", "off")]
+    assert not exact, (
+        "the routing fact's value must be 'ligado'/'desligado', not English: "
+        + "; ".join(f"{ln} {t!r}" for _, ln, t in exact)
+    )
+
+
+def test_console_lint_error_sentence_lives_once_in_the_map():
+    """§4.7: the lint-error sentence exists once — in the WRITE map.
+
+    The literal scan (comment #92) found it twice: the map's template (fill()
+    at the preset banner) and a same-head inline copy in renderWarnings that
+    spelled its own plural. The count is on the sentence's HEAD, up to the
+    interpolation — a re-spelled copy ("2 erros no arquivo" instead of
+    "2 erro(s) no arquivo") would still trip it, which is exactly how the
+    second copy was born. The extractor strips comments and the ``<style>``
+    block, so a mention in prose does not count.
+    """
+
+    strings = _console_ui_strings()
+    head = "Não é possível salvar enquanto houver erro"
+    found = [(w, ln, t) for w, ln, t in strings if head in t]
+    assert len(found) == 1, (
+        f"the lint sentence's head must exist once (the WRITE map), found {len(found)}: "
+        + "; ".join(f"{w}:{ln} {t[:70]!r}" for w, ln, t in found[:6])
+    )
+
+
+def test_console_text_editor_warning_is_present_once_from_the_map():
+    """§4.7: the whole-file editor's warning is present, once, from the map.
+
+    The literal scan (comment #92) found the sentence missing from the
+    ``<details>`` entirely. It quotes "Ver o que muda" and "Salvar", so it
+    cannot re-spell them: the sentence lives in the WRITE map and boot stamps
+    the empty ``#jsonNote`` paragraph, exactly like the three write buttons.
+    The script therefore carries exactly one copy of the sentence (the map),
+    and the markup carries none outside it.
+    """
+
+    html = (EXTENSION / "console.html").read_text(encoding="utf-8")
+    details = html.split("<summary>Editar como texto</summary>", 1)[1].split("</details>", 1)[0]
+    assert 'id="jsonNote"' in details, "the warning's paragraph lives inside the <details>"
+    strings = _console_ui_strings()
+    sent = [(w, ln, t) for w, ln, t in strings if "Aqui você edita o arquivo de política inteiro" in t]
+    assert len(sent) == 1, (
+        "the whole-file warning must exist once, in the WRITE map — found "
+        + f"{len(sent)}: " + "; ".join(f"{w}:{ln} {t[:70]!r}" for w, ln, t in sent[:6])
+    )
+    script = _console_inline_script()
+    assert "WRITE.textEdit" in script, "boot must stamp the warning from the map"
+    assert "['refresh', WRITE.refresh]" in script, "the refresh button is stamped from the map too"
+
+
 def test_extension_css_only_dresses_the_nav_button():
     """This stylesheet's whole job is the rail button.
 
@@ -578,7 +681,7 @@ def test_health_facts_are_only_the_two_that_exist_nowhere_else():
     """The summary keeps ROUTING and CLASSIFIER — the rules count repeated the
     sheet's numbered list and the invalid count repeated the lint banner."""
     html = (EXTENSION / "console.html").read_text(encoding="utf-8")
-    assert "fact('routing'" in html and "fact('classifier'" in html
+    assert "fact(WRITE.routing" in html and "fact('classifier'" in html
     assert "fact('rules'" not in html and "fact('invalid'" not in html
 
 

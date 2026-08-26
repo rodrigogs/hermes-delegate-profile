@@ -191,15 +191,15 @@ test('a refusal and a routine decision never read the same', () => {
 test('values are translated for an operator, not dumped', () => {
   const { api } = loadConsole();
   // DESIGN.md §2.5: `true` is not a metric.
-  assert.equal(api.say(true), 'yes');
-  assert.equal(api.say(false), 'no');
+  assert.equal(api.say(true), 'sim');
+  assert.equal(api.say(false), 'não');
   assert.equal(api.say(''), '—');
   assert.equal(api.say(null), '—');
   assert.equal(api.say(['a', 'b']), '2', 'a list reports its size, not its JSON');
   // Timestamps become elapsed time; an operator cares how stale, not the epoch.
   const now = Math.floor(Date.now() / 1000);
-  assert.match(api.ago(now - 5), /^\d+s ago$/);
-  assert.match(api.ago(now - 600), /^\d+m ago$/);
+  assert.match(api.ago(now - 5), /^há \d+s$/);
+  assert.match(api.ago(now - 600), /^há \d+m$/);
   assert.equal(api.ago(null), '—');
 });
 
@@ -483,13 +483,14 @@ test('the edit control says what it will do, not what state it is in', () => {
   const button = dom.get('editMode');
 
   api.setMode('reading');
-  assert.equal(dom.get('editLabel').textContent, 'Edit',
+  assert.equal(dom.get('editLabel').textContent, 'Editar',
     'reading mode offers the next action');
   assert.match(button.title, /Editar a política de roteamento/,
     'and the title says what gets edited');
 
   api.setMode('editing');
-  assert.equal(dom.get('editLabel').textContent, 'Done');
+  assert.equal(dom.get('editLabel').textContent, 'Concluir');
+  assert.equal(button.title, 'Parar de editar', 'the armed title says what ends the mode');
   assert.equal(button.attrs['aria-pressed'], 'true', 'a mode toggle reports pressed');
   assert.equal(dom.get('policyEditor').readOnly, false, 'editing arms the editor');
 });
@@ -570,7 +571,7 @@ test('an empty screen distinguishes "not asked yet" from "genuinely nothing"', (
   // Before the first response, claiming "no models" is a guess presented as a
   // fact — the operator cannot tell a healthy-but-empty router from a broken one.
   assert.equal(api.state.loading, true, 'the console starts out not knowing');
-  assert.equal(api.absence('Nenhum modelo roteável informado.'), 'Loading…');
+  assert.equal(api.absence('Nenhum modelo roteável informado.'), 'Carregando…');
 
   api.state.loading = false;
   api.state.unreachable = true;
@@ -835,12 +836,28 @@ test('the summary facts exist nowhere else on the screen', () => {
   api.state.status = { enabled: true, validation_errors: ['rule a: unknown field'] };
   api.renderHealth();
   const labels = findAll(dom.get('healthFacts'), 'fact-label').map((n) => n.textContent);
-  assert.deepEqual(labels, ['routing', 'classifier'],
+  assert.deepEqual(labels, ['Roteamento', 'classifier'],
     `only the two facts that exist nowhere else, got ${JSON.stringify(labels)}`);
   const text = flat(dom.get('healthFacts'));
   assert.match(text, /glm-4\.7/);
   assert.doesNotMatch(text, /error/, 'the lint banner owns the invalid count');
   assert.doesNotMatch(text, /rules/, 'the sheet owns the rules count');
+});
+
+test('the routing fact says Roteamento ligado/desligado, the operator words (§3.2)', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], classifier: { model: 'glm-4.7' } };
+  api.state.status = { enabled: true, validation_errors: [] };
+  api.renderHealth();
+  let text = flat(dom.get('healthFacts'));
+  assert.match(text, /Roteamento/, 'the label is the §3.2 word, not the raw key');
+  assert.match(text, /ligado/);
+  api.state.status = { enabled: false, validation_errors: [] };
+  api.renderHealth();
+  text = flat(dom.get('healthFacts'));
+  assert.match(text, /desligado/);
+  assert.doesNotMatch(text, /\bon\b|\boff\b/, 'the English value pair never reaches the Health column');
 });
 
 // ── the role an elo plays in the policy ──────────────────────────────────
@@ -1097,7 +1114,7 @@ test('a decision row carries the hour it happened, in UTC', () => {
   api.state.routes = [{ id: 'r1', cause: 'hard_rule', model: 'gpt-5.6-terra', task: 't', ts: TRACE_AT }];
   api.renderRoutes();
   const value = dom.get('routesTable').children[0].children[2];
-  assert.match(value.textContent, /ago · 03:20 UTC$/,
+  assert.match(value.textContent, /há \d+[smhd] · 03:20 UTC$/,
     'the age and the hour ride the same column, in the unit windows are declared in');
 });
 
@@ -1688,6 +1705,29 @@ test('the probe verdict is a sentence, not a row of fragments', async () => {
   assert.match(sentence, /em openai-codex/);
   assert.match(sentence, /Recorre a us\.anthropic\.claude-opus-5 → deepseek-v4-pro/);
   assert.doesNotMatch(sentence, /byhard|terraon/, 'no missing space survives');
+});
+
+test('the probe verdict says Roteando… in flight, in pt-BR (§3.2)', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const { api, dom } = loadConsole({
+    fetch: (url) => {
+      if (String(url).includes('/explain')) {
+        return gate.then(() => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({
+          mode: 'deterministic_dry_run',
+          decision: { matched_rule_id: 'r1', output: { model: 'gpt-5.6-terra', provider: 'openai-codex' } },
+        })) }));
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
+    },
+  });
+  api.state.loading = false;
+  api.state.policy = { rules: [{ id: 'r1', then: { model: 'T4' } }], tiers: { T4: {} } };
+  const run = api.probe('Debug a race condition in the cache');
+  await tick();
+  assert.match(flat(dom.get('probeResult')), /Roteando…/, 'the in-flight verdict is the pt-BR word');
+  release();
+  await run;
 });
 
 test('the iOS zoom guard names the classes, or it does nothing at all', () => {
@@ -2754,7 +2794,7 @@ test('an invalid policy is reported where the operator is, with the first error'
   api.state.status = { validation_errors: ["tier 'T9': 'fallback_strategy' must be one of sequential, random"] };
   api.renderWarnings();
   const text = flat(dom.get('warnings'));
-  assert.match(text, /Não é possível salvar enquanto houver erro\. 1 erro no arquivo\./);
+  assert.match(text, /Não é possível salvar enquanto houver erro\. 1 erro\(s\) no arquivo\./);
   assert.match(text, /A simulação é recusada/);
   assert.match(text, /fallback_strategy/, 'the first error itself, not a count of errors');
 });
@@ -2864,7 +2904,7 @@ test('the invalid-policy line grows a jump button when the error names a rule', 
   api.state.status = shadowStatus();
   api.renderWarnings();
   const text = flat(dom.get('warnings'));
-  assert.match(text, /Não é possível salvar enquanto houver erro\. 1 erro no arquivo\./);
+  assert.match(text, /Não é possível salvar enquanto houver erro\. 1 erro\(s\) no arquivo\./);
   assert.match(text, /Ir para a regra 7/, 'the button names the row by its sheet ordinal (index 6 + 1), in the one label this jump has');
 });
 
@@ -4514,6 +4554,11 @@ test('a bypassed time cap drops nothing either, and the two bypasses are indepen
   assert.match(text, /Continuam na fila \(2\)/);
   assert.match(text, /teto de preço cedeu/);
   assert.match(text, /2× now, cap 1\.5×/, 'and the numbers behind the objection survive');
+  // The ceiling's value joins the sentence with the pt-BR preposition; the
+  // English 'of' this replaces rode inside a nested template, invisible to
+  // the static extractors, so it is pinned here where it renders.
+  assert.match(text, /do teto de preço do grupo de 1\.5×/);
+  assert.doesNotMatch(text, / of /, 'no English preposition survives in the sentence');
 
   // INDEPENDENT: the filter can bypass — restoring everything it rejected — and the
   // cap can then remove a hop from the restored chain for real. The elo the cap
@@ -5606,7 +5651,7 @@ test('a missing group is named in the operator words, with the jump and the cons
   api.renderSheet();
 
   const said = flat(dom.get('warnings'));
-  assert.match(said, /Não é possível salvar enquanto houver erro\. 1 erro no arquivo\./);
+  assert.match(said, /Não é possível salvar enquanto houver erro\. 1 erro\(s\) no arquivo\./);
   // WHICH rule and WHICH group, by the rule's own title rather than its id: the id is
   // what the raw lint message already gave, and it is not what the row shows.
   assert.match(said, /A regra “Pedido de auditoria” manda para o Grupo T9, que não existe na sua tabela de grupos\./);
@@ -6246,6 +6291,29 @@ test('an armed Voltar à versão anterior does not survive a refresh', async () 
   assert.deepEqual(routes.filter((r) => /^\/apply/.test(r)), [],
     'the click after a refresh asks again instead of writing');
 });
+
+test('the refresh button says Recarregando… in flight and Recarregar after (§4.1)', async () => {
+  // load() overwrites the button on every read, so the markup could not own
+  // the label — this is exactly how 'Refreshing…'/'Refresh' escaped §4.7.
+  // Both words now ride the WRITE map; this pins the in-flight swap.
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const { api, dom } = loadConsole({
+    fetch: (url) => {
+      if (String(url).endsWith('/health')) {
+        return gate.then(() => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') }));
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
+    },
+  });
+  const btn = dom.get('refresh');
+  const run = api.load();
+  await tick();
+  assert.equal(btn.textContent, 'Recarregando…', 'the loader says what the read is doing, in pt-BR');
+  release();
+  await run;
+  assert.equal(btn.textContent, 'Recarregar', 'and returns to the §4.1 label when the read is over');
+});
 // ── write path: the patch is minimal, and the staleness guard is the gate ──
 // The audit t_873f43b9 blocked the redesign with a HIGH data-integrity defect:
 // a write erased a concurrent CLI/other-tab edit in silence, because the screen
@@ -6577,11 +6645,22 @@ test('the §4.7 write literals are exact, and each lives in exactly one place: t
     `'${api.WRITE.conflict}'`, `'${api.WRITE.inFlight}'`, `'${api.WRITE.saved}'`,
     `'${api.WRITE.httpError}'`, `'${api.WRITE.invalid}'`,
     'Não é possível {action} com esta tela aberta fora do Hermes One: o navegador não manda a credencial da sessão. Abra o Hermes One e volte aqui pelo menu lateral.',
+    // This card's additions — every new surface word lives in the map, once.
+    `'${api.WRITE.refresh}'`, `'${api.WRITE.refreshing}'`, `'${api.WRITE.done}'`,
+    `'${api.WRITE.stopEditing}'`, `'${api.WRITE.routing}'`, `'${api.WRITE.routingOn}'`,
+    `'${api.WRITE.routingOff}'`, `'${api.WRITE.routingVerdict}'`, `'${api.WRITE.banned}'`,
+    `'${api.WRITE.cooldownLeft}'`, `'${api.WRITE.textEdit}'`, `'${api.WRITE.loading}'`,
   ];
   once.forEach((lit) => {
     const n = code.split(lit).length - 1;
     assert.equal(n, 1, `the literal ${lit.slice(0, 44)}… must appear exactly once (the map), found ${n}`);
   });
+  // The lint-error sentence's HEAD — up to the interpolation — once. The full
+  // literal above cannot catch a re-spelled copy ("2 erros no arquivo" instead
+  // of "2 erro(s) no arquivo"), which is exactly how the second copy was born.
+  const head = 'Não é possível salvar enquanto houver erro';
+  assert.equal(code.split(head).length - 1, 1,
+    `the lint sentence's head must exist once (the map), found ${code.split(head).length - 1}`);
 });
 
 test('the save button says Salvando… in flight and returns to Salvar (§4.7)', async () => {
@@ -8467,6 +8546,8 @@ test('only a manual ban offers removal, and only in editing mode', () => {
   api.renderHealth();
   assert.equal(findAll(dom.get('bans'), 'btn').length, 0,
     'reading mode: no removal control exists in the DOM at all — not disabled, absent');
+  assert.match(flat(dom.get('bans')), /banido/, 'a manual ban is named with the pt-BR state word');
+  assert.match(flat(dom.get('bans')), /faltam 300s/, 'a breaker cooldown says the time owed in pt-BR, unit included');
   api.setMode('editing');
   const buttons = findAll(dom.get('bans'), 'btn');
   assert.equal(buttons.length, 1, 'editing mode: the manual ban row grows the control');
