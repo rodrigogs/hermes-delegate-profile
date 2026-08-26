@@ -6551,6 +6551,7 @@ test('the §4.7 write literals are exact, and each lives in exactly one place: t
   const { api } = loadConsole();
   assert.equal(api.WRITE.plan, 'Ver o que muda');
   assert.equal(api.WRITE.save, 'Salvar');
+  assert.equal(api.WRITE.remove, 'Remover o bloqueio');
   assert.equal(api.WRITE.saving, 'Salvando…');
   assert.equal(api.WRITE.revert, 'Voltar à versão anterior');
   assert.equal(api.WRITE.revertConfirm, 'Confirmar: voltar à versão anterior');
@@ -6570,7 +6571,7 @@ test('the §4.7 write literals are exact, and each lives in exactly one place: t
   // own sentence, quoting the button it refuses to press.
   const code = stripCommentsForCounting(fs.readFileSync(sourcePath, 'utf8'));
   const once = [
-    `'${api.WRITE.plan}'`, `'${api.WRITE.save}'`, `'${api.WRITE.saving}'`,
+    `'${api.WRITE.plan}'`, `'${api.WRITE.save}'`, `'${api.WRITE.remove}'`, `'${api.WRITE.saving}'`,
     `'${api.WRITE.revert}'`, `'${api.WRITE.revertConfirm}'`, `'${api.WRITE.checking}'`,
     `'${api.WRITE.noDraft}'`, `'${api.WRITE.noop}'`, `'${api.WRITE.lintError}'`,
     `'${api.WRITE.conflict}'`, `'${api.WRITE.inFlight}'`, `'${api.WRITE.saved}'`,
@@ -8447,4 +8448,165 @@ test('a reserve-reserve swap says a missing billing mode out loud, on the attemp
   assert.equal(fb[1].model, 'gpt-5.6-luna', 'the first reserve went down');
   assert.equal(fb[1].billing_mode, null,
     'the attempt that has no mode says so explicitly (§2.1) — the list replaces wholesale, so an absent key would write nothing');
+});
+// ── §2.6 / §3.3: Fora de rotação — desbanir pela tela e a fila que substitui ──
+// The block used to draw bans with no way to lift them, and never drew the
+// substitute queue. The removal is a write like any other (plan → diff → apply
+// with the whole list minus the item), gated on the same editing mode and the
+// same staleness read — with one difference: GET /policy does not project
+// blocklist, so the guard re-reads the /blocklist the screen already reads.
+
+test('only a manual ban offers removal, and only in editing mode', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = {};
+  api.state.blocklist = {
+    manual_bans: [{ model: 'glm-5.3' }],
+    breaker_cooldowns: [{ model_key: 'deepseek-v4-pro', cooldown_remaining_s: 300 }],
+    fallback_chain: [],
+  };
+  api.renderHealth();
+  assert.equal(findAll(dom.get('bans'), 'btn').length, 0,
+    'reading mode: no removal control exists in the DOM at all — not disabled, absent');
+  api.setMode('editing');
+  const buttons = findAll(dom.get('bans'), 'btn');
+  assert.equal(buttons.length, 1, 'editing mode: the manual ban row grows the control');
+  assert.equal(buttons[0].textContent, 'Remover o bloqueio');
+  const breakerRow = dom.get('bans').children[1];
+  assert.equal(findAll(breakerRow, 'btn').length, 0,
+    'a breaker cooldown is not removable by hand: it expires on its own');
+  api.setMode('reading');
+  assert.equal(findAll(dom.get('bans'), 'btn').length, 0,
+    'leaving editing mode removes the control from the DOM');
+});
+
+test('removing a ban plans the whole list without it, and nothing else', async () => {
+  const planBodies = [];
+  const server = {
+    blocklist: {
+      manual_bans: [{ model: 'glm-5.3' }, { model: 'deepseek-v4-pro' }],
+      fallback_chain: ['gpt-5.6-terra'],
+      breaker_enabled: true,
+      breaker_cooldowns: [],
+    },
+  };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (url.endsWith('/blocklist')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(server.blocklist)) });
+      }
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+      }
+      if (url.endsWith('/plan')) {
+        const policy = JSON.parse(opts.body).policy;
+        planBodies.push(policy);
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy, diff: '- glm-5.3', base_hash: 'h' })) });
+      }
+      if (url.endsWith('/apply')) {
+        server.blocklist = Object.assign({}, server.blocklist, { manual_bans: [{ model: 'deepseek-v4-pro' }] });
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
+    },
+  });
+  api.state.policy = {};
+  api.state.blocklist = server.blocklist;
+  // The markup ships the message line hidden; the fake DOM cannot read the
+  // attribute, so the test arms the state the markup declares.
+  dom.get('bansMsg').hidden = true;
+  api.setMode('editing');
+  findAll(dom.get('bans'), 'btn')[0]._listeners.click();
+  await tick();
+
+  assert.equal(planBodies.length, 1);
+  assert.deepEqual(planBodies[0], { blocklist: { manual_ban: [{ model: 'deepseek-v4-pro' }] } },
+    'the plan body is the whole list WITHOUT the lifted item, and no other top-level key');
+  assert.match(dom.get('bansMsg').textContent, /Vale para as próximas tarefas/,
+    '§2.7: a written save says the temporal scope');
+  assert.equal(dom.get('bansMsg').hidden, false, 'the message line stops hiding once a write speaks');
+  assert.equal(findAll(dom.get('bans'), 'btn').length, 1,
+    'after the reload one ban remains, still with its own control');
+});
+
+test('removing a ban refuses when the blocklist moved since the screen read it', async () => {
+  const calls = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      calls.push(url);
+      if (url.endsWith('/blocklist')) {
+        // The server now bans a model this screen has never seen.
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({
+          manual_bans: [{ model: 'glm-5.3' }, { model: 'gpt-5.6-terra' }],
+          fallback_chain: [], breaker_enabled: true, breaker_cooldowns: [],
+        })) });
+      }
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
+    },
+  });
+  api.state.policy = {};
+  api.state.blocklist = {
+    manual_bans: [{ model: 'glm-5.3' }],
+    fallback_chain: [], breaker_enabled: true, breaker_cooldowns: [],
+  };
+  api.setMode('editing');
+  findAll(dom.get('bans'), 'btn')[0]._listeners.click();
+  await tick();
+
+  assert.match(dom.get('bansMsg').textContent, /mudou por fora/,
+    '§4.7: the refusal says the file moved and that the screen reloaded');
+  assert.match(dom.get('bansMsg').className, /bad/);
+  assert.equal(calls.filter((u) => u.endsWith('/blocklist')).length, 2,
+    'the guard re-read the blocklist, and the refusal reloaded the screen');
+  assert.equal(calls.filter((u) => u.endsWith('/plan')).length, 0,
+    'a stale write never reaches /plan');
+  const text = flat(dom.get('bans'));
+  assert.match(text, /gpt-5\.6-terra/, 'the reload drew the drifted data, not the stale snapshot');
+});
+
+test('removing a ban without a session token says the gesture, not "salvar"', () => {
+  const { api, dom } = loadConsole({ csrfToken: '' });
+  api.state.policy = {};
+  api.state.blocklist = { manual_bans: [{ model: 'glm-5.3' }], breaker_cooldowns: [], fallback_chain: [] };
+  api.setMode('editing');
+  findAll(dom.get('bans'), 'btn')[0]._listeners.click();
+  assert.match(dom.get('bansMsg').textContent, /Não é possível remover o bloqueio/,
+    'the refusal names the button\'s own gesture');
+  assert.match(dom.get('bansMsg').textContent, /Hermes One/);
+});
+
+test('the substitute queue renders in the block with its own §2.6 word', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = {};
+  api.state.blocklist = {
+    manual_bans: [{ model: 'glm-5.3' }],
+    breaker_cooldowns: [],
+    fallback_chain: ['deepseek-v4-flash', 'glm-5.2'],
+  };
+  api.renderHealth();
+  const text = flat(dom.get('bans'));
+  assert.match(text, /substituto da lista de reserva geral/i, 'the queue is drawn with the §2.6 word');
+  assert.match(text, /deepseek-v4-flash/);
+  assert.match(text, /glm-5\.2/);
+  // The §2.6 word names THIS queue and no other concept on the screen.
+  const code = stripCommentsForCounting(fs.readFileSync(sourcePath, 'utf8'));
+  assert.equal(code.split('Substituto da lista de reserva geral').length - 1, 1,
+    'the word lives once — the substitute queue\'s label, not padrão do motor / reserva / último recurso');
+});
+
+test('an empty substitute queue renders no frame and no empty phrase', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = {};
+  api.state.blocklist = { manual_bans: [{ model: 'glm-5.3' }], breaker_cooldowns: [], fallback_chain: [] };
+  api.renderHealth();
+  assert.equal(findAll(dom.get('bans'), 'chain-head').length, 0);
+  assert.doesNotMatch(flat(dom.get('bans')), /substituto/);
+  // An absent key behaves like an empty list.
+  api.state.blocklist = { manual_bans: [{ model: 'glm-5.3' }], breaker_cooldowns: [] };
+  api.renderHealth();
+  assert.equal(findAll(dom.get('bans'), 'chain-head').length, 0);
 });

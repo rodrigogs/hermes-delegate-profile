@@ -1190,6 +1190,10 @@
           <div class="group-head"><h2>Fora de rotação</h2></div>
           <div id="bans"></div>
         </div>
+        <!-- The removal write's feedback lives where the block is, but OUTSIDE
+             the group: when the last ban is lifted the group hides itself, and
+             the confirmation must not hide with it. hidden until a write speaks. -->
+        <p class="msg" id="bansMsg" aria-live="polite" hidden></p>
       </section>
 
       <!-- ── Tarefas: a decision sheet, read top to bottom ─────────── -->
@@ -2976,6 +2980,10 @@
       const WRITE = {
         plan: 'Ver o que muda',
         save: 'Salvar',
+        // §3.3: the one write this block owns — lifting a manual ban. The word
+        // names the GESTURE, so a refusal below reads "não é possível remover o
+        // bloqueio…", never a generic "salvar" that does not match the button.
+        remove: 'Remover o bloqueio',
         saving: 'Salvando…',
         revert: 'Voltar à versão anterior',
         revertConfirm: 'Confirmar: voltar à versão anterior',
@@ -3514,6 +3522,16 @@
           });
         }
 
+        renderBans();
+      }
+
+      // ── §2.6 / §3.3: Fora de rotação ─────────────────────────────────
+      // Who is out of rotation (manual bans + breaker cooldowns) and — the
+      // half the review found missing — the queue that SUBSTITUTES a banned
+      // model. Drawn whole in one pass so a mode change (setMode) can re-draw
+      // it: the removal control exists only in editing mode, and "exists" means
+      // built, not hidden (absent, not disabled, §4).
+      function renderBans() {
         const bl = state.blocklist || {};
         const bans = Array.isArray(bl.manual_bans) ? bl.manual_bans : [];
         const breakers = Array.isArray(bl.breaker_cooldowns) ? bl.breaker_cooldowns : [];
@@ -3521,13 +3539,32 @@
         const banBox = $('bans');
         clear(banBox);
         group.hidden = !(bans.length || breakers.length);
+        // §3.3: a manual ban is lifted by its own row's control; a breaker
+        // cooldown is not — it expires on its own, and a button that promises
+        // to remove what time removes would be a false control. The write is
+        // the whole list minus the lifted item: the server merge replaces
+        // lists wholesale (router/service.py:422-434), so a partial patch
+        // cannot express a removal.
+        const removeBan = (entry, msg, btn) => {
+          msg.hidden = false;
+          const next = state.blocklist.manual_bans.filter((x) => x !== entry);
+          doApply('/apply', msg, { blocklist: { manual_ban: next } }, null, btn, WRITE.remove);
+        };
         bans.forEach((b) => {
           const row = el('div', 'row is-dead');
           row.append(el('span', 'dot'));
           const name = el('div', 'row-main');
           name.append(el('div', 'row-name', b.model || say(b)));
           if (b.reason) name.append(el('div', 'row-note', b.reason));
-          row.append(name, el('span', 'state', 'banned'));
+          const right = el('div');
+          right.append(el('span', 'state', 'banned'));
+          if (state.mode === 'editing') {
+            const btn = el('button', 'btn', WRITE.remove);
+            btn.type = 'button';
+            btn.addEventListener('click', () => removeBan(b, $('bansMsg'), btn));
+            right.append(btn);
+          }
+          row.append(name, right);
           banBox.append(row);
         });
         breakers.forEach((b) => {
@@ -3540,6 +3577,26 @@
           row.append(el('span', 'row-value', `${Math.ceil(Number(b.cooldown_remaining_s) || 0)}s left`));
           banBox.append(row);
         });
+        // §2.6: the substitute queue. Its label is the spec's own word for
+        // THIS queue and no other concept (padrão do motor, reserva, último
+        // recurso keep theirs). Empty or absent renders nothing — no line, no
+        // frame, no empty phrase (DESIGN.md rule 1): a missing substitute
+        // queue is an absence, not a state to describe. Drawn only when the
+        // block itself is on screen: with nobody banned the queue has nothing
+        // to substitute for.
+        const chain = Array.isArray(bl.fallback_chain) ? bl.fallback_chain : [];
+        if (chain.length) {
+          const sub = el('div');
+          sub.append(el('div', 'chain-head', 'Substituto da lista de reserva geral'));
+          const ul = el('ul', 'hops drawn');
+          chain.forEach((m) => {
+            const item = el('li', 'hop');
+            item.append(el('span', 'hop-model', String(m)));
+            ul.append(item);
+          });
+          sub.append(ul);
+          banBox.append(sub);
+        }
       }
 
       // ── chain views: the shared vocabulary ──────────────────────────
@@ -6710,25 +6767,52 @@
       // erased by the following /apply without a word. Refusal is the §4.7 text;
       // there is no "are you sure" because a second gesture over a diff the
       // operator may not read is not a guarantee, the re-read is.
+      // One refusal for both staleness reads below — the same §4.7 text, the
+      // same reload, the same discarded draft, so a snapshot the guard refused
+      // cannot be re-applied from anywhere else on the screen.
+      async function refuseStale(msg) {
+        setMsg(msg, WRITE.conflict, 'bad');
+        state.plan = null;
+        // The draft dies with the refusal: re-applying it would write the
+        // stale snapshot the guard just refused. The open inspector (if any)
+        // is rebuilt from the reloaded policy — the node is captured BEFORE
+        // the reload because renderAll clears the selection when none is
+        // marked — so the panel cannot keep showing (or re-applying) a draft
+        // the refusal discarded.
+        const openNode = state.selectedNode;
+        state.draft = null;
+        await load();
+        if (openNode) renderInspector(openNode);
+        const freshMsg = $('nodeMsg');
+        if (freshMsg) setMsg(freshMsg, WRITE.conflict, 'bad');
+        return false;
+      }
+
       async function plan(policy, msg, diffNode) {
+        // The freshness guard compares the file as THIS screen read it, and
+        // the read must be the same route the screen reads. GET /policy does
+        // not project `blocklist` (router/service.py:672-701) — a ban lifted
+        // elsewhere would pass the policy comparison untouched — so a write
+        // whose body touches blocklist also re-reads the blocklist the screen
+        // already reads (GET /blocklist, the same shape renderBans draws) and
+        // refuses on drift with the same text and the same reload. Only the
+        // two display fields the console can WRITE are compared: breaker_enabled
+        // and breaker_cooldowns are server-owned, and a cooldown counts down —
+        // comparing the ticking value would refuse the operator's own file. One
+        // comparator, samePolicy, serves both reads: no second notion of "equal".
+        if (policy && policy.blocklist && state.blocklist) {
+          const freshBl = await call('/blocklist');
+          const blField = (data, key) => (data && Array.isArray(data[key])) ? data[key] : [];
+          if (!freshBl.error && !freshBl.missing && freshBl.data
+              && (!samePolicy(blField(freshBl.data, 'manual_bans'), blField(state.blocklist, 'manual_bans'))
+                  || !samePolicy(blField(freshBl.data, 'fallback_chain'), blField(state.blocklist, 'fallback_chain')))) {
+            return refuseStale(msg);
+          }
+        }
         const fresh = await call('/policy');
         if (!fresh.error && !fresh.missing && fresh.data && typeof fresh.data === 'object'
             && !samePolicy(fresh.data, state.policy)) {
-          setMsg(msg, WRITE.conflict, 'bad');
-          state.plan = null;
-          // The draft dies with the refusal: re-applying it would write the
-          // stale snapshot the guard just refused. The open inspector (if any)
-          // is rebuilt from the reloaded policy — the node is captured BEFORE
-          // the reload because renderAll clears the selection when none is
-          // marked — so the panel cannot keep showing (or re-applying) a draft
-          // the refusal discarded.
-          const openNode = state.selectedNode;
-          state.draft = null;
-          await load();
-          if (openNode) renderInspector(openNode);
-          const freshMsg = $('nodeMsg');
-          if (freshMsg) setMsg(freshMsg, WRITE.conflict, 'bad');
-          return false;
+          return refuseStale(msg);
         }
         const res = await call('/plan', { method: 'POST', body: { policy } });
         if (res.missing) { setMsg(msg, WRITE.missingPlan, 'bad'); return false; }
@@ -6801,8 +6885,8 @@
       // click.
       let applying = false;
 
-      async function doApply(path, msg, draft, diffNode, saveBtn) {
-        if (!writable(msg, WRITE.save)) return;
+      async function doApply(path, msg, draft, diffNode, saveBtn, action) {
+        if (!writable(msg, action || WRITE.save)) return;
         if (applying) { setMsg(msg, WRITE.inFlight, 'bad'); return; }
         applying = true;
         try {
@@ -6855,7 +6939,7 @@
         }
         } finally {
           applying = false;
-          if (saveBtn && saveBtn.textContent === WRITE.saving) saveBtn.textContent = WRITE.save;
+          if (saveBtn && saveBtn.textContent === WRITE.saving) saveBtn.textContent = action || WRITE.save;
         }
       }
 
@@ -7260,6 +7344,9 @@
         renderRail();
         renderInspector(null);
         if (state.policy) renderSheet();
+        // The bans block's removal control is mode-shaped: it exists in the
+        // DOM only in editing mode, so the block is re-drawn on every toggle.
+        renderBans();
       }
 
       // ── layout ──────────────────────────────────────────────────────
