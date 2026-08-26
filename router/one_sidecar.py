@@ -590,6 +590,18 @@ def _make_handler(app: SidecarApp) -> type[BaseHTTPRequestHandler]:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            # NADA daqui pode ser cacheado, e este é o único ponto por onde toda
+            # resposta passa — console e rotas JSON.
+            #
+            # O console porque um deploy que não aparece é pior que um deploy que
+            # falha: em 2026-08-26 o operador continuou vendo a tela antiga depois
+            # de um deploy verificado, e a causa foi esta — resposta 200 sem
+            # Cache-Control, sem ETag e sem Last-Modified, buscada com a política
+            # default do fetch. As rotas JSON pelo mesmo motivo mais forte ainda:
+            # /status, /policy e /liveness são estado VIVO, e uma cópia cacheada
+            # delas é exatamente a classe de mentira que o DESIGN.md combate na
+            # tela (um número velho apresentado como agora).
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 

@@ -137,6 +137,37 @@ def test_status_provenance_obeys_injected_stamps(tmp_path):
     assert payload["config_mtime"] < payload["process_started_at"]
 
 
+def test_no_response_is_cacheable(running_sidecar):
+    """Nem o console nem uma rota JSON podem ser cacheados pelo navegador.
+
+    Regressão de 2026-08-26: o console era servido com 200 e nenhum cabeçalho de
+    cache, o painel o buscava com a política default do fetch, e depois de um
+    deploy verificado o operador continuava vendo a tela antiga. O invariante é
+    do `_write`, que serve as duas famílias de resposta, então as duas são
+    afirmadas aqui — uma cópia cacheada de /status seria a mesma mentira que a
+    tela evita em toda parte: estado velho apresentado como agora.
+    """
+    base, _token = running_sidecar
+
+    def headers_of(path: str, token: str | None = None):
+        req = urllib.request.Request(f"{base}{path}")
+        if token is not None:
+            req.add_header(TOKEN_HEADER, token)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, {k.lower(): v for k, v in resp.headers.items()}
+
+    status, head = headers_of("/console")
+    assert status == 200
+    assert head.get("cache-control") == "no-store", head
+
+    status, head = headers_of("/status", token="s3cret-token")
+    assert status == 200
+    assert head.get("cache-control") == "no-store", head
+
+    # E o cabeçalho não pode ter custado o que já existia.
+    assert head.get("content-type") == "application/json"
+
+
 def test_policy_explain_and_unknown_route(running_sidecar):
     base, _token = running_sidecar
     assert _get(f"{base}/policy", token="s3cret-token")[0] == 200

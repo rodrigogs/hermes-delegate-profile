@@ -74,6 +74,12 @@
     try {
       const response = await fetch(`${SIDE}/console`, {
         credentials: 'same-origin',
+        // O console é buscado UMA vez por carregamento de página (ver o teste do
+        // reabrir), então uma entrada de cache do navegador sobrevive ao deploy e
+        // o operador vê a tela antiga sem nada no servidor estar errado. O
+        // sidecar agora manda `Cache-Control: no-store`; isto aqui é a outra
+        // ponta, para não depender de o proxy repassar o cabeçalho.
+        cache: 'no-store',
         headers: { Accept: 'text/html' },
       });
       if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status });

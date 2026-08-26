@@ -112,7 +112,7 @@ test('the frame is srcdoc, because a served page cannot be framed at all', async
   const fetched = [];
   const { api } = loadNav({
     fetchStub: (url, opts) => {
-      fetched.push({ url, credentials: opts.credentials });
+      fetched.push({ url, credentials: opts.credentials, cache: opts.cache });
       return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('<html>the console</html>') });
     },
   });
@@ -126,6 +126,10 @@ test('the frame is srcdoc, because a served page cannot be framed at all', async
   assert.equal(frame.attrs.src, undefined, 'never framed by URL');
   assert.match(fetched[0].url, /\/console$/);
   assert.equal(fetched[0].credentials, 'same-origin', 'the proxy needs the session cookie');
+  // A busca acontece UMA vez por carregamento (ver o teste seguinte), então uma
+  // entrada de cache do navegador sobreviveria ao deploy e mostraria a tela
+  // antiga com o servidor certo. Medido em 2026-08-26.
+  assert.equal(fetched[0].cache, 'no-store', 'um console cacheado é um deploy que não aparece');
 });
 
 test('reopening the panel does not refetch or reset the console', async () => {
