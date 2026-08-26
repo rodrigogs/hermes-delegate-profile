@@ -681,6 +681,11 @@
     /* When the router last TRIED this elo (card t_0a3cff85): history, not a
        state, so the same muted metadata treatment — no hue of its own. */
     .hop-tried { color: var(--muted); font-size: var(--t-small); }
+    /* The observed share of this elo (card t_d2210a7c): how many of the
+       recorded decisions TRIED it — history, not a state, so the same muted
+       metadata treatment as the dating line. A zero is a finding about the
+       declared chain, not an error about the elo. */
+    .hop-share { color: var(--muted); font-size: var(--t-small); }
     /* Above the group's price ceiling at this hour (card t_eed59abb): a cost
        CONDITION, so the warn hue — the same meaning the clock line gives a
        peak, and the attention the "cannot be used at this hour" state needs. */
@@ -3934,6 +3939,31 @@
         return latest;
       }
 
+      // Card t_d2210a7c: the OBSERVED share of a chain entry — how many of the
+      // recorded decisions TRIED this model@provider pair. The log records the
+      // head the executor dispatched and never an outcome, so the fact is
+      // "tentada", never "atendeu" — the same constraint lastTriedAt lives
+      // under. `total` is every decision with a legible attempted model (a
+      // refusal or a junk identity tried nothing, so it is not part of the
+      // "tentada" accounting); `n` is the subset whose pair matches exactly.
+      // Pure over the list, no clock: the window the phrase names is the
+      // DATA's own span (hitsWindow), never the wall clock — "de que período
+      // falamos" has exactly one authority.
+      function triedShare(routes, model, provider) {
+        const id = String(model || '');
+        const rail = String(provider || '');
+        let n = 0;
+        let total = 0;
+        (Array.isArray(routes) ? routes : []).forEach((r) => {
+          const m = String((r && r.model) || '');
+          if (!m) return;
+          const p = String((r && r.provider) || '');
+          total += 1;
+          if (m === id && p === rail) n += 1;
+        });
+        return { n, total };
+      }
+
       function eloRow(hop, opts) {
         const o = opts || {};
         const elo = hop && typeof hop === 'object' ? hop : {};
@@ -4011,6 +4041,21 @@
           // inside a template would read as English to the vocabulary guard.
           const age = ago(tried, nowUtc());
           row.append(el('span', 'hop-tried', `última decisão que tentou este modelo: ${age}`));
+        }
+        // Card t_d2210a7c: the observed share, on the SAME gate as the dating
+        // line — only surfaces that pass the log render it, and the pair the
+        // share matches is the rail this very row shows, so a line and the
+        // row it sits on can never disagree (rule 2). The window is the one
+        // the sheet's counts already name (hitsWindow), so "de que período
+        // falamos" has a single authority across both. No decision in the log
+        // ⇒ the whole column is absent (rule 1): "0 de 0" would be a framed
+        // void. With decisions recorded, N = 0 SHOWS — a reserve the log
+        // never tried is the most useful fact its line can carry.
+        const share = o.routes ? triedShare(o.routes, elo.model, rail) : null;
+        if (share && share.total > 0) {
+          const period = hitsWindow();
+          row.append(el('span', 'hop-share',
+            `tentada em ${share.n} das ${share.total} decisões${period ? ` (${period})` : ''}`));
         }
         return row;
       }
@@ -8248,6 +8293,13 @@
         // Exported so the pair-identity and the "no decision ⇒ no line" rule
         // are pinned by tests rather than eyeballed.
         lastTriedAt,
+        // The observed share (card t_d2210a7c): how many of the recorded
+        // decisions TRIED this model@provider pair, and the denominator that
+        // makes the fraction say something ("tentada em N das T decisões").
+        // Exported so the pair identity, the legible-model denominator and
+        // the "no log ⇒ no column" rule are pinned by tests rather than
+        // eyeballed.
+        triedShare,
         // The mechanism clause of a decision row (card t_9388289e): which
         // group the decision went through (decisionGroup), whether the policy
         // backs it with a fail-safe (hasConfiguredFailSafe), and the one or

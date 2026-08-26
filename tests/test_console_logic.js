@@ -9632,3 +9632,124 @@ test('displayOrder mirrors order_chain: the hour swaps the queue, non-time strat
   assert.deepEqual(models(api.displayOrder(hops, 'random', monday3, { registry })), models(hops),
     'random must not reorder by the hour either');
 });
+test('triedShare counts the decisions that TRIED this model@provider pair', () => {
+  const { api } = loadConsole();
+  const routes = [
+    { ts: 1000, model: 'glm-4.7', provider: 'zai', cause: 'hard_rule' },
+    { ts: 2000, model: 'glm-4.7', provider: 'zai', cause: 'hard_rule' },
+    { ts: 3000, model: 'glm-4.7', provider: 'deepseek', cause: 'hard_rule' },
+    { ts: 4000, model: 'gpt-5.6-luna', provider: 'openai-codex', cause: 'fail_safe_strong' },
+  ];
+  assert.deepEqual(plain(api.triedShare(routes, 'glm-4.7', 'zai')), { n: 2, total: 4 });
+  assert.deepEqual(plain(api.triedShare(routes, 'glm-4.7', 'deepseek')), { n: 1, total: 4 },
+    'same id on another rail is a separate share');
+  assert.deepEqual(plain(api.triedShare(routes, 'mimo-v2.5', 'xiaomi')), { n: 0, total: 4 },
+    'never tried: 0 of the total, not an absent number');
+  assert.deepEqual(plain(api.triedShare([], 'glm-4.7', 'zai')), { n: 0, total: 0 }, 'no log, no column');
+  assert.deepEqual(plain(api.triedShare(null, 'glm-4.7', 'zai')), { n: 0, total: 0 });
+  assert.deepEqual(plain(api.triedShare(routes, '', 'zai')), { n: 0, total: 4 }, 'no id, no identity');
+});
+
+test('triedShare denominator counts only decisions with a legible attempted model', () => {
+  const { api } = loadConsole();
+  const routes = [
+    { ts: 10, cause: 'deny' },                     // a refusal tried nothing
+    { ts: 20, model: '', provider: 'zai' },        // junk identity
+    { ts: 30, model: 'glm-4.7', provider: 'zai' }, // the one that counts
+  ];
+  assert.deepEqual(plain(api.triedShare(routes, 'glm-4.7', 'zai')), { n: 1, total: 1 });
+});
+
+test('each chain entry shows its observed share: 154 decisions, sum closes, 0 shows, window cited', () => {
+  const { api, dom } = loadConsole();
+  api.state.clock = PEAK;
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [], default: {},
+    tiers: {
+      T1: {
+        model: 'glm-4.7', provider: 'zai', billing_mode: 'plan',
+        fallback: [
+          { model: 'gpt-5.6-luna', provider: 'openai-codex', billing_mode: 'subscription' },
+          { model: 'mimo-v2.5', provider: 'xiaomi', billing_mode: 'metered' },
+        ],
+        fallback_strategy: 'sequential',
+      },
+    },
+  };
+  const routes = [];
+  const now = PEAK.getTime() / 1000;
+  const add = (model, provider, ts) => routes.push({ ts, model, provider, cause: 'hard_rule', task: 't' });
+  // 153 decisions inside the last 3h, plus ONE 3 days old — the window is the
+  // data's own span (so "nos últimos 3 dias"), and a clock-relative filter
+  // that dropped the old decision would make the total 153 and break the sum.
+  for (let i = 0; i < 99; i += 1) add('glm-4.7', 'zai', now - 60 - i * 60);
+  for (let i = 0; i < 54; i += 1) add('gpt-5.6-luna', 'openai-codex', now - 3600 - i * 60);
+  add('glm-4.7', 'zai', now - 3 * 86400);
+  assert.equal(routes.length, 154);
+  api.state.routes = routes;
+  api.renderLadder();
+  const shares = findAll(dom.get('ladder'), 'hop-share').map((n) => n.textContent);
+  assert.deepEqual(shares, [
+    'tentada em 100 das 154 decisões (nos últimos 3 dias)',
+    'tentada em 54 das 154 decisões (nos últimos 3 dias)',
+    'tentada em 0 das 154 decisões (nos últimos 3 dias)',
+  ], 'the three shares sum to the total, the zero entry SHOWS its 0, and the window is cited');
+  const sum = shares.reduce((acc, s) => acc + Number(/em (\d+) das/.exec(s)[1]), 0);
+  assert.equal(sum, 154, 'the shares close the sum');
+});
+
+test('the same model id on two providers gets two independent share lines', () => {
+  const { api, dom } = loadConsole();
+  api.state.clock = PEAK;
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [], default: {},
+    tiers: {
+      T1: {
+        model: 'glm-4.7', provider: 'zai',
+        fallback: [{ model: 'glm-4.7', provider: 'deepseek' }],
+        fallback_strategy: 'sequential',
+      },
+    },
+  };
+  const now = PEAK.getTime() / 1000;
+  const routes = [];
+  for (let i = 0; i < 10; i += 1) routes.push({ ts: now - 60 - i, model: 'glm-4.7', provider: 'zai', cause: 'hard_rule', task: 't' });
+  for (let i = 0; i < 7; i += 1) routes.push({ ts: now - 3600 - i, model: 'glm-4.7', provider: 'deepseek', cause: 'hard_rule', task: 't' });
+  api.state.routes = routes;
+  api.renderLadder();
+  const shares = findAll(dom.get('ladder'), 'hop-share').map((n) => n.textContent);
+  assert.deepEqual(shares, [
+    'tentada em 10 das 17 decisões (na última hora)',
+    'tentada em 7 das 17 decisões (na última hora)',
+  ], 'each rail counts ITS OWN attempts — counting by model alone would give 17 on both');
+});
+
+test('no recorded decision means no share column on any line', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.state.routes = [];
+  api.renderLadder();
+  const text = flat(dom.get('ladder'));
+  assert.doesNotMatch(text, /tentada em/);
+  assert.doesNotMatch(text, /0 de 0/);
+});
+
+test('the last-resort chain on Modelos shows its observed share too', () => {
+  const { api, dom } = loadConsole();
+  api.state.clock = PEAK;
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [], default: {}, tiers: {},
+    fail_safe: { model: 'glm-4.7', provider: 'zai', fallback: [{ model: 'gpt-5.6-luna', provider: 'openai-codex' }] },
+  };
+  api.state.routes = [
+    { ts: PEAK.getTime() / 1000 - 260, model: 'glm-4.7', provider: 'zai', cause: 'fail_safe_strong', task: 't' },
+  ];
+  api.renderFailSafe();
+  const box = dom.get('failSafeBox');
+  assert.match(flat(box), /tentada em 1 das 1 decisões \(no último minuto\)/,
+    'the same chainList the groups use, so the same share vocabulary');
+});

@@ -536,6 +536,25 @@ def test_last_tried_dating_says_tried_never_served():
         assert "nunca" not in t, f"a dating phrase invents an absence: {t!r}"
 
 
+def test_share_phrase_says_tried_never_served():
+    """Card t_d2210a7c: the chain-entry share says ``tentada``, never ``atendeu``.
+
+    The share is over the decisions that TRIED the elo (the log records the
+    head the executor dispatched and never an outcome), so ``atendeu`` would
+    assert a fact nobody measured. The extractor strips the ``${...}``
+    interpolations, so the fixed prefix and the denominator word are what is
+    pinned here — the window the phrase cites is pinned behaviourally in
+    test_console_logic.js, where the fixture's span is known.
+    """
+
+    prose = _console_rendered_text()
+    share = [t for _, _, t in prose if "tentada em" in t]
+    assert share, "the chain-entry share phrase must exist and be renderable text"
+    for t in share:
+        assert "atendeu" not in t, f"a share phrase claims an outcome: {t!r}"
+        assert "decisões" in t, f"a share phrase lost its denominator: {t!r}"
+
+
 def test_cap_mark_and_bypass_speak_the_cards_own_words():
     """Card t_eed59abb: the per-attempt ceiling mark is one fixed vocabulary.
 
