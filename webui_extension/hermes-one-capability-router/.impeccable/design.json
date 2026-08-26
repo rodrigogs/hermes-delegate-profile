@@ -1,0 +1,497 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-26T00:00:00Z",
+  "title": "Design System: Capability Router Console",
+  "extensions": {
+    "colorMeta": {
+      "skin-accent": {
+        "role": "primary",
+        "displayName": "The Skin's Accent",
+        "canonical": "var(--host-accent, #f3f3f6)",
+        "note": "Forwarded live from the running Hermes One skin (gold in default/dark, purple in catppuccin/light). Marks selection only, never condition. The hex is the fail-safe for an unreadable shell.",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(37% 0 0)",
+          "oklch(48% 0 0)",
+          "oklch(59% 0 0)",
+          "oklch(70% 0 0)",
+          "oklch(82% 0 0)",
+          "oklch(95% 0 0)"
+        ],
+        "value": "#f3f3f6"
+      },
+      "accent-fg": {
+        "role": "primary",
+        "displayName": "Accent Foreground",
+        "canonical": "var(--host-accent-fg, #0a0a0c)",
+        "note": "Near-black, not #fff: the host declares this only under :root.dark, so in every light skin the fallback lands on the one filled button, where #fff measured 1.1:1 against the paper-white fail-safe accent.",
+        "value": "#0a0a0c"
+      },
+      "ok": {
+        "role": "secondary",
+        "displayName": "Alive",
+        "canonical": "var(--host-success, #4ade9b)",
+        "note": "Fill/dot form. As text it measured 1.49:1 worst case, so words use ok-text.",
+        "tonalRamp": [
+          "oklch(20% 0.09 160)",
+          "oklch(31% 0.11 160)",
+          "oklch(42% 0.13 160)",
+          "oklch(53% 0.15 160)",
+          "oklch(64% 0.16 160)",
+          "oklch(75% 0.14 160)",
+          "oklch(86% 0.09 160)",
+          "oklch(95% 0.04 160)"
+        ],
+        "value": "#4ade9b"
+      },
+      "warn": {
+        "role": "secondary",
+        "displayName": "Needs Your Attention",
+        "canonical": "var(--host-warning, #f7b955)",
+        "note": "The router needs attention: an exception count, a rule that never fired, an expensive window, a missing billing mode. Never the operator's own doing.",
+        "tonalRamp": [
+          "oklch(20% 0.08 75)",
+          "oklch(31% 0.10 75)",
+          "oklch(42% 0.12 75)",
+          "oklch(53% 0.14 75)",
+          "oklch(64% 0.15 75)",
+          "oklch(75% 0.13 75)",
+          "oklch(86% 0.08 75)",
+          "oklch(95% 0.04 75)"
+        ],
+        "value": "#f7b955"
+      },
+      "bad": {
+        "role": "secondary",
+        "displayName": "Dead or Refused",
+        "canonical": "var(--host-error, #ff6b7d)",
+        "note": "Reserved for a control giving way. Rejection reasons under a DROPPED heading stay muted.",
+        "tonalRamp": [
+          "oklch(20% 0.10 15)",
+          "oklch(31% 0.13 15)",
+          "oklch(42% 0.15 15)",
+          "oklch(53% 0.17 15)",
+          "oklch(64% 0.18 15)",
+          "oklch(75% 0.15 15)",
+          "oklch(86% 0.09 15)",
+          "oklch(95% 0.04 15)"
+        ],
+        "value": "#ff6b7d"
+      },
+      "info": {
+        "role": "secondary",
+        "displayName": "Quota, and Inference Happened",
+        "canonical": "var(--host-info, #b490ff)",
+        "note": "Worst raw-text case measured across 23 palettes x both polarities: 1.38:1 in neon-paint/light. Hence the -text forms.",
+        "tonalRamp": [
+          "oklch(20% 0.10 295)",
+          "oklch(31% 0.13 295)",
+          "oklch(42% 0.16 295)",
+          "oklch(53% 0.18 295)",
+          "oklch(64% 0.19 295)",
+          "oklch(75% 0.16 295)",
+          "oklch(86% 0.10 295)",
+          "oklch(95% 0.04 295)"
+        ],
+        "value": "#b490ff"
+      },
+      "ok-text": {
+        "role": "secondary",
+        "displayName": "Alive, in Words",
+        "canonical": "color-mix(in srgb, var(--host-success, #4ade9b) 45%, var(--host-text, #f3f3f6))",
+        "note": "45% is the measured ratio for all four: worst case 5.08:1 (info, neon-paint/light) against a 4.5:1 floor; 50% gives 4.44:1 and does not clear it. Mixing toward TEXT rather than away from BG is what makes it darken on parchment and lighten on navy.",
+        "value": "#4ade9b"
+      },
+      "plane-bg": {
+        "role": "neutral",
+        "displayName": "The Shell's Page",
+        "canonical": "var(--host-bg, #0a0a0c)",
+        "tonalRamp": [
+          "oklch(12% 0.01 280)",
+          "oklch(20% 0.01 280)",
+          "oklch(30% 0.01 280)",
+          "oklch(42% 0.01 280)",
+          "oklch(55% 0.01 280)",
+          "oklch(68% 0.01 280)",
+          "oklch(82% 0.01 280)",
+          "oklch(95% 0.005 280)"
+        ],
+        "value": "#0a0a0c"
+      },
+      "plane-raised": {
+        "role": "neutral",
+        "displayName": "The Raised Plane",
+        "canonical": "var(--host-surface-subtle, #15151a)",
+        "note": "The host's authored wash, not a mix toward --text: measured, mixing toward the text colour INVERTS in catppuccin/light (bg #EFF1F5, surface #FFFFFF), so a raised plane read as recessed.",
+        "value": "#15151a"
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "var(--host-border, #212127)",
+        "note": "The system's only structural device: group boundaries, row separators, sequence spines, the inset edge on a dot.",
+        "value": "#212127"
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted",
+        "canonical": "var(--host-muted, #9a9aa8)",
+        "note": "The second and last text step. It bottoms out at 3.47:1 across 21 skins x both polarities; a third step derived from it measured 2.31:1, so --faint is deliberately the SAME value and the step below muted is made in type.",
+        "value": "#9a9aa8"
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Panel title and inspector head. Measured off the running shell's .main-view-title; hidden under .is-embedded because the rail and sidebar already name the surface."
+      },
+      "title": {
+        "displayName": "Value",
+        "purpose": "The lede's answer and a fact's value — scannable without being a headline. 16px has no host equivalent and sits between body and heading."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Prose, rule names, section leads, verdicts. Capped at 74ch with text-wrap: balance."
+      },
+      "small": {
+        "displayName": "Small",
+        "purpose": "Supporting facts, rails, prices, notes, JSON."
+      },
+      "label": {
+        "displayName": "Metadata Label",
+        "purpose": "The third text step, made in TYPE and not in contrast: section names, fact labels, stage names, cause words, 'editando', badges."
+      },
+      "mono": {
+        "displayName": "Machine Fact",
+        "purpose": "Model ids, rails, counts, hashes, timestamps, context windows — anything an operator copies into a shell. A cause label is a phrase, so it is sans."
+      }
+    },
+    "shadows": [
+      {
+        "name": "focus-ring",
+        "value": "0 0 0 3px var(--host-focus-ring, rgba(243, 243, 246, .22))",
+        "purpose": "The host's own focus token, on :focus-visible everywhere. Not elevation."
+      },
+      {
+        "name": "state-halo",
+        "value": "0 0 0 3px var(--warn-bg)",
+        "purpose": "A 14%-alpha halo behind a 6px condition dot. Not elevation."
+      },
+      {
+        "name": "accent-rail",
+        "value": "inset 1px 0 0 var(--accent)",
+        "purpose": "The one 'you picked this' mark: open row, matched rule, replayed step, picked decision."
+      },
+      {
+        "name": "dot-edge",
+        "value": "inset 0 0 0 1px var(--line-strong)",
+        "purpose": "Makes a raw-hue 6px dot locatable in a skin where the hue measures 1.38:1 against the plane."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease",
+        "value": "cubic-bezier(.16, 1, .3, 1)",
+        "purpose": "The only easing in the file."
+      },
+      {
+        "name": "enter",
+        "value": "160ms",
+        "purpose": "The only duration. One @keyframes (screen-in), used by the screen you asked for and reused by the in-row editor — a form arriving in a row and a screen arriving in the panel are the same event at two scales. Yields to prefers-reduced-motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "routes-stack",
+        "value": "860px"
+      },
+      {
+        "name": "panel-narrow",
+        "value": "700px"
+      },
+      {
+        "name": "phone",
+        "value": "640px"
+      },
+      {
+        "name": "embedded-narrow",
+        "value": "1120px"
+      }
+    ],
+    "colorMetaNote": "Each entry also carries `value`: the FAIL-SAFE literal from inside its var() fallback — what the console looks like when the shell cannot be read at all. It is a documented value of this system, not drift, and it is recorded as a bare literal because a palette scan parses the whole var() expression and cannot see through it."
+  },
+  "components": [
+    {
+      "name": "Button",
+      "kind": "button",
+      "refersTo": "button",
+      "description": "The default control, shaped like the host's own header button. 28px tall by construction so the header computes to 44px like every native panel.",
+      "html": "<button class=\"ds-btn\" type=\"button\">Recarregar</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 5px 11px; border: 1px solid var(--host-border, #212127); border-radius: var(--host-radius-md, 8px); background: var(--host-surface, #101013); color: var(--host-text, #f3f3f6); font: 600 var(--host-font-size-sm, 12px)/16px var(--host-font-ui, Inter, ui-sans-serif, system-ui, sans-serif); white-space: nowrap; cursor: pointer; } .ds-btn:hover { background: var(--host-hover-bg, #1c1c23); border-color: var(--host-border2, #33333d); } .ds-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--host-focus-ring, rgba(243,243,246,.22)); }"
+    },
+    {
+      "name": "Commit Button",
+      "kind": "button",
+      "refersTo": "button-commit",
+      "description": "The only FILLED element on a screen, filled with the skin's accent over the host's own accent foreground.",
+      "html": "<button class=\"ds-btn-go\" type=\"button\">Salvar</button>",
+      "css": ".ds-btn-go { display: inline-flex; align-items: center; justify-content: center; padding: 5px 11px; border: 1px solid var(--host-accent, #f3f3f6); border-radius: var(--host-radius-md, 8px); background: var(--host-accent, #f3f3f6); color: var(--host-accent-fg, #0a0a0c); font: 600 var(--host-font-size-sm, 12px)/16px var(--host-font-ui, Inter, ui-sans-serif, system-ui, sans-serif); cursor: pointer; } .ds-btn-go:hover { background: var(--host-accent-hover, #ffffff); border-color: var(--host-accent-hover, #ffffff); } .ds-btn-go:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--host-focus-ring, rgba(243,243,246,.22)); }"
+    },
+    {
+      "name": "Quiet Row Action",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "The per-object Editar that lives in the fixed 84px action slot. Same shape and height as every other button, with no plane until pointed at: ten filled rectangles down a list would out-shout the policy beside them. The border is transparent, not absent, so hovering does not shift the text.",
+      "html": "<button class=\"ds-btn-quiet\" type=\"button\" aria-expanded=\"false\">Editar</button>",
+      "css": ".ds-btn-quiet { display: inline-flex; align-items: center; padding: 5px 11px; border: 1px solid transparent; border-radius: var(--host-radius-md, 8px); background: none; color: var(--host-muted, #9a9aa8); font: 600 var(--host-font-size-sm, 12px)/16px var(--host-font-ui, Inter, ui-sans-serif, system-ui, sans-serif); cursor: pointer; } .ds-btn-quiet:hover { border-color: var(--host-border2, #33333d); background: var(--host-hover-bg, #1c1c23); color: var(--host-text, #f3f3f6); } .ds-btn-quiet:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--host-focus-ring, rgba(243,243,246,.22)); }"
+    },
+    {
+      "name": "Predicate Chips",
+      "kind": "chip",
+      "refersTo": "chip-shape",
+      "description": "One chip per clause of a rule's when block, in a real list, so two conditions are never announced as one string. The three families are told apart in TYPE and PLANE plus their own word — a hue would collide with condition or with selection.",
+      "html": "<ul class=\"ds-whens\"><li class=\"ds-chip\"><span class=\"ds-chip-val\">verb is hard</span></li><li class=\"ds-chip ds-chip-context\"><span class=\"ds-chip-kind\">CONTEXT</span><span class=\"ds-chip-val\">over 400,000 tokens</span></li><li class=\"ds-chip ds-chip-capability\"><span class=\"ds-chip-kind\">NEEDS</span><span class=\"ds-chip-val\">vision</span></li></ul>",
+      "css": ".ds-whens { display: flex; flex-wrap: wrap; gap: 6px; margin: 5px 0 0; padding: 0; list-style: none; } .ds-chip { display: inline-flex; align-items: baseline; gap: 6px; padding: 2px 9px; border: 1px solid var(--host-border, #212127); border-radius: var(--host-radius-pill, 999px); color: var(--host-muted, #9a9aa8); font: var(--host-font-size-sm, 12px)/1.5 var(--host-font-ui, Inter, ui-sans-serif, system-ui, sans-serif); } .ds-chip-kind { flex: 0 0 auto; color: var(--host-muted, #9a9aa8); font: 600 var(--host-font-size-xs, 11px) var(--host-font-ui, Inter, sans-serif); letter-spacing: .05em; text-transform: uppercase; } .ds-chip-context { background: var(--host-surface-subtle, #15151a); color: var(--host-text, #f3f3f6); } .ds-chip-capability { border-color: var(--host-border2, #33333d); color: var(--host-text, #f3f3f6); }"
+    },
+    {
+      "name": "Sheet Row (the one structural primitive)",
+      "kind": "card",
+      "refersTo": "row",
+      "description": "One rule = one line: precedence, what catches, where it goes, how often it fired, and the fixed action slot. No card, no frame: a hairline below and space around. The count column holds a COUNT and disappears when there is nothing to count.",
+      "html": "<ol class=\"ds-sheet\"><li class=\"ds-step\"><span class=\"ds-step-ord\">3</span><div class=\"ds-step-what\"><div class=\"ds-step-id\">Tarefas com código <span class=\"ds-step-off\">has_code_rule</span></div><div class=\"ds-step-when\">quando a tarefa traz código</div></div><div class=\"ds-step-to\"><div class=\"ds-step-dest\"><span class=\"ds-step-arrow\">&rarr;</span><span class=\"ds-step-target\">T2</span></div><span class=\"ds-step-hits\">26&times;</span></div><div class=\"ds-step-act\"><button class=\"ds-btn-quiet\" type=\"button\">Editar</button></div></li></ol>",
+      "css": ".ds-sheet { position: relative; margin: 0; padding-left: 30px; list-style: none; } .ds-sheet::before { content: \"\"; position: absolute; left: 8px; top: 8px; bottom: 26px; width: 1px; background: var(--host-border2, #33333d); } .ds-step { position: relative; display: grid; grid-template-columns: 22px minmax(0, 1fr) fit-content(34%) 84px; align-items: baseline; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--host-border, #212127); transition: background 160ms cubic-bezier(.16,1,.3,1); } .ds-step::before { content: \"\"; position: absolute; left: -22px; top: 19px; width: 9px; height: 1px; background: var(--host-border, #212127); } .ds-step:hover { background: var(--host-hover-bg, #1c1c23); } .ds-step-ord { color: var(--host-muted, #9a9aa8); font: 500 var(--host-font-size-xs, 11px) var(--host-font-mono, ui-monospace, monospace); text-align: right; } .ds-step-id { font: 500 16px var(--host-font-ui, Inter, sans-serif); letter-spacing: -.1px; color: var(--host-text, #f3f3f6); } .ds-step-off { color: var(--host-muted, #9a9aa8); font: 400 var(--host-font-size-sm, 12px) var(--host-font-mono, ui-monospace, monospace); } .ds-step-when { color: var(--host-muted, #9a9aa8); font-size: var(--host-font-size-md, 14px); margin-top: 3px; max-width: 74ch; text-wrap: balance; } .ds-step-to { display: grid; grid-template-columns: minmax(0, 1fr) 52px; align-items: baseline; gap: 14px; } .ds-step-dest { display: flex; align-items: baseline; gap: 8px; justify-content: flex-end; } .ds-step-arrow { color: var(--host-muted, #9a9aa8); font-family: var(--host-font-mono, ui-monospace, monospace); } .ds-step-target { font: 500 var(--host-font-size-md, 14px) var(--host-font-mono, ui-monospace, monospace); color: var(--host-text, #f3f3f6); } .ds-step-hits { color: var(--host-muted, #9a9aa8); font: var(--host-font-size-sm, 12px) var(--host-font-mono, ui-monospace, monospace); text-align: right; } .ds-step-act { display: flex; justify-content: flex-end; align-self: start; }"
+    },
+    {
+      "name": "Row Open, with the Editor In Place",
+      "kind": "custom",
+      "refersTo": "row-open",
+      "description": "Writing is armed per OBJECT: the row rises to the raised plane, takes the 1px accent rail, the action slot swaps Editar for the word 'editando', and the form opens inside the row it changes. Nothing else on the screen changes state, and nothing is dimmed — the neighbours' own Editar is still live.",
+      "html": "<li class=\"ds-step ds-step-open\"><span class=\"ds-step-ord\">3</span><div class=\"ds-step-what\"><div class=\"ds-step-id\">Tarefas com c&oacute;digo</div></div><div class=\"ds-step-to\"></div><div class=\"ds-step-act\"><span class=\"ds-step-editing\">editando</span></div><div class=\"ds-editor-box\"><p class=\"ds-editor-scope\">Editando Tarefas com c&oacute;digo. Nada &eacute; gravado at&eacute; voc&ecirc; salvar.</p><div class=\"ds-actions\"><button class=\"ds-btn-go\" type=\"button\">Salvar</button><button class=\"ds-btn\" type=\"button\">Ver o que muda</button><button class=\"ds-btn\" type=\"button\">Cancelar</button></div></div></li>",
+      "css": ".ds-step-open { background: var(--host-surface-subtle, #15151a); box-shadow: inset 1px 0 0 var(--host-accent, #f3f3f6); border-bottom-color: var(--host-accent-bg-strong, rgba(243,243,246,.15)); border-radius: 0 var(--host-radius-sm, 4px) var(--host-radius-sm, 4px) 0; } .ds-step-open::before { background: var(--host-accent, #f3f3f6); } .ds-step-editing { color: var(--host-accent-text, var(--host-accent, #f3f3f6)); font: 600 var(--host-font-size-xs, 11px) var(--host-font-ui, Inter, sans-serif); letter-spacing: .05em; text-transform: uppercase; padding-right: 11px; } .ds-editor-box { grid-column: 1 / -1; margin: 12px 0 2px; padding: 14px 16px 16px; border-top: 1px solid var(--host-accent-bg-strong, rgba(243,243,246,.15)); animation: ds-screen-in 160ms cubic-bezier(.16,1,.3,1) both; } .ds-editor-scope { margin: 0 0 12px; color: var(--host-muted, #9a9aa8); font-size: var(--host-font-size-sm, 12px); max-width: 74ch; text-wrap: balance; } .ds-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; } @keyframes ds-screen-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } } @media (prefers-reduced-motion: reduce) { .ds-editor-box { animation: none; } }"
+    },
+    {
+      "name": "Model Row",
+      "kind": "card",
+      "refersTo": "row",
+      "description": "The same primitive on Operação: a dot in the raw hue with its 1px inset edge, the elo and its rail in mono, the role it plays in the policy, and the condition as a WORD in the 45%-mixed form so colour is never the only channel.",
+      "html": "<div class=\"ds-row ds-is-alive\"><span class=\"ds-dot\"></span><div class=\"ds-row-main\"><div class=\"ds-row-name\">glm-5.3</div><div class=\"ds-row-note\">zai</div><div class=\"ds-row-role\">T2 prim&aacute;ria, T3 hop 3</div></div><div><span class=\"ds-state\">alive</span></div></div>",
+      "css": ".ds-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 11px 0; border-bottom: 1px solid var(--host-border, #212127); } .ds-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; background: var(--host-muted, #9a9aa8); outline: 1px solid var(--host-border2, #33333d); outline-offset: -1px; } .ds-is-alive .ds-dot { background: var(--host-success, #4ade9b); box-shadow: 0 0 0 3px color-mix(in srgb, var(--host-success, #4ade9b) 14%, transparent); } .ds-row-name { font: 500 var(--host-font-size-md, 14px) var(--host-font-mono, ui-monospace, monospace); color: var(--host-text, #f3f3f6); } .ds-row-note, .ds-row-role { color: var(--host-muted, #9a9aa8); font: var(--host-font-size-sm, 12px) var(--host-font-mono, ui-monospace, monospace); margin-top: 2px; } .ds-state { font: 600 var(--host-font-size-xs, 11px) var(--host-font-ui, Inter, sans-serif); letter-spacing: .05em; text-transform: uppercase; color: var(--host-muted, #9a9aa8); } .ds-is-alive .ds-state { color: color-mix(in srgb, var(--host-success, #4ade9b) 45%, var(--host-text, #f3f3f6)); }"
+    },
+    {
+      "name": "Probe Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Mono, because it holds task text an operator pastes. Focus moves the border to the accent and the shared focus ring lands on the host's own token. 16px minimum under a coarse pointer, reached BY CLASS.",
+      "html": "<form class=\"ds-probe\"><input class=\"ds-probe-input\" aria-label=\"Tarefa a rotear\" placeholder=\"Descreva uma tarefa\"><button class=\"ds-btn\" type=\"submit\">Rotear</button></form>",
+      "css": ".ds-probe { display: flex; gap: 8px; } .ds-probe-input { flex: 1; min-width: 0; padding: 9px 12px; border: 1px solid var(--host-border, #212127); border-radius: var(--host-radius-md, 8px); background: var(--host-input-bg, var(--host-surface, #101013)); color: var(--host-text, #f3f3f6); font: var(--host-font-size-md, 14px) var(--host-font-mono, ui-monospace, monospace); caret-color: var(--host-accent, #f3f3f6); } .ds-probe-input::placeholder { color: var(--host-muted, #9a9aa8); } .ds-probe-input:focus { border-color: var(--host-accent, #f3f3f6); } .ds-probe-input:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--host-focus-ring, rgba(243,243,246,.22)); } @media (hover: none) and (pointer: coarse) { .ds-probe-input { font-size: max(16px, 1em); } .ds-btn { min-height: 44px; } }"
+    },
+    {
+      "name": "Two-Tab Navigation",
+      "kind": "nav",
+      "refersTo": "tab",
+      "description": "Two destinations split by what the operator is DOING, drawn in the host's own nav idiom: a quiet muted label that takes the accent when selected, plus the host's 20px x 2px accent bar. Each tab carries the live state of what it leads to; a count appears only when counting something actionable, and wears amber when it counts exceptions.",
+      "html": "<nav class=\"ds-tabs\" role=\"tablist\"><button class=\"ds-tab\" role=\"tab\" aria-selected=\"true\" type=\"button\">Configura&ccedil;&atilde;o<span class=\"ds-tab-state ds-is-alive\"><span class=\"ds-dot\"></span></span></button><button class=\"ds-tab\" role=\"tab\" aria-selected=\"false\" type=\"button\">Opera&ccedil;&atilde;o<span class=\"ds-tab-state ds-is-degraded\"><span class=\"ds-count ds-is-warn\">2</span><span class=\"ds-dot\"></span></span></button></nav>",
+      "css": ".ds-tabs { display: flex; align-items: stretch; gap: 2px; padding: 0 clamp(14px, 2.4vw, 32px); border-bottom: 1px solid var(--host-border, #212127); background: var(--host-bg, #0a0a0c); } .ds-tab { position: relative; display: inline-flex; align-items: center; gap: 8px; padding: 9px 12px 10px; border: 0; background: none; color: var(--host-muted, #9a9aa8); font: 500 var(--host-font-size-md, 14px) var(--host-font-ui, Inter, sans-serif); border-radius: var(--host-radius-sm, 4px) var(--host-radius-sm, 4px) 0 0; cursor: pointer; } .ds-tab:hover { color: var(--host-text, #f3f3f6); background: var(--host-surface-subtle, #15151a); } .ds-tab[aria-selected=\"true\"] { color: var(--host-accent-text, var(--host-accent, #f3f3f6)); } .ds-tab[aria-selected=\"true\"]::after { content: \"\"; position: absolute; bottom: -1px; left: 50%; transform: translateX(-50%); width: 20px; height: 2px; border-radius: 2px 2px 0 0; background: var(--host-accent, #f3f3f6); } .ds-tab-state { display: inline-flex; align-items: center; gap: 6px; } .ds-count { color: var(--host-muted, #9a9aa8); font: 500 var(--host-font-size-xs, 11px) var(--host-font-mono, ui-monospace, monospace); } .ds-count.ds-is-warn { color: color-mix(in srgb, var(--host-warning, #f7b955) 45%, var(--host-text, #f3f3f6)); } .ds-is-degraded .ds-dot { background: var(--host-warning, #f7b955); box-shadow: 0 0 0 3px color-mix(in srgb, var(--host-warning, #f7b955) 14%, transparent); } @media (hover: none) and (pointer: coarse) { .ds-tab { min-height: 44px; } }"
+    },
+    {
+      "name": "Preset Choice",
+      "kind": "custom",
+      "refersTo": "preset-chosen",
+      "description": "A real radio group, not characters drawn to look like one: each row is a label wrapping a real radio, so the whole row is the target and the browser's own arrow keys move between them. The chosen row takes the host's selected wash; the one in force says so on its own line in accent 11px.",
+      "html": "<label class=\"ds-preset ds-is-chosen\"><input class=\"ds-preset-radio\" type=\"radio\" name=\"ds-preset\" checked><span class=\"ds-preset-body\"><span class=\"ds-preset-label\">Equilibrado<span class=\"ds-preset-live\">em vigor</span></span><span class=\"ds-preset-metric\">4 grupos, 11 elos</span><span class=\"ds-preset-consequence\">Tarefas grandes v&atilde;o para o grupo mais largo primeiro.</span></span></label>",
+      "css": ".ds-preset { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px; align-items: start; padding: 11px 12px; margin: 0 -12px; border: 1px solid transparent; border-radius: var(--host-radius-md, 8px); cursor: pointer; } .ds-preset:hover { background: var(--host-hover-bg, #1c1c23); } .ds-preset.ds-is-chosen { border-color: var(--host-accent-bg-strong, rgba(243,243,246,.15)); background: var(--host-accent-bg, rgba(243,243,246,.08)); } .ds-preset-radio { accent-color: var(--host-accent, #f3f3f6); margin: 3px 0 0; width: 15px; height: 15px; } .ds-preset-label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font: 500 var(--host-font-size-md, 14px) var(--host-font-ui, Inter, sans-serif); color: var(--host-text, #f3f3f6); } .ds-preset-live { color: var(--host-accent-text, var(--host-accent, #f3f3f6)); font: 600 var(--host-font-size-xs, 11px) var(--host-font-ui, Inter, sans-serif); letter-spacing: .05em; text-transform: uppercase; } .ds-preset-metric, .ds-preset-consequence { display: block; color: var(--host-muted, #9a9aa8); font-size: var(--host-font-size-sm, 12px); margin-top: 4px; max-width: 74ch; text-wrap: balance; }"
+    },
+    {
+      "name": "Condition Line",
+      "kind": "custom",
+      "refersTo": "row",
+      "description": "A condition that needs an operator is a LINE marked with the same dot the tabs use — not a tinted card with a thick coloured edge. Every other group here is a hairline and space; the warning was the one element that disagreed, and it disagreed loudest. The muted-dot variant is a disclosure about the DATA, grey precisely so it can never read as an amber verdict.",
+      "html": "<div class=\"ds-warn-line\"><span><strong>Pol&iacute;tica inv&aacute;lida</strong> &mdash; 2 erros no arquivo.</span></div><div class=\"ds-window-stale\"><span><strong>Sem hist&oacute;rico</strong> para este per&iacute;odo, ent&atilde;o n&atilde;o h&aacute; contagem por regra.</span></div>",
+      "css": ".ds-warn-line, .ds-window-stale { display: flex; gap: 10px; align-items: baseline; padding: 11px 0; margin-bottom: 18px; border-bottom: 1px solid var(--host-border, #212127); color: var(--host-muted, #9a9aa8); font-size: var(--host-font-size-md, 14px); } .ds-warn-line::before { content: \"\"; flex: 0 0 auto; width: 6px; height: 6px; margin-top: 6px; border-radius: 50%; background: var(--host-warning, #f7b955); box-shadow: 0 0 0 3px color-mix(in srgb, var(--host-warning, #f7b955) 14%, transparent); } .ds-window-stale::before { content: \"\"; flex: 0 0 auto; width: 6px; height: 6px; margin-top: 6px; border-radius: 50%; background: var(--host-muted, #9a9aa8); box-shadow: 0 0 0 3px var(--host-border, #212127); } .ds-warn-line strong, .ds-window-stale strong { color: var(--host-text, #f3f3f6); font-weight: 600; }"
+    }
+  ],
+  "verification": {
+    "tests": "295 console tests, 57 extension tests, 4 nav tests; repository suite 1763 passed / 2 skipped with a 100% coverage gate.",
+    "mechanicalDetector": {
+      "command": "node .claude/skills/impeccable/scripts/detect.mjs --json webui_extension/hermes-one-capability-router/console.html",
+      "runs": 2,
+      "beforeThisFile": "no findings — with no DESIGN.md palette to compare against, the colour check had nothing to run",
+      "afterThisFile": "7 advisory findings, all one thing, all accepted with reason",
+      "accepted": {
+        "antipattern": "design-system-color",
+        "severity": "advisory",
+        "count": 7,
+        "values": [
+          "#4ade9b",
+          "#f7b955",
+          "#ff6b7d",
+          "#b490ff",
+          "rgb(154, 154, 168)",
+          "rgb(51, 51, 61)",
+          "rgb(16, 16, 19)"
+        ],
+        "why": "Every one is a FAIL-SAFE, which is this surface's most load-bearing rule: there is no palette in the file, each token reads a --host-* property the theme bridge forwards, and the literal after the comma is what the console looks like when the shell cannot be read at all. The four hexes are the semantic four's fallbacks at the top of the stylesheet; the three rgb() values are the muted, line-strong and surface fallbacks, reported by the browser pass because that pass renders the console with no host around it — so every colour resolves to its fail-safe, which is precisely the degraded state the fallbacks exist for.",
+        "whyNotSilenced": "addSidecarColors() in the detector reads only `canonical` and `tonalRamp`, and parseDesignColor() cannot see through a var() expression, so a fail-safe inside a fallback is unreachable to it. The two ways to clear the report would be to list the fail-safes as a tonal ramp — a lie about what they are — or to strip them from the stylesheet, which would leave an unstyled page whenever the bridge is missing. Neither is worth a clean scan. Each colorMeta entry now also carries `value` with its bare fail-safe literal, which documents them explicitly even though this version of the colour check does not read that field."
+      }
+    },
+    "contrast": "Every element this build added was measured in a browser with alpha compositing over the real host skins: worst case 4.9:1 light, 10.13:1 dark.",
+    "mutation": "32 mutations applied to the new assertions; all 32 caught.",
+    "notCanonized": "The .55 opacity on disabled buttons and scope pills (measured 2.54:1 for a live Editar at that value, which is why nothing live is dimmed) and the orphaned .mode[aria-pressed=\"true\"] selector, whose global Editar button no longer exists in the markup. Both are recorded as defects the build carries; the system rule is the accent wash for a selected control, not either of these."
+  },
+  "narrative": {
+    "northStar": "The Guest That Wears the House's Skin",
+    "overview": "This console is a panel inside Hermes One, and it owns no identity of its own. Every colour it paints reads a --host-* property the theme bridge forwards from the running shell, so it repaints with all 21 skins and both polarities; the hex after each comma is a fail-safe for a shell that cannot be read at all, not a palette. The measured reason: a copied palette is wrong in 20 skins out of 21, and in any light skin this console was a black rectangle inside a parchment shell — screenshotted.\n\nIt is an Operate surface: an operator's control room, not a dashboard. Groups are made of hairlines and space, never cards. The previous version of this file mandated a kicker + title + subtitle on every panel and a card around every block; that rule produced 53 cards, 21 subtitles and three competing health rollups, and the operator's verdict was \"feio e muito poluído — pouco objetivo\". Fewer elements, each carrying a fact.\n\nThe surface is TWO screens split by what the operator is DOING, not by which noun they are looking at. Configuração holds everything writable — the ordered rule sheet, the probe, the model groups, the last-resort block, the presets, the general settings, the file editor — and every change is offered on the row it changes. Operação holds the runtime: reachable models, out-of-rotation, the decision log and its replay, and nothing on it is editable. Three nouns (Tarefas / Modelos / Decisões) failed because no noun says where a setting lives. panel-health is gone; selectTab('health') survives as an alias to Operação, because a caller asking for the models is still asking for a screen that exists.",
+    "keyCharacteristics": [
+      "No palette: every colour is the host's, forwarded live; the hexes are fail-safes.",
+      "The accent marks WHAT YOU PICKED; the semantic four report CONDITION. Never crossed.",
+      "Hairlines and space instead of cards; one structural primitive, the row.",
+      "Two type families — sans for prose and labels, mono for what an operator copies.",
+      "Writing is armed per object, on the row that owns it, in a fixed action slot.",
+      "No <svg> in the document and no markup injection: a control is a word.",
+      "Two screens, one column, 100dvh, 44px targets and 16px inputs under a coarse pointer."
+    ],
+    "rules": [
+      {
+        "name": "The No Palette Rule",
+        "body": "No colour is authored here. If a value cannot be traced to a --host-* property, it is not a token — it is a bug, and the only hexes in the file are the fail-safes for an unreadable shell.",
+        "section": "colors"
+      },
+      {
+        "name": "The Split Meaning Rule",
+        "body": "The accent reports SELECTION; the four report CONDITION. A gold underline can therefore never be read as health, and a green dot can never be read as selection. A fifth meaning (predicate family, billing mode, destination kind) gets no hue at all — it is made in TYPE and PLANE, plus its own word.",
+        "section": "colors"
+      },
+      {
+        "name": "The 45% Mix Rule",
+        "body": "A state colour has two forms and the difference is measured. The host's success/warning/error/info are authored for FILLS; as text on their own skin's background they bottom out at 1.38:1 (info, neon-paint/light). So a DOT takes the raw hue plus a 1px inset edge on the strong hairline, and a WORD takes the -text form: 45% hue into the skin's TEXT. 45% clears 4.5:1 in every skin (worst 5.08:1) where 50% does not (4.44:1); mixing toward text rather than away from background is what makes it darken on parchment and lighten on navy.",
+        "section": "colors"
+      },
+      {
+        "name": "The Two Text Steps Rule",
+        "body": "--faint is deliberately the same value as --muted, because --host-muted already bottoms out at 3.47:1 and a third step derived from it measured 2.31:1. The step below muted is made in TYPE — 11px uppercase tracked, the host's own metadata treatment — never in contrast.",
+        "section": "colors"
+      },
+      {
+        "name": "The Colour Budget Rule",
+        "body": "Only a refusal is painted. Rejection reasons under a DROPPED heading stay muted (the heading already says they were refused; painting them put three reds beside the one real refusal); \"goes to the classifier\" is a KIND of destination and is named once on its stage heading rather than coloured five times.",
+        "section": "colors"
+      },
+      {
+        "name": "The Never The Only Channel Rule",
+        "body": "Every dot sits beside its state in words; every multiplier is in the text beside its amber. Colour is confirmation, never the fact.",
+        "section": "colors"
+      },
+      {
+        "name": "The Amber Is A Verdict Rule",
+        "body": "Amber means the ROUTER needs attention — an exception count, a rule that never fired, an expensive window, a missing billing mode. It never marks the operator's own doing (an open editor is not a degradation), and a disclosure about the DATA rather than the policy takes the muted dot instead.",
+        "section": "colors"
+      },
+      {
+        "name": "The Copy-It Rule",
+        "body": "Sans carries prose, labels and section names; mono carries machine facts. A cause label (\"fail safe strong\") is a phrase, so it is sans. A rule title is prose and its slug is a machine fact, so they do not share one face — at one size in one mono they made the pt-BR name and the id peers and left the row with no step of its own.",
+        "section": "typography"
+      },
+      {
+        "name": "The Tabular Rule",
+        "body": "font-variant-numeric: tabular-nums on the body, so counts line up down a column.",
+        "section": "typography"
+      },
+      {
+        "name": "The One Measure Rule",
+        "body": "Prose is capped at 74ch with text-wrap: balance, and the cap is attached to the KIND of content, not to a particular class: a measure that belongs to a class only holds where that class went, and prose kept landing elsewhere. At full panel width lines ran to 146 characters, twice a readable line. balance and not pretty: measured on this surface, pretty left last lines at 24%, 13% and 5% of the first line's width; balance puts them at 91–95%. Data is exempt on purpose — chain rows, chips, the Ordem: knob line and every mono value, which a measure would only wrap.",
+        "section": "typography"
+      },
+      {
+        "name": "The Label Is Not A Sentence Rule",
+        "body": "Tracked uppercase is a treatment for a label; 58 characters of it is a passage read by shape, so a sentence goes to a placeholder or a note instead.",
+        "section": "typography"
+      },
+      {
+        "name": "The Sequence Down One Spine Rule",
+        "body": "The policy is an ordered first-match table and a trace is a short ordered path, so both are drawn as numbered vertical lines against a single 1px spine — never as a node canvas. Fifteen tiny boxes to highlight three of them makes the reader hunt for the answer.",
+        "section": "layout"
+      },
+      {
+        "name": "The Unordered Gets No Ordinals Rule",
+        "body": "A sequential chain is numbered down the spine; a random chain is a SET — it loses the ordinals and the spine and wraps across the line, keeping only the 26px indent so the eye does not have to re-find the model. A numbered random chain is a lie about which elo runs first.",
+        "section": "layout"
+      },
+      {
+        "name": "The Compare Down A Column Rule",
+        "body": "Destination and count are fixed tracks. Two ways this has failed, both measured: auto on the destination track sized to its content's intrinsic width (278px) and starved the minmax(0, 1fr) rule column to 0px; and capping the CHILD with a percentage is circular — the child's containing block is a track the child itself sizes, so the destination resolved to 0px and every destination word vanished while the arrow stayed. The cap belongs on the TRACK.",
+        "section": "layout"
+      },
+      {
+        "name": "The No Card Without A Reason Rule",
+        "body": "A card exists to group things read together. One list, one table or one control does not need a frame, and nothing gets a second frame inside something already marked — the in-row editor is a raised plane with one hairline, not a box inside a box.",
+        "section": "elevation"
+      },
+      {
+        "name": "The 1px Accent Rail Rule",
+        "body": "Every \"you picked this\" mark is the same object: an inset 1px accent rail on the leading edge, plus the accent wash where a whole row is chosen. The open row, the probed rule that matched, the replayed trace step, the picked decision — one reading, learned once.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Nothing Live Is Dimmed Rule",
+        "body": "No element is faded by opacity while its own controls stay pressable. Measured at .55 on parchment: Editar fell to 2.54:1 and the row title to 3.95:1, against a 4.5:1 floor. Dimming survives only where nothing in the dimmed thing can be pressed — a rule switched off in the file, a trace step still ahead of the reader.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Render Nothing For Nothing Rule",
+        "body": "No empty card, no dashed placeholder, no row that announces its own emptiness. A section with no data is absent (the bans group, the compaction group, the clock strip, the count column) or a single muted line. A count column with nothing to count disappears rather than filling with em dashes.",
+        "section": "elevation"
+      },
+      {
+        "name": "The One Write Vocabulary Rule",
+        "body": "Every word a write can say lives in one WRITE map — plan, save, saving, revert, cancel, conflict, no-op, in-flight, lint error, missing action, no credential. Static markup carries no write vocabulary; boot stamps the three text-editor buttons from the map, and the draft hint names the buttons by the map's own labels so it cannot drift from them.",
+        "section": "components"
+      },
+      {
+        "name": "The Ranked, Not Recited Rule",
+        "body": "Where a thing has five knobs and four are the engine's default, the DECLARED ones are the line and the defaults collapse into one control that says how many there are. Recited inline they read 170 characters in which the same parenthesis appears three times and one knob is news.",
+        "section": "components"
+      },
+      {
+        "name": "The Count, Not A Sentence Rule",
+        "body": "A count column holds a count (\"26×\", \"nunca\") and disappears when there is nothing to count. The period it covers is stated once — by the section note or by the stale disclosure above the list — never per row: the sentence form put the same 60 characters on ten consecutive rows in the widest column and overflowed the host panel by 236px with the third column clipped.",
+        "section": "components"
+      },
+      {
+        "name": "The Editor Node Is Fetched, Never Held Rule",
+        "body": "The form is a singleton moved next to whatever is being edited, so it becomes a child of a row that the next render clears. It is fetched through an accessor that rebuilds it under the same id when the document no longer has one. Measured in a browser: without it, the first Editar built a form and every one after it marked a row and rendered nothing.",
+        "section": "components"
+      },
+      {
+        "name": "The Browser's Own Surfaces Take The Skin Rule",
+        "body": "Selection, caret and scrollbars are drawn too: a default blue selection inside a gold-on-navy shell, a white caret and a platform-grey scrollbar belong to no design system.",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "Do read every colour from a --host-* property, and treat the hex after the comma as the fail-safe for an unreadable shell.",
+      "Do keep the accent for selection and the four for condition, and give a fifth distinction TYPE and PLANE plus its own word instead of a hue.",
+      "Do write a state as a word in the 45%-mixed -text form, and a state as a dot in the raw hue with a 1px inset edge — with the word always beside the dot.",
+      "Do make groups out of a heading, one hairline and space, at 34px apart, with more space above a heading than below it.",
+      "Do put every editable object's own control in the fixed 84px action slot, and open its form inside the row it changes.",
+      "Do keep the write vocabulary in the WRITE map and take button labels from it.",
+      "Do cap prose at 74ch with text-wrap: balance, attached to the kind of content rather than to a class, and leave data uncapped.",
+      "Do draw an ordered sequence numbered down one 1px spine, and an unordered one as a wrapped set with no ordinals.",
+      "Do keep the domain's words — profile, model, provider/rail, tier, rule, classifier, fail-safe, blocklist, breaker, decision — and invent none.",
+      "Do keep 100dvh, 44px coarse-pointer targets, and max(16px, 1em) inputs named BY CLASS."
+    ],
+    "donts": [
+      "Don't author a palette, a wordmark, or a type step the host does not ship. The 10.5px and 20px steps were a guest's scale and read as an accident beside host chrome.",
+      "Don't frame a single list, table or control, and don't put a frame inside something already marked as open or picked.",
+      "Don't derive a third, fainter text step: measured at 2.31:1. Make the step in type instead.",
+      "Don't fade anything by opacity while its own controls stay pressable — measured 2.54:1 for a live Editar at .55.",
+      "Don't paint every reason, every destination kind, or the operator's own actions. Amber is a verdict about the router; a disclosure about the DATA takes the muted dot.",
+      "Don't add a global mode, or any control whose scope is not the thing you can see. Arming the old one changed the page by 0 characters.",
+      "Don't disable a control that must not be pressed if it can be absent instead.",
+      "Don't use <svg> or an icon font in this document, and never innerHTML / insertAdjacentHTML / outerHTML / document.write — decision traces carry attacker-influenceable task text, so all text goes through textContent. A control is a word. (The rail icon the extension registers with the host is the host's own iconPath API, outside this document.)",
+      "Don't size a destination or count column with auto, or cap it on the child: both collapsed the column to 0px, measured.",
+      "Don't repeat a fact two surfaces already own — a second chip for a state something else signals, a badge counting what a numbered list counts, a heading repeating the panel title, or a per-row copy of the window a count was taken over.",
+      "Don't add a second @keyframes, a second button vocabulary, or a second chip shape. One authored moment (160ms ease-out on the screen you asked for, reused by the in-row form), and it yields to prefers-reduced-motion."
+    ]
+  }
+}
