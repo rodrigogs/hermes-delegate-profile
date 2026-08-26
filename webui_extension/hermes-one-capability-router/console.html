@@ -671,6 +671,9 @@
     /* Why this elo is where it is: the time policy moved it. A sentence, so it
        is sans, and muted — the position it describes is already visible. */
     .hop-move { color: var(--muted); font-size: var(--t-small); }
+    /* When the router last TRIED this elo (card t_0a3cff85): history, not a
+       state, so the same muted metadata treatment — no hue of its own. */
+    .hop-tried { color: var(--muted); font-size: var(--t-small); }
     /* How the request is PAID for. A badge, not a state: billing is not a
        condition, so it takes the metadata treatment (11px, tracked, uppercase)
        and no hue — until it is missing, which an operator cannot cost a
@@ -3823,6 +3826,28 @@
       // One elo: what it is, whose rail it runs on, how it is billed, how much it
       // can hold. `ord` is null for a chain with no order, and then no ordinal is
       // drawn at all — a "1" on a random draw would be a lie about which runs first.
+      // Card t_0a3cff85: the last decision that TRIED this elo, as a ts. The
+      // log records the head the executor dispatched — the server flattens the
+      // persisted `output.attempted_model@attempted_provider` pair into the
+      // top-level `model@provider` of every /routes item (service.py:1968-1980)
+      // — but never an outcome, so the fact is "foi tentado", never "atendeu".
+      // The largest matching ts wins; a model with no decision in the log is
+      // null, and null renders NO line at all (DESIGN.md rule 1: absence of a
+      // record is not absence of use, so "nunca" is forbidden too).
+      function lastTriedAt(routes, model, provider) {
+        const id = String(model || '');
+        if (!id) return null;
+        const rail = String(provider || '');
+        let latest = null;
+        (Array.isArray(routes) ? routes : []).forEach((r) => {
+          if (String((r && r.model) || '') !== id) return;
+          if (String((r && r.provider) || '') !== rail) return;
+          const ts = Number(r && r.ts);
+          if (Number.isFinite(ts) && ts > 0 && (latest === null || ts > latest)) latest = ts;
+        });
+        return latest;
+      }
+
       function eloRow(hop, opts) {
         const o = opts || {};
         const elo = hop && typeof hop === 'object' ? hop : {};
@@ -3873,6 +3898,19 @@
         // position an operator cannot explain reads as a bug in the console.
         const moved = timePolicyMove(elo, o.flags);
         if (moved) row.append(el('span', 'hop-move', moved));
+        // When the router LAST tried this elo, dated off the injected clock.
+        // Only surfaces that pass the log render it: the pair the dating
+        // matches is the rail this very row shows, so a line and the row it
+        // sits on can never disagree (DESIGN.md rule 2), and the cooldown
+        // line stays the authority on "está fora agora".
+        const tried = lastTriedAt(o.routes, elo.model, rail);
+        if (tried !== null) {
+          // The age is computed in a code position and only its VALUE enters
+          // the literal: rendered strings are pt-BR, and an English symbol
+          // inside a template would read as English to the vocabulary guard.
+          const age = ago(tried, nowUtc());
+          row.append(el('span', 'hop-tried', `última decisão que tentou este modelo: ${age}`));
+        }
         return row;
       }
 
@@ -3940,6 +3978,7 @@
               multiplier: o.multipliers && o.multipliers[model],
               live: o.live && o.live[model],
               flags: o.flags && o.flags[model],
+              routes: o.routes,
             }));
           });
           return ul;
@@ -4835,6 +4874,9 @@
           if (floorChips.length) block.append(chipList(floorChips));
           block.append(chainList(hops, {
             strategy, registry, billing, when, live,
+            // The log the dating line reads: the Modelos tab is where "quando
+            // foi tentado" separates a hot elo from an abandoned one.
+            routes: state.routes,
             // A price-ordered chain must show the prices it was ordered by; an
             // ordinary tier shows one only where a window is actually moving it.
             showPrice: strategy.timeRelative,
@@ -4923,6 +4965,7 @@
           billing: billingIndex(state.policy),
           when,
           live: liveMultipliers(state.liveness, when),
+          routes: state.routes,
           showPrice: false,
         }));
         // The note the sheet's synthetic row already carries — one fact, two
@@ -7937,6 +7980,11 @@
         // chip), and the definition of an off-rule cause (causeTitle). Each is
         // exported because the strings an operator reads are the contract.
         tierRoles, causeTitle,
+        // The last-decision dating (card t_0a3cff85): the newest ts whose
+        // attempted pair matches the elo, or null when the log never tried it.
+        // Exported so the pair-identity and the "no decision ⇒ no line" rule
+        // are pinned by tests rather than eyeballed.
+        lastTriedAt,
         // The mechanism clause of a decision row (card t_9388289e): which
         // group the decision went through (decisionGroup), whether the policy
         // backs it with a fail-safe (hasConfiguredFailSafe), and the one or

@@ -518,6 +518,24 @@ def test_console_vocabulario():
         )
 
 
+def test_last_tried_dating_says_tried_never_served():
+    """Card t_0a3cff85: the elo dating says ``tentou``.
+
+    The log records the head the executor dispatched and never an outcome, so
+    ``atendeu`` would claim a fact nobody measured — and ``nunca`` would claim
+    an absence that may just be an absent log (DESIGN.md rule 1). Both words
+    are banned inside the dating literal itself; the extractor strips the
+    ``${...}`` interpolation, so the fixed prefix is what is pinned here.
+    """
+
+    prose = _console_rendered_text()
+    dating = [t for _, _, t in prose if "última decisão que tentou este modelo" in t]
+    assert dating, "the elo dating phrase must exist and be renderable text"
+    for t in dating:
+        assert "atendeu" not in t, f"a dating phrase claims an outcome: {t!r}"
+        assert "nunca" not in t, f"a dating phrase invents an absence: {t!r}"
+
+
 def test_console_write_surface_speaks_one_pt_br_vocabulary():
     """§4.7/§6.10: the write surface has no English labels or messages.
 

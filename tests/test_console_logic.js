@@ -9206,3 +9206,120 @@ test('the decision phrase never promises attempt data the log does not record', 
     assert.ok(!html.includes(banned), `'${banned}' is backlog, and this file must not promise it`);
   }
 });
+
+// ── the elo dating: when the router LAST tried this model (t_0a3cff85) ─────
+// The log records the head the executor dispatched, never an outcome, so the
+// fact is "foi tentado", not "atendeu" — and a model with no decision gets NO
+// line at all: an absent record is not absence of use, so "nunca" is banned.
+
+test('lastTriedAt is the newest decision that tried the elo, by model@provider', () => {
+  const { api } = loadConsole();
+  const routes = [
+    { ts: 1000, model: 'glm-4.7', provider: 'zai', cause: 'hard_rule' },
+    { ts: 2000, model: 'glm-4.7', provider: 'zai', cause: 'hard_rule' },
+    { ts: 3000, model: 'glm-4.7', provider: 'deepseek', cause: 'hard_rule' },
+    { ts: 4000, model: 'gpt-5.6-luna', provider: 'openai-codex', cause: 'fail_safe_strong' },
+  ];
+  assert.equal(api.lastTriedAt(routes, 'glm-4.7', 'zai'), 2000, 'the LARGEST ts for this pair, not the first');
+  assert.equal(api.lastTriedAt(routes, 'glm-4.7', 'deepseek'), 3000, 'same id on another rail is a separate fact');
+  assert.equal(api.lastTriedAt(routes, 'gpt-5.6-luna', 'openai-codex'), 4000);
+  assert.equal(api.lastTriedAt(routes, 'glm-4.7', 'xiaomi'), null, 'never tried on this rail');
+  assert.equal(api.lastTriedAt(routes, 'mimo-v2.5', 'xiaomi'), null, 'model absent from the log');
+  assert.equal(api.lastTriedAt(routes, '', 'zai'), null, 'no id, no identity');
+  assert.equal(api.lastTriedAt(null, 'glm-4.7', 'zai'), null, 'no log, no line');
+});
+
+test('lastTriedAt ignores decisions with junk identity or instant', () => {
+  const { api } = loadConsole();
+  const routes = [
+    { ts: 'abc', model: 'glm-4.7', provider: 'zai' },   // unparseable instant
+    { ts: -5, model: 'glm-4.7', provider: 'zai' },      // not an instant
+    { ts: 0, model: 'glm-4.7', provider: 'zai' },       // not an instant
+    { ts: 10, cause: 'blocklist_veto' },                // a refusal tried nothing
+    { ts: 20, model: 'glm-4.7', provider: 'zai' },      // the one that counts
+  ];
+  assert.equal(api.lastTriedAt(routes, 'glm-4.7', 'zai'), 20);
+});
+
+test('a chain row dates the last decision that tried it, off the pinned clock', () => {
+  // 260 s before the pinned clock renders as "há 4m" — the compact unit the
+  // decision rows already speak (the card's "há 4 min" is the age in prose).
+  const { api, dom } = loadConsole();
+  api.state.clock = PEAK;
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.state.routes = [{
+    ts: PEAK.getTime() / 1000 - 260, model: 'glm-4.7', provider: 'zai', cause: 'hard_rule', task: 't',
+  }];
+  api.renderLadder();
+  const text = flat(dom.get('ladder'));
+  assert.match(text, /última decisão que tentou este modelo: há 4m/);
+});
+
+test('an elo the log never tried gets no dating line at all', () => {
+  // DESIGN.md rule 1: an absent record is not absence of use, so there is no
+  // line — and never a "nunca foi tentado" fallback.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.state.routes = [{ ts: 1, model: 'some-other-model', provider: 'other-rail', cause: 'hard_rule' }];
+  api.renderLadder();
+  const text = flat(dom.get('ladder'));
+  assert.doesNotMatch(text, /última decisão/);
+  assert.doesNotMatch(text, /nunca foi tentado/);
+});
+
+test('the same model id on two providers gets two independent dating lines', () => {
+  const { api, dom } = loadConsole();
+  api.state.clock = PEAK;
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [], default: {},
+    tiers: {
+      T1: {
+        model: 'glm-4.7', provider: 'zai',
+        fallback: [{ model: 'glm-4.7', provider: 'deepseek' }],
+        fallback_strategy: 'sequential',
+      },
+    },
+  };
+  api.state.routes = [
+    { ts: PEAK.getTime() / 1000 - 260, model: 'glm-4.7', provider: 'zai', cause: 'hard_rule', task: 't' },
+    { ts: PEAK.getTime() / 1000 - 120, model: 'glm-4.7', provider: 'deepseek', cause: 'hard_rule', task: 't' },
+  ];
+  api.renderLadder();
+  const tried = findAll(dom.get('ladder'), 'hop-tried').map((n) => n.textContent);
+  assert.deepEqual(tried, [
+    'última decisão que tentou este modelo: há 4m',
+    'última decisão que tentou este modelo: há 2m',
+  ], 'each rail dates ITS OWN last attempt');
+});
+
+test('the last-resort chain on Modelos dates its elos too', () => {
+  const { api, dom } = loadConsole();
+  api.state.clock = PEAK;
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [], default: {}, tiers: {},
+    fail_safe: { model: 'glm-4.7', provider: 'zai', fallback: [{ model: 'gpt-5.6-luna', provider: 'openai-codex' }] },
+  };
+  api.state.routes = [
+    { ts: PEAK.getTime() / 1000 - 260, model: 'glm-4.7', provider: 'zai', cause: 'fail_safe_strong', task: 't' },
+  ];
+  api.renderFailSafe();
+  const box = dom.get('failSafeBox');
+  assert.match(flat(box), /última decisão que tentou este modelo: há 4m/,
+    'the same chainList the groups use, so the same dating vocabulary');
+});
+
+test('the elo dating phrase never says "atendeu" or "nunca"', () => {
+  // The static promise of the card: the phrase dates a TRY, because the log
+  // records the head dispatched and never an outcome. A swap of the verb, or
+  // a "nunca" fallback, fails here before it reaches a reader.
+  const html = fs.readFileSync(sourcePath, 'utf8');
+  const idx = html.indexOf('última decisão que tentou este modelo');
+  assert.ok(idx !== -1, 'the dating phrase must exist');
+  const snippet = html.slice(idx, idx + 80);
+  assert.ok(!snippet.includes('atendeu'), `dating claims an outcome: ${snippet}`);
+  assert.ok(!snippet.includes('nunca'), `dating invents an absence: ${snippet}`);
+});
