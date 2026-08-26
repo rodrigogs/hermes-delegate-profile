@@ -393,11 +393,14 @@ order — the misreading that costs most is the one defined first:
   appends "nunca roda: uma regra anterior já cobre tudo o que esta cobriria"
   after a shadowed finding, because the word alone describes a state, not the
   mechanism that makes the row dead.
-- **An off-rule cause carries the definition of what it names.** "fail safe
-  strong" and "blocklist veto" get hover resolutions on the row (the same idiom
-  as the "fora da política" mark), and the "Not by rule" pill defines the
-  subset it offers before it is chosen. A cause this console has not learned
-  gets nothing invented (§2.6).
+- **An off-rule cause carries the definition of what it names.** "Último
+  recurso" (fail_safe_strong) and "Bloqueio" (blocklist_veto) get hover
+  resolutions on the row (the same idiom as the "fora da política" mark), and
+  the "Not by rule" pill defines the subset it offers before it is chosen. A
+  cause this console has not learned gets nothing invented (§2.6). The cause
+  column itself reads pt-BR over the closed vocabulary of
+  `router/decision_log.py` (`CAUSE_WORDS`, one map, one authority); a value
+  outside the set renders raw so an inventing caller stays visible.
 
 ## 3e. First viewport: counters count exceptions, facts echo nothing
 

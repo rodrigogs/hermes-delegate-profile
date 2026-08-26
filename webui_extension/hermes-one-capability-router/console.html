@@ -753,11 +753,14 @@
     .row.route {
       width: 100%; border: 0; border-bottom: 1px solid var(--line);
       background: none; text-align: left; font: inherit; color: inherit;
-      /* 118px, not 104: the longest real cause is "FAIL SAFE STRONG" and at the
-         host's 11px it needs 112px on one line. At 104 it wrapped to two, which
-         made every fail-safe row 20px taller than its neighbours and turned a
-         scannable column into a ragged one. Measured against the live log's four
-         causes: has_code_rule, fail_safe_strong, hard_rule, blocklist_veto. */
+      /* 118px, not 104: at the host's 11px the longest label needs ~112px on
+         one line. At 104 it wrapped to two, which made every such row 20px
+         taller than its neighbours and turned a scannable column into a
+         ragged one. The anchor was measured live on the raw enum ("FAIL
+         SAFE STRONG" = 112px, before card t_e10949c5); since the cause is
+         translated, the longest real phrase is "Nenhuma casou" — measured
+         ~105px in DejaVu Bold 11px + .05em tracking, scaled against that
+         same recorded anchor, so 118px still holds with margin. */
       grid-template-columns: 118px minmax(0, 1fr) auto; gap: 12px;
     }
     .row.route .cause { line-height: 1.3; overflow-wrap: anywhere; }
