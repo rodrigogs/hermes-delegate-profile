@@ -3271,6 +3271,28 @@
         return null;
       }
 
+      // WHICH preset ONE group matches — the per-group reader of the same
+      // five-knob comparison activePreset runs over the whole table. The
+      // group editor's preset line reads the DRAFT tier with it, so the label
+      // answers the group as it stands under the operator's edit, not as the
+      // file last said — "a mudança manual diz o que fez com o preset".
+      function tierPresetOf(tier, tierName, policy) {
+        const tiers = (policy && typeof policy === 'object' && policy.tiers
+          && typeof policy.tiers === 'object') ? policy.tiers : {};
+        if (!Object.prototype.hasOwnProperty.call(tiers, tierName)) return null;
+        const t = tier && typeof tier === 'object' ? tier : {};
+        const same = (a, b) => JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b);
+        for (const preset of PRESETS) {
+          const patch = presetPatch(preset.key, policy);
+          const p = patch.tiers[tierName];
+          if (!p) continue;
+          const fits = PRESET_KEYS.every((knob) => !Object.prototype.hasOwnProperty.call(p, knob)
+            || same(t[knob], p[knob]));
+          if (fits) return preset;
+        }
+        return null;
+      }
+
       // The preset box, rendered. Choosing a preset writes NOTHING: it plans, shows the
       // diff, and only then does a Salvar exist (§2.4, CA5). The button is built here
       // rather than sitting in the markup precisely so that an /apply cannot be one
@@ -5637,7 +5659,7 @@
         if (!badge.unknown) bits.push(badge.word);
         return bits.join(' · ');
       }
-      function modelField(box, label, get, set, requirements, onProvider, onRequirements) {
+      function modelField(box, label, get, set, requirements, onProvider, onLowerFloor) {
         const registry = state.capabilities;
         const wrap = el('div', 'field');
         // §3.4(c): without a catalogue the field is free text, and the label
@@ -5744,54 +5766,31 @@
         wrap.append(countNote);
 
         // §3.4(d) zero block. The prose names the two ways out, and the FIRST
-        // is a real control: the button opens THIS group's requirements floor
-        // in the draft, with the current value, and nothing is written until
-        // the operator saves — naming the remedy is not executing it (§6.8),
-        // and the write stays on the minimal-patch path the touched set
-        // describes ('requirements').
-        const zeroProse = el('p', 'field-note',
-          `Nenhum modelo do seu catálogo declara ${fmt(floorNow())} tokens ou mais. Duas saídas: baixar a exigência do grupo, ou escolher um modelo mesmo assim — nesse caso ele sai da fila em tempo de execução, e a fila do grupo pode ficar vazia.`);
+        // is a real control: the button leads to THIS group's floor field in
+        // the panel below (preloaded with the current value) — the ONE place
+        // this group's minimum lives. Naming the remedy is not executing it
+        // (§6.8): the button reveals the field the operator asked for and
+        // writes nothing itself, and the write stays on the minimal-patch
+        // path the touched set describes ('requirements').
+        const zeroProse = el('p', 'field-note');
         const lowerBtn = el('button', 'btn', 'Baixar a exigência do grupo');
         lowerBtn.type = 'button';
-        const floorInput = document.createElement('input');
-        const floorId = fieldId();
-        floorInput.id = floorId;
-        floorInput.hidden = true;
-        // The revealed field is a field: the button's words are not the
-        // field's name — the number typed here is the group's minimum.
-        const floorLabel = el('label', '', 'Mínimo de contexto do grupo (tokens)');
-        floorLabel.htmlFor = floorId;
-        floorLabel.hidden = true;
-        floorInput.value = hasFloorNow() ? String(floorNow()) : '';
-        floorInput.addEventListener('input', () => {
-          const raw = String(floorInput.value).trim();
-          const num = Number(raw);
-          // §2.1: removing a key is an explicit null — an empty (or non-numeric)
-          // field means "no floor", and the patch carries
-          // requirements.min_context: null.
-          const next = raw === '' ? null : (Number.isFinite(num) && num > 0 ? num : null);
-          if (requirements) requirements.min_context = next;
-          if (onRequirements) onRequirements(next);
-          refresh();
-        });
-        lowerBtn.addEventListener('click', () => {
-          floorInput.hidden = false;
-          floorLabel.hidden = false;
-          lowerBtn.hidden = true;
-        });
+        lowerBtn.addEventListener('click', () => { if (onLowerFloor) onLowerFloor(); });
         const renderZero = () => {
           const zero = eligible.length === 0 && hasFloorNow();
+          // The prose names the CURRENT floor: the panel's floor field is
+          // persistent, so the operator can raise the minimum while the block
+          // is on screen — a stale number here would say what to lower without
+          // saying to what.
+          if (zero) {
+            zeroProse.textContent = `Nenhum modelo do seu catálogo declara ${fmt(floorNow())} tokens ou mais. Duas saídas: baixar a exigência do grupo, ou escolher um modelo mesmo assim — nesse caso ele sai da fila em tempo de execução, e a fila do grupo pode ficar vazia.`;
+          }
           zeroProse.hidden = !zero;
-          if (!zero) { lowerBtn.hidden = true; floorInput.hidden = true; floorLabel.hidden = true; return; }
-          // Zero: the button leads to the field — it shows until the field is
-          // open, then yields to it.
-          lowerBtn.hidden = !floorInput.hidden;
+          lowerBtn.hidden = !zero;
         };
         renderZero();
         wrap.append(zeroProse);
         wrap.append(lowerBtn);
-        wrap.append(floorLabel);
-        wrap.append(floorInput);
 
         // [mostrar todos os N] — the filter is a reading aid, not a gate:
         // everything the catalogue knows stays reachable, and choosing
@@ -5849,7 +5848,7 @@
         wrap.append(escapeInput);
         wrap.append(escapeNote);
         box.append(wrap);
-        return { wrap, select, countNote };
+        return { wrap, select, countNote, refresh };
       }
 
       // ── §2.2: the ONE destination control ─────────────────────────────
@@ -6097,6 +6096,13 @@
       // another thing. Numbering (1ª/2ª/3ª) stays the ladder's job (§2.3):
       // editing shows list order, one authority for the queue.
       function editTierChain(box, t, touched, msg, tierName) {
+        // The floor is a STABLE object for the whole panel: every model picker
+        // and the floor field below share THIS reference, so an edit in one is
+        // read by the others (the live count answers the draft, not the value
+        // the picker was born with). An absent floor becomes an empty object in
+        // the draft only — it never reaches the patch unless the operator
+        // touches the field (§5.2: untouched keys do not ride along).
+        if (!t.requirements || typeof t.requirements !== 'object') t.requirements = {};
         const REQUIREMENTS = t.requirements;
         const knownBilling = Object.keys(BILLING);
         // A structural change can move the primary, the reserves, or both, so
@@ -6159,6 +6165,11 @@
             if (!allowed.has(String(select.value))) return;
             mark();
             attempt.billing_mode = select.value ? select.value : null;
+            // The preset match reads pin_primary, and Economizar DERIVES it
+            // from the primary's mode — so a mode change can take the group
+            // out of (or back into) a preset. The label beside the fields
+            // follows, like any other edit.
+            renderPresetNote();
           });
           wrap.append(select);
           wrap.append(el('p', 'field-note',
@@ -6182,15 +6193,15 @@
             row.classList.add('chain-target');
           }
           row.append(el('div', 'chain-head', heading));
-          modelField(row, 'Modelo', () => attempt.model,
+          const mf = modelField(row, 'Modelo', () => attempt.model,
             (v) => { mark('model'); attempt.model = v; },
             REQUIREMENTS,
             (provider) => { mark('provider'); attempt.provider = provider; },
-            // §3.4(d): the zero-count "Baixar a exigência do grupo" edits the
-            // floor in the DRAFT (modelField mutates the shared requirements
-            // object); this callback only marks the key touched so the patch
-            // carries it. The button itself never writes.
-            () => mark('requirements'));
+            // §3.4(d): the zero-count "Baixar a exigência do grupo" points at
+            // the panel's floor field (revealFloor); the field itself marks
+            // 'requirements' touched on edit. The button never writes.
+            revealFloor);
+          modelFields.push(mf);
           const provWrap = el('div', 'field');
           const provInput = document.createElement('input');
           const provId = fieldId();
@@ -6271,14 +6282,122 @@
 
         const host = el('div', 'chain-editor');
         box.append(host);
+
+        // ── The group's two operator constraints, beside the queue ────────
+        // min_context and max_multiplier are RESTRICTIONS the operator sets on
+        // their own fleet (§3.4(d), §5.4), not strategy: the three strategy
+        // keys stay the presets' territory. Both fields carry the CURRENT
+        // effective value (from either shape the file may hold) and write the
+        // shape the engine reads — the console cannot produce the form the
+        // lint refuses.
+        let modelFields = [];
+        const floorWrap = el('div', 'field');
+        const floorLabel = el('label', '', 'Exigência de contexto (mínimo de tokens)');
+        const floorInput = document.createElement('input');
+        const floorId = fieldId();
+        floorInput.id = floorId;
+        floorLabel.htmlFor = floorId;
+        floorWrap.append(floorLabel);
+        const floorNow = () => {
+          const f = Number(REQUIREMENTS.min_context);
+          return Number.isFinite(f) && f > 0 ? f : null;
+        };
+        floorInput.value = floorNow() == null ? '' : String(floorNow());
+        floorInput.addEventListener('input', () => {
+          const raw = String(floorInput.value).trim();
+          const num = Number(raw);
+          // §2.1: removing a key is an explicit null. An empty (or non-positive,
+          // or non-numeric) field means "no floor" — never a floor of 0, which
+          // the lint refuses and which would read as a real constraint.
+          const next = raw === '' ? null : (Number.isFinite(num) && num > 0 ? num : null);
+          touched.add('requirements');
+          REQUIREMENTS.min_context = next;
+          // Padrão 3 (§2.5): the pickers answer the operator's number on the
+          // spot, zero included — the count is a live consequence, not a
+          // post-save discovery.
+          modelFields.forEach((mf) => { if (mf && mf.refresh) mf.refresh(); });
+          renderPresetNote();
+        });
+        floorWrap.append(floorInput);
+        box.append(floorWrap);
+
+        const capWrap = el('div', 'field');
+        const capLabel = el('label', '', 'Teto de preço (multiplicador máximo)');
+        const capInput = document.createElement('input');
+        const capId = fieldId();
+        capInput.id = capId;
+        capLabel.htmlFor = capId;
+        capWrap.append(capLabel);
+        // The effective value, read from EITHER shape the file can carry: the
+        // documented {max_multiplier: n} mapping, or the loose number §5.4
+        // names. A loose number still has a value the operator may want to
+        // keep — the field shows it, and any save that touches it rewrites it
+        // in the form the engine reads.
+        const capNow = () => {
+          const raw = t.time_cap;
+          if (raw && typeof raw === 'object') return Number(raw.max_multiplier);
+          if (typeof raw === 'number') return Number(raw);
+          return NaN;
+        };
+        capInput.value = (() => { const v = capNow(); return Number.isFinite(v) && v > 0 ? String(v) : ''; })();
+        capInput.addEventListener('input', () => {
+          const raw = String(capInput.value).trim();
+          const num = Number(raw);
+          touched.add('time_cap');
+          // The console writes ONLY the form the engine reads:
+          // {max_multiplier: n}. An empty (or non-positive, or non-numeric)
+          // field is ABSENCE — the null the server reads as "remove the key"
+          // (service.py: null removes, {} removes nothing) — never a ceiling
+          // of 0, which is a cap that excludes every option.
+          t.time_cap = (raw !== '' && Number.isFinite(num) && num > 0)
+            ? { max_multiplier: num } : null;
+          // What a cap DOES is said once, in the Economizar preset's own
+          // consequence — the authority §2.4 gives it; the field points there
+          // instead of explaining the same fact a second time.
+          capNote.hidden = false;
+          renderPresetNote();
+        });
+        capWrap.append(capInput);
+        const capNote = el('p', 'field-note',
+          'O que um teto faz está dito na descrição do preset Economizar.');
+        capNote.hidden = true;
+        capWrap.append(capNote);
+        box.append(capWrap);
+
+        // §2.4: the panel says what the operator's edit did to the preset
+        // match — on the spot, next to the fields — so "this group is now
+        // Personalizado" is never a post-save discovery.
+        const presetNote = el('p', 'field-note');
+        const renderPresetNote = () => {
+          const preset = tierPresetOf(t, tierName, state.draft);
+          presetNote.textContent = preset
+            ? `Este grupo casa com o preset ${preset.label}.`
+            : 'Com esses valores, este grupo não casa com nenhum preset — ele é Personalizado.';
+        };
+        renderPresetNote();
+        box.append(presetNote);
+
+        // §3.4(d): "Baixar a exigência do grupo" lands the operator on the
+        // floor field — the button names the remedy, the field is the remedy.
+        const revealFloor = () => {
+          floorInput.scrollIntoView({ block: 'center' });
+          if (floorInput.focus) floorInput.focus();
+          floorWrap.classList.add('chain-target');
+        };
+
         const render = () => {
           while (host.children.length) host.removeChild(host.children[0]);
+          modelFields = [];
           attemptRow(host, t, 'Primeira tentativa', true, 0);
           fallback().forEach((entry, i) => attemptRow(host, entry, 'Reserva', false, i + 1));
           const add = el('button', 'btn', 'Adicionar tentativa');
           add.type = 'button';
           add.addEventListener('click', addAttempt);
           host.append(add);
+          // A chain op can swap the primary's billing_mode — and Economizar
+          // DERIVES pin_primary from it — so the preset label follows the
+          // rebuilt queue, not just the two constraint fields.
+          renderPresetNote();
         };
         render();
       }
@@ -6486,7 +6605,22 @@
           return Array.isArray(d.rules) ? { rules: d.rules } : null;
         }
         if (node.bind === 'tier') {
-          return { tiers: { [node.tier]: pick((d.tiers || {})[node.tier], [...touched]) } };
+          const picked = pick((d.tiers || {})[node.tier], [...touched]);
+          // An all-null (or empty) requirements object IS "no floor", and the
+          // file must not keep an empty mapping: the Ordem: line reads an
+          // absent key as "(padrão do motor)" and a present-but-empty one as
+          // "declared without conditions" — two different sentences for the
+          // same operator intent. The server removes a key only for an
+          // explicit null (service.py: null removes, {} removes nothing), so
+          // an emptied floor leaves as `requirements: null`. A floor cleared
+          // beside OTHER requirement keys keeps them: only the nulled key is
+          // dropped by the merge.
+          if (Object.prototype.hasOwnProperty.call(picked, 'requirements')
+              && picked.requirements && typeof picked.requirements === 'object'
+              && Object.keys(picked.requirements).every((k) => picked.requirements[k] == null)) {
+            picked.requirements = null;
+          }
+          return { tiers: { [node.tier]: picked } };
         }
         return { [node.bind]: pick(d[node.bind], [...touched]) };
       }
@@ -7335,7 +7469,7 @@
         priceWords, pricePublished, declaredPin, timePolicyMove, timeFlagIndex,
         timeKnobWords, orderLineParts, orderLine, chipList, missingGroupFindings,
         tierUsers, renderFailSafe,
-        PRESETS, presetPatch, activePreset, renderPresets, previewPreset, applyPreset,
+        PRESETS, presetPatch, activePreset, tierPresetOf, renderPresets, previewPreset, applyPreset,
         requestRevert, disarmRevert,
         planWhen, timeCapOf, cappedEntries, renderClock, nowUtc,
         // The server's own numbers, and the two questions the console must answer

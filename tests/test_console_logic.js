@@ -7062,13 +7062,16 @@ test('↑ on the first row and ↓ on the last row move nothing and say so', () 
   rowButtons(rows[0]).children.find((b) => b.textContent === '↑')._listeners.click();
   assert.match(nodeMsg(box).textContent, /nada a mover/,
     'the head control says the row is already first');
-  assert.deepEqual(api.state.draft.tiers.T2, before,
+  // plain() both sides: the draft now carries the panel's stable floor object
+  // (requirements: {} when the file declares none), and a nested empty object
+  // from the VM realm never deepEquals one from this realm.
+  assert.deepEqual(plain(api.state.draft.tiers.T2), before,
     '↑ on the head does not rotate the queue — no wrap-around');
 
   rowButtons(rows[2]).children.find((b) => b.textContent === '↓')._listeners.click();
   assert.match(nodeMsg(box).textContent, /nada a mover/,
     'the tail control says the row is already last');
-  assert.deepEqual(api.state.draft.tiers.T2, before,
+  assert.deepEqual(plain(api.state.draft.tiers.T2), before,
     '↓ on the tail moves nothing either');
 });
 
@@ -7682,7 +7685,7 @@ test('Trocar por um modelo do catálogo opens the group editor with THAT attempt
 // field in the draft, with the current value, and never writes by itself —
 // naming the remedy is not executing it (§6.8).
 
-test('Baixar a exigência do grupo opens the floor field with the current value and does not write', async () => {
+test('Baixar a exigência do grupo points at the panel floor field, preloaded, and writes nothing itself', async () => {
   const posted = [];
   const policy = tierPolicy();
   policy.tiers.T3 = { requirements: { min_context: 2000000 } };
@@ -7704,14 +7707,21 @@ test('Baixar a exigência do grupo opens the floor field with the current value 
   };
   api.setMode('editing');
   api.renderInspector({ id: 'tier:T3', name: 'T3', bind: 'tier', tier: 'T3' });
-  const modelWrap = byLabel(dom.get('inspector'), 'Modelo');
+  const box = dom.get('inspector');
+  const modelWrap = byLabel(box, 'Modelo');
 
   const lower = modelWrap.children.find((b) => b.textContent === 'Baixar a exigência do grupo');
   assert.ok(lower, 'the remedy button exists at zero eligible');
   lower._listeners.click();
   assert.equal(posted.length, 0, 'the button itself writes NOTHING');
-  const floorInput = modelWrap.children.find((c) => c.tagName === 'input' && c.hidden === false);
-  assert.ok(floorInput, 'clicking it opens the floor field');
+  // §3.4(d): the button lands on the PANEL's floor field — the one field this
+  // group's minimum lives in — and that field carries the CURRENT floor.
+  const floorWrap = byLabel(box, 'Exigência de contexto (mínimo de tokens)');
+  assert.ok(floorWrap, 'the panel floor field exists');
+  const floorInput = floorWrap.children.find((c) => c.tagName === 'input');
+  assert.ok(floorInput, 'it is a real input');
+  assert.ok(floorInput._scrolledTo, 'the button scrolls to the field the operator asked for');
+  assert.ok(floorWrap.classList.contains('chain-target'), 'and marks it as the target');
   assert.equal(floorInput.value, '2000000', 'the field carries the CURRENT floor');
 
   // Lowering the floor edits the draft and the surfaces follow live.
@@ -7862,4 +7872,372 @@ test('the §3.4(a) row-fix select is a bound field too', () => {
   api.setMode('editing');
   api.renderSheet();
   assertEveryFieldLinked(dom.get('sheet'), 'sheet destFix row');
+});
+
+// ── The two operator constraints: min_context and max_multiplier ────────
+// The presets own the three STRATEGY keys; these two are restrictions the
+// operator sets on their own fleet (§3.4(d), §5.4). The group panel carries
+// both fields, preloaded with the effective value, writing the shape the
+// engine reads — and the /plan body carries only the touched keys.
+
+test('the cap field preloads the effective value and writes {max_multiplier: n}, never the loose number', async () => {
+  const posted = [];
+  const policy = tierPolicy();
+  policy.tiers.T2.time_cap = { max_multiplier: 1.5 };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.body) posted.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: JSON.parse(opts.body) });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const box = dom.get('inspector');
+
+  const capWrap = byLabel(box, 'Teto de preço (multiplicador máximo)');
+  assert.ok(capWrap, 'the cap field exists in the group panel');
+  const capInput = capWrap.children.find((c) => c.tagName === 'input');
+  assert.equal(capInput.value, '1.5', 'the effective value is preloaded');
+
+  capInput.value = '2.5';
+  capInput._listeners.input();
+  assert.deepEqual(plain(api.state.draft.tiers.T2.time_cap), { max_multiplier: 2.5 },
+    'the draft carries the MAP form — the console cannot write the loose number');
+
+  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Salvar');
+  apply._listeners.click();
+  await tick();
+  const planCall = posted.find((c) => c.url === '/plan');
+  assert.ok(planCall, 'an /plan went out');
+  assert.deepEqual(plain(planCall.body.policy), { tiers: { T2: { time_cap: { max_multiplier: 2.5 } } } },
+    'the body is the minimal fragment: only time_cap');
+  assert.deepEqual(Object.keys(planCall.body.policy.tiers.T2), ['time_cap'],
+    'and no other key rides along');
+});
+
+test('clearing the cap field writes null — absence, never a ceiling of 0', async () => {
+  const posted = [];
+  const policy = tierPolicy();
+  policy.tiers.T2.time_cap = { max_multiplier: 1.5 };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.body) posted.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: JSON.parse(opts.body) });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const box = dom.get('inspector');
+  const capInput = byLabel(box, 'Teto de preço (multiplicador máximo)').children.find((c) => c.tagName === 'input');
+
+  // A zero is not a ceiling: it would exclude every option at every hour.
+  capInput.value = '0';
+  capInput._listeners.input();
+  assert.equal(api.state.draft.tiers.T2.time_cap, null, '0 is absence, not a zero cap');
+
+  capInput.value = '';
+  capInput._listeners.input();
+  assert.equal(api.state.draft.tiers.T2.time_cap, null, 'an empty field is absence');
+
+  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Salvar');
+  apply._listeners.click();
+  await tick();
+  const planCall = posted.find((c) => c.url === '/plan');
+  assert.ok(planCall, 'an /plan went out');
+  assert.equal(planCall.body.policy.tiers.T2.time_cap, null,
+    'the body carries the explicit null the server reads as "remove the key"');
+  assert.deepEqual(Object.keys(planCall.body.policy.tiers.T2), ['time_cap']);
+  // Once the server removes the key the Ordem line reads the engine default.
+  const merged = Object.assign({}, policy.tiers.T2, { time_cap: undefined });
+  assert.match(api.orderLineParts(merged)[2], /sem teto de preço.*padrão do motor/,
+    'absence reads as the engine default, not as a ceiling');
+});
+
+test('a loose time_cap: 1.5 keeps the §5.4 line and is rewritten in the map form when the operator saves', async () => {
+  const posted = [];
+  const policy = tierPolicy();
+  policy.tiers.T2.time_cap = 1.5; // the form §5.4 names — legal YAML, refused by the lint
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.body) posted.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: JSON.parse(opts.body) });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  // The ladder keeps saying the §5.4 thing while the file is unsaved.
+  api.renderLadder();
+  assert.match(flat(dom.get('ladder')), /formato que o roteador não lê/,
+    'the §5.4 text still names the loose form on the Ordem line');
+
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const box = dom.get('inspector');
+  const capInput = byLabel(box, 'Teto de preço (multiplicador máximo)').children.find((c) => c.tagName === 'input');
+  assert.equal(capInput.value, '1.5', 'the loose number still has its value preloaded');
+
+  // The operator saves the same value: the field round-trips it as the map.
+  capInput._listeners.input();
+  assert.deepEqual(plain(api.state.draft.tiers.T2.time_cap), { max_multiplier: 1.5 },
+    'touching the field rewrites the loose number in the form the engine reads');
+  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Salvar');
+  apply._listeners.click();
+  await tick();
+  const planCall = posted.find((c) => c.url === '/plan');
+  assert.ok(planCall, 'an /plan went out');
+  assert.deepEqual(plain(planCall.body.policy.tiers.T2.time_cap), { max_multiplier: 1.5 },
+    'the saved cap is the map form, never the loose number');
+});
+
+test('the floor field preloads the effective min_context and the picker count follows it live, zero included', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  const policy = tierPolicy();
+  policy.tiers.T3 = { requirements: { min_context: 200000 } };
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = {
+    'glm-4.7': { provider: 'zai', context_window: 200000 },
+    'gpt-5.6-luna': { provider: 'openai-codex', context_window: 1000000 },
+  };
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T3', name: 'T3', bind: 'tier', tier: 'T3' });
+  const box = dom.get('inspector');
+  const floorWrap = byLabel(box, 'Exigência de contexto (mínimo de tokens)');
+  assert.ok(floorWrap, 'the floor field exists in the group panel');
+  const floorInput = floorWrap.children.find((c) => c.tagName === 'input');
+  assert.equal(floorInput.value, '200000', 'the effective floor is preloaded');
+
+  const modelWrap = byLabel(box, 'Modelo');
+  let note = modelWrap.children.find((c) => String(c.className).includes('field-note'));
+  assert.match(note.textContent, /^2 modelos atendem à exigência deste grupo \(≥ 200,000 tokens\)/,
+    'the picker count states the floor it applied');
+
+  // A floor above every window: zero is a rendered count, not a silent list.
+  floorInput.value = '2000000';
+  floorInput._listeners.input();
+  assert.equal(api.state.draft.tiers.T3.requirements.min_context, 2000000, 'the draft floor rises');
+  note = modelWrap.children.find((c) => String(c.className).includes('field-note'));
+  assert.match(note.textContent, /^0 modelos atendem à exigência deste grupo/,
+    'the count follows the operator number on the spot — Padrão 3');
+  assert.match(flat(modelWrap), /Nenhum modelo do seu catálogo declara 2,000,000 tokens ou mais/,
+    'the zero block names the floor as the thing to lower');
+
+  // And down again: the count is a live function of the field, not a snapshot.
+  floorInput.value = '1000';
+  floorInput._listeners.input();
+  note = modelWrap.children.find((c) => String(c.className).includes('field-note'));
+  assert.match(note.textContent, /^2 modelos atendem/, 'lowering brings the count back');
+});
+
+test('clearing the floor sends requirements: null, so the group reads (padrão do motor) again', async () => {
+  const posted = [];
+  const policy = tierPolicy();
+  policy.tiers.T3 = { requirements: { min_context: 200000 } };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.body) posted.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: JSON.parse(opts.body) });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T3', name: 'T3', bind: 'tier', tier: 'T3' });
+  const box = dom.get('inspector');
+  const floorInput = byLabel(box, 'Exigência de contexto (mínimo de tokens)').children.find((c) => c.tagName === 'input');
+
+  floorInput.value = '';
+  floorInput._listeners.input();
+  assert.equal(api.state.draft.tiers.T3.requirements.min_context, null,
+    'an empty field is "no floor" — never a floor of 0');
+
+  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Salvar');
+  apply._listeners.click();
+  await tick();
+  const planCall = posted.find((c) => c.url === '/plan');
+  assert.ok(planCall, 'an /plan went out');
+  assert.equal(planCall.body.policy.tiers.T3.requirements, null,
+    'the emptied floor leaves as a KEY-LEVEL null — an empty mapping would read as "declared without conditions"');
+  assert.deepEqual(Object.keys(planCall.body.policy.tiers.T3), ['requirements'],
+    'only the floor rides the patch');
+  // The server pops the key; the Ordem line then reads the engine default.
+  const merged = Object.assign({}, policy.tiers.T3, { requirements: undefined });
+  assert.match(api.orderLineParts(merged)[4], /sem exigência de contexto.*padrão do motor/);
+});
+
+test('clearing the floor beside OTHER requirement keys drops only min_context', async () => {
+  const posted = [];
+  const policy = tierPolicy();
+  policy.tiers.T3 = { requirements: { min_context: 200000, vision: true } };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.body) posted.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: JSON.parse(opts.body) });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T3', name: 'T3', bind: 'tier', tier: 'T3' });
+  const box = dom.get('inspector');
+  const floorInput = byLabel(box, 'Exigência de contexto (mínimo de tokens)').children.find((c) => c.tagName === 'input');
+  floorInput.value = '';
+  floorInput._listeners.input();
+  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Salvar');
+  apply._listeners.click();
+  await tick();
+  const planCall = posted.find((c) => c.url === '/plan');
+  assert.ok(planCall, 'an /plan went out');
+  assert.deepEqual(plain(planCall.body.policy.tiers.T3.requirements), { min_context: null, vision: true },
+    'only the nulled key is sent — the sibling requirement survives the merge');
+});
+
+test('the preset label beside the fields follows the draft: Personalizado when the edit leaves the preset, back when it matches again', () => {
+  const { api, dom } = loadConsole();
+  const policy = tierPolicy();
+  // A group that matches Economizar exactly: cheapest now, the first option
+  // free to move (metered), ceiling at 1.5. requirements and time_policy are
+  // FREE in that preset's patch, so a floor edit must NOT move the label.
+  policy.tiers.T2.fallback_strategy = 'cheapest_now';
+  policy.tiers.T2.pin_primary = false;
+  policy.tiers.T2.billing_mode = 'metered';
+  policy.tiers.T2.time_cap = { max_multiplier: 1.5 };
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const box = dom.get('inspector');
+  const noteOf = () => box.children.find((c) => String(c.className).includes('field-note')
+    && /casa com o preset|Personalizado/.test(c.textContent || ''));
+  assert.ok(noteOf(), 'the panel carries the preset line');
+  assert.match(noteOf().textContent, /casa com o preset Economizar/,
+    'a group matching Economizar says so, next to the fields');
+
+  // Editing the FLOOR does not move the label: requirements is free in the
+  // Economizar patch — the edit still "casa com um preset".
+  const floorInput = byLabel(box, 'Exigência de contexto (mínimo de tokens)').children.find((c) => c.tagName === 'input');
+  floorInput.value = '500000';
+  floorInput._listeners.input();
+  assert.match(noteOf().textContent, /casa com o preset Economizar/,
+    'a floor edit inside the preset keeps the label');
+
+  // Editing the CAP out of the preset flips it on the spot.
+  const capInput = byLabel(box, 'Teto de preço (multiplicador máximo)').children.find((c) => c.tagName === 'input');
+  capInput.value = '2.5';
+  capInput._listeners.input();
+  assert.match(noteOf().textContent, /Personalizado/,
+    'a ceiling outside every preset reads Personalizado beside the field, before any save');
+
+  // And back: the label is a live function of the draft, not a latch.
+  capInput.value = '1.5';
+  capInput._listeners.input();
+  assert.match(noteOf().textContent, /casa com o preset Economizar/,
+    'restoring the preset value restores the label');
+});
+
+test('editing floor and cap sends ONLY the two constraint keys in the plan body', async () => {
+  const posted = [];
+  const policy = tierPolicy();
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.body) posted.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: JSON.parse(opts.body) });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const box = dom.get('inspector');
+  const floorInput = byLabel(box, 'Exigência de contexto (mínimo de tokens)').children.find((c) => c.tagName === 'input');
+  floorInput.value = '400000';
+  floorInput._listeners.input();
+  const capInput = byLabel(box, 'Teto de preço (multiplicador máximo)').children.find((c) => c.tagName === 'input');
+  capInput.value = '2';
+  capInput._listeners.input();
+
+  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Salvar');
+  apply._listeners.click();
+  await tick();
+  const planCall = posted.find((c) => c.url === '/plan');
+  assert.ok(planCall, 'an /plan went out');
+  assert.deepEqual(Object.keys(planCall.body.policy.tiers.T2).sort(), ['requirements', 'time_cap'],
+    'the two operator constraints, and nothing else');
+  assert.deepEqual(plain(planCall.body.policy.tiers.T2.requirements), { min_context: 400000 });
+  assert.deepEqual(plain(planCall.body.policy.tiers.T2.time_cap), { max_multiplier: 2 });
+  // The three strategy keys stay the presets' territory — a field beside them
+  // must not smuggle them back into the body.
+  assert.ok(!('fallback_strategy' in planCall.body.policy.tiers.T2), 'no fallback_strategy leaks');
+  assert.ok(!('pin_primary' in planCall.body.policy.tiers.T2), 'no pin_primary leaks');
+  assert.ok(!('time_policy' in planCall.body.policy.tiers.T2), 'no time_policy leaks');
+});
+
+test('editing the cap reveals the preset Economizar pointer — the one authority on what a cap does', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = tierPolicy();
+  api.state.loading = false;
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const box = dom.get('inspector');
+  const capWrap = byLabel(box, 'Teto de preço (multiplicador máximo)');
+  const capInput = capWrap.children.find((c) => c.tagName === 'input');
+  const note = capWrap.children.find((c) => String(c.className).includes('field-note'));
+  assert.ok(note, 'the cap carries a note');
+  assert.equal(note.hidden, true, 'the note stays quiet until the operator touches the cap');
+  capInput.value = '2';
+  capInput._listeners.input();
+  assert.equal(note.hidden, false, 'the edit reveals the pointer');
+  assert.match(note.textContent, /descrição do preset Economizar/,
+    'it points at the existing authority — no second explanation of what a cap does');
+});
+
+test('tierPresetOf is the per-group reader: the applied preset matches that group, a hand-written one does not', () => {
+  const { api } = loadConsole();
+  const policy = presetPolicy();
+  assert.equal(api.tierPresetOf(policy.tiers.T1, 'T1', policy), null,
+    'a hand-written group matches no preset');
+  const next = JSON.parse(JSON.stringify(policy));
+  const patch = plain(api.presetPatch('economizar', policy)).tiers;
+  Object.keys(patch).forEach((name) => Object.assign(next.tiers[name], patch[name]));
+  assert.equal(api.tierPresetOf(next.tiers.T1, 'T1', next).key, 'economizar',
+    'a group carrying the preset patch matches that preset');
+  const factory = JSON.parse(JSON.stringify(policy));
+  const eq = plain(api.presetPatch('equilibrio', policy)).tiers;
+  Object.keys(eq).forEach((name) => Object.assign(factory.tiers[name], eq[name]));
+  assert.equal(api.tierPresetOf(factory.tiers.T1, 'T1', factory).key, 'equilibrio',
+    'a factory group matches Equilíbrio — A→B→C order resolves the tie');
 });
