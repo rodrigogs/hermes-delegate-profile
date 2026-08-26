@@ -2914,6 +2914,122 @@
         return targets.reduce((best, t) => (t.earlier_index < best.earlier_index ? t : best));
       }
 
+      // ── the reason a rule never decides ─────────────────────────────
+      // The lint names a shadowed pair; this names the CLAUSE that proves it,
+      // and only the three shapes this screen can vouch for decide: one
+      // numeric bound on the same key (the later bound the stricter), one
+      // membership set on the same key (the later set inside the earlier's),
+      // or exact equality of the condition value. A pair exists only when
+      // EVERY key the earlier rule constrains is constrained by the later
+      // rule and each proves by one of the three — so the warning names the
+      // first of the earlier rule's keys, and that clause alone proves the
+      // pair. Anything else — substring/regex operators, mixed or disjoint
+      // bounds, a key on only one side, an empty `when` — is silence:
+      // uncertainty must not become text. A disabled rule cannot fire, so it
+      // cannot kill the row behind it and nothing is dead because of it:
+      // skipped on both sides, exactly as the lint's shadow analysis does.
+      const NUMERIC_BOUND_OPS = ['gt', 'gte', 'lt', 'lte'];
+      function boundNumber(v) {
+        return typeof v === 'number' && Number.isFinite(v);
+      }
+      function clauseOn(key, earlierCond, laterCond) {
+        if (!earlierCond || typeof earlierCond !== 'object'
+            || !laterCond || typeof laterCond !== 'object') return null;
+        // Exact equality decides every operator by identity — the same test
+        // the lint's _condition_contains applies first.
+        if (samePolicy(earlierCond, laterCond)) {
+          const op = Object.keys(earlierCond)[0] || 'eq';
+          return { key, op, v_earlier: earlierCond[op], v_later: laterCond[op] };
+        }
+        const ek = Object.keys(earlierCond);
+        const lk = Object.keys(laterCond);
+        // One numeric bound on both sides, same operator: the later bound is
+        // the stricter one — a higher floor for gt/gte, a lower ceiling for
+        // lt/lte. A different op, a mixed bound, or a non-numeric value is
+        // undecidable here and stays silent.
+        if (ek.length === 1 && lk.length === 1 && ek[0] === lk[0]
+            && NUMERIC_BOUND_OPS.indexOf(ek[0]) >= 0
+            && boundNumber(earlierCond[ek[0]]) && boundNumber(laterCond[lk[0]])) {
+          const op = ek[0];
+          const v_earlier = earlierCond[op];
+          const v_later = laterCond[op];
+          if ((op === 'gt' || op === 'gte') && v_later >= v_earlier) return { key, op, v_earlier, v_later };
+          if ((op === 'lt' || op === 'lte') && v_later <= v_earlier) return { key, op, v_earlier, v_later };
+          return null;
+        }
+        // One membership set on both sides: the later set must fit inside the
+        // earlier's.
+        if (ek.length === 1 && lk.length === 1 && ek[0] === 'in' && lk[0] === 'in'
+            && Array.isArray(earlierCond.in) && Array.isArray(laterCond.in)
+            && laterCond.in.every((v) => earlierCond.in.indexOf(v) >= 0)) {
+          return { key, op: 'in', v_earlier: earlierCond.in, v_later: laterCond.in };
+        }
+        return null;
+      }
+      function subsetClause(earlierWhen, laterWhen) {
+        let first = null;
+        const keys = Object.keys(earlierWhen);
+        for (const key of keys) {
+          if (!Object.prototype.hasOwnProperty.call(laterWhen, key)) return null;
+          const c = clauseOn(key, earlierWhen[key], laterWhen[key]);
+          if (!c) return null;
+          if (!first) first = c;
+        }
+        return first;
+      }
+      function shadowPairs(rules) {
+        const out = [];
+        if (!Array.isArray(rules)) return out;
+        const whenOf = (r) => (r && typeof r === 'object' && r.when && typeof r.when === 'object')
+          ? r.when : null;
+        rules.forEach((later, j) => {
+          if (later && later.enabled === false) return;
+          const laterWhen = whenOf(later);
+          if (!laterWhen || !Object.keys(laterWhen).length) return;
+          for (let i = 0; i < j; i += 1) {
+            const earlier = rules[i];
+            if (earlier && earlier.enabled === false) continue;
+            const earlierWhen = whenOf(earlier);
+            if (!earlierWhen || !Object.keys(earlierWhen).length) continue;
+            const clause = subsetClause(earlierWhen, laterWhen);
+            if (!clause) continue;
+            out.push({
+              earlier_index: i,
+              later_index: j,
+              earlier_id: earlier && earlier.id != null ? String(earlier.id) : `regra ${i + 1}`,
+              later_id: later && later.id != null ? String(later.id) : `regra ${j + 1}`,
+              key: clause.key, op: clause.op,
+              v_earlier: clause.v_earlier, v_later: clause.v_later,
+            });
+          }
+        });
+        return out;
+      }
+      // The EARLIEST provable shadower of one rule: moving before a later one
+      // leaves an even earlier one in front of the rule still — the same
+      // reasoning shadowTargetFor applies to the lint's findings.
+      function shadowPairFor(ruleIndex, findings) {
+        let best = null;
+        (findings || []).forEach((f) => {
+          if (f.later_index !== ruleIndex) return;
+          if (!best || f.earlier_index < best.earlier_index) best = f;
+        });
+        return best;
+      }
+      // The one-line cause and remedy (spec decision 2), on the dead rule's
+      // own row: names the shadower, the clause that proves the overlap, and
+      // the move that resolves the class.
+      const OP_SYMBOL = { gt: '>', gte: '>=', lt: '<', lte: '<=', in: '∈', eq: '=' };
+      function clauseValue(raw) {
+        if (Array.isArray(raw)) return `{${raw.join(', ')}}`;
+        if (typeof raw === 'number') return fmtPt(raw);
+        return say(raw);
+      }
+      function shadowReasonWords(f) {
+        const op = OP_SYMBOL[f.op] || f.op;
+        return `a regra ${f.later_index + 1} nunca decide: a regra ${f.earlier_index + 1} já casa tudo que ela pede (${f.key} ${op} ${clauseValue(f.v_later)} é subconjunto de ${op} ${clauseValue(f.v_earlier)}); mova-a acima da ${f.earlier_index + 1}`;
+      }
+
       // ── A destination that names a group the table does not have ─────
       // §3.4(a). The lint refuses the file for it (rules.py: "references unknown
       // tier"), and that message reaches the console as raw server text — which
@@ -3981,6 +4097,10 @@
         if (!policy) { box.append(el('p', 'nothing', absence('Este serviço do roteador não tem lista de regras.'))); return; }
         const { byRule, byCause, total } = ruleHits();
         const rules = Array.isArray(policy.rules) ? policy.rules : [];
+        // The sheet's shadow story is the pure detector's: the reason each
+        // dead row names is the clause that proves it, so the rows, the
+        // count and the fix must all read the same findings (DESIGN.md §2.2).
+        const findings = shadowPairs(rules);
         const editable = state.mode === 'editing';
         // A destination that names a TIER is the sheet's one vocabulary gap: it
         // reads as a model id while meaning "try this chain". The tier table and
@@ -4144,17 +4264,30 @@
           if (expansion) item.append(expansion);
           // The shadowed-rule fix path (§3.3): the finding names the earlier
           // row that swallows this one, and the ONE move that resolves the
-          // class without touching `when` — jump and open its editor.
+          // class without touching `when` — jump and open its editor. The
+          // warning says WHY (the clause that proves the overlap) and offers
+          // BOTH rows as destinations under the single jump label this
+          // screen uses: the dead rule's own editor (where the move button
+          // lives) and the shadower's.
           if (opts.shadow) {
             const warn = el('div', 'step-when');
-            warn.append(el('span', '', `Sem efeito: a regra ${opts.shadow.earlier_index + 1} acima pega tudo que esta pegaria, e a primeira que casa decide. Esta nunca vai disparar.`));
-            const jump = el('button', 'btn', `Ir para a regra ${opts.shadow.earlier_index + 1}`);
-            jump.type = 'button';
-            jump.addEventListener('click', (event) => {
+            warn.append(el('span', '', shadowReasonWords(opts.shadow)));
+            const own = el('button', 'btn', `Ir para a regra ${opts.shadow.later_index + 1}`);
+            own.type = 'button';
+            own.addEventListener('click', (event) => {
               if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
               showLintTarget(opts.shadow);
             });
-            warn.append(jump);
+            const shadower = el('button', 'btn', `Ir para a regra ${opts.shadow.earlier_index + 1}`);
+            shadower.type = 'button';
+            shadower.addEventListener('click', (event) => {
+              if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+              // The SAME navigation, with the shadower as the target: the
+              // finding's later_* fields carry the shadower's coordinates
+              // here, so showLintTarget needs no second path.
+              showLintTarget({ later_index: opts.shadow.earlier_index, later_id: opts.shadow.earlier_id });
+            });
+            warn.append(own, shadower);
             item.append(warn);
           }
           if (opts.onPick) item.addEventListener('click', opts.onPick);
@@ -4204,7 +4337,7 @@
             stale,
             editable,
             off: r.enabled === false,
-            shadow: shadowTargetFor(i),
+            shadow: shadowPairFor(i, findings),
             onPick: editable ? () => pickBind({ id: `rule:${r.id}`, name: String(r.id), bind: 'rule', ruleIndex: i }) : null,
           }));
         });
@@ -4241,12 +4374,13 @@
         }));
 
         // The phrase-answer above the list (§1.2): how many task types, and
-        // whether any of them is without effect.
-        const shadowCount = rules.filter((r, i) => shadowTargetFor(i)).length;
+        // whether any of them is without effect. One rule counted once — two
+        // shadowers of the same row are one dead rule, not two.
+        const shadowCount = new Set(findings.map((f) => f.later_index)).size;
         const note = $('pipelineNote');
         if (note) {
           note.textContent = rules.length
-            ? `${rules.length} tipos de tarefa, em ordem. A primeira que casar decide.${shadowCount ? ` ${shadowCount} está sem efeito.` : ' Todas valem.'}`
+            ? `${rules.length} tipos de tarefa, em ordem. A primeira que casar decide.${shadowCount ? ` ${shadowCount} ${shadowCount === 1 ? 'está' : 'estão'} sem efeito.` : ' Todas valem.'}`
             : 'Nenhuma regra de roteamento no arquivo. Toda tarefa cai no último recurso.';
         }
       }
@@ -7610,6 +7744,11 @@
         // exercised by driving showLintTarget, because a test that only counted
         // buttons would pass no matter what the button did.
         showLintTarget, selectTab, lintErrors, lintTargets, findRuleRow, shadowTargetFor,
+        // The pure shadow detector (the clause that proves a rule never
+        // decides) and its two readers: the row's EARLIEST provable shadower
+        // and the one-line cause+remedy the sheet renders. Exported so the
+        // twelve-case table and the exact phrase are pinned, not eyeballed.
+        shadowPairs, shadowPairFor, shadowReasonWords,
         showDefaultPanel, verDefaultButton,
         drawPath, pickRoute, stepNode, stepOutcome, causeColor, worstOf, modelState,
         phraseCondition, phraseWhen, renderSheet, renderLadder, ruleHits, probe,

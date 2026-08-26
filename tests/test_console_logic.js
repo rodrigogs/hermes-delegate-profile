@@ -3182,6 +3182,174 @@ test('a disabled rule renders marked off on the sheet', () => {
   assert.doesNotMatch(live.className, /\boff\b/, 'a live rule does not');
 });
 
+// ── THE REASON: the clause that proves a rule never decides ────────────
+// The lint says a pair is shadowed; this says WHY — which predicate of the
+// later rule is a subset of which predicate of the earlier — and only when
+// the screen can vouch for it. The detector is a pure function over
+// rules[].when (no server field, no heuristic). The three provable shapes
+// — one numeric bound on the same key, one membership set on the same key,
+// exact equality — are each pinned here as a positive, and the silences
+// (disjoint, different condition types, a key on only one side, equal
+// values on different keys, an indirect substring cover, an empty when, a
+// disabled row) as negatives. Uncertainty must not become text.
+
+test('the detector proves a pair only by one of the three shapes — 15 pinned cases', () => {
+  const { api } = loadConsole();
+  const cases = [
+    // Positives — one per provable shape.
+    { name: 'gte floor: the later threshold is higher', rules: [
+      { id: 'a', when: { est_input_tokens: { gte: 128000 } } },
+      { id: 'b', when: { est_input_tokens: { gte: 200000 } } },
+    ], expect: [{ earlier_index: 0, later_index: 1, earlier_id: 'a', later_id: 'b', key: 'est_input_tokens', op: 'gte', v_earlier: 128000, v_later: 200000 }] },
+    { name: 'lte ceiling: the later threshold is lower', rules: [
+      { id: 'a', when: { est_input_tokens: { lte: 200000 } } },
+      { id: 'b', when: { est_input_tokens: { lte: 100000 } } },
+    ], expect: [{ earlier_index: 0, later_index: 1, earlier_id: 'a', later_id: 'b', key: 'est_input_tokens', op: 'lte', v_earlier: 200000, v_later: 100000 }] },
+    { name: 'gt floor', rules: [
+      { id: 'a', when: { est_input_tokens: { gt: 128000 } } },
+      { id: 'b', when: { est_input_tokens: { gt: 200000 } } },
+    ], expect: [{ earlier_index: 0, later_index: 1, earlier_id: 'a', later_id: 'b', key: 'est_input_tokens', op: 'gt', v_earlier: 128000, v_later: 200000 }] },
+    { name: 'lt ceiling', rules: [
+      { id: 'a', when: { est_input_tokens: { lt: 200000 } } },
+      { id: 'b', when: { est_input_tokens: { lt: 100000 } } },
+    ], expect: [{ earlier_index: 0, later_index: 1, earlier_id: 'a', later_id: 'b', key: 'est_input_tokens', op: 'lt', v_earlier: 200000, v_later: 100000 }] },
+    { name: 'set: the later membership fits inside the earlier', rules: [
+      { id: 'a', when: { lang: { in: ['py', 'ts'] } } },
+      { id: 'b', when: { lang: { in: ['py'] } } },
+    ], expect: [{ earlier_index: 0, later_index: 1, earlier_id: 'a', later_id: 'b', key: 'lang', op: 'in', v_earlier: ['py', 'ts'], v_later: ['py'] }] },
+    { name: 'exact equality', rules: [
+      { id: 'a', when: { needs_vision: { eq: true } } },
+      { id: 'b', when: { needs_vision: { eq: true } } },
+    ], expect: [{ earlier_index: 0, later_index: 1, earlier_id: 'a', later_id: 'b', key: 'needs_vision', op: 'eq', v_earlier: true, v_later: true }] },
+    { name: 'the later rule may add clauses — narrower is still dead', rules: [
+      { id: 'a', when: { est_input_tokens: { gte: 128000 } } },
+      { id: 'b', when: { est_input_tokens: { gte: 200000 }, lang: { in: ['py'] } } },
+    ], expect: [{ earlier_index: 0, later_index: 1, earlier_id: 'a', later_id: 'b', key: 'est_input_tokens', op: 'gte', v_earlier: 128000, v_later: 200000 }] },
+
+    // Negatives — each is a silence, never a warning.
+    { name: 'disjoint bounds on the same key', rules: [
+      { id: 'a', when: { est_input_tokens: { gte: 200000 } } },
+      { id: 'b', when: { est_input_tokens: { lte: 100000 } } },
+    ], expect: [] },
+    { name: 'the later bound is looser — the subset runs the wrong way', rules: [
+      { id: 'a', when: { est_input_tokens: { gte: 200000 } } },
+      { id: 'b', when: { est_input_tokens: { gte: 128000 } } },
+    ], expect: [] },
+    { name: 'same key, different condition types', rules: [
+      { id: 'a', when: { est_input_tokens: { in: ['py'] } } },
+      { id: 'b', when: { est_input_tokens: { gte: 200000 } } },
+    ], expect: [] },
+    { name: 'a key only on one side', rules: [
+      { id: 'a', when: { est_input_tokens: { gte: 128000 }, needs_vision: { eq: true } } },
+      { id: 'b', when: { est_input_tokens: { gte: 200000 } } },
+    ], expect: [] },
+    { name: 'equal values on different keys', rules: [
+      { id: 'a', when: { num_files: { gte: 3 } } },
+      { id: 'b', when: { size_lines: { gte: 3 } } },
+    ], expect: [] },
+    { name: 'indirect cover (substring) — the three shapes refuse', rules: [
+      { id: 'a', when: { keywords: { contains: 'aud' } } },
+      { id: 'b', when: { keywords: { contains: 'audit' } } },
+    ], expect: [] },
+    { name: 'an empty when proves nothing', rules: [
+      { id: 'a', when: {} },
+      { id: 'b', when: { est_input_tokens: { gte: 200000 } } },
+    ], expect: [] },
+    { name: 'a disabled rule neither shadows nor is shadowed', rules: [
+      { id: 'a', enabled: false, when: { est_input_tokens: { gte: 128000 } } },
+      { id: 'b', when: { est_input_tokens: { gte: 200000 } } },
+    ], expect: [] },
+  ];
+  cases.forEach((c) => {
+    assert.deepEqual(plain(api.shadowPairs(c.rules)), c.expect, c.name);
+  });
+});
+
+test('the warning is one sentence naming the pair, the clause and the remedy', () => {
+  const { api } = loadConsole();
+  const pairs = api.shadowPairs([
+    { id: 'broad', when: { est_input_tokens: { gte: 128000 } } },
+    { id: 'dead', when: { est_input_tokens: { gte: 200000 } } },
+  ]);
+  assert.equal(api.shadowReasonWords(pairs[0]),
+    'a regra 2 nunca decide: a regra 1 já casa tudo que ela pede (est_input_tokens >= 200.000 é subconjunto de >= 128.000); mova-a acima da 1');
+
+  const sets = api.shadowPairs([
+    { id: 'a', when: { lang: { in: ['py', 'ts'] } } },
+    { id: 'b', when: { lang: { in: ['py'] } } },
+  ]);
+  assert.equal(api.shadowReasonWords(sets[0]),
+    'a regra 2 nunca decide: a regra 1 já casa tudo que ela pede (lang ∈ {py} é subconjunto de ∈ {py, ts}); mova-a acima da 1');
+
+  const eqs = api.shadowPairs([
+    { id: 'a', when: { needs_vision: { eq: true } } },
+    { id: 'b', when: { needs_vision: { eq: true } } },
+  ]);
+  assert.equal(api.shadowReasonWords(eqs[0]),
+    'a regra 2 nunca decide: a regra 1 já casa tudo que ela pede (needs_vision = sim é subconjunto de = sim); mova-a acima da 1');
+});
+
+test('the sheet warns with the exact reason and two jumps only when the detector proves a pair', () => {
+  const { api, dom } = loadConsole();
+  // No provable pair → no warning text, no jump, and the count says all rules count.
+  api.state.policy = {
+    rules: [
+      { id: 'a', when: { est_input_tokens: { gte: 200000 } } },
+      { id: 'b', when: { est_input_tokens: { gte: 128000 } } },
+    ],
+  };
+  api.renderSheet();
+  assert.doesNotMatch(flat(dom.get('sheet')), /nunca decide/);
+  assert.match(dom.get('pipelineNote').textContent, /Todas valem/);
+
+  // A provable pair → the dead row carries the one-line cause+remedy and
+  // BOTH destinations under the single jump label.
+  api.state.policy = {
+    rules: [
+      { id: 'a', when: { est_input_tokens: { gte: 128000 } } },
+      { id: 'b', when: { est_input_tokens: { gte: 200000 } } },
+    ],
+  };
+  api.renderSheet();
+  assert.match(dom.get('pipelineNote').textContent, /1 está sem efeito/);
+  const dead = dom.get('sheet').children.find((c) => c.dataset.ruleId === 'b');
+  assert.ok(dead, 'the dead row exists');
+  const warn = dead.children.find((c) => c.className === 'step-when');
+  assert.ok(warn, 'the reason rides the row itself');
+  assert.match(flat(warn), /a regra 2 nunca decide: a regra 1 já casa tudo que ela pede \(est_input_tokens >= 200\.000 é subconjunto de >= 128\.000\); mova-a acima da 1/);
+  const buttons = findAll(warn, 'btn');
+  assert.equal(buttons.length, 2, 'the shadower AND the dead rule are both one click away');
+  assert.deepEqual(buttons.map((b) => b.textContent), ['Ir para a regra 2', 'Ir para a regra 1']);
+
+  // Each jump opens its own inspector: the dead rule's (where the move
+  // button lives) and the shadower's.
+  buttons[0]._listeners.click();
+  assert.equal(api.state.selected, 'rule:b');
+  buttons[1]._listeners.click();
+  assert.equal(api.state.selected, 'rule:a');
+});
+
+test('when two rules shadow the same row, the warning names the EARLIEST and counts the row once', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = {
+    rules: [
+      { id: 'a', when: { est_input_tokens: { gte: 128000 } } },
+      { id: 'b', when: { est_input_tokens: { gte: 200000 } } },
+      { id: 'c', when: { est_input_tokens: { gte: 300000 } } },
+    ],
+  };
+  api.renderSheet();
+  const dead = dom.get('sheet').children.find((c) => c.dataset.ruleId === 'c');
+  const warn = dead.children.find((c) => c.className === 'step-when');
+  assert.match(flat(warn), /a regra 3 nunca decide: a regra 1 já casa tudo/);
+  assert.deepEqual(findAll(warn, 'btn').map((b) => b.textContent),
+    ['Ir para a regra 3', 'Ir para a regra 1'],
+    'moving before the earliest shadower resolves every finding at once');
+  // Two dead rows (b and c), not three findings: the count is rules, and
+  // the plural agrees.
+  assert.match(dom.get('pipelineNote').textContent, /2 estão sem efeito/);
+});
+
 test('a fresh probe clears the previous task\'s chain plan before asking', async () => {
   const explain = {
     mode: 'deterministic_dry_run', requires_classifier: false,
