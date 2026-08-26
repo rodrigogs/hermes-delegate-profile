@@ -7796,3 +7796,123 @@ test('the unverified-capabilities fact has ONE spelling across every surface (§
   assert.doesNotMatch(src, /sem capacidade verificada/, 'the old singular spelling is gone');
   assert.doesNotMatch(src, /não foram verificadas/, 'the old sentence spelling is gone');
 });
+
+// ── a11y: every dynamic field binds its label to its control ─────────────
+// Each field the inspector builds is a <label> beside an <input>/<select>.
+// A screen reader names the control through the for/id link, so the generic
+// rule is: no input/select without an id, no label without a for, and every
+// for resolves to a control actually in the tree. Walking the tree instead of
+// pinning one field covers whatever the sibling cards add later — a new
+// dynamic control without the pair fails here before it reaches a reviewer.
+
+function collectFieldNodes(box) {
+  const controls = [];
+  const labels = [];
+  const walk = (n, path) => {
+    if (n.tagName === 'input' || n.tagName === 'select') controls.push({ node: n, path });
+    else if (n.tagName === 'label') labels.push({ node: n, path });
+    (n.children || []).forEach((c) => walk(c, `${path}/${c.tagName || '?'}`));
+  };
+  walk(box, box.id || 'box');
+  return { controls, labels };
+}
+
+function assertEveryFieldLinked(box, context) {
+  const { controls, labels } = collectFieldNodes(box);
+  controls.forEach(({ node, path }) => {
+    assert.ok(node.id, `${context}: ${path} is an input/select without an id`);
+  });
+  const ids = controls.map((c) => c.node.id);
+  assert.equal(new Set(ids).size, ids.length, `${context}: field ids must be unique`);
+  const idSet = new Set(ids);
+  labels.forEach(({ node, path }) => {
+    assert.ok(node.htmlFor, `${context}: ${path} is a label without a for`);
+    assert.ok(idSet.has(node.htmlFor), `${context}: label ${path} for= points to an id not in the tree`);
+  });
+}
+
+test('every field the inspector builds binds label to control — for/id in the tree', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.state.capabilities = {
+    'glm-4.7': { provider: 'zai', context_window: 200000 },
+    'gpt-5.6-luna': { provider: 'openai-codex', context_window: 1000000 },
+    'mimo-v2.5': { provider: 'xiaomi', context_window: 1048576 },
+  };
+  api.setMode('editing');
+  const binds = [
+    { id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' },
+    { id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 },
+    { id: 'classifier', name: 'classifier', bind: 'classifier' },
+    { id: 'fail_safe', name: 'fail_safe', bind: 'fail_safe' },
+    { id: 'default', name: 'default', bind: 'default' },
+  ];
+  binds.forEach((node) => {
+    api.renderInspector(node);
+    assertEveryFieldLinked(dom.get('inspector'), `bind=${node.bind}`);
+  });
+});
+
+test('reopening the inspector mints fresh ids — two renders never share one', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.state.capabilities = { 'glm-4.7': { provider: 'zai', context_window: 200000 } };
+  api.setMode('editing');
+  const node = { id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' };
+  api.renderInspector(node);
+  const first = collectFieldNodes(dom.get('inspector')).controls.map((c) => c.node.id);
+  api.renderInspector(node);
+  const second = collectFieldNodes(dom.get('inspector')).controls.map((c) => c.node.id);
+  const all = first.concat(second);
+  assert.equal(new Set(all).size, all.length,
+    'a re-render must mint fresh ids — two panels open together must never collide');
+});
+
+test('the escape-hatch field carries its own label once revealed', () => {
+  const { api, dom } = loadConsole();
+  const policy = tierPolicy();
+  policy.tiers.T1.model = 'modelo-fora-do-catalogo';
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = { 'glm-4.7': { provider: 'zai', context_window: 200000 } };
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+  const modelWrap = byLabel(dom.get('inspector'), 'Modelo');
+  const escapeBtn = modelWrap.children.find((b) => b.textContent === 'Usar um id que não está na lista');
+  assert.ok(escapeBtn, 'the escape hatch button exists');
+  escapeBtn._listeners.click();
+  const input = modelWrap.children.find((c) => c.tagName === 'input' && c.hidden === false);
+  assert.ok(input && input.id, 'the revealed field is an input with an id');
+  const label = modelWrap.children.find((c) => c.tagName === 'label' && c.htmlFor === input.id);
+  assert.ok(label, 'a bound label names the revealed field');
+  assert.equal(label.textContent, 'Id do modelo, escrito à mão');
+});
+
+test('the "Outro papel…" text field is named when revealed', () => {
+  const { api, dom } = loadConsole();
+  const policy = tierPolicy();
+  policy.rules = [{ id: 'r1', when: {}, then: { model: 'T2', profile: 'coder' } }];
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.setMode('editing');
+  api.renderInspector({ id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 });
+  const wrap = byLabel(dom.get('inspector'), 'Papel');
+  const select = wrap.children.find((c) => c.tagName === 'select');
+  select.value = '__other';
+  select._listeners.change();
+  const input = wrap.children.find((c) => c.tagName === 'input' && c.hidden === false);
+  assert.ok(input && input.id, 'the text field is revealed with an id');
+  const label = wrap.children.find((c) => c.tagName === 'label' && c.htmlFor === input.id);
+  assert.ok(label, 'a bound label names the revealed field');
+  assert.equal(label.textContent, 'Papel, escrito à mão');
+});
+
+test('the §3.4(a) row-fix select is a bound field too', () => {
+  const { api, dom } = loadConsole();
+  missingGroupState(api);
+  api.setMode('editing');
+  api.renderSheet();
+  assertEveryFieldLinked(dom.get('sheet'), 'sheet destFix row');
+});

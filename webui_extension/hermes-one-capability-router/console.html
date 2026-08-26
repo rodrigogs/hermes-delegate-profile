@@ -1424,6 +1424,13 @@
         if (text !== undefined && text !== null) n.textContent = String(text);
         return n;
       };
+      // A11y: every field this screen creates at runtime binds its label to
+      // the control with for/id. ONE counter owns all ids — a second id
+      // source would collide the day two panels render together — and the
+      // ids are never read by CSS or JS, so `campo-<n>` only has to be
+      // unique, not meaningful.
+      let fieldSeq = 0;
+      const fieldId = () => 'campo-' + (++fieldSeq);
       const clear = (n) => { while (n.firstChild) n.removeChild(n.firstChild); };
       const pretty = (v) => {
         if (typeof v === 'string') return v;
@@ -4052,8 +4059,12 @@
           // visible and Salvar writes it through the normal path.
           if (opts.destFix) {
             const fixWrap = el('div', 'field step-dest-fix');
-            fixWrap.append(el('label', '', 'Escolha um destino que exista:'));
             const fixSelect = destSelect(opts.destFix.then, tierIndex);
+            const fixId = fieldId();
+            fixSelect.id = fixId;
+            const fixLabel = el('label', '', 'Escolha um destino que exista:');
+            fixLabel.htmlFor = fixId;
+            fixWrap.append(fixLabel);
             fixSelect.addEventListener('change', () => {
               state.rowDestFix = { ruleIndex: opts.destFix.ruleIndex, value: fixSelect.value };
               pickBind({ id: `rule:${opts.destFix.id}`, name: String(opts.destFix.id), bind: 'rule', ruleIndex: opts.destFix.ruleIndex });
@@ -5727,11 +5738,15 @@
         // it actually is, so "Id do modelo" and "Sem catálogo, não há lista
         // para escolher." read as one statement.
         const noCatalog = !registry || typeof registry !== 'object';
-        wrap.append(el('label', '', noCatalog ? 'Id do modelo' : label));
+        const lbl = el('label', '', noCatalog ? 'Id do modelo' : label);
+        wrap.append(lbl);
         if (noCatalog) {
           // §3.4(c): no catalogue, no list to choose from. Free text is the
           // honest fallback, and the note says why without naming an endpoint.
           const input = document.createElement('input');
+          const id = fieldId();
+          input.id = id;
+          lbl.htmlFor = id;
           input.value = get() == null ? '' : String(get());
           input.addEventListener('input', () => set(input.value));
           wrap.append(input);
@@ -5763,6 +5778,9 @@
         };
 
         const select = document.createElement('select');
+        const selId = fieldId();
+        select.id = selId;
+        lbl.htmlFor = selId;
         let showAll = false;
         const renderOptions = () => {
           while (select.children.length) select.removeChild(select.children[0]);
@@ -5828,7 +5846,14 @@
         const lowerBtn = el('button', 'btn', 'Baixar a exigência do grupo');
         lowerBtn.type = 'button';
         const floorInput = document.createElement('input');
+        const floorId = fieldId();
+        floorInput.id = floorId;
         floorInput.hidden = true;
+        // The revealed field is a field: the button's words are not the
+        // field's name — the number typed here is the group's minimum.
+        const floorLabel = el('label', '', 'Mínimo de contexto do grupo (tokens)');
+        floorLabel.htmlFor = floorId;
+        floorLabel.hidden = true;
         floorInput.value = hasFloorNow() ? String(floorNow()) : '';
         floorInput.addEventListener('input', () => {
           const raw = String(floorInput.value).trim();
@@ -5843,12 +5868,13 @@
         });
         lowerBtn.addEventListener('click', () => {
           floorInput.hidden = false;
+          floorLabel.hidden = false;
           lowerBtn.hidden = true;
         });
         const renderZero = () => {
           const zero = eligible.length === 0 && hasFloorNow();
           zeroProse.hidden = !zero;
-          if (!zero) { lowerBtn.hidden = true; floorInput.hidden = true; return; }
+          if (!zero) { lowerBtn.hidden = true; floorInput.hidden = true; floorLabel.hidden = true; return; }
           // Zero: the button leads to the field — it shows until the field is
           // open, then yields to it.
           lowerBtn.hidden = !floorInput.hidden;
@@ -5856,6 +5882,7 @@
         renderZero();
         wrap.append(zeroProse);
         wrap.append(lowerBtn);
+        wrap.append(floorLabel);
         wrap.append(floorInput);
 
         // [mostrar todos os N] — the filter is a reading aid, not a gate:
@@ -5890,17 +5917,27 @@
           'Este id não está no catálogo. Ele vai rodar, mas a tela não sabe janela de contexto nem preço dele, e nada aqui vai conferir se ele atende à exigência do grupo.');
         escapeNote.hidden = true;
         const escapeInput = document.createElement('input');
+        const escapeId = fieldId();
+        escapeInput.id = escapeId;
         escapeInput.hidden = true;
+        // A field revealed by a button is still a field: it carries its own
+        // name — what is typed here is a model id, not the action that
+        // uncovered the box.
+        const escapeLabel = el('label', '', 'Id do modelo, escrito à mão');
+        escapeLabel.htmlFor = escapeId;
+        escapeLabel.hidden = true;
         escapeInput.value = current;
         escapeInput.addEventListener('input', () => set(escapeInput.value));
         const escapeBtn = el('button', 'btn', 'Usar um id que não está na lista');
         escapeBtn.type = 'button';
         escapeBtn.addEventListener('click', () => {
           escapeInput.hidden = false;
+          escapeLabel.hidden = false;
           escapeNote.hidden = false;
           escapeBtn.hidden = true;
         });
         wrap.append(escapeBtn);
+        wrap.append(escapeLabel);
         wrap.append(escapeInput);
         wrap.append(escapeNote);
         box.append(wrap);
@@ -6003,8 +6040,12 @@
       }
       function destField(box, then, touched, tiers) {
         const wrap = el('div', 'field');
-        wrap.append(el('label', '', 'Destino'));
         const select = destSelect(then, tiers);
+        const id = fieldId();
+        select.id = id;
+        const lbl = el('label', '', 'Destino');
+        lbl.htmlFor = id;
+        wrap.append(lbl);
         const current = destValue(then, tiers);
         const isTier = (v) => v !== '' && v !== '__classify' && v !== '__deny' && v !== '__fixed';
         wrap.append(select);
@@ -6082,8 +6123,12 @@
       }
       function profileField(box, then, touched, policy) {
         const wrap = el('div', 'field');
-        wrap.append(el('label', '', 'Papel'));
         const select = document.createElement('select');
+        const id = fieldId();
+        select.id = id;
+        const lbl = el('label', '', 'Papel');
+        lbl.htmlFor = id;
+        wrap.append(lbl);
         const union = profileUnion(policy);
         const current = then.profile == null ? '' : String(then.profile);
         const blank = document.createElement('option');
@@ -6108,14 +6153,23 @@
         wrap.append(select);
         const input = document.createElement('input');
         input.type = 'text';
+        const inputId = fieldId();
+        input.id = inputId;
         input.hidden = true;
+        // The "Outro papel…" option reveals a text field, and a revealed
+        // field is still a field: its name says what is typed — a role
+        // written by hand — not the option that uncovered the box.
+        const inputLbl = el('label', '', 'Papel, escrito à mão');
+        inputLbl.htmlFor = inputId;
+        inputLbl.hidden = true;
         input.value = current;
         input.addEventListener('input', () => { touched.add('profile'); then.profile = input.value; });
+        wrap.append(inputLbl);
         wrap.append(input);
         select.addEventListener('change', () => {
           const v = select.value;
           touched.add('profile');
-          if (v === '__other') { input.hidden = false; }
+          if (v === '__other') { input.hidden = false; inputLbl.hidden = false; }
           else if (v === '') { then.profile = null; }
           else { then.profile = v; }
         });
@@ -6161,8 +6215,12 @@
 
         const billingField = (rowBox, attempt, mark) => {
           const wrap = el('div', 'field');
-          wrap.append(el('label', '', 'Modo de pagamento'));
           const select = document.createElement('select');
+          const id = fieldId();
+          select.id = id;
+          const lbl = el('label', '', 'Modo de pagamento');
+          lbl.htmlFor = id;
+          wrap.append(lbl);
           // The vocabulary is the closed set of capabilities.BILLING_MODES,
           // transcribed once in BILLING above. A mode the policy declares and
           // this console has not learned is an OPTION here, shown as written
@@ -6226,8 +6284,12 @@
             // carries it. The button itself never writes.
             () => mark('requirements'));
           const provWrap = el('div', 'field');
-          provWrap.append(el('label', '', 'Provedor'));
           const provInput = document.createElement('input');
+          const provId = fieldId();
+          provInput.id = provId;
+          const provLabel = el('label', '', 'Provedor');
+          provLabel.htmlFor = provId;
+          provWrap.append(provLabel);
           provInput.value = attempt.provider == null ? '' : String(attempt.provider);
           provInput.addEventListener('input', () => { mark('provider'); attempt.provider = provInput.value; });
           provWrap.append(provInput);
@@ -6375,7 +6437,6 @@
         const msg = el('p', 'msg'); msg.id = 'nodeMsg'; msg.setAttribute('aria-live', 'polite');
         const field = (label, key, get, set, options) => {
           const wrap = el('div', 'field');
-          wrap.append(el('label', '', label));
           let input;
           if (options) {
             input = document.createElement('select');
@@ -6387,6 +6448,11 @@
           } else {
             input = document.createElement('input');
           }
+          const id = fieldId();
+          input.id = id;
+          const lbl = el('label', '', label);
+          lbl.htmlFor = id;
+          wrap.append(lbl);
           input.value = get() == null ? '' : String(get());
           input.addEventListener('input', () => { touched.add(key); set(input.value); });
           wrap.append(input);
