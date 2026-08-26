@@ -335,9 +335,28 @@ class SidecarApp:
         if allowed and method not in allowed:
             return _error(405, "method not allowed")
 
-        # /health is the only auth-exempt data route.
+        # /health is the only auth-exempt data route. It reports the token's
+        # state, but stays 200 in both cases ON PURPOSE: this same process
+        # serves /console, and the screen must load so it can EXPLAIN the
+        # failure — a 503 here would take the explanation down with the
+        # problem. Whoever wants the state reads the field.
+        #
+        # 2026-08-26, measured: for three hours /health said ok while every
+        # token-gated route answered 503 "sidecar token not provisioned", and
+        # the operator's panel was blind. The field exists so that can never
+        # read as healthy again. Consumers verified additive-safe on this
+        # deploy: the webui proxy probes status only (200 vs not), the console
+        # reads it as a truthy liveness dot, router-deploy.sh greps for
+        # "ok": true, and smoke-live-sidecar.sh checks the HTTP code — none
+        # asserts the payload is an exact object.
         if path == "/health":
-            return 200, {"ok": True, "service": EXTENSION_ID, "version": _VERSION}
+            expected = self._expected_token()
+            return 200, {
+                "ok": True,
+                "service": EXTENSION_ID,
+                "version": _VERSION,
+                "token": "present" if expected.present and expected.token else "missing",
+            }
 
         denial = self._authorize(headers)
         if denial is not None:

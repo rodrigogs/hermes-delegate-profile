@@ -74,13 +74,68 @@ def test_health_is_open_and_mutating_methods_are_refused(tmp_path):
     app = _app(tmp_path)
     assert app.dispatch("GET", "/health", {}) == (
         200,
-        {"ok": True, "service": "hermes-one-capability-router", "version": 1},
+        {
+            "ok": True,
+            "service": "hermes-one-capability-router",
+            "version": 1,
+            # The one fact /health used to be structurally blind to (2026-08-26:
+            # three hours of "ok" while every token-gated route answered 503).
+            # Same authority as _authorize — _expected_token — never a second
+            # read of the file.
+            "token": "present",
+        },
     )
     assert app.dispatch("POST", "/health", {})[0] == 405
     # A GET-only data route hit with POST is 405 (wrong method), even with auth.
     assert app.dispatch("POST", "/status", _auth())[0] == 405
     # A write route hit with GET is likewise 405.
     assert app.dispatch("GET", "/plan", _auth())[0] == 405
+
+
+def test_health_reports_the_token_state_it_share_with_authorize(tmp_path, monkeypatch):
+    """/health names the missing token, and stays 200 while doing it.
+
+    The 200 is deliberate and load-bearing: this process also serves /console,
+    and the screen must load to be able to EXPLAIN the failure — a 503 here
+    would take the explanation down with the problem. Two failure shapes count
+    as missing, mirroring _authorize exactly: no file at all, and a file whose
+    stripped content is empty (a whitespace-only token authenticates nothing).
+    """
+    # Second-reader trap, same as the e2e fixture: an env pointer that disagrees
+    # with the injected token_path. Any parallel resolution of the token (the
+    # module-level read_expected_token, the env precedence ladder) says
+    # "missing" here while the authority says "present" — deterministically,
+    # on every machine, not only on boxes without an env-resolvable token.
+    monkeypatch.setenv(
+        "HERMES_EXT_SIDECAR_TOKEN_FILE", str(tmp_path / "no-such-env.token")
+    )
+    # The authority is present, and /health must agree with it...
+    app = _app(tmp_path)
+    status, body = app.dispatch("GET", "/health", {})
+    assert status == 200
+    assert body["token"] == "present"
+    # ...and so must the gate it shares the authority with.
+    assert app.dispatch("GET", "/status", _auth())[0] == 200
+
+    # No token file at all: the pairing that was invisible for three hours —
+    # /health names the missing token WHILE a gated route answers the 503 the
+    # screen actually receives.
+    bare = _app(tmp_path / "missing", token=None)
+    status, body = bare.dispatch("GET", "/health", {})
+    assert status == 200
+    assert body["token"] == "missing"
+    assert bare.dispatch("GET", "/status", _auth()) == (
+        503,
+        {"error": "sidecar token not provisioned"},
+    )
+    # A file that exists but strips to empty authenticates nothing — /health
+    # must not call it present.
+    empty = tmp_path / "empty-token"
+    empty.write_text("   \n", encoding="utf-8")
+    app_empty = SidecarApp(
+        RouterService(_config_path(tmp_path)), token_path=lambda: empty
+    )
+    assert app_empty.dispatch("GET", "/health", {})[1]["token"] == "missing"
 
 
 def test_token_gate_distinguishes_wrong_and_unprovisioned(tmp_path):

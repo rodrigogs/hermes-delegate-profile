@@ -174,8 +174,14 @@ curl -fsS http://127.0.0.1:8791/health
 Resultado esperado:
 
 ```json
-{"ok": true, "service": "hermes-one-capability-router", "version": 1}
+{"ok": true, "service": "hermes-one-capability-router", "version": 1, "token": "present"}
 ```
+
+`token` é o estado do token-v1 (`present`/`missing`), lido da mesma fonte que a
+autenticação usa. `/health` responde 200 nos dois casos de propósito: é o probe do
+proxy e a rota que serve o console deste mesmo processo — um 503 derrubaria a
+explicação junto com o problema. `missing` com rotas autenticadas respondendo 503
+foi o incidente de 2026-08-26 (unit com `HERMES_HOME` de perfil de agente).
 
 ### Instalação no Hermes One
 
@@ -540,7 +546,7 @@ vez de deixar um serviço rodando com árvore parcialmente atualizada.
 | Versão Hermes | `Hermes Agent v0.19.0 (2026.7.20)` |
 | Core memory suite | `72 passed` |
 | Plugin/router suite | `424 passed, 2 skipped` |
-| Router health | `{"ok": true, "service": "hermes-one-capability-router", "version": 1}` |
+| Router health | `{"ok": true, "service": "hermes-one-capability-router", "version": 1, "token": "present"}` |
 | Memory health | `{"ok": true, "store": "…/memory_store.db", "present": true}` |
 | Router unit | `active (running)` |
 | Memory unit | `active (running)` |

@@ -45,9 +45,17 @@ def _get(url: str, token: str | None = None, method: str = "GET"):
 
 
 @pytest.fixture()
-def running_sidecar(tmp_path):
+def running_sidecar(tmp_path, monkeypatch):
     token_file = tmp_path / "hermes-one-capability-router.token"
     token_file.write_text("s3cret-token", encoding="utf-8")
+    # The second-reader trap: if /health ever resolves the token through the
+    # ENVIRONMENT instead of the same injected path _authorize reads, this
+    # disagreeing pointer makes it say "missing" while the truth is present.
+    # Without it, the trap only fires on machines that happen to lack an
+    # env-resolvable token — this shell is one, the operator's box is not.
+    monkeypatch.setenv(
+        "HERMES_EXT_SIDECAR_TOKEN_FILE", str(tmp_path / "no-such-env.token")
+    )
     app = SidecarApp(RouterService(ROOT / "router.yaml"), token_path=lambda: token_file)
     server = build_server("127.0.0.1", 0, app)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -66,7 +74,44 @@ def test_health_is_tokenless_and_cors_open(running_sidecar):
     base, _token = running_sidecar
     status, payload = _get(f"{base}/health")
     assert status == 200
-    assert payload == {"ok": True, "service": EXTENSION_ID, "version": 1}
+    assert payload == {
+        "ok": True,
+        "service": EXTENSION_ID,
+        "version": 1,
+        "token": "present",
+    }
+
+
+def test_health_says_missing_while_gated_routes_answer_503(tmp_path):
+    """The pairing that was invisible for three hours on 2026-08-26.
+
+    The incident: /health responded 200 ok with no token file, /status and
+    every other screen-fed route answered 503, and nothing on the operator's
+    side could see the difference. This boots the real HTTP server with NO
+    token file and asserts BOTH sides of the incident over the wire: /health
+    200 naming the missing token, /status 503 with the exact error the screen
+    receives. The 200 on /health is deliberate — this process also serves
+    /console, which has to load to explain the failure.
+    """
+    missing = tmp_path / "absent.token"
+    app = SidecarApp(RouterService(ROOT / "router.yaml"), token_path=lambda: missing)
+    server = build_server("127.0.0.1", 0, app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, payload = _get(f"{base}/health")
+        assert status == 200
+        assert payload is not None and payload["token"] == "missing"
+        assert payload["ok"] is True
+        # A token-gated route simultaneously refuses with the 503 the screen
+        # receives — even with a token supplied, because none is provisioned.
+        status, payload = _get(f"{base}/status", token="anything")
+        assert (status, payload) == (503, {"error": "sidecar token not provisioned"})
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_status_requires_valid_token(running_sidecar):
