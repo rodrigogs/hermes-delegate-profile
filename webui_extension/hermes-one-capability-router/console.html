@@ -546,13 +546,18 @@
     /* WHAT IS BEING EDITED, said by the row itself: the plane rises, the accent edge
        marks it as the thing you picked, and the neighbours recede. This is the
        feedback the global mode never gave — the scope of the edit, visible. */
+    .step { transition: background var(--enter) var(--ease), box-shadow var(--enter) var(--ease); }
     .step.is-open {
       background: var(--surface-raised);
-      box-shadow: inset 2px 0 0 var(--accent);
+      box-shadow: inset 1px 0 0 var(--accent);
       border-bottom-color: var(--accent-bg-strong);
     }
     .step.is-open::before { background: var(--accent); }
-    .sheet.is-editing .step:not(.is-open) { opacity: .55; }
+    /* NOTHING IS DIMMED BY OPACITY. The rows that are not open keep their full
+       contrast, because their own Editar is still live and a control you can press
+       must stay readable — measured at .55 on parchment: Editar 2.54:1 and the row
+       title 3.95:1, against a 4.5:1 floor. The `is-editing` class stays as the state
+       hook; what it no longer does is make working text unreadable. */
     /* The action slot. Right-aligned so the button's own right edge lines up with the
        column, and baseline-aligned with the row's first line rather than its middle,
        because a two-line row must not push its own action down. */
@@ -560,10 +565,13 @@
     .step-editing {
       color: var(--accent-text); font: 600 var(--t-label) var(--sans);
       letter-spacing: .05em; text-transform: uppercase; white-space: nowrap;
+      /* The same 11px the button beside it spends on padding, so both labels' ink ends
+         on one x and the column does not shift when Editar becomes EDITANDO. */
+      padding-right: 11px;
     }
     /* The line the probed task matched: this is an ANSWER TO YOUR QUESTION, not
        a condition, so it wears the accent. */
-    .step.hit { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
+    .step.hit { background: var(--accent-bg); box-shadow: inset 1px 0 0 var(--accent); }
     .step.hit::before { background: var(--accent); }
     .step.cold { opacity: .5; }
     /* A rule the operator switched off (enabled: false) is still in the file
@@ -573,7 +581,12 @@
     .step-off { color: var(--muted); font-weight: 400; }
     .step-ord { color: var(--muted); font: 500 var(--t-label) var(--mono); text-align: right; }
     .step-what { min-width: 0; }
-    .step-id { font: 500 var(--t-body) var(--mono); }
+    /* THE TITLE IS PROSE, THE SLUG IS A MACHINE FACT. They shared one mono face at one
+       size, which made the pt-BR name and the rule id peers and left the row without a
+       step of its own. Sans for the name, and .step-off keeps mono for the id it
+       trails — the same division the rest of the file already follows. */
+    .step-id { font: 500 var(--t-value) var(--sans); letter-spacing: -.1px; }
+    .step-id .step-off { font: 400 var(--t-small) var(--mono); }
     .step-when { color: var(--muted); font-size: var(--t-body); margin-top: 3px; }
     /* Destination and hits are columns, not a floating pair: a reader compares
        down a column, so both must land on the same x on every line. Two ways this
@@ -693,7 +706,12 @@
     }
     .tier-headline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; min-width: 0; }
     .tier-name { font: 600 var(--t-body) var(--mono); letter-spacing: .04em; color: var(--text); }
-    .tier-fact { color: var(--muted); font-size: var(--t-small); }
+    .tier-fact { color: var(--muted); font-size: var(--t-small); max-width: 74ch; }
+    /* WHAT WORK LANDS HERE is the group's own answer, so it is the one line in the
+       block at text weight. The rest — who sends to it, how it orders, what it will
+       decline to pay — are supporting facts and stay one step down. Four kinds of
+       fact at one voice is a block that has to be read whole to be read at all. */
+    .tier-what { color: var(--text); font-size: var(--t-body); max-width: 74ch; }
     .tier-fact.thin { color: var(--warn-text); }
     /* A finding about the chain, in a line — the same shape the console uses for
        every other condition that needs an operator, one step quieter. */
@@ -843,7 +861,7 @@
     .trace:hover { background: var(--surface-hover); }
     /* Where the reader is (accent — it is what they picked), what has already
        happened, what is still ahead. */
-    .trace.on { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
+    .trace.on { background: var(--accent-bg); box-shadow: inset 1px 0 0 var(--accent); }
     .trace.on::before { background: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
     .trace.past::before { background: var(--muted); box-shadow: inset 0 0 0 1px var(--muted); }
     .trace.ahead { opacity: .72; }
@@ -890,7 +908,7 @@
     /* ── routes + replay detail ────────────────────────────────────── */
     .route { cursor: pointer; }
     .route:hover { background: var(--surface-hover); }
-    .route.picked { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
+    .route.picked { background: var(--accent-bg); box-shadow: inset 1px 0 0 var(--accent); }
     /* The cause of a decision: one of the four condition colours, set in JS.
        Sans, because a cause is a phrase ("fail safe strong"), not code. */
     .cause { font: 600 var(--t-label) var(--sans); letter-spacing: .05em; text-transform: uppercase; }
@@ -932,14 +950,17 @@
     /* A group being edited takes the same marks the sheet row does, so one reading
        serves both lists. */
     .tier.is-open {
-      background: var(--surface-raised); box-shadow: inset 2px 0 0 var(--accent);
+      background: var(--surface-raised); box-shadow: inset 1px 0 0 var(--accent);
       border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
       padding-left: 12px; padding-right: 12px;
     }
-    #ladder.is-editing .tier:not(.is-open) { opacity: .55; }
+
     /* The five knobs of a group: the declared ones on the line, the engine's own
        behind one control that says how many there are. */
-    .tier-order { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+    /* The knob line is a LIST of short values, not prose, so the 74ch prose cap does
+       not apply to it: capped, it pushed its own trailing "+N no padrão do motor"
+       control onto an orphan line under the group. */
+    .tier-order { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; max-width: none; }
     .tier-defaults { margin-top: 4px; padding-left: 10px; border-left: 1px solid var(--line); }
 
     /* ── the presets, as one choice ────────────────────────────────────
@@ -966,7 +987,7 @@
     /* A settings row: the same primitive the model rows use, with the action slot the
        sheet rows carry, so the third list on the screen is not a third layout. */
     .row.setting { grid-template-columns: minmax(0, 1fr) 84px; align-items: start; }
-    .row.setting.is-open { background: var(--surface-raised); box-shadow: inset 2px 0 0 var(--accent); }
+    .row.setting.is-open { background: var(--surface-raised); box-shadow: inset 1px 0 0 var(--accent); }
     .row-why { color: var(--muted); font-size: var(--t-small); margin-top: 3px; }
     /* A setting's value when the value is a WORD rather than a machine fact. */
     .row-word { color: var(--text); font-size: var(--t-body); margin-top: 2px; }
@@ -4287,7 +4308,10 @@
             }
           }
           to.append(dest);
-          if (opts.hits !== undefined) {
+          // Absent, not dashed, when the log does not cover this policy: `stale` means
+          // there is no count to give, and a column of em dashes is a column that
+          // survives only to be explained by the line above it.
+          if (opts.hits !== undefined && !opts.stale) {
             // A zero is a FINDING only when the rule could have fired in the
             // counted window. On a stale sheet every count becomes a muted
             // disclosure about the DATA rather than an amber verdict on the rule.
@@ -4909,7 +4933,7 @@
           // The bare key was the complaint: "T1" tells an operator nothing about
           // which work lands here. The rubric's own words go directly under the
           // name, before any fact about the chain.
-          block.append(el('div', 'tier-fact', meaning ? meaning.what : TIER_UNKNOWN_WHAT));
+          block.append(el('div', 'tier-what', meaning ? meaning.what : TIER_UNKNOWN_WHAT));
           // The tier's own time knobs, in the operator's words. They are facts about
           // the CONFIG — what it will decline to pay, and which rails it steps around
           // — while "which rail is expensive right now" belongs to the clock line and
