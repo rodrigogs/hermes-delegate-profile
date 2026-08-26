@@ -2243,7 +2243,7 @@ test('a dropped elo says WHY in words, never as a raw enum', () => {
     no_vision: /não lê imagem/,
     no_tool_calling: /não chama ferramentas/,
     no_structured_output: /não devolve resposta em formato fixo/,
-    capability_unknown: /não foram verificadas/,
+    capability_unknown: /capacidades não verificadas/,
   };
   for (const [reason, expected] of Object.entries(reasons)) {
     const words = api.rejectWhy(reason);
@@ -2418,8 +2418,8 @@ test('every elo shows the rail it runs on, how it is billed and what it can hold
   assert.match(text, /1M de contexto/);
   // An elo nothing knows is not a blank cell: it routes UNCHECKED, and the filter
   // can neither clear it nor reject it.
-  assert.match(text, /sem capacidade verificada/);
-  assert.match(dom.get('ladderNote').textContent, /sem capacidade verificada/,
+  assert.match(text, /capacidades não verificadas/);
+  assert.match(dom.get('ladderNote').textContent, /capacidades não verificadas/,
     'and the group head counts them, so the gap is visible without reading every row');
 });
 
@@ -5398,7 +5398,9 @@ test('a model field without a catalogue falls back to free text with the §3.4(c
   api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const box = dom.get('inspector');
-  const modelWrap = byLabel(box, 'Modelo');
+  // §3.4(c): the fallback field is labelled for what it is — an id being
+  // typed, not a choice being made.
+  const modelWrap = byLabel(box, 'Id do modelo');
   assert.ok(modelWrap, 'the model field exists');
   const input = modelWrap.children.find((c) => c.tagName === 'input');
   assert.ok(input, 'no catalogue: the model field is an input (text fallback)');
@@ -7558,4 +7560,239 @@ test('tierWarnings returns exactly the rows a group deserves — nothing for not
     { model: 'a', provider: 'zai', fallback: [{ model: 'b', provider: 'xiaomi' }] },
     [{ model: 'a', provider: 'zai' }, { model: 'b', provider: 'xiaomi' }], { pinSort: true });
   assert.deepEqual(plain(pin), ['Com a ordem sorteada e o primeiro fixo, só as reservas são sorteadas.']);
+});
+
+// ── §3.4: each missing-model state names its remedy with a control ────────
+// The four states already said the problem; this slice adds the control the
+// spec's wireframes carry. One literal per fact, one surface per phrase (§4.8),
+// and the remedies are controls that EXIST — the row's §2.2 select, the
+// editor's Salvar, the model picker, the group's own requirements field.
+
+// ── §3.4(a): the missing-group row carries its own remedy ─────────────────
+// CA8 left the row marked ("⚠ Grupo T9 — não existe") and the banner naming
+// the consequence. The wireframe adds the row's own control: the SAME §2.2
+// destination select, prefixed "Escolha um destino que exista:", whose choice
+// lands in the DRAFT and opens the rule's editor — the write path is the
+// normal Salvar, never a silent save from the row.
+
+test('the missing-group row shows the §3.4(a) inline destination select, only in editing mode', () => {
+  const { api, dom } = loadConsole();
+  missingGroupState(api);
+  api.setMode('editing');
+  api.renderSheet();
+
+  const fixes = findAll(dom.get('sheet'), 'step-dest-fix');
+  assert.equal(fixes.length, 1, 'exactly the one broken rule carries the fix');
+  const wrap = fixes[0];
+  assert.match(flat(wrap), /Escolha um destino que exista:/, 'the prefix is the spec literal');
+  const select = wrap.children.find((c) => c.tagName === 'select');
+  assert.ok(select, 'the fix is the §2.2 <select>, not a second invention');
+  assert.equal(select.value, 'T9', 'the broken destination stays selected, never blanked');
+  assert.deepEqual(select.children.map((o) => o.value),
+    ['T1', 'T2', 'T3', 'T4', 'T9', '', '__classify', '__deny', '__fixed'],
+    'the closed option set of §2.2, the missing group kept visible');
+
+  // Read mode: the row is marked but the fix needs a save path, so the
+  // control is not born there — the banner's [ Ir para a regra ] jump opens
+  // the editor, and the Editar support text says editing is allowed.
+  api.setMode('reading');
+  api.renderSheet();
+  assert.equal(findAll(dom.get('sheet'), 'step-dest-fix').length, 0,
+    'no fix control in reading mode');
+});
+
+test('choosing a destination on the §3.4(a) row writes the DRAFT and opens the rule editor', () => {
+  const { api, dom } = loadConsole();
+  missingGroupState(api);
+  api.setMode('editing');
+  api.renderSheet();
+
+  const wrap = findAll(dom.get('sheet'), 'step-dest-fix')[0];
+  const select = wrap.children.find((c) => c.tagName === 'select');
+  select.value = 'T2';
+  select._listeners.change();
+
+  // The read view is untouched — the staleness guard compares the file
+  // against state.policy, so mutating it here would refuse every save.
+  assert.equal(api.state.policy.rules[0].then.model, 'T9',
+    'state.policy is never mutated by the row fix');
+  // The editor opened with the fix applied to the DRAFT; the profile key the
+  // row never touched survives.
+  const draft = api.state.draft.rules[0].then;
+  assert.deepEqual(plain({ model: draft.model, action: draft.action, deny: draft.deny, profile: draft.profile }),
+    { model: 'T2', action: null, deny: null, profile: 'reviewer' },
+    'the §2.2 three keys written, the untouched keys preserved');
+  // The inspector shows the new destination in the SAME control.
+  const dest = byLabel(dom.get('inspector'), 'Destino');
+  const destSelect = dest.children.find((c) => c.tagName === 'select');
+  assert.equal(destSelect.value, 'T2', 'the editor renders the fixed destination');
+  // And the row still shows the file truth until the write lands.
+  assert.match(flat(dom.get('sheet')), /⚠ Grupo T9 — não existe/);
+});
+
+test('while the file lints bad the Editar button carries the §3.4(a) support text', () => {
+  // The DOM stub has no markup, so the literal is pinned against the file's
+  // own markup — the same way seedJsonActions mirrors #jsonActions.
+  const src = fs.readFileSync(sourcePath, 'utf8');
+  assert.match(src,
+    /id="editNote"[^>]*>Você pode editar; só não é possível salvar até o erro acima ser corrigido\.<\/span>/,
+    'the support text is the spec literal, in the markup');
+  const { api, dom } = loadConsole();
+  missingGroupState(api);
+  api.renderWarnings();
+  const note = dom.get('editNote');
+  assert.equal(note.hidden, false, 'the support text is present with the error');
+  assert.equal(note.textContent, '', 'the stub node is a mirror; the literal lives in the markup');
+
+  // The note rides the error set, not the mode: it clears with the errors.
+  api.state.status = { validation_errors: [], error_targets: [], enabled: true };
+  api.renderWarnings();
+  assert.equal(dom.get('editNote').hidden, true, 'a clean file hides the note');
+});
+
+// ── §3.4(b): an attempt outside the catalogue names its two remedies ──────
+// The group head's count and the row's "capacidades não verificadas" exist;
+// what the spec adds is the block with the TWO controls that exist: swap the
+// model (opens THIS group's editor with THAT attempt marked) or leave it
+// (hides the block until the next read, writing nothing — §3.4(b)'s literal).
+
+function unknownModelPolicy() {
+  return {
+    rules: [], default: {},
+    tiers: {
+      T1: {
+        model: 'glm-4.7', provider: 'zai',
+        fallback: [{ model: 'mystery-model', provider: 'xiaomi' }],
+      },
+    },
+  };
+}
+
+test('an off-catalogue attempt warns with the two named remedies, and Deixar writes nothing and dies at the next read', async () => {
+  const calls = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      calls.push(String(url).replace(/^.*\/sidecar/, ''));
+      const body = url.includes('/policy')
+        ? JSON.stringify(unknownModelPolicy())
+        : (url.includes('/capabilities') ? JSON.stringify(catalogue('glm-4.7').data) : '{}');
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(body) });
+    },
+  });
+  api.state.loading = false;
+  api.state.policy = unknownModelPolicy();
+  api.state.capabilities = api.capabilityRegistry(catalogue('glm-4.7'));
+  api.setMode('editing');
+  api.renderLadder();
+
+  const said = flat(dom.get('ladder'));
+  assert.match(said, /O catálogo não conhece este id: mystery-model\. Ele vai rodar/);
+  const buttons = findAll(dom.get('ladder'), 'btn');
+  assert.ok(buttons.some((b) => b.textContent === 'Trocar por um modelo do catálogo'),
+    'the swap remedy is named');
+  assert.ok(buttons.some((b) => b.textContent === 'Deixar como está'),
+    'the keep remedy is named');
+
+  const before = calls.length;
+  buttons.find((b) => b.textContent === 'Deixar como está')._listeners.click();
+  assert.equal(calls.length, before, 'Deixar como está emits NO request at all');
+  assert.doesNotMatch(flat(dom.get('ladder')), /não conhece este id/,
+    'the warning is hidden — in state, never in the file');
+  assert.deepEqual(api.state.policy, plain(unknownModelPolicy()), 'the policy is untouched');
+
+  // §3.4(b): "até a próxima leitura" — a load() brings the warning back.
+  await api.load();
+  assert.match(flat(dom.get('ladder')), /não conhece este id: mystery-model/,
+    'the next read resurrects the warning');
+});
+
+test('Trocar por um modelo do catálogo opens the group editor with THAT attempt marked', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = unknownModelPolicy();
+  api.state.capabilities = api.capabilityRegistry(catalogue('glm-4.7'));
+  api.setMode('editing');
+  api.renderLadder();
+
+  const buttons = findAll(dom.get('ladder'), 'btn');
+  const swap = buttons.find((b) => b.textContent === 'Trocar por um modelo do catálogo');
+  assert.ok(swap, 'the swap remedy exists');
+  swap._listeners.click();
+
+  const rows = findAll(dom.get('inspector'), 'chain-row');
+  assert.equal(rows.length, 2, 'the group editor holds the primary and the reserve');
+  assert.equal(rows[0].classList.contains('chain-target'), false,
+    'the FIRST attempt is not the one the warning named');
+  assert.equal(rows[1].classList.contains('chain-target'), true,
+    'the SECOND attempt — the off-catalogue one — is the marked row');
+  assert.equal(api.state.tierFix, null, 'the target is one-shot, consumed by the render');
+});
+
+// ── §3.4(d): the zero-count group names the floor as the thing to lower ──
+// The count and the prose already render zero; the missing piece is the real
+// control: [ Baixar a exigência do grupo ] opens THIS group's min_context
+// field in the draft, with the current value, and never writes by itself —
+// naming the remedy is not executing it (§6.8).
+
+test('Baixar a exigência do grupo opens the floor field with the current value and does not write', async () => {
+  const posted = [];
+  const policy = tierPolicy();
+  policy.tiers.T3 = { requirements: { min_context: 2000000 } };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.body) posted.push(String(url).replace(/^.*\/sidecar/, ''));
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = {
+    'glm-4.7': { provider: 'zai', context_window: 200000 },
+    'gpt-5.6-luna': { provider: 'openai-codex', context_window: 1000000 },
+  };
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T3', name: 'T3', bind: 'tier', tier: 'T3' });
+  const modelWrap = byLabel(dom.get('inspector'), 'Modelo');
+
+  const lower = modelWrap.children.find((b) => b.textContent === 'Baixar a exigência do grupo');
+  assert.ok(lower, 'the remedy button exists at zero eligible');
+  lower._listeners.click();
+  assert.equal(posted.length, 0, 'the button itself writes NOTHING');
+  const floorInput = modelWrap.children.find((c) => c.tagName === 'input' && c.hidden === false);
+  assert.ok(floorInput, 'clicking it opens the floor field');
+  assert.equal(floorInput.value, '2000000', 'the field carries the CURRENT floor');
+
+  // Lowering the floor edits the draft and the surfaces follow live.
+  floorInput.value = '1000';
+  floorInput._listeners.input();
+  assert.equal(api.state.draft.tiers.T3.requirements.min_context, 1000,
+    'the draft floor is lowered');
+  assert.equal(posted.length, 0, 'typing writes nothing either');
+  const note = modelWrap.children.find((c) => String(c.className).includes('field-note'));
+  assert.match(note.textContent, /^2 modelos atendem/, 'the count follows the new floor');
+  assert.equal(lower.hidden, true, 'the zero block clears once a model qualifies');
+
+  // The write still goes through the minimal patch: Salvar plans, carrying
+  // only the touched surface.
+  const apply = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Salvar');
+  apply._listeners.click();
+  await tick();
+  assert.equal(posted.filter((u) => u === '/plan').length, 1, 'the save plans once');
+});
+
+// ── §3.4(b)/(c)/§2.3: the unverified-capabilities fact has ONE spelling ──
+// The spec writes "capacidades não verificadas"; the screen used to say it
+// three ways. The mutation to catch is a second spelling surviving anywhere.
+
+test('the unverified-capabilities fact has ONE spelling across every surface (§2.3, §3.4(b))', () => {
+  const src = fs.readFileSync(sourcePath, 'utf8');
+  const matches = src.match(/capacidades não verificadas/g) || [];
+  assert.ok(matches.length >= 3, `the spec literal appears on every surface, got ${matches.length}`);
+  assert.doesNotMatch(src, /sem capacidade verificada/, 'the old singular spelling is gone');
+  assert.doesNotMatch(src, /não foram verificadas/, 'the old sentence spelling is gone');
 });

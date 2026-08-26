@@ -218,6 +218,10 @@
       color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .view-actions { display: inline-flex; align-items: center; gap: 8px; justify-self: end; }
+    /* §3.4(a): the support text under the Editar button while the file lints
+       bad. A note, not a button: it never looks pressable, because the action
+       it names is the mode button's, not its own. */
+    .edit-note { color: var(--muted); font: var(--t-label) var(--sans); max-width: 34ch; line-height: 1.35; }
 
     /* Liveness of the console's own reading, next to the controls that refresh
        it: a dot and the provenance ages, 11px, the host's metadata step. The
@@ -784,6 +788,10 @@
     .field-note { color: var(--muted); font: var(--t-small)/1.5 var(--sans); margin: 0; }
     .chain-row { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 2px; }
     .chain-row:first-child { border-top: none; margin-top: 0; }
+    /* §3.4(b): the row the "Trocar por um modelo do catálogo" warning named —
+       a hairline on the left, nothing louder, because the point is WHERE the
+       selector is, not that the group is in trouble. */
+    .chain-row.chain-target { border-left: 3px solid var(--accent); padding-left: 10px; }
     .chain-head { color: var(--muted); font: 600 var(--t-label) var(--sans); letter-spacing: .05em; text-transform: uppercase; margin-bottom: 8px; }
     .row-ops { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
@@ -1080,6 +1088,12 @@
       <button class="btn mode" id="editMode" type="button" aria-pressed="false">
         <span id="editLabel">Editar</span>
       </button>
+      <!-- §3.4(a): while the file carries a lint error the Editar button stays
+           (editing is not writing) and THIS is the support text that says the
+           line between the two — you may edit, you may not save yet. Absent,
+           the mode button reads as the thing to press and the error as the
+           reason it does nothing. -->
+      <span class="edit-note" id="editNote" hidden>Você pode editar; só não é possível salvar até o erro acima ser corrigido.</span>
       <button class="btn" id="refresh" type="button">Recarregar</button>
     </div>
   </header>
@@ -1367,6 +1381,15 @@
         // cannot.
         capabilities: null, chainPlan: null,
         plan: null, draft: null, selected: null,
+        // §3.4(a): the destination the sheet row's "Escolha um destino que
+        // exista" chose, waiting for the rule's editor to open and write it
+        // into the draft. One-shot: consumed by renderInspector.
+        rowDestFix: null,
+        // §3.4(b): which attempt the "Trocar por um modelo do catálogo"
+        // warning points at, consumed by the chain editor to mark the target
+        // row; and the per-(tier, model) dismissals of "Deixar como está",
+        // which live in state and die at the next read (never in the file).
+        tierFix: null, unknownDismissed: {},
         // The node object behind `selected`. The staleness guard re-renders the
         // inspector from it after a refused write: once the reload lands, the
         // panel must show the policy that was actually read, never the draft the
@@ -1863,7 +1886,7 @@
         no_vision:            'ele não lê imagem',
         no_tool_calling:      'ele não chama ferramentas',
         no_structured_output: 'ele não devolve resposta em formato fixo',
-        capability_unknown:   'as capacidades dele não foram verificadas',
+        capability_unknown:   'ele tem capacidades não verificadas',
         // The time cap is a COST refusal, not a capability one: the elo can do the
         // work, the tier declines to pay this hour's price for it.
         time_cap:             'nesta hora ele custa mais do que o teto de preço do grupo permite',
@@ -3036,6 +3059,12 @@
       function renderWarnings() {
         const box = $('warnings');
         clear(box);
+        // §3.4(a): the Editar support text rides the same error set the banner
+        // reads, so the two can never disagree about whether the file is
+        // blocked. The note appears even in reading mode — the fact is the
+        // file's, not the mode's.
+        const editNote = $('editNote');
+        if (editNote) editNote.hidden = lintErrors().length === 0;
         if (state.unreachable) {
           const line = el('div', 'warn-line bad');
           line.append(el('strong', '', 'Não consegui falar com o roteador.'),
@@ -3621,7 +3650,7 @@
         // model, so it routes UNCHECKED — the capability filter cannot reject it and
         // cannot vouch for it either, and that is the operator's problem to know.
         if (window) row.append(el('span', 'hop-ctx', `${window} de contexto`));
-        else row.append(el('span', 'hop-ctx unverified', verified ? 'contexto não publicado' : 'sem capacidade verificada'));
+        else row.append(el('span', 'hop-ctx unverified', verified ? 'contexto não publicado' : 'capacidades não verificadas'));
         // What it costs at the injected hour, in ONE order of precedence and never
         // the console's own arithmetic where a server number exists:
         //   1. the plan's `multipliers` — the number the ordering decision RAN on;
@@ -4013,6 +4042,25 @@
             }
           }
           to.append(dest);
+          // §3.4(a): a destination naming a group the table does not have is
+          // the one row that carries its own remedy — the SAME §2.2 select,
+          // prefixed by what the operator is choosing. Choosing writes the
+          // three keys to the DRAFT (never to the read view's policy: the
+          // staleness guard in plan() compares the file against state.policy,
+          // so a mutation there would read as an external edit and refuse
+          // every save) and opens the rule's editor, where the change is
+          // visible and Salvar writes it through the normal path.
+          if (opts.destFix) {
+            const fixWrap = el('div', 'field step-dest-fix');
+            fixWrap.append(el('label', '', 'Escolha um destino que exista:'));
+            const fixSelect = destSelect(opts.destFix.then, tierIndex);
+            fixSelect.addEventListener('change', () => {
+              state.rowDestFix = { ruleIndex: opts.destFix.ruleIndex, value: fixSelect.value };
+              pickBind({ id: `rule:${opts.destFix.id}`, name: String(opts.destFix.id), bind: 'rule', ruleIndex: opts.destFix.ruleIndex });
+            });
+            fixWrap.append(fixSelect);
+            to.append(fixWrap);
+          }
           if (opts.hits !== undefined) {
             // A zero is a FINDING only when the rule could have fired in the
             // counted window. On a stale sheet every count becomes a muted
@@ -4085,6 +4133,12 @@
             target: dest.text,
             tierDest: dest.kind === 'tier' ? tierDestOf(then.model) : null,
             targetColor: dest.kind === 'refuse' || dest.kind === 'missing' ? 'var(--bad-text)' : '',
+            // §3.4(a): the missing-group row carries the one control that
+            // resolves the class — only in editing mode, where the fix has a
+            // save path to land in (the read view's banner jump opens the
+            // editor; the row's own select is that jump with the choice made).
+            destFix: dest.kind === 'missing' && editable
+              ? { ruleIndex: i, id: r.id != null ? String(r.id) : `regra ${i + 1}`, then } : null,
             hits: byRule[r.id] || 0,
             stale,
             editable,
@@ -4437,21 +4491,13 @@
           // (state.capabilities null) there is no way to claim "the catalogue
           // does not know this id" — the endpoint answered 404, not "no".
           // The SAME verified flag the chain row uses marks it, so the row's
-          // "sem capacidade verificada" and this line can never disagree; a
+          // "capacidades não verificadas" and this line can never disagree; a
           // hop that declares its own window is verifiable without the
           // catalogue and gets no warning.
-          if (o.registry) {
-            const unknown = [];
-            list.forEach((hop) => {
-              const model = String((hop && hop.model) || '');
-              if (model && !hopCaps(hop, o.registry).verified && unknown.indexOf(model) < 0) {
-                unknown.push(model);
-              }
-            });
-            unknown.forEach((model) => {
-              out.push(`O catálogo não conhece este id: ${model}. Ele vai rodar, mas nada aqui confere capacidade, janela ou preço dele.`);
-            });
-          }
+          // NOTE: the unknown-model line itself does NOT live here — the
+          // group head's warning is one surface, and §3.4(b) renders that
+          // same fact as a block with the two named remedies (Trocar /
+          // Deixar como está) in renderLadder, where the buttons exist.
 
           // pin_primary true with random. Needs at least two attempts — with
           // one, there are no reserves to sort and the "só uma opção" row is
@@ -4581,6 +4627,41 @@
           }));
 
           warnings.forEach((warn) => block.append(el('div', 'tier-note', warn)));
+          // §3.4(b): an attempt whose model the catalogue never described. The
+          // warning names the id AND the two remedies that exist: swap it for
+          // a catalogue model (opens this group's chain editor with THAT
+          // attempt's row marked, so the operator does not have to count
+          // rows), or leave it — which writes nothing and hides the block
+          // until the next read, per the spec's literal. Both facts the row
+          // needs are per-hop, so the block is per unknown model, never one
+          // line for the group.
+          if (registry && typeof registry === 'object') {
+            hops.forEach((hop, hopIndex) => {
+              const model = String((hop && hop.model) || '');
+              if (!model || hopCaps(hop, registry).verified) return;
+              const key = `${name}:${model}`;
+              if (state.unknownDismissed[key]) return;
+              const unknownNote = el('div', 'tier-note');
+              unknownNote.append(el('span', '',
+                `O catálogo não conhece este id: ${model}. Ele vai rodar, mas nada aqui confere capacidade, janela ou preço dele.`));
+              const swap = el('button', 'btn', 'Trocar por um modelo do catálogo');
+              swap.type = 'button';
+              swap.addEventListener('click', () => {
+                state.tierFix = { tier: name, attempt: hopIndex };
+                pickBind({ id: `tier:${name}`, name, bind: 'tier', tier: name });
+              });
+              const keep = el('button', 'btn', 'Deixar como está');
+              keep.type = 'button';
+              keep.addEventListener('click', () => {
+                // §3.4(b): hides until the next read. No POST, no draft
+                // touch — the file does not know this preference exists.
+                state.unknownDismissed[key] = true;
+                renderLadder();
+              });
+              unknownNote.append(swap, keep);
+              block.append(unknownNote);
+            });
+          }
           box.append(block);
         });
 
@@ -4593,7 +4674,7 @@
         // endpoint (DESIGN.md:558-563).
         note.textContent = unverified
           ? (state.capabilities
-            ? `${unverified} tentativa${unverified === 1 ? '' : 's'} sem capacidade verificada — sem registro no catálogo, o filtro não pode conferir.`
+            ? `${unverified} tentativa${unverified === 1 ? '' : 's'} com capacidades não verificadas — sem registro no catálogo, o filtro não pode conferir.`
             : 'Este serviço do roteador não tem catálogo de modelos. As filas acima estão certas; o que falta é a informação de capacidade e preço de cada opção. Não é erro de configuração.')
           : 'Todas as tentativas que um grupo pode fazer, e como ele escolhe a próxima.';
       }
@@ -5153,6 +5234,10 @@
         state.selected = node.id;
         renderSheet();
         renderInspector(node);
+        // §3.4(b): the "Trocar por um modelo do catálogo" target is a
+        // one-shot — the chain editor reads it during renderInspector to mark
+        // the attempt row, and any later navigation must not re-mark it.
+        state.tierFix = null;
       }
 
       // ── WHERE THIS TASK ACTUALLY GOES ───────────────────────────────
@@ -5633,11 +5718,17 @@
         if (!badge.unknown) bits.push(badge.word);
         return bits.join(' · ');
       }
-      function modelField(box, label, get, set, requirements, onProvider) {
+      function modelField(box, label, get, set, requirements, onProvider, onRequirements) {
         const registry = state.capabilities;
         const wrap = el('div', 'field');
-        wrap.append(el('label', '', label));
-        if (!registry || typeof registry !== 'object') {
+        // §3.4(c): without a catalogue the field is free text, and the label
+        // says what is being typed — an id, not a choice. Every caller passes
+        // 'Modelo' for the select form; the fallback names the field for what
+        // it actually is, so "Id do modelo" and "Sem catálogo, não há lista
+        // para escolher." read as one statement.
+        const noCatalog = !registry || typeof registry !== 'object';
+        wrap.append(el('label', '', noCatalog ? 'Id do modelo' : label));
+        if (noCatalog) {
           // §3.4(c): no catalogue, no list to choose from. Free text is the
           // honest fallback, and the note says why without naming an endpoint.
           const input = document.createElement('input');
@@ -5649,10 +5740,27 @@
           return { wrap, input };
         }
         const current = String(get() == null ? '' : get());
-        const eligible = Object.keys(registry)
+        let eligible = Object.keys(registry)
           .filter((id) => modelMeetsRequirement(registry[id], requirements));
-        const floor = Number(requirements && requirements.min_context);
-        const hasFloor = Number.isFinite(floor) && floor > 0;
+        // The floor is read LIVE: §3.4(d)'s "Baixar a exigência do grupo"
+        // edits it in the draft, and the count and the zero block must follow
+        // the operator's number, not the value the field was born with.
+        const floorNow = () => {
+          const f = Number(requirements && requirements.min_context);
+          return Number.isFinite(f) && f > 0 ? f : 0;
+        };
+        const hasFloorNow = () => floorNow() > 0;
+        // One recompute for every surface that reads the eligibility: the
+        // select's options, the count, the show-all toggle and the zero block
+        // all answer the same question, so a floor edit re-asks it once.
+        const refresh = () => {
+          eligible = Object.keys(registry)
+            .filter((id) => modelMeetsRequirement(registry[id], requirements));
+          renderOptions();
+          renderCount();
+          renderToggle();
+          renderZero();
+        };
 
         const select = document.createElement('select');
         let showAll = false;
@@ -5700,17 +5808,55 @@
         const countNote = el('p', 'field-note');
         const renderCount = () => {
           const n = eligible.length;
-          const suffix = hasFloor ? ` (≥ ${fmt(floor)} tokens)` : '';
+          const floor = floorNow();
+          const suffix = hasFloorNow() ? ` (≥ ${fmt(floor)} tokens)` : '';
           countNote.textContent = n === 1
             ? `1 modelo atende à exigência deste grupo${suffix}`
             : `${n} modelos atendem à exigência deste grupo${suffix}`;
         };
         renderCount();
         wrap.append(countNote);
-        if (eligible.length === 0 && hasFloor) {
-          wrap.append(el('p', 'field-note',
-            `Nenhum modelo do seu catálogo declara ${fmt(floor)} tokens ou mais. Duas saídas: baixar a exigência do grupo, ou escolher um modelo mesmo assim — nesse caso ele sai da fila em tempo de execução, e a fila do grupo pode ficar vazia.`));
-        }
+
+        // §3.4(d) zero block. The prose names the two ways out, and the FIRST
+        // is a real control: the button opens THIS group's requirements floor
+        // in the draft, with the current value, and nothing is written until
+        // the operator saves — naming the remedy is not executing it (§6.8),
+        // and the write stays on the minimal-patch path the touched set
+        // describes ('requirements').
+        const zeroProse = el('p', 'field-note',
+          `Nenhum modelo do seu catálogo declara ${fmt(floorNow())} tokens ou mais. Duas saídas: baixar a exigência do grupo, ou escolher um modelo mesmo assim — nesse caso ele sai da fila em tempo de execução, e a fila do grupo pode ficar vazia.`);
+        const lowerBtn = el('button', 'btn', 'Baixar a exigência do grupo');
+        lowerBtn.type = 'button';
+        const floorInput = document.createElement('input');
+        floorInput.hidden = true;
+        floorInput.value = hasFloorNow() ? String(floorNow()) : '';
+        floorInput.addEventListener('input', () => {
+          const raw = String(floorInput.value).trim();
+          const num = Number(raw);
+          // §2.1: removing a key is an explicit null — an empty (or non-numeric)
+          // field means "no floor", and the patch carries
+          // requirements.min_context: null.
+          const next = raw === '' ? null : (Number.isFinite(num) && num > 0 ? num : null);
+          if (requirements) requirements.min_context = next;
+          if (onRequirements) onRequirements(next);
+          refresh();
+        });
+        lowerBtn.addEventListener('click', () => {
+          floorInput.hidden = false;
+          lowerBtn.hidden = true;
+        });
+        const renderZero = () => {
+          const zero = eligible.length === 0 && hasFloorNow();
+          zeroProse.hidden = !zero;
+          if (!zero) { lowerBtn.hidden = true; floorInput.hidden = true; return; }
+          // Zero: the button leads to the field — it shows until the field is
+          // open, then yields to it.
+          lowerBtn.hidden = !floorInput.hidden;
+        };
+        renderZero();
+        wrap.append(zeroProse);
+        wrap.append(lowerBtn);
+        wrap.append(floorInput);
 
         // [mostrar todos os N] — the filter is a reading aid, not a gate:
         // everything the catalogue knows stays reachable, and choosing
@@ -5809,13 +5955,16 @@
         if (!(n > 0)) return head;
         return `${head} Um grupo, no lugar dele, teria ${n} tentativa${n === 1 ? '' : 's'}.`;
       }
-      function destField(box, then, touched, tiers) {
-        const wrap = el('div', 'field');
-        wrap.append(el('label', '', 'Destino'));
+      // The §2.2 destination select, built ONCE. Both surfaces that render a
+      // destination — the inspector's field and the §3.4(a) row fix — use this
+      // construction, so the five closed options, their order and the
+      // missing-group append cannot drift apart. The CHANGE wiring differs per
+      // surface (the editor writes the draft; the row fix routes to the
+      // editor), so the listener is the caller's, never this builder's.
+      function destSelect(then, tiers) {
         const select = document.createElement('select');
         const names = destOptionList(tiers);
         const current = destValue(then, tiers);
-        const isTier = (v) => v !== '' && v !== '__classify' && v !== '__deny' && v !== '__fixed';
         if (!current) {
           const blank = document.createElement('option');
           blank.value = ''; blank.textContent = '—';
@@ -5850,6 +5999,14 @@
         fixedOpt.value = '__fixed'; fixedOpt.textContent = 'Um modelo fixo, sem reserva (avançado)';
         select.appendChild(fixedOpt);
         select.value = current;
+        return select;
+      }
+      function destField(box, then, touched, tiers) {
+        const wrap = el('div', 'field');
+        wrap.append(el('label', '', 'Destino'));
+        const select = destSelect(then, tiers);
+        const current = destValue(then, tiers);
+        const isTier = (v) => v !== '' && v !== '__classify' && v !== '__deny' && v !== '__fixed';
         wrap.append(select);
 
         // The fixed-model option reveals the one model picker (§2.5) and the
@@ -5977,7 +6134,7 @@
       // `fallback: []` — an empty list is a declaration, an absent key is
       // another thing. Numbering (1ª/2ª/3ª) stays the ladder's job (§2.3):
       // editing shows list order, one authority for the queue.
-      function editTierChain(box, t, touched, msg) {
+      function editTierChain(box, t, touched, msg, tierName) {
         const REQUIREMENTS = t.requirements;
         const knownBilling = Object.keys(BILLING);
         // A structural change can move the primary, the reserves, or both, so
@@ -6050,11 +6207,24 @@
         const attemptRow = (container, attempt, heading, isPrimary, rowIndex) => {
           const mark = (tierKey) => touched.add(isPrimary ? tierKey : 'fallback');
           const row = el('div', 'chain-row');
+          // §3.4(b): the ladder's "Trocar por um modelo do catálogo" names the
+          // attempt by index; the editor marks that row so the operator lands
+          // on the selector they asked for — never a silent jump to the top
+          // of the chain.
+          if (state.tierFix && state.tierFix.tier === tierName
+              && state.tierFix.attempt === rowIndex) {
+            row.classList.add('chain-target');
+          }
           row.append(el('div', 'chain-head', heading));
           modelField(row, 'Modelo', () => attempt.model,
             (v) => { mark('model'); attempt.model = v; },
             REQUIREMENTS,
-            (provider) => { mark('provider'); attempt.provider = provider; });
+            (provider) => { mark('provider'); attempt.provider = provider; },
+            // §3.4(d): the zero-count "Baixar a exigência do grupo" edits the
+            // floor in the DRAFT (modelField mutates the shared requirements
+            // object); this callback only marks the key touched so the patch
+            // carries it. The button itself never writes.
+            () => mark('requirements'));
           const provWrap = el('div', 'field');
           provWrap.append(el('label', '', 'Provedor'));
           const provInput = document.createElement('input');
@@ -6180,6 +6350,25 @@
         // not ride along on the snapshot's value — that is how a write reverts a
         // concurrent edit in silence.
         const touched = new Set();
+        // §3.4(a): the sheet row's "Escolha um destino que exista" landed here.
+        // The draft is fresh from the policy; the three keys of §2.2 are
+        // written to the rule the row fixed, so the editor renders the new
+        // destination and Salvar writes it through the same minimal patch as
+        // any rule edit. The write NEVER touches state.policy — the staleness
+        // guard in plan() compares the file against it, so a mutation there
+        // would read as an external edit and refuse every save.
+        if (state.rowDestFix && node.bind === 'rule'
+            && node.ruleIndex === state.rowDestFix.ruleIndex) {
+          const fix = state.rowDestFix;
+          state.rowDestFix = null;
+          const fr = state.draft.rules[node.ruleIndex] = state.draft.rules[node.ruleIndex] || {};
+          fr.then = fr.then || {};
+          const v = fix.value;
+          if (v === '__classify') { fr.then.model = null; fr.then.action = 'classify'; fr.then.deny = null; }
+          else if (v === '__deny') { fr.then.model = null; fr.then.action = null; fr.then.deny = true; }
+          else { fr.then.model = (v === '' || v === '__fixed') ? null : v; fr.then.action = null; fr.then.deny = null; }
+          touched.add('model'); touched.add('action'); touched.add('deny');
+        }
         // Created here, before the fields, because the rule position/state
         // controls below write their feedback to it; appended once, after the
         // actions, so the message reads where the buttons are.
@@ -6215,7 +6404,7 @@
           // primary row plus one row per reserve — with ↑/↓/Remover and
           // Adicionar tentativa: the primary's keys stay tier keys, and every
           // reserve lives inside the fallback list.
-          editTierChain(box, t, touched, msg);
+          editTierChain(box, t, touched, msg, node.tier);
         } else if (node.bind === 'rule') {
           const r = d.rules[node.ruleIndex] = d.rules[node.ruleIndex] || {};
           r.then = r.then || {};
@@ -7054,6 +7243,11 @@
         state.routesTotal = Number(routes.data && routes.data.count) || state.routes.length;
         state.checkedAt = new Date();
         state.loading = false;
+        // §3.4(b): a fresh read brings the dismissed unknown-model warnings
+        // back — "Deixar como está" hides them ATÉ A PRÓXIMA LEITURA, never
+        // beyond it. The file does not know the preference exists.
+        state.unknownDismissed = {};
+        state.tierFix = null;
         renderAll();
       }
 
