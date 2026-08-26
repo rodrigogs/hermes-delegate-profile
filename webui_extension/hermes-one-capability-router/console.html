@@ -5,27 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Roteador de modelos</title>
   <!--
-    THESIS: An operator opens this to answer three questions — is it healthy, how
-      does it route, what did it decide. Everything that serves none of them is
-      absent. It refuses the dashboard reflex of framing each fact in its own card
-      with a subtitle explaining the card.
-    OWN-WORLD: Hermes One's own. There is no palette here: every colour reads a
-      --host-* property the theme bridge forwards from the running shell, so the
-      console repaints with all 21 skins and both polarities. The header, the tab
-      strip, the type ladder and the button shape are the host's measured values.
-      The skin's accent marks WHERE YOU ARE and WHAT YOU PICKED; the semantic four
-      (--ok/--warn/--info/--bad) report CONDITION and nothing else, so a gold
-      underline can never be read as health.
-    STORY: Health first — the models it can reach. Pipeline to see and change how
-      tasks route, in an explicit edit mode. Routes to replay what really happened,
-      step by step.
-    FIRST VIEWPORT: A host-shaped header names the surface, a tab strip names the
-      three destinations and carries their live state, and then the screen's own
-      question is answered in its first line: how many models are routable, or
-      where a task would land, or what the log holds.
-    FORM: Single self-contained file, one column under a fixed header. Both the
-      policy and a trace read as ordered vertical sequences down one spine —
-      never a canvas. See DESIGN.md for the rules of subtraction.
+    THESIS: Two screens split by what the operator is DOING. Configuração holds
+      everything that can be changed, and every change is offered on the row it
+      changes; Operação holds what the router can reach and what it decided. It
+      refuses the global edit mode, whose only measured effect was its own label:
+      inside the host, arming it changed the body by 0 characters.
+    OWN-WORLD: Hermes One's own, unchanged. There is no palette here: every colour
+      reads a --host-* property the theme bridge forwards from the running shell,
+      so the console repaints with all 21 skins and both polarities. Groups are
+      made of hairlines and space, never cards. The accent marks WHAT YOU PICKED;
+      the semantic four report CONDITION. No icons, because no svg and no markup
+      injection: a control is a word.
+    STORY: Open Configuração and the rules are there in order, each row carrying
+      Editar. Press it and that row becomes the form, with Salvar and Cancelar
+      where Editar was — nothing else on the screen changes state.
+    FIRST VIEWPORT: The host's header (provenance + Recarregar), two tabs, then
+      REGRAS: one summary line and the numbered rows, destination and count in
+      fixed columns, Editar on every row that can be edited.
+    FORM: Two screens, sections of one-line rows, the editor opening in place.
+      Structure 6 of 7 on the ordered list; surface seed 092cedd3.
+    FINISH: unreviewed and undocumented is unfinished; this build ends with the
+      finish review, the verdict, DESIGN.md, and every shipping raster carrying
+      its provenance.
   -->
   <style>
     /* ── WHERE EVERY COLOUR COMES FROM ─────────────────────────────────
@@ -293,6 +294,14 @@
     .btn:hover { background: var(--surface-hover); border-color: var(--line-strong); }
     .btn[disabled] { opacity: .55; cursor: default; }
     .btn[disabled]:hover { background: var(--surface); border-color: var(--line); }
+    /* The row-level action. Same shape and same height as every other button here —
+       a second button vocabulary is how a surface comes to look like two products —
+       but with no plane behind it until it is pointed at, because there are ten of
+       them down a list and ten filled rectangles would out-shout the policy they sit
+       beside. It is a real border on hover, not an appearing one: a control that
+       gains a border on hover shifts the text under it. */
+    .btn-quiet { border-color: transparent; background: none; color: var(--muted); }
+    .btn-quiet:hover { border-color: var(--line-strong); background: var(--surface-hover); color: var(--text); }
     /* The committing action is the only FILLED element on a screen, and it is
        filled with the skin's accent — the same signal the host puts on its own
        primary button, with the host's own foreground rule for legibility. */
@@ -300,13 +309,33 @@
     .btn.go:hover { border-color: var(--accent-strong); background: var(--accent-strong); color: var(--accent-fg); }
     .btn.warn { color: var(--bad-text); border-color: var(--line-strong); }
     .btn.warn:hover { border-color: var(--bad); background: var(--bad-bg); }
-    /* Editing is a MODE of this console, so its control reads as pressed while
-       the mode is on, in the host's own "selected" idiom (accent wash + accent
-       text). Deliberately not amber: the four condition colours describe the
-       router, and an operator choosing to edit is not the router degrading. */
+    /* `.mode` was the global Editar button's pressed state and the button is gone.
+       The rule stays because the state it describes did not: a control that reads as
+       pressed while its mode is on is the host's own selected idiom, and the preset
+       radios and the scope pills use the same wash. */
     .mode[aria-pressed="true"] {
       border-color: var(--accent-bg-strong); background: var(--accent-bg); color: var(--accent-text);
     }
+
+    /* ── THE BROWSER'S OWN SURFACES ────────────────────────────────────
+       The parts nobody draws still carry the design, and here they were all
+       defaults belonging to no design system: a blue selection inside a gold-on-navy
+       shell, a white caret, and the decision list's own scrollbar in the platform's
+       grey. Each one takes the skin. */
+    ::selection { background: var(--accent-bg-strong); color: var(--text); }
+    input, textarea { caret-color: var(--accent); }
+    .route-list, .body, .code, .editor {
+      scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent;
+    }
+    .route-list::-webkit-scrollbar, .body::-webkit-scrollbar,
+    .code::-webkit-scrollbar, .editor::-webkit-scrollbar { width: 10px; height: 10px; }
+    .route-list::-webkit-scrollbar-thumb, .body::-webkit-scrollbar-thumb,
+    .code::-webkit-scrollbar-thumb, .editor::-webkit-scrollbar-thumb {
+      border: 3px solid transparent; border-radius: var(--radius-pill);
+      background-clip: content-box; background-color: var(--line-strong);
+    }
+    .route-list::-webkit-scrollbar-track, .body::-webkit-scrollbar-track,
+    .code::-webkit-scrollbar-track, .editor::-webkit-scrollbar-track { background: transparent; }
 
     /* ── the scrolling body ────────────────────────────────────────────
        The host's .main-view-body: it scrolls, the header does not. padding
@@ -347,6 +376,16 @@
 
     /* MORE space above a heading than below it. */
     .group { margin-top: 34px; }
+    /* The first section on a screen does not need the separation it would want from
+       a section above it; the panel's own padding is that space. */
+    .group.is-first { margin-top: 0; }
+    /* The one-line answer under a section's name: what this section is for, or what
+       its numbers count. It replaces the stacked paragraphs the same content used to
+       be — six sentences of preset prose, five muted lines per group — because a
+       section that needs a paragraph to be understood is a section whose rows are
+       not saying enough. */
+    .section-lead { color: var(--muted); font-size: var(--t-body); margin: -2px 0 12px; }
+    .section-lead:empty { display: none; }
     .group-head {
       display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
       padding-bottom: 8px; margin-bottom: 10px; border-bottom: 1px solid var(--line);
@@ -480,10 +519,16 @@
        goes, and how often it really fired. */
     .step {
       position: relative; display: grid;
-      /* minmax(0, max-content), not `auto`: an auto track sizes to its content's
-         intrinsic width and took it from the 1fr beside it. */
-      grid-template-columns: 22px minmax(0, 1fr) fit-content(46%);
-      align-items: baseline; gap: 16px; padding: 12px 10px 12px 0;
+      /* Four tracks, and the fourth is the ACTION SLOT: a fixed 72px so Editar lands
+         on the same x down the whole list, which is what makes "what can I do with
+         this line" answerable by looking once rather than per row.
+         minmax(0, max-content), not `auto`, on the destination: an auto track sizes
+         to its content's intrinsic width and took it from the 1fr beside it. */
+      grid-template-columns: 22px minmax(0, 1fr) fit-content(34%) 84px;
+      /* No right padding: the action slot has to end on the same x as the one on a
+         group row and on a settings row, and 10px of it put the sheet's column 10px
+         inside theirs — measured, two distinct x positions across sixteen slots. */
+      align-items: baseline; gap: 16px; padding: 12px 0;
       border-bottom: 1px solid var(--line); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
     }
     .step:last-child { border-bottom: 0; }
@@ -491,8 +536,31 @@
       content: ""; position: absolute; left: -22px; top: 19px;
       width: 9px; height: 1px; background: var(--line);
     }
-    .step.editable { cursor: pointer; }
+    /* The ROW is not a button any more, so it does not claim to be one. `cursor:
+       pointer` on the whole li plus a hover plane was the entire signifier for
+       "this can be edited" — invisible until the mouse was already on it, absent on
+       touch, and it made every tap inside the row open an editor. The labelled
+       button in the action slot is the affordance now, and the row keeps a quiet
+       hover only to tie the slot to the line it belongs to. */
     .step.editable:hover { background: var(--surface-hover); }
+    /* WHAT IS BEING EDITED, said by the row itself: the plane rises, the accent edge
+       marks it as the thing you picked, and the neighbours recede. This is the
+       feedback the global mode never gave — the scope of the edit, visible. */
+    .step.is-open {
+      background: var(--surface-raised);
+      box-shadow: inset 2px 0 0 var(--accent);
+      border-bottom-color: var(--accent-bg-strong);
+    }
+    .step.is-open::before { background: var(--accent); }
+    .sheet.is-editing .step:not(.is-open) { opacity: .55; }
+    /* The action slot. Right-aligned so the button's own right edge lines up with the
+       column, and baseline-aligned with the row's first line rather than its middle,
+       because a two-line row must not push its own action down. */
+    .step-act { display: flex; justify-content: flex-end; align-self: start; padding-top: 1px; }
+    .step-editing {
+      color: var(--accent-text); font: 600 var(--t-label) var(--sans);
+      letter-spacing: .05em; text-transform: uppercase; white-space: nowrap;
+    }
     /* The line the probed task matched: this is an ANSWER TO YOUR QUESTION, not
        a condition, so it wears the accent. */
     .step.hit { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
@@ -529,11 +597,16 @@
        it is 158.8px, so the sheet-wide `.stale` state widens the track to 160px
        — the destination column is the one the operator reads when the counts
        are missing, and it ellipsizes rather than wraps. */
+    /* The hits track is 52px, not the old 80/160px pair: the column holds a COUNT
+       now ("26×", "nunca", "—") and not a sentence. The 160px variant existed for
+       "sem dados nesta janela" and it is what broke the sheet — measured in the host
+       panel at 1141px, the row wanted 1377px and the console scrolled sideways with
+       the third column clipped. The period those counts were taken over is one line
+       above the list, where it is said once. */
     .step-to {
-      display: grid; grid-template-columns: minmax(0, 1fr) 80px;
+      display: grid; grid-template-columns: minmax(0, 1fr) 52px;
       align-items: baseline; gap: 14px;
     }
-    .sheet.stale .step-to { grid-template-columns: minmax(0, 1fr) 160px; }
 
     .step-dest { display: flex; align-items: baseline; gap: 8px; justify-content: flex-end; min-width: 0; }
     .step-arrow { color: var(--muted); font: var(--t-body) var(--mono); }
@@ -610,7 +683,15 @@
        floor the tier declares. */
     .tier { padding: 14px 0 15px; border-bottom: 1px solid var(--line); }
     .tier:last-child { border-bottom: 0; }
-    .tier-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; }
+    /* A GRID, not a flex row, because the last cell is the ACTION SLOT and it has to
+       land on the same x as every other Editar on the screen. As flex it sat wherever
+       the group's facts happened to end — 788px, 787px, 796px on three consecutive
+       groups — and a reader hunting for the control has to re-find it on every row. */
+    .tier-head {
+      display: grid; grid-template-columns: minmax(0, 1fr) 84px;
+      align-items: baseline; gap: 6px 16px;
+    }
+    .tier-headline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; min-width: 0; }
     .tier-name { font: 600 var(--t-body) var(--mono); letter-spacing: .04em; color: var(--text); }
     .tier-fact { color: var(--muted); font-size: var(--t-small); }
     .tier-fact.thin { color: var(--warn-text); }
@@ -824,6 +905,72 @@
     .io-label { color: var(--muted); font: 600 var(--t-label) var(--sans); letter-spacing: .05em; text-transform: uppercase; margin-bottom: 6px; }
     .inspector-head { margin: 28px 0 12px; font: 600 var(--t-head)/1.3 var(--sans); letter-spacing: -.18px; }
 
+    /* ── THE EDITOR, IN PLACE ──────────────────────────────────────────
+       It opens inside the row it edits, which is what makes its scope readable
+       without a word: the form is physically inside the thing it changes. It spans
+       the row's whole grid, sits on the raised plane the open row already carries,
+       and keeps one hairline — not a card, and not a second frame inside a row that
+       is already marked (DESIGN.md §2.4).
+       Its entrance is the file's ONE authored moment, reused rather than invented:
+       the same `screen-in` the panels ease in with, because a form arriving in a row
+       and a screen arriving in the panel are the same event at two scales — something
+       you asked for is now here. One keyframe, one easing, one duration, and it
+       yields to prefers-reduced-motion with everything else. */
+    #inspector { grid-column: 1 / -1; }
+    #inspector:empty { display: none; }
+    .editor-box {
+      margin: 12px 0 2px; padding: 14px 16px 16px;
+      border-top: 1px solid var(--accent-bg-strong);
+      animation: screen-in var(--enter) var(--ease) both;
+    }
+    /* WHAT IS BEING CHANGED AND WHETHER IT IS WRITTEN YET — the sentence the global
+       mode tried to put in a note the sheet immediately overwrote. Here it cannot be
+       overwritten, because it belongs to the form. */
+    .editor-scope { color: var(--muted); font-size: var(--t-small); margin-bottom: 12px; }
+    .editor-box .actions { margin-top: 14px; }
+    .editor-box .field { max-width: min(440px, 100%); }
+    /* A group being edited takes the same marks the sheet row does, so one reading
+       serves both lists. */
+    .tier.is-open {
+      background: var(--surface-raised); box-shadow: inset 2px 0 0 var(--accent);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      padding-left: 12px; padding-right: 12px;
+    }
+    #ladder.is-editing .tier:not(.is-open) { opacity: .55; }
+    /* The five knobs of a group: the declared ones on the line, the engine's own
+       behind one control that says how many there are. */
+    .tier-order { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+    .tier-defaults { margin-top: 4px; padding-left: 10px; border-left: 1px solid var(--line); }
+
+    /* ── the presets, as one choice ────────────────────────────────────
+       A row is a <label> wrapping a real radio, so the whole row is the target and
+       the browser's own arrow-key navigation moves between the three. The chosen row
+       takes the host's selected wash; the one in force says so on its own line. */
+    .preset {
+      display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px;
+      align-items: start; padding: 11px 12px; margin: 0 -12px;
+      border-radius: var(--radius); border: 1px solid transparent; cursor: pointer;
+    }
+    .preset:hover { background: var(--surface-hover); }
+    .preset.is-chosen { border-color: var(--accent-bg-strong); background: var(--accent-bg); }
+    .preset-radio { accent-color: var(--accent); margin: 3px 0 0; width: 15px; height: 15px; }
+    .preset-body { min-width: 0; }
+    .preset-label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font: 500 var(--t-body) var(--sans); color: var(--text); }
+    .preset-live {
+      color: var(--accent-text); font: 600 var(--t-label) var(--sans);
+      letter-spacing: .05em; text-transform: uppercase;
+    }
+    .preset-metric { color: var(--muted); font-size: var(--t-small); margin-top: 2px; }
+    .preset-consequence { color: var(--muted); font-size: var(--t-small); margin-top: 6px; }
+
+    /* A settings row: the same primitive the model rows use, with the action slot the
+       sheet rows carry, so the third list on the screen is not a third layout. */
+    .row.setting { grid-template-columns: minmax(0, 1fr) 84px; align-items: start; }
+    .row.setting.is-open { background: var(--surface-raised); box-shadow: inset 2px 0 0 var(--accent); }
+    .row-why { color: var(--muted); font-size: var(--t-small); margin-top: 3px; }
+    /* A setting's value when the value is a WORD rather than a machine fact. */
+    .row-word { color: var(--text); font-size: var(--t-body); margin-top: 2px; }
+
     /* A condition that needs an operator is a LINE, marked with the same dot the
        tabs use — not a tinted card with a thick coloured edge. Every other group
        here is made from a hairline and space; the warning was the one element
@@ -887,7 +1034,14 @@
        width the shell around it does. Header + tabs measure 41 + 38 = 79px of
        chrome, against 120px for the old three-row masthead. */
     @media (max-width: 640px) {
-      .view-head { padding: 8px 14px; }
+      /* THE NAME OF THE SURFACE NEVER YIELDS. At 390px the provenance block is three
+         lines of mono ~150px wide, which left the title ~110px and ellipsed
+         "Roteador de modelos" to "Roteado…" — a surface whose own name is cut is the
+         one thing this header must not do. One column instead: the title takes the
+         full width and the actions sit under it. (Inside the host the title is hidden
+         anyway; this is the standalone page at /capability-router.) */
+      .view-head { padding: 8px 14px; grid-template-columns: minmax(0, 1fr); }
+      .view-actions { justify-self: start; flex-wrap: wrap; }
       /* The tabs scroll rather than wrap: three destinations with live state
          dots do not fit 390px, and a wrapped tab strip reads as two
          navigations. Scroll-snap so a partial swipe settles on a boundary. */
@@ -910,9 +1064,19 @@
       .step-to { grid-column: 2; max-width: none; grid-template-columns: minmax(0, 1fr) auto; }
       .step-dest { justify-content: flex-start; }
       .step-target { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
-      /* The tier head's facts stack rather than truncate: "2 of 3 independent
-         rails" is the whole point of the line and must not become "2 of 3 ind…". */
-      .tier-head { gap: 4px 12px; }
+      /* THE ACTION SLOT STOPS BEING A COLUMN AND BECOMES A LINE. There is no room
+         for an 84px gutter at 390px, so the control sits under the row it belongs
+         to, left-aligned with that row's own text — measured, the four-track sheet
+         collapsed to two wrapped the slot into column 1, which put Editar 62px left
+         of everything it acts on, while the group and setting rows kept an implicit
+         right-hand track and put theirs at three different x positions. */
+      .step > .step-act { grid-column: 2; justify-content: flex-start; }
+      .tier-head { grid-template-columns: minmax(0, 1fr); gap: 4px 12px; }
+      .tier-head > .step-act { grid-column: 1; justify-content: flex-start; }
+      /* `.row` becomes flex here, which makes a grid template inert — so the
+         setting row's slot is placed by the flex rules instead, and the
+         `margin-left: auto` written for the model rows is reset. */
+      .row.setting > .step-act { margin-left: 0; flex: 0 0 100%; justify-content: flex-start; }
       /* A drawn (random) chain keeps wrapping, but at 390px there is room for one
          elo per line — so the words carry the "no order here" fact instead of the
          layout, which is why the head says it too. */
@@ -1067,37 +1231,38 @@
            something else owns: it reports THIS CONSOLE'S last read, which nothing
            else on screen can say. -->
       <span class="reach" id="reach"><span class="dot"></span><span id="reachText">Ainda não li nada do roteador.</span></span>
-      <!-- Edit, not a padlock. The padlock claimed to be a protection and was
-           not: the sidecar has never heard of it (zero mentions in
-           one_sidecar.py), and every write is already gated server-side by the
-           per-extension token-v1 secret, the host's CSRF token, a loopback-only
-           bind, and an optimistic base_hash that answers 409 on drift. The
-           compaction action additionally requires confirm=="COMPACT" checked ON
-           THE SERVER (one_sidecar.py:392).
-           What it did that was worth keeping is the read-only DEFAULT: the
-           Pipeline shows the live routing policy, and a stray tap on a line
-           should not start editing it. That is a mode, so it is named as one. -->
-      <button class="btn mode" id="editMode" type="button" aria-pressed="false">
-        <span id="editLabel">Editar</span>
-      </button>
+      <!-- ONE action in the header, and it is the one that has no home on a row.
+           The global "Editar" that used to sit here is GONE, and it was measured
+           rather than judged: inside the host document (where the CSRF token
+           exists) pressing it changed the body of the page by exactly 0
+           characters — 2207 before, 2207 after. It wrote its one announcing
+           sentence into #pipelineNote and then called renderSheet(), which
+           overwrites that very node with the rule count, so the whole visible
+           payload of arming a write was the button's own label flipping to
+           "Done" plus a cursor change nobody sees until they hover.
+           A mode whose scope is invisible is worse than no mode. Writing is now
+           armed per OBJECT, by the Editar button on the row that owns it, where
+           the scope is the row you can see. -->
       <button class="btn" id="refresh" type="button">Recarregar</button>
     </div>
   </header>
 
-  <!-- Three destinations, drawn the way the host draws its own nav tabs: a quiet
-       label that takes the accent when selected, with a 20px accent bar on the
-       bottom edge. Each carries the live state of what it leads to. -->
+  <!-- Two destinations, split by what the operator is DOING rather than by which
+       noun they are looking at. "Tarefas / Modelos / Decisões" were three nouns,
+       and no noun tells you where a setting lives: the rule list, the JSON
+       editor and the compaction action were under Tarefas while the presets and
+       the group chains were under Modelos, which is the whole of "I don't know
+       where I can edit the settings".
+       Drawn the way the host draws its own nav tabs: a quiet label that takes the
+       accent when selected, with a 20px accent bar on the bottom edge. Each
+       carries the live state of what it leads to. -->
   <nav class="tabs" role="tablist" aria-label="Seções da tela">
     <button class="tab" id="tab-pipeline" role="tab" aria-selected="true" aria-controls="panel-pipeline" data-tab="pipeline" type="button">
-      <span class="tab-name">Tarefas</span>
+      <span class="tab-name">Configuração</span>
       <span class="tab-state" id="statePipeline"><span class="count" id="countPipeline" hidden></span><span class="dot"></span></span>
     </button>
-    <button class="tab" id="tab-health" role="tab" aria-selected="false" aria-controls="panel-health" data-tab="health" type="button">
-      <span class="tab-name">Modelos</span>
-      <span class="tab-state" id="stateHealth"><span class="count" id="countHealth" hidden></span><span class="dot"></span></span>
-    </button>
     <button class="tab" id="tab-routes" role="tab" aria-selected="false" aria-controls="panel-routes" data-tab="routes" type="button">
-      <span class="tab-name">Decisões</span>
+      <span class="tab-name">Operação</span>
       <span class="tab-state" id="stateRoutes"><span class="count" id="countRoutes" hidden></span><span class="dot"></span></span>
     </button>
   </nav>
@@ -1125,77 +1290,37 @@
       </div>
       <div id="warnings"></div>
 
-      <!-- ── Modelos: which models can this router reach right now ────── -->
-      <section class="screen" id="panel-health" role="tabpanel" aria-labelledby="tab-health">
-        <!-- The screen's one question, answered in its first line: the rollup of
-             the model set, with the router's own three facts on the opposite
-             margin. There is no second "Router" heading — the panel header
-             already names the surface, and a title that repeats the rail is the
-             clutter this console was rebuilt to remove. -->
-        <div class="lede">
-          <p class="lede-answer" id="modelsNote"></p>
-          <div class="facts" id="healthFacts"></div>
-        </div>
-
-        <!-- §2.4: "Melhor modelo por tarefa". A preset only ever writes `tiers` —
-             which models each group uses and in what order — and never `rules`,
-             because the order of rules IS the semantics (first match decides) and the
-             lint's shadowed-rule detection depends on it: a preset that rewrote rules
-             could create or delete dead rules without the operator seeing it. Which
-             group a task uses stays manual, one line at a time.
-
-             There is no Salvar in this markup: it is BUILT after a plan comes back, so
-             an /apply can never be one click away from a body nobody previewed (CA5). -->
-        <div class="group" id="presetBox">
-          <div class="group-head"><h2>Melhor modelo por tarefa</h2><span class="screen-note" id="presetActive"></span></div>
-          <div id="presetOptions"></div>
-          <p class="lede-answer is-quiet" id="presetNote"></p>
-          <div class="actions" id="presetActions"></div>
-          <p class="msg" id="presetMsg" aria-live="polite"></p>
-          <pre class="code" id="presetDiff" hidden></pre>
-        </div>
-
-        <!-- §1.2 item 4. The groups moved here from Tarefas: this tab answers "which
-             models are there, and in what order does each group try them", and CA4 is
-             verified by opening Modelos. On the Tarefas tab the same blocks were a
-             second subject under the rule list. -->
-        <div class="group">
-          <div class="group-head"><h2>Grupos de modelos</h2><span class="screen-note" id="ladderNote"></span></div>
-          <div id="ladder"></div>
-        </div>
-
-        <!-- §1.2 item 5 / §2.6: o último recurso, depois dos grupos. renderFailSafe
-             constrói tudo aqui dentro: com fail_safe, o bloco com a cadeia desenhada
-             pelo MESMO chainList dos grupos (§8); sem fail_safe, não existe moldura
-             (DESIGN.md regra 1) — só a frase do §5.4 no lugar onde o bloco estaria. -->
-        <div id="failSafeBox"></div>
-
-        <div id="models"></div>
-
-        <div class="group" id="bansGroup" hidden>
-          <div class="group-head"><h2>Fora de rotação</h2></div>
-          <div id="bans"></div>
-        </div>
-      </section>
-
-      <!-- ── Tarefas: a decision sheet, read top to bottom ─────────── -->
+      <!-- ══ CONFIGURAÇÃO: everything that can be changed, and the change is
+           offered on the row it changes ══════════════════════════════════════
+           One screen answers "where do I edit the settings?" — here, and every
+           row that can be edited says so on itself. The sections are the answer
+           to "what can I do on this screen", so they are the first thing the
+           eye lands on and each one holds exactly one kind of decision. -->
       <section class="screen active" id="panel-pipeline" role="tabpanel" aria-labelledby="tab-pipeline">
-        <!-- The probe is the first thing in the first viewport, because "where
-             would MY task land?" is the question this screen exists for and the
-             sheet below is the answer's audit trail. Backed by /explain (Stage 0,
-             deterministic): GET for a goal, POST once a context is supplied,
-             because that is the only pipe wide enough for one. -->
-        <div class="lede">
-          <p class="lede-answer is-quiet" id="pipelineNote">Leia de cima para baixo — a primeira regra que casar decide.</p>
+        <!-- §1.2: the LIST first, the probe after it. The list is what this screen
+             is for — the ordered types of task, first match decides — and the probe
+             is a tool for checking one case against it. With the probe first the
+             screen opened with an empty box above the answer, which reads as "type
+             something to see anything". -->
+        <div class="group is-first">
+          <div class="group-head"><h2>Regras</h2><span class="screen-note" id="sheetNote"></span></div>
+          <p class="section-lead" id="pipelineNote">Leia de cima para baixo — a primeira regra que casar decide.</p>
+          <!-- The disclosure that explains the COUNTS moved ABOVE the list it is
+               about. It used to sit ~1000px below them, so ten rows each repeated
+               the same 60-character sentence in the loudest column on the screen
+               ("sem histórico: o registro de decisões não cobre este período")
+               and the one line that explained it was off-screen. Now the counts
+               are one short word and this line carries the reason, once. -->
+          <div class="window-stale" id="windowStale" hidden></div>
+          <ol class="sheet" id="sheet"></ol>
         </div>
 
-        <!-- §1.2: the LIST first, the probe after it. The list is what the tab is for
-             — the ordered types of task, first match decides — and the probe is a tool
-             for checking one case against it. With the probe first the screen opened
-             with an empty box above the answer, which reads as "type something to see
-             anything". -->
-        <ol class="sheet" id="sheet"></ol>
-
+        <!-- The probe. Backed by /explain (Stage 0, deterministic): GET for a goal,
+             POST once a context is supplied, because that is the only pipe wide
+             enough for one. -->
+        <div class="group">
+          <div class="group-head"><h2>Testar uma tarefa</h2></div>
+          <p class="section-lead">Escreva uma tarefa e a tela mostra por onde ela passaria — sem gravar nada.</p>
         <form class="probe" id="probeForm">
           <input id="probeTask" class="probe-input" autocomplete="off"
                  placeholder="Descreva uma tarefa — “Depurar uma condição de corrida no cache”" aria-label="Tarefa a rotear">
@@ -1241,41 +1366,88 @@
              Driven by chain_plan on the /explain response; absent until a task is
              probed, because there is no chain plan without a task. -->
         <div id="chainPlan"></div>
+        </div>
 
-        <!-- One line at the top of the Pipeline tab that names why the per-rule
-             counts below are missing: the newest recorded decision predates the
-             router.yaml on disk (or the window is older than STALE_WINDOW_DAYS,
-             or nothing is recorded at all). Not a warning — a disclosure. -->
-        <div class="window-stale" id="windowStale" hidden></div>
+        <!-- The groups. Configuração, not observation: a group's chain, its order
+             and its price ceiling are all things the operator sets, and until this
+             build there was NO WAY IN — `EDITABLE` has listed 'tier' since the
+             inspector was written and nothing ever called pickBind with one, so
+             renderInspector's whole tier branch was unreachable code. Every group
+             row now carries Editar. -->
+        <div class="group">
+          <div class="group-head"><h2>Grupos de modelos</h2><span class="screen-note" id="ladderNote"></span></div>
+          <div id="ladder"></div>
+        </div>
 
-        <!-- Compaction is a PIPELINE fact (DESIGN.md §1: Blocklist lives in
-             Health, Compaction in Pipeline), and it follows the Blocked group's
-             rule: hidden unless it carries an active condition — a sidecar that
-             reports no compaction data gets no group at all (Render nothing for
-             nothing, DESIGN.md §2.1). The type-to-confirm stays: this action
-             restarts the agent, and the server demands the same phrase
-             independently (one_sidecar.py:392), so the two cannot drift apart.
-             The summary carries the consequence, so the decision to open it is
-             informed. -->
+        <!-- §1.2 item 5 / §2.6: o último recurso, depois dos grupos. renderFailSafe
+             constrói tudo aqui dentro: com fail_safe, o bloco com a cadeia desenhada
+             pelo MESMO chainList dos grupos (§8); sem fail_safe, não existe moldura
+             (DESIGN.md regra 1) — só a frase do §5.4 no lugar onde o bloco estaria.
+             Ele é CONFIGURAÇÃO: é a última coisa que o roteador tenta, e quem a
+             escolhe é o operador — então mora aqui, depois dos grupos que ele
+             substitui quando todos falham. -->
+        <div id="failSafeBox"></div>
+
+        <!-- §2.4: "Melhor modelo por tarefa". A preset only ever writes `tiers` —
+             which models each group uses and in what order — and never `rules`,
+             because the order of rules IS the semantics (first match decides) and the
+             lint's shadowed-rule detection depends on it: a preset that rewrote rules
+             could create or delete dead rules without the operator seeing it. Which
+             group a task uses stays manual, one line at a time.
+
+             There is no Salvar in this markup: it is BUILT after a plan comes back, so
+             an /apply can never be one click away from a body nobody previewed (CA5). -->
+        <div class="group" id="presetBox">
+          <div class="group-head"><h2>Melhor modelo por tarefa</h2><span class="screen-note" id="presetActive"></span></div>
+          <p class="section-lead" id="presetNote"></p>
+          <div id="presetOptions"></div>
+          <div class="actions" id="presetActions"></div>
+          <p class="msg" id="presetMsg" aria-live="polite"></p>
+          <pre class="code" id="presetDiff" hidden></pre>
+        </div>
+
+        <!-- The two settings that are neither a rule nor a group: who answers when
+             a rule cannot decide, and what happens when the whole chain fails. The
+             classifier had no edit path at all before this build for the same
+             reason the groups did not. -->
+        <div class="group">
+          <div class="group-head"><h2>Ajustes gerais</h2></div>
+          <div id="settings"></div>
+        </div>
+
+        <!-- Compaction follows the Blocked group's rule: hidden unless it carries
+             an active condition — a sidecar that reports no compaction data gets no
+             group at all (Render nothing for nothing, DESIGN.md §2.1). The
+             type-to-confirm stays: this action restarts the agent, and the server
+             demands the same phrase independently (one_sidecar.py:392), so the two
+             cannot drift apart. The summary carries the consequence, so the decision
+             to open it is informed. -->
         <div class="group" id="compactionGroup" hidden>
-          <div class="group-head"><h2>Compaction</h2><span class="screen-note" id="compactionNote"></span></div>
+          <div class="group-head"><h2>Compactação da conversa</h2><span class="screen-note" id="compactionNote"></span></div>
           <div class="facts" id="compaction"></div>
           <details id="compactionApply">
-            <summary>Recalculate thresholds — restarts the agent</summary>
+            <summary>Recalcular os limites — reinicia o agente</summary>
             <div class="field" style="margin-top:10px">
-              <label for="compactConfirm">Type COMPACT to confirm</label>
+              <label for="compactConfirm">Digite COMPACT para confirmar</label>
               <input id="compactConfirm" autocomplete="off" placeholder="COMPACT">
             </div>
-            <div class="actions"><button class="btn warn" id="compactGo" type="button">Recalculate</button></div>
+            <div class="actions"><button class="btn warn" id="compactGo" type="button">Recalcular</button></div>
             <p class="msg" id="compactMsg" aria-live="polite"></p>
           </details>
         </div>
 
+        <!-- The editor for one object, and it is MOVED next to whatever is being
+             edited: renderSheet, renderLadder and the settings rows insert this
+             node right after the row the operator opened, so the form is where the
+             thing is. It used to live here, permanently, below a ten-row sheet and
+             a probe — about a thousand pixels from the row it was editing, which is
+             the other half of "I don't know where I can edit the settings". -->
         <div id="inspector"></div>
+
         <div class="group">
           <details>
-            <summary>Editar como texto</summary>
-            <textarea id="policyEditor" class="editor" spellcheck="false" readonly aria-label="Política como texto"></textarea>
+            <summary>Editar o arquivo como texto</summary>
+            <textarea id="policyEditor" class="editor" spellcheck="false" aria-label="Política como texto"></textarea>
             <!-- No Confirm button. It POSTed /apply/confirm, which on the server
                  is the SAME function as /apply — one_sidecar.py:346 and :353 both
                  return _commit_policy(body). Two buttons, one effect, and nothing
@@ -1293,11 +1465,31 @@
         </div>
       </section>
 
-      <!-- ── Decisões: what it actually decided ───────────────────────── -->
+      <!-- ══ OPERAÇÃO: what the router can reach right now, and what it decided
+           with it ═══════════════════════════════════════════════════════════
+           One verb, two readings, and they belong together: a decision that went
+           to a model the set now reports dead is one scroll from the row that
+           says so. Nothing on this screen is editable, which is what makes
+           Configuração's answer to "where do I edit" a whole answer. -->
       <section class="screen" id="panel-routes" role="tabpanel" aria-labelledby="tab-routes">
         <div class="lede">
-          <p class="lede-answer is-quiet" id="routesNote"></p>
+          <p class="lede-answer" id="modelsNote"></p>
+          <div class="facts" id="healthFacts"></div>
         </div>
+
+        <div class="group is-first">
+          <div class="group-head"><h2>Modelos alcançáveis</h2></div>
+          <div id="models"></div>
+        </div>
+
+        <div class="group" id="bansGroup" hidden>
+          <div class="group-head"><h2>Fora de rotação</h2></div>
+          <div id="bans"></div>
+        </div>
+
+        <div class="group">
+          <div class="group-head"><h2>Decisões</h2></div>
+          <p class="section-lead" id="routesNote"></p>
         <!-- One line that reconciles the LOG against the POLICY ON SCREEN: how
              many distinct models the log names, how many of those the console
              still monitors, and how many are outside today's policy. The log is
@@ -1331,6 +1523,7 @@
                  hour is stated here with its source (DESIGN.md §3c). -->
             <div id="replayPlan"></div>
           </div>
+        </div>
         </div>
       </section>
     </div>
@@ -1453,7 +1646,11 @@
       // to tell them apart: we have not asked yet, we cannot ask, or we asked and
       // there is genuinely nothing. Claiming the third while the first is true is
       // the most common lie a console tells.
-      const absence = (empty) => state.loading ? 'Loading…'
+      // In the surface's own language. This read "Loading…" while every sentence
+      // around it was Portuguese — one of eleven English strings on a pt-BR screen,
+      // and the one an operator meets first, because it is what every empty section
+      // says during the first read.
+      const absence = (empty) => state.loading ? 'Carregando…'
         : state.unreachable ? 'Indisponível enquanto não for possível falar com o roteador.'
         : empty;
 
@@ -2674,13 +2871,11 @@
           }
         };
         const health = state.unreachable ? 'dead' : (models.length ? worstOf(models) : '');
-        // The Health badge counts EXCEPTIONS, not elos: a ban or a breaker
-        // cooldown is what an operator must act on, and the elo total already
-        // lives in the lede ("all 8 reachable" / "2 of 3 not routable").
-        // Counting elos here was worse than useless — ban one of eight models
-        // and the badge fell from 8 to 1 at the moment the problem appeared.
-        // Zero exceptions hides the badge entirely (badge.hidden = !count).
-        set('stateHealth', 'countHealth', health, bans.length + breakers.length, true);
+        // `stateHealth`/`countHealth` are gone with the third tab: Modelos and
+        // Decisões were one verb (observation) split into two rooms, and the model
+        // set's condition now rides on Operação's own dot, below. set() guards on a
+        // missing node, so this call would have been a silent no-op; an explicit
+        // absence is better than a call that does nothing.
         // The Pipeline dot reports the POLICY, never the operator's own mode. It
         // used to go amber ('degraded') whenever editing was open, so the console
         // claimed the router was degraded because someone had clicked a button —
@@ -2695,7 +2890,16 @@
         // condition; the list keeps the count.
         set('statePipeline', 'countPipeline',
             invalid ? 'degraded' : (state.policy ? 'alive' : ''), 0);
-        set('stateRoutes', 'countRoutes', routes.length ? 'alive' : '', routes.length);
+        // OPERAÇÃO carries the RUNTIME's condition — the worst state in the model
+        // set, or dead when the console cannot read it — and its count is the number
+        // of EXCEPTIONS (manual bans plus breaker cooldowns), in amber, hidden at
+        // zero. Not the number of recorded decisions: 134 is a fact about the log's
+        // size that never needs acting on, and a badge that always shows a large
+        // number is a badge nobody reads. The decision total is stated on the screen
+        // itself, where the unit is named.
+        set('stateRoutes', 'countRoutes',
+            state.unreachable ? 'dead' : (health || (routes.length ? 'alive' : '')),
+            bans.length + breakers.length, true);
 
         const reach = $('reach');
         // Provenance header: three ages instead of one "checked" clock.
@@ -2761,15 +2965,21 @@
       }
 
       // ── the pricing clock ───────────────────────────────────────────
-      // One persistent line, on every screen: what hour it is and which rails are
-      // expensive at it. It is persistent because the hour is not a screen's
-      // subject — it changes what every screen means, and an operator who opens
-      // the console at 06:30 UTC to ask why a task went to the subscription rail
-      // has to be able to see the answer without probing anything.
+      // The hour is not a screen's subject — it changes what every screen MEANS, and
+      // an operator who opens the console at 06:30 UTC to ask why a task went to the
+      // subscription rail has to see the answer without probing anything.
+      //
+      // But it only means something when a rail is actually off its base rate. The
+      // line used to render on every screen at every hour, and at a base hour it read
+      // "deepseek tarifa base até 01:00 UTC, depois 2× · zai tarifa base até 06:00
+      // UTC, depois 2× · xiaomi 0.8× em hora barata até 00:00 UTC" — 120 characters
+      // of future tense above every screen, saying that nothing is happening. Now it
+      // appears when something IS: a rail off base rate, or a replay whose hour is
+      // not this one. Otherwise the screen starts with its own subject.
       function renderClock() {
         const bar = $('clockbar');
         if (!bar) return;
-        // On Routes a SELECTED decision is the subject, and the strip must price
+        // On Operação a SELECTED decision is the subject, and the strip must price
         // the hour that decision happened — the same rule the chain plan already
         // follows (recordedAt beats the browser clock). Everywhere else the
         // subject is the present, so the strip keeps saying now.
@@ -2778,7 +2988,11 @@
         const at = replayAt || nowUtc();
         const face = timeFace(at, -at.getTimezoneOffset());
         const rows = railWindowRows(state.capabilities, whenOf(at));
-        bar.hidden = !face || !rows.length;
+        // Only the rails that are OFF BASE RATE right now. A rail at 1× is priced
+        // exactly as the registry publishes it, which is the assumption every other
+        // number on the screen already makes.
+        const moving = rows.filter((row) => row.expensive || row.cheap);
+        bar.hidden = !face || !(moving.length || replayAt);
         if (bar.hidden) return;
         const utc = $('clockNow');
         utc.textContent = face.utc;
@@ -2791,7 +3005,14 @@
           + (replayAt ? ' · hora da decisão' : '');
         const list = $('clockRails');
         clear(list);
-        rows.forEach((row) => {
+        // Under a replay with every rail at base rate there is no rail row to draw,
+        // and the strip is still worth its line: it is naming the hour the decision
+        // below was priced at, which is the thing this console cannot say twice.
+        if (!moving.length) {
+          list.append(el('li', 'clock-rail', 'todos os provedores na tarifa base nesta hora'));
+          return;
+        }
+        moving.forEach((row) => {
           const item = el('li', `clock-rail${row.expensive ? ' peak' : ''}`);
           item.append(el('span', 'clock-rail-name', row.rail), el('span', '', ` ${row.words}`));
           list.append(item);
@@ -2971,6 +3192,10 @@
         save: 'Salvar',
         saving: 'Salvando…',
         revert: 'Voltar à versão anterior',
+        // The way OUT of an editor, which only exists now that an editor opens
+        // inside the row it edits: there has to be something to press that is not a
+        // write and not a reload.
+        cancel: 'Cancelar',
         revertConfirm: 'Confirmar: voltar à versão anterior',
         checking: 'Verificando…',
         noDraft: 'Não há o que salvar.',
@@ -3269,36 +3494,71 @@
         clear(box);
         const policy = state.policy;
         const active = activePreset(policy);
+        // The section note says what a preset IS and what it never touches — one
+        // short sentence, because "em vigor" is now marked on the option itself and
+        // the three consequence paragraphs collapsed onto the chosen row. This box
+        // opened with 700 characters of prose before anything actionable.
         const activeLine = $('presetActive');
         if (activeLine) {
-          activeLine.textContent = policy
-            ? `Em vigor agora: ${active ? presetByKey(active).label : 'Personalizado'}`
-            : '';
+          activeLine.textContent = policy && !active ? 'nenhum: suas configurações são próprias' : '';
         }
         const note = $('presetNote');
         if (note) {
           note.textContent = active
-            ? 'Nenhum preset adiciona um modelo que você não tem. Todos os três só mudam a ordem e as regras de preço dos modelos que já estão nos grupos. Nenhum preset mexe em qual grupo cada tarefa usa.'
-            : 'Suas configurações não batem com nenhum dos três presets. Escolher um substitui as suas em todos os grupos — a tela mostra o que muda antes de salvar.';
+            ? 'Um preset só muda a ordem e o teto de preço dos modelos que já estão nos grupos. Nenhum adiciona modelo, e nenhum mexe em qual grupo cada tarefa usa.'
+            : 'Suas configurações não batem com nenhum preset. Escolher um substitui as suas em todos os grupos — a tela mostra o que muda antes de salvar.';
         }
         if (!policy) {
           box.append(el('p', 'nothing', absence('Este serviço do roteador não tem tabela de grupos.')));
           return;
         }
         PRESETS.forEach((preset) => {
-          const row = el('div', `preset${state.preset === preset.key ? ' is-chosen' : ''}`);
-          const pick = el('button', 'btn', `${preset.key === active ? '(•) ' : '( ) '}${preset.label}`);
-          pick.type = 'button';
+          // The radio's CHECKED value is the current one — the preset in force —
+          // until the operator moves it, which is what a radio group means. The old
+          // ASCII "(•)" marked the one in force and the plane marked the one being
+          // looked at, and the two could never be the same control.
+          const chosen = (state.preset || active) === preset.key;
+          // `is-chosen` is the PENDING choice — the wash that says "this is what you
+          // are about to write" — so it tracks state.preset and not the radio, which
+          // starts on the one in force.
+          const pending = state.preset === preset.key;
+          const row = el('label', `preset${pending ? ' is-chosen' : ''}${preset.key === active ? ' is-active' : ''}`);
+          // A REAL RADIO. This was three bordered buttons whose labels began with the
+          // characters "( )" and "(•)" — a Unicode glyph standing in for a control,
+          // which reads as three separate actions rather than one choice, needs an
+          // aria-pressed to tell assistive technology what the parentheses meant, and
+          // loses arrow-key navigation between the options. The platform's own radio
+          // has every one of those properties for free, in the host's form
+          // vocabulary, and no svg or markup injection is involved.
+          const pick = document.createElement('input');
+          pick.type = 'radio';
+          pick.name = 'preset';
+          pick.value = preset.key;
+          pick.className = 'preset-radio';
           pick.dataset.preset = preset.key;
-          // Drawn as a radio ("( )" / "(•)"): DESIGN.md allows no svg here and no markup
-          // injection, so the shape is characters. The STATE therefore has to reach
-          // assistive technology as state rather than as two of those characters — found
-          // reviewing this slice.
-          //
-          // (The forbidden-token guard in test_webui_extension.py greps this whole script
-          // for the names of the APIs it bans, so a comment cannot spell them either.)
-          pick.setAttribute('aria-pressed', String(preset.key === active));
-          pick.addEventListener('click', () => {
+          pick.checked = chosen;
+          const body = el('div', 'preset-body');
+          const head = el('div', 'preset-label', preset.label);
+          // WHICH ONE IS IN FORCE, marked on the option itself. The section note used
+          // to carry it as a sentence on the opposite margin ("Em vigor agora: …"),
+          // which is the same fact in two places and the further one from the choice.
+          if (preset.key === active) head.append(el('span', 'preset-live', 'em vigor'));
+          body.append(head);
+          // The METRIC and the CONSEQUENCE, always both: a preset named without its
+          // metric is asking for trust in a number nobody showed. The consequence is
+          // the longer sentence and it is the one that only matters once the option is
+          // being considered, so it stays with the chosen row.
+          body.append(el('div', 'preset-metric', preset.metric));
+          // THE CONSEQUENCE IS ALWAYS THERE. It was briefly moved onto the chosen row
+          // only, to shorten a box that opened with 700 characters of prose — and
+          // that was the wrong cut: the sentence carries the release valve ("if that
+          // would leave the group with no option, the ceiling switches itself off"),
+          // which is exactly what an operator has to read BEFORE choosing, not after.
+          // The box got shorter by moving "em vigor" onto the option and dropping the
+          // duplicate line, not by hiding a safety sentence.
+          body.append(el('div', 'preset-consequence', preset.consequence));
+          row.append(pick, body);
+          pick.addEventListener('change', () => {
             // A new choice invalidates the plan that was on screen: the diff below
             // belonged to the other preset, and a Salvar left over from it would write
             // a body the operator is no longer reading.
@@ -3309,11 +3569,6 @@
             setMsg($('presetMsg'), '');
             renderPresets();
           });
-          row.append(pick);
-          // The METRIC and the CONSEQUENCE, always both: a preset named without its
-          // metric is asking for trust in a number nobody showed.
-          row.append(el('div', 'preset-metric', preset.metric));
-          row.append(el('div', 'preset-consequence', preset.consequence));
           box.append(row);
         });
         renderPresetActions();
@@ -3327,7 +3582,13 @@
         clear(actions);
         const chosen = state.preset ? presetByKey(state.preset) : null;
         if (!chosen) {
-          actions.append(el('span', 'hint', 'Escolha um preset para ver o que ele mudaria.'));
+          // "Escolha um preset" contradicted a radio that was already checked: the
+          // group starts on the preset IN FORCE, so what is missing is a DIFFERENT
+          // one. The line names the next move against what is on screen.
+          const inForce = activePreset(state.policy);
+          actions.append(el('span', 'hint', inForce
+            ? 'Escolha outro preset para ver o que ele mudaria.'
+            : 'Escolha um preset para ver o que ele mudaria.'));
           return;
         }
         const preview = el('button', 'btn', WRITE.plan);
@@ -3414,9 +3675,12 @@
         // now removed), and the invalid count echoed the lint banner's "Policy
         // invalid — N errors" 72px above — both were a second chip repeating a
         // state something else already owns (DESIGN.md §2.2).
-        fact('routing', say(st.enabled === undefined ? undefined : st.enabled, '—') === 'yes' ? 'on' : 'off');
+        // In Portuguese, like the sentence beside them. These read "ROUTING / on" and
+        // "CLASSIFIER / glm-4.7" — English labels with English values, on the same
+        // baseline as "todos os 8 alcançáveis".
+        fact('roteamento', say(st.enabled === undefined ? undefined : st.enabled, '—') === 'yes' ? 'ligado' : 'desligado');
         const classifier = (st.classifier && st.classifier.model) || (state.policy && state.policy.classifier && state.policy.classifier.model);
-        if (classifier) fact('classifier', classifier, true);
+        if (classifier) fact('classificador', classifier, true);
 
         const list = $('models');
         clear(list);
@@ -3492,7 +3756,7 @@
           const name = el('div', 'row-main');
           name.append(el('div', 'row-name', b.model || say(b)));
           if (b.reason) name.append(el('div', 'row-note', b.reason));
-          row.append(name, el('span', 'state', 'banned'));
+          row.append(name, el('span', 'state', 'bloqueado'));
           banBox.append(row);
         });
         breakers.forEach((b) => {
@@ -3502,7 +3766,7 @@
           name.append(el('div', 'row-name', b.model_key || '—'));
           if (b.last_failure_kind) name.append(el('div', 'row-note', b.last_failure_kind));
           row.append(name);
-          row.append(el('span', 'row-value', `${Math.ceil(Number(b.cooldown_remaining_s) || 0)}s left`));
+          row.append(el('span', 'row-value', `faltam ${Math.ceil(Number(b.cooldown_remaining_s) || 0)}s`));
           banBox.append(row);
         });
       }
@@ -3543,7 +3807,7 @@
         // returns. The console does not know current usage — nothing in /compaction
         // reports it — so it must not imply it.)
         $('compactionNote').textContent = window && at
-          ? `fires once a conversation fills ${Math.round(share * 100)}% of the ${fmt(window)}-token window`
+          ? `dispara quando a conversa chega a ${Math.round(share * 100)}% da janela de ${fmt(window)} tokens`
           : '';
 
         const fact2 = (label, value, note) => {
@@ -3561,17 +3825,19 @@
         // 0.002 per point (threshold.py:28), so MORE aggressive means a LOWER
         // threshold, i.e. compacting sooner and more often. An operator raising this
         // to "make it do less" would get the opposite.
-        const PRESETS = { 0: 'max context', 25: 'conservative', 50: 'balanced', 100: 'aggressive' };
+        // The names are the SERVER'S (router/threshold.py PRESETS), translated for
+        // the reader; the number stays beside the word so the two never drift.
+        const PRESETS = { 0: 'janela máxima', 25: 'conservador', 50: 'equilibrado', 100: 'agressivo' };
         const dial = Number(c.aggressiveness);
         const preset = PRESETS[dial];
-        fact2('aggressiveness',
+        fact2('agressividade',
               preset || `${say(c.aggressiveness)}/100`,
-              preset ? `${dial}/100 · compacts sooner as this rises` : 'compacts sooner as this rises');
-        fact2('compacts at', fmt(at), window ? `of ${fmt(window)}` : '');
+              preset ? `${dial}/100 · quanto mais alto, mais cedo compacta` : 'quanto mais alto, mais cedo compacta');
+        fact2('compacta em', fmt(at), window ? `de ${fmt(window)}` : '');
         if (c.warning) {
           const line = el('div', 'warn-line');
-          line.append(el('strong', '', 'Threshold exceeds the window.'),
-                      el('span', '', 'Compaction would never fire — lower the aggressiveness.'));
+          line.append(el('strong', '', 'O limite passou do tamanho da janela.'),
+                      el('span', '', 'A compactação nunca vai disparar — baixe a agressividade.'));
           comp.append(line);
         }
       }
@@ -3895,7 +4161,11 @@
         if (!policy) { box.append(el('p', 'nothing', absence('Este serviço do roteador não tem lista de regras.'))); return; }
         const { byRule, byCause, total } = ruleHits();
         const rules = Array.isArray(policy.rules) ? policy.rules : [];
-        const editable = state.mode === 'editing';
+        // Every row that CAN be edited says so on itself, always. It used to depend
+        // on a global mode being armed first, which meant the answer to "where do I
+        // change this?" was invisible until the operator had already found a button
+        // that appeared to do nothing.
+        const editable = true;
         // A destination that names a TIER is the sheet's one vocabulary gap: it
         // reads as a model id while meaning "try this chain". The tier table and
         // the chain-rendering context are computed once per render — declared
@@ -3919,6 +4189,10 @@
         const stale = fresh.stale;
         const span = windowSpan(state.routes);
         box.classList.toggle('stale', stale);
+        // The list knows one of its rows is open, so the others can recede. This is
+        // the other half of the visible scope: not only "this row is being edited"
+        // but "and the rest are not".
+        box.classList.toggle('is-editing', state.mode === 'editing');
         const windowBanner = $('windowStale');
         if (windowBanner) {
           if (stale) {
@@ -3943,7 +4217,7 @@
         // file order, then the two synthetic rows. Order IS the semantics —
         // first match wins — so the ordinals are the reading.
         const row = (opts) => {
-          const item = el('li', `step${opts.editable ? ' editable' : ''}${opts.off ? ' off' : ''}`);
+          const item = el('li', `step${opts.editable ? ' editable' : ''}${opts.off ? ' off' : ''}${opts.open ? ' is-open' : ''}`);
           if (opts.id && !opts.synthetic
               && (String(opts.id) === state.probeRule || String(opts.id) === state.lintRule)) {
             item.classList.add('hit');
@@ -4018,20 +4292,48 @@
             // counted window. On a stale sheet every count becomes a muted
             // disclosure about the DATA rather than an amber verdict on the rule.
             const cls = opts.stale ? ' empty' : (opts.hits === 0 ? ' zero' : '');
-            // A count with no period is a number about nothing: "disparou 2×" reads as
-            // a claim about now, and the reader has no way to know whether the log
-            // covers an hour or a month (spec §3.3). The stale case says what is
-            // actually wrong — the record does not cover the period — instead of
-            // "sem dados nesta janela", which named a window the row never showed.
+            // A COUNT, not a sentence. The period it was counted over is a fact
+            // about the whole list, so it is said once — in the section's own note
+            // and in the disclosure above the list — instead of on every row.
+            // Measured on the live policy: the sentence form put the same 60
+            // characters ("sem histórico: o registro de decisões não cobre este
+            // período") on ten consecutive rows in the widest column, and the sheet
+            // overflowed the host panel by 236px horizontally with the third column
+            // clipped. The reason is per-list; the number is per-row.
             const period = hitsWindow();
-            const since = period ? ` ${period}` : '';
-            const words = opts.stale
-              ? 'sem histórico: o registro de decisões não cobre este período'
-              : (opts.hits === 0 ? `nunca disparou${since}` : `disparou ${opts.hits}×${since}`);
+            const words = opts.stale ? '—'
+              : (opts.hits === 0 ? 'nunca' : `${opts.hits}×`);
             const h = el('span', `step-hits${cls}`, words);
+            h.title = opts.stale
+              ? 'Sem histórico: o registro de decisões não cobre este período.'
+              : (opts.hits === 0
+                ? `Nunca disparou${period ? ` ${period}` : ''}.`
+                : `Disparou ${opts.hits} vez${opts.hits === 1 ? '' : 'es'}${period ? ` ${period}` : ''}.`);
             to.append(h);
           }
           item.append(to);
+          // THE ACTION SLOT. Fixed position on every row, so "what can I do with
+          // this line" is answered in the same place down the whole list, and the
+          // open row swaps the same slot for its own state word rather than moving
+          // anything. Absent — not disabled — on a row nothing can be done to: a
+          // manual block is state the router owns, not a setting.
+          const act = el('div', 'step-act');
+          if (opts.editable && opts.onPick) {
+            if (opts.open) {
+              act.append(el('span', 'step-editing', 'editando'));
+            } else {
+              const edit = el('button', 'btn btn-quiet', 'Editar');
+              edit.type = 'button';
+              edit.setAttribute('aria-expanded', 'false');
+              edit.title = `Editar ${opts.titleText || opts.id}`;
+              edit.addEventListener('click', (event) => {
+                if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+                opts.onPick();
+              });
+              act.append(edit);
+            }
+          }
+          item.append(act);
           if (expansion) item.append(expansion);
           // The shadowed-rule fix path (§3.3): the finding names the earlier
           // row that swallows this one, and the ONE move that resolves the
@@ -4048,9 +4350,28 @@
             warn.append(jump);
             item.append(warn);
           }
-          if (opts.onPick) item.addEventListener('click', opts.onPick);
+          // The ROW is not the button. It used to be — the whole `li` carried the
+          // click and `cursor: pointer` was the only signifier — which is both an
+          // invisible affordance and a trap: every tap inside a row, including one
+          // meant for the chain chip beside it, opened an editor. The labelled
+          // button in the action slot owns the action now, and it is the only thing
+          // in the row that is clickable.
+          if (opts.open) {
+            // The class rides in the constructor above, not through classList: the
+            // state is known when the row is built, and one idiom (renderLadder does
+            // the same) is what keeps the two lists reading alike.
+            item.setAttribute('aria-current', 'true');
+            // The form, physically next to the row it edits. One #inspector node
+            // exists, so attaching it here is also what enforces "one editor open".
+            const box = $('inspector');
+            if (box) item.append(box);
+          }
           return item;
         };
+
+        // Which row is open, by the same id the editor was opened with. One test,
+        // used by every row, so two rows can never both claim to be the open one.
+        const openFor = (id) => state.mode === 'editing' && state.selected === id;
 
         const manualBans = (policy.blocklist && Array.isArray(policy.blocklist.manual_ban))
           ? policy.blocklist.manual_ban : [];
@@ -4090,7 +4411,8 @@
             editable,
             off: r.enabled === false,
             shadow: shadowTargetFor(i),
-            onPick: editable ? () => pickBind({ id: `rule:${r.id}`, name: String(r.id), bind: 'rule', ruleIndex: i }) : null,
+            open: openFor(`rule:${r.id}`),
+            onPick: () => openEditor({ id: `rule:${r.id}`, name: ruleTitle(r.when), bind: 'rule', ruleIndex: i }),
           }));
         });
         const def = policy.default || {};
@@ -4104,7 +4426,8 @@
           targetColor: defDest.kind === 'refuse' || defDest.kind === 'missing' ? 'var(--bad-text)' : '',
           notes: ['Esta é a única rota que gasta uma chamada de modelo a mais.'],
           editable,
-          onPick: editable ? () => pickBind({ id: 'default', name: 'default', bind: 'default' }) : null,
+          open: openFor('default'),
+          onPick: () => openEditor({ id: 'default', name: 'Quando nenhuma regra casa', bind: 'default' }),
         }));
         const fs = policy.fail_safe || {};
         ord += 1;
@@ -4122,7 +4445,8 @@
           hits: fsHits,
           stale,
           editable,
-          onPick: editable ? () => pickBind({ id: 'fail_safe', name: 'fail_safe', bind: 'fail_safe' }) : null,
+          open: openFor('fail_safe'),
+          onPick: () => openEditor({ id: 'fail_safe', name: 'Quando tudo falha', bind: 'fail_safe' }),
         }));
 
         // The phrase-answer above the list (§1.2): how many task types, and
@@ -4133,6 +4457,21 @@
           note.textContent = rules.length
             ? `${rules.length} tipos de tarefa, em ordem. A primeira que casar decide.${shadowCount ? ` ${shadowCount} está sem efeito.` : ' Todas valem.'}`
             : 'Nenhuma regra de roteamento no arquivo. Toda tarefa cai no último recurso.';
+        }
+        // WHAT THE LAST COLUMN COUNTS, said once for the whole list. The rows carry
+        // the number; the period is a property of the log, not of a rule, so
+        // repeating it per row was the same sentence ten times in the widest column.
+        const sheetNote = $('sheetNote');
+        if (sheetNote) {
+          const period = hitsWindow();
+          // ONE AUTHORITY. When the window is stale the DISCLOSURE above the list owns
+          // that fact — it names the gap and the real window, which a column header
+          // cannot — so this note goes quiet rather than saying a shorter version of
+          // the same thing two lines away (DESIGN.md §2 rule 2). It exists to name
+          // what the last column counts, which is only a question when there are
+          // counts in it.
+          sheetNote.textContent = stale ? ''
+            : (period ? `quantas vezes cada uma disparou ${period}` : 'quantas vezes cada uma disparou');
         }
       }
 
@@ -4512,6 +4851,7 @@
         // preferred over anything computed here.
         const live = liveMultipliers(state.liveness, when);
         let unverified = 0;
+        box.classList.toggle('is-editing', state.mode === 'editing');
 
         names.forEach((name) => {
           const t = tiers[name] || {};
@@ -4531,29 +4871,57 @@
           const rails = independentRails(hops);
           hops.forEach((hop) => { if (!hopCaps(hop, registry).verified) unverified += 1; });
 
-          const block = el('div', 'tier');
+          const open = state.mode === 'editing' && state.selected === `tier:${name}`;
+          const block = el('div', `tier${open ? ' is-open' : ''}`);
           const head = el('div', 'tier-head');
+          // The name and the one fact that judges the chain share the first cell; the
+          // action slot owns the second, so Editar lands on the same x here as it does
+          // on every rule row above.
+          const headline = el('div', 'tier-headline');
           const meaning = TIER_MEANING[name] || null;
-          head.append(el('span', 'tier-name',
+          headline.append(el('span', 'tier-name',
                           meaning ? `Grupo ${name} · ${meaning.label}` : `Grupo ${name} · sem descrição`));
           // Redundancy in the only terms that mean anything: distinct upstreams. A
           // count of vendors would call two OpenRouter resellers two rails.
-          head.append(el('span', `tier-fact${rails < 2 ? ' thin' : ''}`,
+          headline.append(el('span', `tier-fact${rails < 2 ? ' thin' : ''}`,
                           `${rails} provedor${rails === 1 ? '' : 'es'} independente${rails === 1 ? '' : 's'} em ${hops.length} tentativa${hops.length === 1 ? '' : 's'}`));
-          // The tier's own time knobs, in the operator's words. They are facts about
-          // the CONFIG — what it will decline to pay, and which rails it steps
-          // around — while "which rail is expensive right now" belongs to the clock
-          // line at the top of the screen and is said only there. The chain and the
-          // registry go with them because the cap's ceiling is in DOLLARS: which of
-          // these hops it can actually remove is a fact about their billing modes.
-          timeKnobWords(t, { hops, registry }).forEach(
-            (words) => head.append(el('span', 'tier-fact', words)));
+          head.append(headline);
+          // THE ACTION SLOT, the same one the rule rows carry, in the same place.
+          // Until this build a group could not be edited from the UI at all: the
+          // inspector has had a complete `tier` branch since it was written and
+          // nothing ever opened it, so the four groups — the thing the presets exist
+          // to rewrite — were read-only by accident.
+          const act = el('div', 'step-act');
+          if (open) {
+            act.append(el('span', 'step-editing', 'editando'));
+          } else {
+            const edit = el('button', 'btn btn-quiet', 'Editar');
+            edit.type = 'button';
+            edit.title = `Editar o grupo ${name}`;
+            edit.addEventListener('click', () => openEditor({
+              id: `tier:${name}`, name: `o grupo ${name}`, bind: 'tier', tier: name,
+            }));
+            act.append(edit);
+          }
+          head.append(act);
           const floorChips = requirementChips(t.requirements);
           block.append(head);
           // The bare key was the complaint: "T1" tells an operator nothing about
           // which work lands here. The rubric's own words go directly under the
           // name, before any fact about the chain.
           block.append(el('div', 'tier-fact', meaning ? meaning.what : TIER_UNKNOWN_WHAT));
+          // The tier's own time knobs, in the operator's words. They are facts about
+          // the CONFIG — what it will decline to pay, and which rails it steps around
+          // — while "which rail is expensive right now" belongs to the clock line and
+          // is said only there. The chain and the registry go with them because the
+          // cap's ceiling is in DOLLARS: which of these hops it can actually remove is
+          // a fact about their billing modes. They carry the release valve too ("o teto
+          // se desliga se isso fosse deixar a fila vazia"), which is the sentence that
+          // makes a cost control safe to leave on — so it moved OUT of the head, where
+          // it was competing with the group's name, and down here where the rest of the
+          // chain's own facts are read.
+          timeKnobWords(t, { hops, registry }).forEach(
+            (words) => block.append(el('div', 'tier-fact', words)));
           // §2.3: the inverted index, one line when it is not empty. The default
           // enters named as what it is — the destination every unmatched task
           // falls through to — after the rules that also use the group: "Usado
@@ -4564,15 +4932,50 @@
             if (users.byDefault) parts.push(parts.length ? 'e o destino padrão' : 'o destino padrão');
             block.append(el('div', 'tier-fact', `Usado por: ${parts.join(', ')}`));
           }
-          // The five knobs, always all five, right under what the group is FOR: the
-          // order a reader needs is "what work lands here" and then "how it is tried".
-          // The strategy word used to be a chip in the head; it lives here now, so the
-          // value of each knob is stated in exactly one place (DESIGN.md §2 rule 2).
-          block.append(el('div', 'tier-fact', orderLine(t, { when })));
+          // THE FIVE KNOBS, ranked instead of recited. CA4 requires all five to be
+          // readable and none of them blank, and they still are — but four of the
+          // five are usually the ENGINE'S default, and printing them inline made the
+          // line "na ordem escrita (padrão do motor) · o primeiro fica fixo (padrão
+          // do motor) · teto de preço 1.5× · sem política de horário (padrão do
+          // motor) · sem exigência de contexto (padrão do motor)": 170 characters in
+          // which the same parenthesis appears three times and only one knob is news.
+          // So the DECLARED knobs are the line, and the defaults collapse into one
+          // control that says how many there are and opens them in place.
+          const parts = orderLineParts(t, { when });
+          const declared = parts.filter((p) => p.indexOf(ENGINE_DEFAULT) < 0);
+          const defaults = parts.filter((p) => p.indexOf(ENGINE_DEFAULT) >= 0)
+            .map((p) => p.replace(ENGINE_DEFAULT, ''));
+          const orderRow = el('div', 'tier-fact tier-order');
+          orderRow.append(el('span', '', `Ordem: ${declared.length ? declared.join(' · ') : 'tudo no padrão do motor'}`));
+          if (defaults.length) {
+            const defs = el('div', 'tier-defaults');
+            defs.hidden = true;
+            defaults.forEach((one) => defs.append(el('div', 'tier-fact', one)));
+            const more = el('button', 'btn btn-quiet',
+              `+${defaults.length} no padrão do motor`);
+            more.type = 'button';
+            more.setAttribute('aria-expanded', 'false');
+            more.title = defaults.join(' · ');
+            more.addEventListener('click', () => {
+              const shown = defs.hidden;
+              defs.hidden = !shown;
+              more.setAttribute('aria-expanded', String(shown));
+            });
+            orderRow.append(more);
+            block.append(orderRow);
+            block.append(defs);
+          } else {
+            block.append(orderRow);
+          }
+          // The generic strategy note YIELDS to the pin+random warning row when that
+          // fires: the same fact in other words, and `pinSort` is the one computation
+          // both read (§2.8).
           if (strategy.note && !pinSort) block.append(el('div', 'tier-fact', strategy.note));
-          // A per-tier floor is a condition on every elo in the chain, so it is
-          // said in the same chips a rule's own conditions use.
-          if (floorChips.length) block.append(chipList(floorChips));
+          // The floor is NOT drawn again here. It is knob 5 of the Ordem line above
+          // ("exige pelo menos 200,000 tokens"), and the chip under it said the same
+          // words a line later — one fact, two authorities, 24px apart. The chips
+          // remain the vocabulary for a RULE's conditions, where nothing else states
+          // them; `floorChips` stays computed because the count below reads it.
           block.append(chainList(hops, {
             strategy, registry, billing, when, live,
             // A price-ordered chain must show the prices it was ordered by; an
@@ -4581,6 +4984,11 @@
           }));
 
           warnings.forEach((warn) => block.append(el('div', 'tier-note', warn)));
+          // The form, inside the group it edits — the same rule the sheet follows.
+          if (open) {
+            const inspector = $('inspector');
+            if (inspector) block.append(inspector);
+          }
           box.append(block);
         });
 
@@ -4634,6 +5042,83 @@
         // surfaces, one sentence.
         group.append(el('div', 'tier-fact', 'Esta fila não passa pelos grupos. É a última coisa que o roteador tenta.'));
         box.append(group);
+      }
+
+      // ── Ajustes gerais: the two settings that are not a step and not a group ──
+      //
+      // The classifier is the one that had NO edit path at all: `EDITABLE` has
+      // listed it since the inspector was written, renderInspector has a complete
+      // branch for it, and nothing anywhere called pickBind with it — so the model
+      // that decides every ambiguous delegation was unreachable from the UI while
+      // the screen printed its id as a read-only fact.
+      //
+      // Two rows and not one, because they are read together: the master switch
+      // says whether any of this runs, and the classifier says who decides when the
+      // rules do not. The switch carries no Editar on purpose — turning routing off
+      // is a whole-file decision, so it belongs to the file editor, and the row says
+      // that instead of leaving an operator to wonder why it is not clickable.
+      function renderSettings() {
+        const box = $('settings');
+        if (!box) return;
+        clear(box);
+        const policy = state.policy;
+        if (!policy) { box.append(el('p', 'nothing', absence('Este serviço do roteador não tem política para ajustar.'))); return; }
+        const st = state.status || {};
+
+        const settingRow = (opts) => {
+          const row = el('div', `row setting${opts.open ? ' is-open' : ''}`);
+          const main = el('div', 'row-main');
+          main.append(el('div', 'row-name', opts.name));
+          // Mono is for machine facts — a model id, something an operator would copy —
+          // and sans for words. "ligado" is a word; "glm-4.7 @ zai" is not, and both
+          // were coming out mono because .row-note is one treatment.
+          if (opts.value) main.append(el('div', opts.mono ? 'row-note' : 'row-word', opts.value));
+          if (opts.why) main.append(el('div', 'row-why', opts.why));
+          row.append(main);
+          const act = el('div', 'step-act');
+          if (opts.onEdit) {
+            if (opts.open) {
+              act.append(el('span', 'step-editing', 'editando'));
+            } else {
+              const edit = el('button', 'btn btn-quiet', 'Editar');
+              edit.type = 'button';
+              edit.title = `Editar ${opts.name}`;
+              edit.addEventListener('click', opts.onEdit);
+              act.append(edit);
+            }
+          }
+          row.append(act);
+          if (opts.open) {
+            const inspector = $('inspector');
+            if (inspector) row.append(inspector);
+          }
+          box.append(row);
+        };
+
+        const on = st.enabled === undefined ? (policy.enabled !== false) : st.enabled !== false;
+        settingRow({
+          name: 'Roteamento automático',
+          value: on ? 'ligado' : 'desligado',
+          why: on
+            ? 'Com ele ligado, uma tarefa sem modelo escolhido passa pelas regras acima.'
+            : 'Desligado: nenhuma regra roda e nada é gravado nas decisões. Toda tarefa usa o modelo que o pedido nomear.',
+        });
+
+        const cls = (policy.classifier && typeof policy.classifier === 'object' ? policy.classifier : null)
+          || (st.classifier && typeof st.classifier === 'object' ? st.classifier : null);
+        const model = cls && cls.model ? String(cls.model) : '';
+        settingRow({
+          name: 'Classificador',
+          value: model
+            ? (cls.provider ? `${model} @ ${cls.provider}` : model)
+            : 'nenhum modelo definido',
+          mono: !!model,
+          why: model
+            ? 'É quem decide o grupo quando nenhuma regra casa. Está no caminho de toda delegação.'
+            : 'Sem classificador, uma tarefa que não casa com nenhuma regra cai direto no último recurso.',
+          open: state.mode === 'editing' && state.selected === 'classifier',
+          onEdit: () => openEditor({ id: 'classifier', name: 'o classificador', bind: 'classifier' }),
+        });
       }
 
       // ── The chain plan for one probed task ──────────────────────────
@@ -5149,10 +5634,14 @@
         box.append(group);
       }
 
+      // Selecting an object IS opening its editor now. It used to be a navigation
+      // that showed the fragment's raw JSON in reading mode, and raw JSON is what
+      // DESIGN.md §2.5 allows only where the operator is editing JSON — so the
+      // reading half was a pretty-printer nobody asked for. The one caller that is
+      // genuinely a navigation (the lint jump) wants the editor anyway: the fix for
+      // a shadowed rule is to move or disable it, which is what the editor offers.
       function pickBind(node) {
-        state.selected = node.id;
-        renderSheet();
-        renderInspector(node);
+        openEditor(node);
       }
 
       // ── WHERE THIS TASK ACTUALLY GOES ───────────────────────────────
@@ -5322,7 +5811,7 @@
         state.lintRule = null;
         renderChainPlan(null);
         if (!task) return;
-        // The gate BEFORE 'Routing…': renderWarnings already disables the
+        // The gate BEFORE 'Roteando…': renderWarnings already disables the
         // button, but Enter in the input submits the form no matter what a
         // disabled button says, and the sidecar would refuse anyway — so the
         // round-trip would only replace this message with the same refusal.
@@ -5340,7 +5829,7 @@
             + 'rotear só a linha do objetivo.'));
           return;
         }
-        box.append(el('div', 'verdict', 'Routing…'));
+        box.append(el('div', 'verdict', 'Roteando…'));
         const res = await call(req.path, req.options);
         clear(box);
         if (res.missing || res.error) {
@@ -6153,9 +6642,15 @@
         // Nothing selected is not a condition to report: the sheet above already
         // shows every rule and the ladder every tier, and the screen note already
         // says how to edit. DESIGN.md §2.1.
-        if (!node) return;
+        if (!node) { box.className = ''; return; }
         const editing = state.mode === 'editing' && node.bind && EDITABLE.has(node.bind);
-        box.append(el('h2', 'inspector-head', node.name));
+        // The editor is a plane, not a card: raised surface, one hairline, and the
+        // accent-tinted edge the host uses for "this is the thing you picked". It
+        // sits inside the row it edits, so it needs no title repeating the row's
+        // name — what it needs is to say WHAT IS BEING CHANGED and that nothing is
+        // written yet, which is the scope NN/g's edit-mode feedback rule is about.
+        box.className = 'editor-box';
+        box.append(el('p', 'editor-scope', `Editando ${node.name}. Nada é gravado até você salvar.`));
         if (!editing) {
           const policy = state.policy || {};
           let fragment = null;
@@ -6169,7 +6664,10 @@
           // block. A node that can never be edited (runtime state) would read
           // the instruction as a promise, so only EDITABLE binds get it.
           if (state.mode !== 'editing' && node.bind && EDITABLE.has(node.bind)) {
-            box.append(el('p', 'nothing', 'Só leitura. Aperte "Editar" no topo para poder mudar algo.'));
+            // It names the control that EXISTS. This said "Aperte 'Editar' no topo",
+            // and there is no longer anything at the top to press: writing is armed by
+            // the Editar on the row that owns the object, so that is what it points at.
+            box.append(el('p', 'nothing', 'Só leitura. Use o "Editar" da linha deste item para mudar algo.'));
           }
           return;
         }
@@ -6276,14 +6774,21 @@
         // Salvar leads, because writing is the intention; Ver o que muda is for
         // the operator who wants to see the diff first. Salvar no longer
         // depends on Ver o que muda having been pressed — it plans for itself.
-        // The three labels are the WRITE map's (§4.7): the inspector, the text
+        // The labels are the WRITE map's (§4.7): the inspector, the text
         // editor and the presets call the same actions by the same names.
+        //
+        // CANCELAR IS HERE AND VOLTAR À VERSÃO ANTERIOR IS NOT. A form that opens
+        // inside a row needs a way out that is not a write, and restoring the .bak is
+        // a WHOLE-FILE action with no diff and no plan — putting it next to Salvar is
+        // the destructive-beside-confirming adjacency NN/g lists tenth, one slip away
+        // from throwing the file away. It lives in the file section, which is the
+        // scope it actually has.
         const actions = el('div', 'actions');
         const applyBtn = el('button', 'btn go', WRITE.save);
         applyBtn.id = 'nodeApply';
         const previewBtn = el('button', 'btn', WRITE.plan);
-        const revertBtn = el('button', 'btn warn', WRITE.revert);
-        actions.append(applyBtn, previewBtn, revertBtn);
+        const cancelBtn = el('button', 'btn', WRITE.cancel);
+        actions.append(applyBtn, previewBtn, cancelBtn);
         box.append(actions);
         box.append(msg);
         const diff = el('pre', 'code'); diff.id = 'nodeDiff'; diff.hidden = true;
@@ -6295,7 +6800,7 @@
         // list — back to the server on the snapshot's stale values.
         applyBtn.addEventListener('click', () => doApply('/apply', msg, surfacePatch(node, touched), diff, applyBtn));
         previewBtn.addEventListener('click', () => doPreview(surfacePatch(node, touched), msg, diff));
-        revertBtn.addEventListener('click', () => doApply('/apply/revert', msg));
+        cancelBtn.addEventListener('click', () => closeEditor());
       }
 
       // §5.2: the minimal patch for the surface the operator edited. A field
@@ -6569,7 +7074,7 @@
 
       async function doCompaction() {
         const msg = $('compactMsg');
-        if (!writable(msg, 'Recalculate')) return;
+        if (!writable(msg, 'recalcular')) return;
         if ($('compactConfirm').value !== 'COMPACT') { setMsg(msg, 'Type COMPACT exactly to confirm.', 'bad'); return; }
         const aggressiveness = state.compaction && Number.isFinite(state.compaction.aggressiveness)
           ? state.compaction.aggressiveness : 50;
@@ -6924,39 +7429,56 @@
         box.append(io);
       }
 
-      // ── edit mode ───────────────────────────────────────────────────
+      // ── writing is armed per OBJECT, never per screen ─────────────────
+      //
+      // `state.mode` survives as the ARMED flag — the write path, the warnings and
+      // the row rendering all read it — but nothing global switches it any more.
+      // The header button that used to is gone, and it was removed on a
+      // measurement rather than a judgement: inside the host document, where the
+      // CSRF token exists, pressing it changed the body of the page by exactly 0
+      // characters (2207 before, 2207 after). It wrote one announcing sentence
+      // into #pipelineNote and then called renderSheet(), which owns that node and
+      // overwrites it with the rule count — so the entire visible effect of arming
+      // a write was the button's own label and a `cursor: pointer` nobody sees
+      // until they hover. DESIGN.md §4 recorded that mode as a decision; this
+      // build overturns it, out loud, for the reason the decision itself gave
+      // ("one control owns write mode") applied honestly: the control that owns a
+      // write is the one on the object being written.
+      //
+      // What the mode still buys is the read-only DEFAULT the old §4 was right
+      // about: a stray tap on a rule must not start editing it. That now comes
+      // from the affordance instead of from a global switch — a row is opened by
+      // its own labelled Editar button, so there is nothing to tap by accident.
       function setMode(mode) {
         state.mode = mode;
-        const open = mode === 'editing';
-        const button = $('editMode');
-        button.setAttribute('aria-pressed', String(open));
-        // The label names what the button DOES next, so the operator never has to
-        // work out whether a state word is a description or an instruction.
-        button.title = open ? 'Stop editing' : 'Editar a política de roteamento';
-        $('editLabel').textContent = open ? 'Done' : 'Edit';
-        $('policyEditor').readOnly = !open;
-        // The JSON twisty's write buttons follow the read-only default too. They are
-        // static markup, so unlike the inspector's — which renderInspector simply
-        // does not build in reading mode — they have to be disabled explicitly.
-        // Without this, expanding "Edit the whole policy as JSON" to READ it put a
-        // live green Apply and a live Revert one tap away, and renderAll() keeps
-        // that textarea pre-filled with the live policy whenever the console is not
-        // editing, so jsonDraft() always parses and the "Nothing to apply" guard
-        // could never fire on that path. Revert is the destructive one: it takes no
-        // plan, shows no diff, and restores whatever the .bak holds.
-        // Through saveButton(): while the file carries an error the node is DETACHED
-        // (§3.4(a)), and getElementById does not find a detached node.
-        const save = saveButton();
-        if (save) save.disabled = !open;
-        $('jsonRevert').disabled = !open;
-        $('pipelineNote').textContent = open
-          ? 'Modo edição ligado. Nada é gravado até você apertar “Salvar”, e a tela mostra o que muda antes.'
-          : 'Leia de cima para baixo — a primeira regra que casar decide.';
         disarmRevert();
         renderWarnings();
         renderRail();
-        renderInspector(null);
-        if (state.policy) renderSheet();
+        if (mode !== 'editing') renderInspector(null);
+        if (state.policy) { renderSheet(); renderLadder(); renderSettings(); }
+      }
+
+      // Open the editor for one object: arm the write, remember which object, and
+      // let the three renderers put the form next to the row that owns it.
+      function openEditor(node) {
+        state.selected = node.id;
+        state.mode = 'editing';
+        disarmRevert();
+        renderWarnings();
+        renderRail();
+        renderSheet();
+        renderLadder();
+        renderSettings();
+        renderInspector(node);
+      }
+
+      // Close it without writing. The row goes back to carrying Editar, and the
+      // draft is dropped — a draft nobody can see is a draft that writes by
+      // surprise on the next Salvar.
+      function closeEditor() {
+        state.selected = null;
+        state.draft = null;
+        setMode('reading');
       }
 
       // ── layout ──────────────────────────────────────────────────────
@@ -7001,14 +7523,23 @@
         renderSheet();
         renderLadder();
         renderFailSafe();
+        renderSettings();
         // A refresh must not silently drop the plan the operator is reading; it is
         // re-rendered from state so new capability data lands in it.
         renderChainPlan(state.chainPlan);
-        if (!state.selected) renderInspector(null);
+        // The editor is re-attached by whichever renderer owns the open object; with
+        // nothing open the node is emptied so a stale form cannot survive a reload.
+        if (state.selectedNode && state.mode === 'editing') renderInspector(state.selectedNode);
+        else renderInspector(null);
         if (state.replay) renderStep();
-        if (state.mode !== 'editing' || !$('policyEditor').value) {
-          $('policyEditor').value = state.policy ? pretty(fullPolicy()) : '';
-        }
+        // The file's own text: refreshed unless the operator is typing in it. The
+        // guard used to be `state.mode !== 'editing'`, and with editing armed per
+        // object that would have frozen this textarea whenever any row was open.
+        // What must not be overwritten is a draft IN THIS BOX, which is exactly what
+        // a non-empty value that differs from the file means.
+        const editor = $('policyEditor');
+        const file = state.policy ? pretty(fullPolicy()) : '';
+        if (!editor.value || !state.jsonTouched) editor.value = file;
       }
 
       async function load() {
@@ -7018,10 +7549,10 @@
         disarmRevert();
         const button = $('refresh');
         button.disabled = true;
-        button.textContent = 'Refreshing…';
+        button.textContent = 'Recarregando…';
         try { await fetchAll(); } finally {
           button.disabled = false;
-          button.textContent = 'Refresh';
+          button.textContent = 'Recarregar';
         }
       }
 
@@ -7061,6 +7592,12 @@
       // and the tab clicks in wire() reach the same place, so a keyboard user
       // and a button land on the same screen state.
       function selectTab(name) {
+        // 'health' was the third destination and is now part of Operação: the model
+        // set and the decision log are one verb, observation, and they were two
+        // rooms. Kept as an ALIAS rather than removed, because a caller asking for
+        // the models is still asking for a screen that exists — and answering with a
+        // dead tab id would leave the console with every panel hidden.
+        if (name === 'health') name = 'routes';
         state.tab = name;
         document.querySelectorAll('.tab').forEach((t) => {
           const on = t.dataset.tab === name;
@@ -7097,9 +7634,19 @@
             next.focus();
           });
         });
-        $('editMode').addEventListener('click', () => setMode(state.mode === 'editing' ? 'reading' : 'editing'));
         $('refresh').addEventListener('click', load);
         $('compactGo').addEventListener('click', doCompaction);
+        // ESCAPE CLOSES THE OPEN EDITOR. A form that opens in place has to be
+        // closable without hunting for the button that closed it, and Escape is what
+        // every other panel in the host answers to.
+        document.addEventListener('keydown', (event) => {
+          if (event.key !== 'Escape' || state.mode !== 'editing') return;
+          closeEditor();
+        });
+        // The file's own text is a draft the moment it is typed in, so renderAll
+        // stops overwriting it. Without this flag a background refresh (the operator
+        // saving a row elsewhere, a reload) replaced whatever was half-written here.
+        $('policyEditor').addEventListener('input', () => { state.jsonTouched = true; });
         // One parse, used by both buttons. Malformed JSON is reported before any
         // request goes out, because "your text is not JSON" is not something the
         // server should have to tell you.
@@ -7145,6 +7692,14 @@
       globalThis.__router = {
         state, setMode, renderRail, renderHealth, renderRoutes, renderStep, renderInspector,
         renderWarnings,
+        // Writing armed per object: the two controls that replaced the global mode,
+        // and the settings section whose classifier row was the one editable surface
+        // with no way in. Exported for the same reason every other write control is —
+        // the refusals and the scope are the contract.
+        openEditor, closeEditor, renderSettings,
+        // The whole-screen render, exported so a test can pin what survives one: the
+        // file editor's own draft is the thing a background re-render used to eat.
+        renderAll,
         // The lint fix path, exported whole: the jump itself (showLintTarget)
         // and the two payload readers it is built from. The button wiring is
         // exercised by driving showLintTarget, because a test that only counted

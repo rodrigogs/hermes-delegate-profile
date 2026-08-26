@@ -364,16 +364,20 @@ test('the rail carries each destination\'s live state', () => {
   // The Pipeline count is GONE: the sheet's numbered rule list is its own counter.
   assert.equal(dom.get('countPipeline').hidden, true,
     'pipeline shows no count — the numbered list is the counter');
-  assert.equal(dom.get('countRoutes').textContent, '2', 'routes counts recorded decisions');
-  // The Health badge counts EXCEPTIONS, not elos: two models with no bans or
-  // breaker cooldowns show nothing, not "2".
-  assert.equal(dom.get('countHealth').hidden, true,
-    'no exceptions → no health count, however many elos');
-  // One degraded target must surface, not be averaged into "fine".
-  assert.match(dom.get('stateHealth').className, /is-degraded/);
+  // OPERAÇÃO's badge counts EXCEPTIONS, never the size of the log. Two recorded
+  // decisions with no ban and no cooldown show NOTHING: 134 recorded decisions is a
+  // fact about the log's size that never needs acting on, and a badge that always
+  // carries a large number is a badge nobody reads. (This asserted '2' — the
+  // decision count — while the third tab existed; the count moved with the merge,
+  // and the amber exception counter is the one an operator acts on.)
+  assert.equal(dom.get('countRoutes').hidden, true,
+    'no exceptions → no count, however many decisions are recorded');
+  // One degraded model must surface on the destination that reports the runtime,
+  // not be averaged into "fine".
+  assert.match(dom.get('stateRoutes').className, /is-degraded/);
 });
 
-test('the health badge counts bans and breaker cooldowns, in amber', () => {
+test('the Operação badge counts bans and breaker cooldowns, in amber', () => {
   const { api, dom } = loadConsole();
   api.state.policy = { rules: [] };
   api.state.liveness = { models: [{ state: 'alive' }, { state: 'alive' }, { state: 'alive' }] };
@@ -382,18 +386,53 @@ test('the health badge counts bans and breaker cooldowns, in amber', () => {
     breaker_cooldowns: [{ model_key: 'deepseek-v4-pro', cooldown_remaining_s: 300 }],
   };
   api.renderRail();
-  // The badge is bans + breakers, NOT elos — the review's 8→1 was the badge
-  // counting inventory and the inventory shrinking at the moment of the problem.
-  assert.equal(dom.get('countHealth').textContent, '2', 'bans + breakers, not elos');
-  assert.equal(dom.get('countHealth').hidden, false);
-  assert.equal(dom.get('countHealth').classList.contains('is-warn'), true,
+  // The badge is bans + breakers, NOT elos and NOT decisions — the review's 8→1 was
+  // the badge counting inventory and the inventory shrinking at the moment of the
+  // problem. It reads off the same numbers, on the tab that now owns the runtime.
+  assert.equal(dom.get('countRoutes').textContent, '2', 'bans + breakers, not elos');
+  assert.equal(dom.get('countRoutes').hidden, false);
+  assert.equal(dom.get('countRoutes').classList.contains('is-warn'), true,
     'an exception count wears amber, the attention colour');
 
   // Exceptions cleared → hidden again (zero is not drawn, §2.1).
   api.state.blocklist = { manual_bans: [], breaker_cooldowns: [] };
   api.renderRail();
-  assert.equal(dom.get('countHealth').hidden, true);
-  assert.equal(dom.get('countHealth').classList.contains('is-warn'), false);
+  assert.equal(dom.get('countRoutes').hidden, true);
+  assert.equal(dom.get('countRoutes').classList.contains('is-warn'), false);
+});
+
+test('there are two destinations, and they are named by what you do there', () => {
+  // The third tab was retired: "Tarefas / Modelos / Decisões" were three NOUNS and
+  // no noun says where a setting lives, which is the whole of "I don't know where I
+  // can edit the settings" — the rule list, the file editor and the compaction
+  // action were under one noun while the presets and the group chains were under
+  // another. Configuração holds everything writable; Operação holds the runtime.
+  //
+  // Read off the MARKUP, because the DOM stub creates any id on demand and would
+  // answer that a retired tab still exists.
+  const html = fs.readFileSync(sourcePath, 'utf8');
+  const nav = html.slice(html.indexOf('<nav class="tabs"'), html.indexOf('</nav>'));
+  const tabs = [...nav.matchAll(/data-tab="([\w-]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(tabs, ['pipeline', 'routes'], 'two destinations, in reading order');
+  assert.match(nav, /Configuração/);
+  assert.match(nav, /Operação/);
+  assert.doesNotMatch(html, /id="tab-health"/, 'the third tab is gone, not hidden');
+  assert.doesNotMatch(html, /id="panel-health"/, 'and so is the panel it pointed at');
+  // Every panel a tab points at exists, and nothing points at a panel that does not.
+  tabs.forEach((tab) => {
+    assert.ok(html.includes(`id="panel-${tab}"`), `panel-${tab} exists`);
+    assert.ok(html.includes(`aria-controls="panel-${tab}"`), `a tab points at panel-${tab}`);
+  });
+});
+
+test('selectTab still answers to the retired name instead of hiding every panel', () => {
+  // A caller asking for the models is still asking for a screen that exists, and
+  // answering with a dead tab id would leave `.screen.active` matching nothing —
+  // a console with every panel hidden. showLintTarget and the host's sidebar both
+  // reach selectTab, so the alias is what keeps an old caller honest.
+  const { api } = loadConsole();
+  api.selectTab('health');
+  assert.equal(api.state.tab, 'routes', 'health resolves to the screen that holds the models');
 });
 
 test('the rail survives being rendered before any data arrives', () => {
@@ -469,29 +508,39 @@ test('a fresh sidecar shows no stale banner; checking and dead keep their words'
 //
 // What the mode really is: the read-only DEFAULT that stops a stray tap on the
 // Pipeline from editing the live routing policy. That is what is pinned here.
-test('the console opens read-only, so a stray tap cannot change routing', () => {
+test('the console opens with nothing armed, so a stray tap cannot change routing', () => {
   const { api, dom } = loadConsole({ csrfToken: 'tok' });
-  // Not merely the initial value of a variable — the editor must actually be
-  // read-only after the console has finished setting itself up.
   api.setMode('reading');
-  assert.equal(dom.get('policyEditor').readOnly, true);
-  assert.equal(dom.get('editMode').attrs['aria-pressed'], 'false');
+  assert.equal(api.state.mode, 'reading');
+  assert.equal(api.state.selected, null, 'no object is open for editing');
+
+  // The ROW is not a button any more. It used to carry the click itself, with
+  // `cursor: pointer` as the only signifier — invisible until the pointer was
+  // already on it, absent on touch, and it meant every tap inside a row (including
+  // one aimed at the chain chip beside it) opened an editor.
+  api.state.loading = false;
+  api.state.policy = { rules: [{ id: 'r1', when: {}, then: { model: 'T1' } }], tiers: { T1: {} } };
+  api.renderSheet();
+  const rows = dom.get('sheet').children;
+  assert.ok(rows.length >= 3, 'a rule, the default and the fail-safe');
+  rows.forEach((row) => assert.equal(typeof row._listeners.click, 'undefined',
+    'no row opens an editor by being tapped'));
 });
 
-test('the edit control says what it will do, not what state it is in', () => {
-  const { api, dom } = loadConsole({ csrfToken: 'tok' });
-  const button = dom.get('editMode');
-
-  api.setMode('reading');
-  assert.equal(dom.get('editLabel').textContent, 'Edit',
-    'reading mode offers the next action');
-  assert.match(button.title, /Editar a política de roteamento/,
-    'and the title says what gets edited');
-
-  api.setMode('editing');
-  assert.equal(dom.get('editLabel').textContent, 'Done');
-  assert.equal(button.attrs['aria-pressed'], 'true', 'a mode toggle reports pressed');
-  assert.equal(dom.get('policyEditor').readOnly, false, 'editing arms the editor');
+test('THE GLOBAL EDIT BUTTON IS GONE, because pressing it changed nothing', () => {
+  // Measured in the running console, inside the host document (where the CSRF token
+  // exists): arming the mode changed the body of the page by 0 characters — 2207
+  // before, 2207 after. setMode wrote its one announcing sentence into #pipelineNote
+  // and then called renderSheet(), which owns that node and immediately overwrote it
+  // with the rule count. The whole visible payload was the button's own label
+  // flipping to "Done" and a `cursor: pointer` nobody sees until they hover.
+  const html = fs.readFileSync(sourcePath, 'utf8');
+  assert.doesNotMatch(html, /id="editMode"/, 'no global write toggle in the header');
+  assert.doesNotMatch(html, /id="editLabel"/);
+  // And the sentence it used to fight over is owned by exactly one writer now.
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const writers = [...script.matchAll(/\$\('pipelineNote'\)/g)].length;
+  assert.equal(writers, 1, `#pipelineNote has one writer, got ${writers}`);
 });
 
 test('closing the editor is not a write permission', () => {
@@ -570,7 +619,9 @@ test('an empty screen distinguishes "not asked yet" from "genuinely nothing"', (
   // Before the first response, claiming "no models" is a guess presented as a
   // fact — the operator cannot tell a healthy-but-empty router from a broken one.
   assert.equal(api.state.loading, true, 'the console starts out not knowing');
-  assert.equal(api.absence('Nenhum modelo roteável informado.'), 'Loading…');
+  // In the surface's own language: this was the English string an operator meets
+  // first, because it is what every empty section says during the first read.
+  assert.equal(api.absence('Nenhum modelo roteável informado.'), 'Carregando…');
 
   api.state.loading = false;
   api.state.unreachable = true;
@@ -835,12 +886,15 @@ test('the summary facts exist nowhere else on the screen', () => {
   api.state.status = { enabled: true, validation_errors: ['rule a: unknown field'] };
   api.renderHealth();
   const labels = findAll(dom.get('healthFacts'), 'fact-label').map((n) => n.textContent);
-  assert.deepEqual(labels, ['routing', 'classifier'],
+  // In the surface's own language. These read "ROUTING / on" and "CLASSIFIER /
+  // glm-4.7" — English labels with English values — on the same baseline as
+  // "todos os 8 alcançáveis".
+  assert.deepEqual(labels, ['roteamento', 'classificador'],
     `only the two facts that exist nowhere else, got ${JSON.stringify(labels)}`);
   const text = flat(dom.get('healthFacts'));
   assert.match(text, /glm-4\.7/);
   assert.doesNotMatch(text, /error/, 'the lint banner owns the invalid count');
-  assert.doesNotMatch(text, /rules/, 'the sheet owns the rules count');
+  assert.doesNotMatch(text, /regras/, 'the sheet owns the rules count');
 });
 
 // ── the role an elo plays in the policy ──────────────────────────────────
@@ -908,7 +962,7 @@ test('the compaction sentence states when it fires, not where usage is', () => {
   };
   api.renderCompaction();
   const note = dom.get('compactionNote').textContent;
-  assert.match(note, /fires once/, 'it must read as a trigger, not a level');
+  assert.match(note, /dispara quando/, 'it must read as a trigger, not a level');
   assert.match(note, /77%/);
   assert.match(note, /272,000/, 'the window is separated for comparison');
   assert.doesNotMatch(note, /^at \d/, 'a bare "at 77%" reads as current usage');
@@ -928,8 +982,10 @@ test('the aggressiveness dial says which way it points', () => {
   };
   api.renderCompaction();
   const text = JSON.stringify(dom.get('compaction'));
-  assert.match(text, /balanced/, 'the server has names for these presets');
-  assert.match(text, /compacts sooner/, 'and the direction must be stated');
+  // The server's names (router/threshold.py PRESETS), translated for the reader,
+  // with the number kept beside the word so the two cannot drift.
+  assert.match(text, /equilibrado/, 'the server has names for these presets');
+  assert.match(text, /mais cedo compacta/, 'and the direction must be stated');
 });
 
 test('compaction is hidden when the sidecar reports no compaction data', () => {
@@ -1428,19 +1484,34 @@ test('a double-clicked apply does not race itself', async () => {
   assert.equal(writes.length, 1, 'the second click must not produce a second write');
 });
 
-test('the JSON twisty cannot write while the console is read-only', () => {
-  // Expanding "Edit the whole policy as JSON" to READ it used to put a live green
-  // Apply and a live Revert one tap away — and Revert takes no plan, shows no diff,
-  // and restores whatever the .bak holds.
+test('the file editor keeps its own draft when anything else re-renders', () => {
+  // This used to pin the JSON twisty's buttons to the GLOBAL read-only mode, and
+  // that mode is gone: writing is armed per object now, so a disabled-until-armed
+  // Salvar in here would be gated on a switch that no longer exists. What actually
+  // protects this box is unchanged and elsewhere — the lint gate detaches Salvar
+  // while the file carries an error (CA8), Voltar à versão anterior asks first
+  // (requestRevert), and every write still needs the token, the CSRF header and a
+  // matching base_hash.
+  //
+  // What DOES need pinning is the new hazard the per-object editors created: a
+  // background re-render while the operator is typing in here. renderAll used to
+  // skip this textarea only while the global mode was armed.
   const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = { rules: [{ id: 'r1' }] };
 
-  api.setMode('reading');
-  assert.equal(dom.get('jsonApply').disabled, true, 'Apply follows the read-only default');
-  assert.equal(dom.get('jsonRevert').disabled, true, 'and so does the destructive one');
+  const editor = dom.get('policyEditor');
+  editor.value = '{"rules": [{"id": "half-typed"';
+  api.state.jsonTouched = true;
+  api.renderAll();
+  assert.equal(editor.value, '{"rules": [{"id": "half-typed"',
+    'a re-render must not overwrite what the operator is typing');
 
-  api.setMode('editing');
-  assert.equal(dom.get('jsonApply').disabled, false);
-  assert.equal(dom.get('jsonRevert').disabled, false);
+  // Untouched, it follows the file — otherwise a reload would show the previous
+  // read's policy in a box that claims to be the file.
+  api.state.jsonTouched = false;
+  api.renderAll();
+  assert.match(editor.value, /"r1"/, 'an untouched box mirrors the file');
 });
 
 // ── it belongs to the shell ───────────────────────────────────────────────
@@ -2093,8 +2164,21 @@ test('a window older than the policy demotes every count and says why', () => {
   // 2 rules + classifier: no blocklist row, because this policy declares no
   // manual ban (spec 1.3).
   assert.ok(hits.length >= 3, '2 rules + classifier carry hits');
-  assert.ok(hits.every((n) => n.textContent === 'sem histórico: o registro de decisões não cobre este período'),
+  // The column carries a COUNT, and a demoted one is an em dash. It used to carry
+  // the sentence "sem histórico: o registro de decisões não cobre este período" —
+  // 60 characters repeated on every row in the widest column, which is what
+  // overflowed the sheet by 236px in the host panel. The REASON is a fact about the
+  // log, not about a rule, so it is said once: in the disclosure banner asserted
+  // above and in the section note asserted below.
+  assert.ok(hits.every((n) => n.textContent === '—'),
     `every count demoted, got ${JSON.stringify(hits.map((n) => n.textContent))}`);
+  assert.ok(hits.every((n) => /o registro de decisões não cobre este período/.test(n.title)),
+    'and each one can still be resolved in place');
+  // ONE AUTHORITY: the disclosure above the list owns the fact, because it names the
+  // gap and the real window, which a column header cannot. The section note goes
+  // quiet rather than saying a shorter version of it two lines away.
+  assert.equal(dom.get('sheetNote').textContent, '',
+    'the disclosure owns the reason; the column header does not repeat it');
   assert.ok(hits.every((n) => /empty/.test(n.className)), 'all demoted rows carry the muted class');
   assert.ok(hits.every((n) => !/zero/.test(n.className)), 'no amber zero survives on a stale sheet');
   assert.doesNotMatch(flat(dom.get('sheet')), /never fired/);
@@ -2136,14 +2220,19 @@ test('a covering window keeps the amber "never fired" finding', () => {
     'a window covering the current policy shows no disclosure');
   const text = flat(dom.get('sheet'));
   assert.match(text, /2×/, 'a rule that fired keeps its count');
-  assert.match(text, /nunca disparou/,
-    'a rule that existed and never fired keeps the finding');
+  assert.match(text, /nunca/, 'a rule that existed and never fired keeps the finding');
   assert.doesNotMatch(text, /sem histórico/);
   assert.doesNotMatch(text, /% of the decisions/);
-  // §3.3: the count carries its PERIOD. Two hours of decisions is "nas últimas 2h" —
-  // a number with no period reads as a claim about now.
-  assert.match(text, /disparou 2× na última hora/, 'the count says what it counted over');
-  assert.match(text, /nunca disparou na última hora/, 'and so does the zero');
+  // §3.3 still holds — the count carries its PERIOD — but the period is stated ONCE,
+  // for the column, instead of on all ten rows. A row's own resolution is on the row
+  // (the title), which is where a number's exact reading belongs.
+  assert.match(dom.get('sheetNote').textContent, /quantas vezes cada uma disparou na última hora/,
+    'the section note carries the period the column was counted over');
+  const hitNodes = findAll(dom.get('sheet'), 'step-hits');
+  assert.ok(hitNodes.some((n) => /Disparou 2 vezes na última hora/.test(n.title)),
+    'the count resolves in place');
+  assert.ok(hitNodes.some((n) => /Nunca disparou na última hora/.test(n.title)),
+    'and so does the zero');
   // Both zero-hit rows (never-caught, fail-safe) are amber: the window covers the
   // policy, so every zero is a genuine finding. There is no blocklist row — this
   // policy declares no manual ban (spec 1.3).
@@ -2171,7 +2260,10 @@ test('an empty log demotes every count and says nothing is recorded yet', () => 
   assert.match(flat(dom.get('windowStale')), /Nenhuma decisão registrada ainda/);
   const words = findAll(dom.get('sheet'), 'step-hits').map((n) => n.textContent);
   assert.ok(words.length >= 2, 'every rule-bearing row renders a hits cell');
-  assert.ok(words.every((w) => w === 'sem histórico: o registro de decisões não cobre este período'));
+  // A demoted count is an em dash, and the reason is said once — here, by the
+  // section note, and by the disclosure banner asserted above.
+  assert.ok(words.every((w) => w === '—'), `got ${JSON.stringify(words)}`);
+  assert.equal(dom.get('sheetNote').textContent, '', 'the disclosure above owns the reason');
   assert.doesNotMatch(flat(dom.get('sheet')), /never fired/);
   // No window exists, so no window is claimed.
   assert.doesNotMatch(flat(dom.get('sheet')), /counts over/);
@@ -2902,12 +2994,16 @@ function inspectorMsg(dom) {
 // wire() is stripped from the harness, so the tab machinery is driven through
 // its named function: give querySelectorAll a real table to act on.
 function tabWire(dom) {
-  const tabs = ['health', 'pipeline', 'routes'].map((name) => {
+  // TWO destinations, matching the markup: the third was retired when Modelos and
+  // Decisões were merged into Operação (one verb, two rooms). A stub that still
+  // offered a health tab would let a test pass against a tab the product does not
+  // have — the stub creates any id on demand, so it cannot notice on its own.
+  const tabs = ['pipeline', 'routes'].map((name) => {
     const t = dom.get(`tab-${name}`);
     t.dataset.tab = name;
     return t;
   });
-  const screens = ['panel-health', 'panel-pipeline', 'panel-routes'].map((name) => dom.get(name));
+  const screens = ['panel-pipeline', 'panel-routes'].map((name) => dom.get(name));
   dom.document.querySelectorAll = (sel) => sel === '.tab' ? tabs : (sel === '.screen' ? screens : []);
   return { tabs, screens };
 }
@@ -2970,9 +3066,16 @@ test('a probe refuses locally when the policy is invalid — no round-trip', asy
 test('selectTab flips the aria state and the visible screen', () => {
   const { api, dom } = loadConsole();
   const { tabs, screens } = tabWire(dom);
+  // Índices por POSIÇÃO: Configuração é 0 e Operação é 1, desde que a terceira aba
+  // saiu. Antes a lista era [health, pipeline, routes] e pipeline era o índice 1.
   api.selectTab('pipeline');
+  assert.equal(tabs[0].getAttribute('aria-selected'), 'true');
+  assert.equal(tabs[1].getAttribute('aria-selected'), 'false');
+  assert.equal(screens[0].classList.contains('active'), true);
+  assert.equal(screens[1].classList.contains('active'), false);
+  // And the other way, so neither index is passing by accident.
+  api.selectTab('routes');
   assert.equal(tabs[1].getAttribute('aria-selected'), 'true');
-  assert.equal(tabs[0].getAttribute('aria-selected'), 'false');
   assert.equal(screens[1].classList.contains('active'), true);
   assert.equal(screens[0].classList.contains('active'), false);
 });
@@ -2997,7 +3100,7 @@ test('the jump button drives the whole fix path: tab, hit row, inspector, scroll
   assert.ok(btn, 'the warn-line carries the button');
   btn._listeners.click();
 
-  assert.equal(screens[1].classList.contains('active'), true, 'the Pipeline tab is now visible');
+  assert.equal(screens[0].classList.contains('active'), true, 'the Configuração screen is now visible');
   assert.equal(api.state.lintRule, 'review-request');
   const row = dom.get('sheet').children.find((c) => c.dataset.ruleId === 'review-request');
   assert.ok(row, 'the dead row exists on the re-rendered sheet');
@@ -4051,12 +4154,27 @@ test('the pricing clock names the hour in both zones and the rails in a window',
   assert.match(local, /local/, 'the local reading says it is local');
   assert.match(local, /UTC[+−]\d\d:\d\d/, 'and names its own offset, in any timezone this runs in');
 
+  // ONLY THE RAILS THAT ARE OFF BASE RATE. At this hour deepseek and zai are both in
+  // their 2x window and xiaomi is at 1x, so two lines render and not three. The line
+  // used to list every rail at every hour, and at a base hour that was 120 characters
+  // of future tense above every screen saying that nothing was happening — "deepseek
+  // tarifa base até 01:00 UTC, depois 2x" and two more like it. A rail at 1x is
+  // priced exactly as the registry publishes it, which every other number on the
+  // screen already assumes.
   const rails = dom.get('clockRails').children;
-  assert.equal(rails.length, 3, 'one line per rail that prices by the hour');
+  assert.equal(rails.length, 2, 'one line per rail actually off its base rate');
   const first = flat(rails[0]);
   assert.match(first, /deepseek 2× em hora de pico até 10:00 UTC/, 'real spaces, so it reads aloud');
   assert.match(rails[0].className, /peak/, 'and amber, because paying double needs attention');
-  assert.doesNotMatch(rails[2].className, /peak/, 'a rail at base rate is not a condition');
+  assert.ok(rails.every((row) => !/xiaomi/.test(flat(row))), 'a rail at base rate is not news');
+
+  // And with nothing moving at all, the strip is absent rather than reassuring.
+  api.state.clock = new Date(Date.UTC(2026, 7, 17, 13, 0));
+  api.renderClock();
+  assert.equal(dom.get('clockbar').hidden, true,
+    'a flat hour gives the top of the screen back to the screen');
+  api.state.clock = PEAK;
+  api.renderClock();
 
   // The night discount is not a peak and must not be painted as one.
   api.state.clock = NIGHT;
@@ -5562,17 +5680,62 @@ test('renderLadder prints one Ordem line per group, with 1 + fallback.length att
   blocks.forEach((block, i) => {
     const tier = api.state.policy.tiers[names[i]];
     const text = flat(block);
-    const line = (text.match(/Ordem: [^]*?(?=Sem reserva|As tentativas|$)/) || [''])[0];
     assert.match(text, /Ordem: /, `group ${names[i]} has no Ordem line`);
-    // The five parts survive the join: four separators between five values.
-    const head = line.split('Ordem: ')[1] || '';
-    assert.ok(head.split(' · ').length >= 5,
-      `group ${names[i]} prints ${head.split(' · ').length} knobs, and the contract is five`);
+    // CA4 UNCHANGED IN SUBSTANCE, RANKED IN PRESENTATION. All five knobs are still
+    // readable and none is blank — but the DECLARED ones are the line and the
+    // engine's own collapse behind one control that says how many there are. Printed
+    // inline, four of five were usually the engine's, which produced "na ordem
+    // escrita (padrão do motor) · o primeiro fica fixo (padrão do motor) · teto de
+    // preço 1.5× · sem política de horário (padrão do motor) · sem exigência de
+    // contexto (padrão do motor)": 170 characters in which the same parenthesis
+    // appears three times and one knob is news. So the count is taken over the line
+    // PLUS the defaults block, which is where the rest live.
+    const declared = ((text.match(/Ordem: (.*?)(?=\+\d+ no padrão do motor|Sem reserva|As tentativas|$)/) || ['', ''])[1] || '')
+      .split(' · ').filter(Boolean);
+    const collapsed = findAll(block, 'tier-defaults')
+      .flatMap((box) => box.children.map((one) => one.textContent)).filter(Boolean);
+    assert.equal(declared.length + collapsed.length, 5,
+      `group ${names[i]} shows ${declared.length} declared + ${collapsed.length} default knobs, and the contract is five`);
+    collapsed.forEach((one) => assert.doesNotMatch(one, /^\s*$/, 'no knob is blank'));
+    // The control that opens them says how many, so nothing is silently dropped.
+    if (collapsed.length) {
+      assert.match(text, new RegExp(`\\+${collapsed.length} no padrão do motor`),
+        'the collapsed knobs are counted where they are hidden');
+    }
     // CA4's other half, counted rather than assumed.
     const attempts = findAll(block, 'hop');
     assert.equal(attempts.length, 1 + (tier.fallback || []).length,
       `group ${names[i]} must list the primary plus every reserve`);
   });
+});
+
+test('a group can be edited from the group, which was impossible before', () => {
+  // `EDITABLE` has listed 'tier' since the inspector was written and renderInspector
+  // has a complete branch for it — and nothing anywhere ever called pickBind with
+  // one, so the four groups (the thing the presets exist to rewrite) were read-only
+  // by accident, with no way in from any screen.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.renderLadder();
+
+  const names = Object.keys(api.state.policy.tiers);
+  const block = findAll(dom.get('ladder'), 'tier')[0];
+  const edit = findAll(block, 'btn-quiet').find((c) => c.textContent === 'Editar');
+  assert.ok(edit, 'every group row offers Editar');
+  edit._listeners.click();
+
+  assert.equal(api.state.mode, 'editing', 'and pressing it arms the write');
+  assert.equal(api.state.selected, `tier:${names[0]}`, 'for THAT group and no other');
+  // The form is inside the group it edits — that is the whole of the visible scope.
+  // Read off className: el() assigns the class string directly, so the stub's
+  // classList (a separate set) knows nothing about it.
+  const open = findAll(dom.get('ladder'), 'is-open')[0];
+  assert.ok(open, 'the open group is marked');
+  assert.ok(flat(open).includes('Editando o grupo'), 'and says what is being changed');
+  assert.ok(open.children.some((c) => c.id === 'inspector'), 'the editor is attached to the row');
+  assert.ok(findAll(dom.get('ladder'), 'step-editing').length === 1,
+    'and its action slot says so where Editar was');
 });
 
 test('the multiplier is stated once: the Ordem line owns it, the cap sentence explains it', () => {
@@ -6064,7 +6227,9 @@ test('choosing another preset drops the plan the diff on screen belonged to', as
     .flatMap((row) => row.children || [])
     .find((k) => String(k.dataset && k.dataset.preset) === 'qualidade');
   assert.ok(other, 'each preset has its own control');
-  other._listeners.click();
+  // A radio answers to `change`, not to `click`: the control is the platform's own now.
+  other.checked = true;
+  other._listeners.change();
   assert.equal(labels().indexOf('Salvar'), -1, 'the plan went with the choice');
   assert.equal(dom.get('presetDiff').hidden, true);
   // And the plan is really GONE, not merely unreachable from this box: doApply falls
@@ -6128,19 +6293,28 @@ test('the preset box names the metric and the consequence of each option, and wh
   assert.match(said, /Priorizar qualidade/);
   assert.match(said, /nunca tira uma opção da fila por causa de preço\./);
 
-  // A hand-written file matches none of the three, and that is said as an answer.
-  assert.equal(dom.get('presetActive').textContent, 'Em vigor agora: Personalizado');
+  // A hand-written file matches none of the three, and that is said as an answer —
+  // on the section's own line, because there is no option to mark.
+  assert.equal(dom.get('presetActive').textContent, 'nenhum: suas configurações são próprias');
   assert.match(dom.get('presetNote').textContent, /Escolher um substitui as suas em todos os grupos/);
 
-  // With a preset in force, the note is the other one: no preset ever adds a model.
+  // With a preset in force, "em vigor" is marked ON THE OPTION. It used to be a
+  // sentence on the opposite margin — the same fact in two places, and the further
+  // one from the choice it describes.
   const next = JSON.parse(JSON.stringify(api.state.policy));
   const patch = plain(api.presetPatch('qualidade', next)).tiers;
   Object.keys(patch).forEach((name) => Object.assign(next.tiers[name], patch[name]));
   api.state.policy = next;
   api.renderPresets();
-  assert.equal(dom.get('presetActive').textContent, 'Em vigor agora: Priorizar qualidade');
-  assert.match(dom.get('presetNote').textContent, /Nenhum preset adiciona um modelo que você não tem/);
-  assert.match(dom.get('presetNote').textContent, /Nenhum preset mexe em qual grupo cada tarefa usa/);
+  assert.equal(dom.get('presetActive').textContent, '', 'nothing to disclose once an option carries it');
+  const live = findAll(dom.get('presetOptions'), 'preset-live');
+  assert.equal(live.length, 1, 'exactly one option is in force');
+  assert.equal(live[0].textContent, 'em vigor');
+  const inForce = (dom.get('presetOptions').children || [])
+    .find((row) => findAll(row, 'preset-live').length);
+  assert.match(flat(inForce), /Priorizar qualidade/, 'and it is the one the file matches');
+  assert.match(dom.get('presetNote').textContent, /Nenhum adiciona modelo/);
+  assert.match(dom.get('presetNote').textContent, /nenhum mexe em qual grupo cada tarefa usa/);
 });
 
 test('doApply plans immediately before every write, whichever surface called it (CA5)', async () => {
@@ -6257,9 +6431,13 @@ test('every row on the sheet has a destination, and it is one of the five (CA2)'
   assert.equal(hit.length, 5, `all five prefixes exercised, got ${hit.length}`);
 });
 
-test('the preset control says its state to assistive technology, not only in ASCII', () => {
-  // It is drawn as a radio — "( )" and "(•)" — because DESIGN.md allows no svg and no
-  // innerHTML. Two characters of text are not state: aria-pressed is.
+test('the preset control is a real radio group, not three buttons drawn as one', () => {
+  // It used to be three bordered buttons whose labels BEGAN with the characters
+  // "( )" / "(•)" — a Unicode glyph standing in for a control. That reads as three
+  // separate actions rather than one choice, needs an aria-pressed to tell assistive
+  // technology what the parentheses meant, and loses the arrow-key navigation a radio
+  // group has for free. The platform's own radio has every one of those properties,
+  // in the host's form vocabulary, with no svg and no markup injection.
   const { api, dom } = loadConsole();
   api.state.loading = false;
   const next = JSON.parse(JSON.stringify(presetPolicy()));
@@ -6268,12 +6446,23 @@ test('the preset control says its state to assistive technology, not only in ASC
   api.state.policy = next;
   api.renderPresets();
 
-  const buttons = (dom.get('presetOptions').children || []).flatMap((row) => (row.children || [])
+  const radios = (dom.get('presetOptions').children || []).flatMap((row) => (row.children || [])
     .filter((k) => k.dataset && k.dataset.preset));
-  assert.equal(buttons.length, 3, 'one control per preset');
-  const pressed = buttons.filter((b) => b.getAttribute('aria-pressed') === 'true');
-  assert.deepEqual(pressed.map((b) => b.dataset.preset), ['qualidade'],
-    'exactly the one in force is pressed');
+  assert.equal(radios.length, 3, 'one control per preset');
+  radios.forEach((r) => {
+    assert.equal(r.type, 'radio', 'a choice is a radio');
+    assert.equal(r.name, 'preset', 'and one group, so the browser moves between them');
+  });
+  // CHECKED is the current value — the one in force — until the operator moves it,
+  // which is what a radio group means. The ASCII form marked the one in force while a
+  // separate class marked the one being looked at, and the two could never be the
+  // same control.
+  const checked = radios.filter((r) => r.checked);
+  assert.deepEqual(checked.map((r) => r.dataset.preset), ['qualidade'],
+    'exactly the one in force is checked');
+  // Nothing carries the retired ASCII state any more.
+  assert.doesNotMatch(flat(dom.get('presetOptions')), /\(•\)/);
+  assert.doesNotMatch(flat(dom.get('presetOptions')), /\( \)/);
 });
 
 test('an armed Voltar à versão anterior does not survive a refresh', async () => {
@@ -7521,7 +7710,9 @@ test('reading mode names the gesture that unlocks editing (§4.7)', () => {
   api.setMode('reading');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   assert.match(flat(dom.get('inspector')),
-    /Só leitura\. Aperte "Editar" no topo para poder mudar algo\./);
+    // The sentence names the control that exists: there is no "Editar no topo" any
+    // more, because writing is armed by the Editar on the row that owns the object.
+    /Só leitura\. Use o "Editar" da linha deste item para mudar algo\./);
 });
 
 test('editing mode never claims the surface is read-only', () => {
@@ -7540,7 +7731,11 @@ test('a §2.8 warning never disables or hides the write controls', () => {
   api.setMode('editing');
   api.renderLadder();
   assert.match(flat(dom.get('ladder')), /só uma opção/, 'the warning is on screen');
-  assert.equal(dom.get('jsonApply').disabled, false,
+  // Salvar is present and NOT disabled. It used to be disabled until a global mode was
+  // armed, and that mode is gone — so the assertion is that nothing disables it, which
+  // is now structural rather than a value some renderer has to keep setting to false.
+  assert.ok(dom.get('jsonApply'), 'the file editor still has its Salvar');
+  assert.ok(!dom.get('jsonApply').disabled,
     'Salvar stays enabled — avisar nunca é bloquear, the only gate is the server lint');
 });
 
@@ -7558,4 +7753,206 @@ test('tierWarnings returns exactly the rows a group deserves — nothing for not
     { model: 'a', provider: 'zai', fallback: [{ model: 'b', provider: 'xiaomi' }] },
     [{ model: 'a', provider: 'zai' }, { model: 'b', provider: 'xiaomi' }], { pinSort: true });
   assert.deepEqual(plain(pin), ['Com a ordem sorteada e o primeiro fixo, só as reservas são sorteadas.']);
+});
+
+// ══ WRITING IS ARMED PER OBJECT ══════════════════════════════════════════
+//
+// The operator's verdict on the previous build was "I don't know what the Edit
+// button is for, nothing changes on screen when I click it" — and that was
+// literally true. Measured in the running console, inside the host document
+// where the CSRF token exists: arming the global mode changed the body of the
+// page by exactly 0 characters, 2207 before and 2207 after. setMode wrote its
+// one announcing sentence into #pipelineNote and then called renderSheet(),
+// which owns that node and overwrote it with the rule count; what was left was
+// the button's own label and a `cursor: pointer` nobody sees until they hover.
+//
+// So the mode is no longer global. Every row that can be edited carries its own
+// Editar, the form opens INSIDE that row, and the scope is what you can see.
+// These assertions pin the visible half — the part the old mode never had.
+
+test('Editar opens the form INSIDE the row, and says what is being changed', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [
+      { id: 'hard-verbs', when: { verb_class: { eq: 'hard' } }, then: { model: 'T4', profile: 'coder' } },
+      { id: 'audit', when: { keywords: { contains: 'audit' } }, then: { model: 'T4' } },
+    ],
+    default: { action: 'classify' }, classifier: { model: 'm' },
+    fail_safe: { model: 'm' }, tiers: { T4: { model: 'x' } },
+  };
+  api.renderSheet();
+
+  // The affordance is a labelled button in a fixed slot, on every editable row.
+  const slots = findAll(dom.get('sheet'), 'step-act');
+  assert.equal(slots.length, 4, 'two rules, the default and the fail-safe');
+  slots.forEach((slot) => {
+    const button = (slot.children || [])[0];
+    assert.ok(button, 'every editable row offers its own control');
+    assert.equal(button.textContent, 'Editar', 'and it names the action, not a state');
+  });
+
+  const first = findAll(dom.get('sheet'), 'step-act')[0].children[0];
+  first._listeners.click({ stopPropagation() {} });
+
+  assert.equal(api.state.mode, 'editing');
+  assert.equal(api.state.selected, 'rule:hard-verbs', 'THAT row and no other');
+  const open = dom.get('sheet').children.filter((r) => /is-open/.test(r.className));
+  assert.equal(open.length, 1, 'exactly one row is open');
+  assert.equal(open[0].dataset.ruleId, 'hard-verbs');
+  assert.equal(open[0].attrs['aria-current'], 'true', 'and a screen reader is told which');
+  // The form is a child of the row it edits. This is the whole of the visible
+  // scope: the editor used to live below a ten-row sheet and a probe, about a
+  // thousand pixels from what it was editing.
+  assert.ok(open[0].children.some((c) => c.id === 'inspector'),
+    'the editor is attached to the row, not parked at the bottom of the screen');
+  // The slot swaps for a state word rather than moving anything.
+  const editing = findAll(dom.get('sheet'), 'step-editing');
+  assert.equal(editing.length, 1);
+  assert.equal(editing[0].textContent, 'editando');
+  // And the list says the others are NOT what is being edited. Through classList,
+  // because #sheet is a markup node whose class is toggled rather than built.
+  assert.equal(dom.get('sheet').classList.contains('is-editing'), true);
+  // The sentence the old mode tried to put in a note the sheet then overwrote.
+  const scope = findAll(dom.get('inspector'), 'editor-scope');
+  assert.equal(scope.length, 1);
+  assert.match(scope[0].textContent, /^Editando Verbo de trabalho difícil\./,
+    'it names the row in the operator\'s own words, not the rule id');
+  assert.match(scope[0].textContent, /Nada é gravado até você salvar/);
+});
+
+test('Cancelar closes the row and drops the draft', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [{ id: 'r1', when: {}, then: { model: 'T1' } }],
+    default: {}, classifier: { model: 'm' }, fail_safe: { model: 'm' }, tiers: { T1: {} },
+  };
+  api.renderSheet();
+  findAll(dom.get('sheet'), 'step-act')[0].children[0]._listeners.click({ stopPropagation() {} });
+  assert.ok(api.state.draft, 'a draft exists while the form is open');
+
+  const cancel = findAll(dom.get('inspector'), 'btn').find((b) => b.textContent === 'Cancelar');
+  assert.ok(cancel, 'the form offers a way out that is not a write');
+  cancel._listeners.click();
+
+  assert.equal(api.state.mode, 'reading');
+  assert.equal(api.state.selected, null);
+  // A draft nobody can see is a draft that writes by surprise on the next Salvar.
+  assert.equal(api.state.draft, null, 'the draft goes with the form');
+  assert.equal(dom.get('sheet').children.filter((r) => /is-open/.test(r.className)).length, 0);
+  assert.equal(findAll(dom.get('sheet'), 'step-editing').length, 0);
+  assert.equal(findAll(dom.get('sheet'), 'step-act')[0].children[0].textContent, 'Editar',
+    'and the slot offers the action again');
+});
+
+test('Escape closes an open editor, and it is wired to the document', () => {
+  // The behaviour, driven directly — wire() needs a live browser, so the listener
+  // itself is checked statically below.
+  const { api } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = { rules: [{ id: 'r1', when: {}, then: {} }], tiers: {} };
+  api.openEditor({ id: 'rule:r1', name: 'a regra', bind: 'rule', ruleIndex: 0 });
+  assert.equal(api.state.mode, 'editing');
+  api.closeEditor();
+  assert.equal(api.state.mode, 'reading');
+
+  const script = fs.readFileSync(sourcePath, 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
+  const wired = script.slice(script.indexOf('function wire()'));
+  assert.match(wired, /event\.key !== 'Escape'/,
+    'a form that opens in place must be closable without hunting for the button');
+  assert.match(wired, /closeEditor\(\)/);
+});
+
+test('ONE WRITE VOCABULARY: the same three words on every surface that writes', () => {
+  // The inspector read "Apply · Preview · Revert" while the JSON twisty six inches
+  // away read "Salvar · Ver o que muda · Voltar à versão anterior" and the preset box
+  // read the second pair again — the same three actions under two names, in two
+  // languages, on one pt-BR screen. NN/g lists "different words or commands for the
+  // same action" second among application-design mistakes; this is a static scan
+  // because that is where the drift would reappear.
+  const raw = fs.readFileSync(sourcePath, 'utf8');
+  const script = raw.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  const markup = raw.replace(/<script>[\s\S]*?<\/script>/, '').replace(/<!--[\s\S]*?-->/g, '');
+  const both = `${script}\n${markup}`;
+  for (const retired of ["'Apply'", "'Preview'", "'Revert'", "'Edit'", "'Done'", "'Refresh'"]) {
+    assert.ok(!both.includes(retired), `${retired} is a second name for an action that already has one`);
+  }
+  // And the surviving vocabulary really is present on all three surfaces.
+  // The labels come from the §4.7 map, so the markup ships them EMPTY and one pass
+  // fills all three — which is the strongest form of "one action, one name": there is
+  // no second copy to drift.
+  assert.match(markup, /id="jsonApply" type="button"><\/button>/, 'the file editor takes its label from the map');
+  assert.match(script, /\[\['jsonApply', WRITE\.save\], \['jsonPreview', WRITE\.plan\], \['jsonRevert', WRITE\.revert\]\]/);
+  assert.match(script, /el\('button', 'btn go', WRITE\.save\)/, 'and so does a row editor');
+  assert.match(script, /el\('button', 'btn', WRITE\.cancel\)/, 'including the way out of one');
+});
+
+test('the screen speaks one language', () => {
+  // Eleven English strings reached a pt-BR screen: the empty-state word every section
+  // shows during the first read, the header's two buttons, the row editor's three,
+  // the blocklist's two states, and every label and sentence in the compaction group.
+  const raw = fs.readFileSync(sourcePath, 'utf8');
+  const script = raw.match(/<script>([\s\S]*?)<\/script>/)[1]
+    .replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const retired of [
+    "'Loading…'", "'Routing…'", "'Refreshing…'", "'banned'",
+    "fact('routing'", "fact('classifier'", "'compacts at'", "'aggressiveness'",
+    'fires once', 'Threshold exceeds', 'compacts sooner',
+  ]) {
+    assert.ok(!script.includes(retired), `${retired} is English on a Portuguese screen`);
+  }
+  // The markup's own controls too.
+  const markup = raw.replace(/<script>[\s\S]*?<\/script>/, '').replace(/<!--[\s\S]*?-->/g, '');
+  for (const retired of ['Recalculate', 'Type COMPACT', 'Compaction<']) {
+    assert.ok(!markup.includes(retired), `${retired} is English on a Portuguese screen`);
+  }
+  assert.ok(markup.includes('Digite COMPACT para confirmar'));
+});
+
+test('the classifier can finally be edited, from the settings it belongs to', () => {
+  // `EDITABLE` has listed 'classifier' since the inspector was written and
+  // renderInspector has a complete branch for it — and nothing ever opened one. The
+  // model on the critical path of every ambiguous delegation was printed as a
+  // read-only fact and could not be changed from any screen.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = { rules: [], tiers: {}, classifier: { model: 'glm-4.7', provider: 'zai' }, enabled: true };
+  api.renderSettings();
+
+  const rows = dom.get('settings').children;
+  assert.equal(rows.length, 2, 'the master switch and the classifier are read together');
+  assert.match(flat(rows[0]), /Roteamento automático/);
+  assert.equal(findAll(rows[0], 'step-act')[0].children.length, 0,
+    'the switch offers no Editar: turning routing off is a whole-file decision');
+  assert.match(flat(rows[1]), /Classificador/);
+  assert.match(flat(rows[1]), /glm-4\.7 @ zai/);
+
+  const edit = findAll(rows[1], 'btn-quiet')[0];
+  assert.ok(edit, 'the classifier row offers Editar');
+  edit._listeners.click();
+  assert.equal(api.state.selected, 'classifier');
+  const open = dom.get('settings').children.filter((r) => /is-open/.test(r.className));
+  assert.equal(open.length, 1);
+  assert.ok(open[0].children.some((c) => c.id === 'inspector'), 'and edits in place');
+  // It really is the model picker, not a text box: the classifier is chosen from the
+  // catalogue like every other model on this screen.
+  assert.ok(findAll(dom.get('inspector'), 'field').length >= 2, 'model and provider');
+});
+
+test("a group's capability floor is stated exactly once", () => {
+  // It was knob 5 of the Ordem line AND a chip 24px under it, in the same words —
+  // one fact, two authorities (DESIGN.md §2 rule 2). The Ordem line owns it, because
+  // that line is the five-knob contract CA4 pins; the chips stay the vocabulary for a
+  // RULE's conditions, where nothing else states them.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = {
+    tiers: { T3: { model: 'x', provider: 'p', requirements: { min_context: 200000 } } },
+  };
+  api.renderLadder();
+  const said = flat(dom.get('ladder'));
+  const hits = said.split('pelo menos 200,000 tokens').length - 1;
+  assert.equal(hits, 1, `the floor is said ${hits} times, and once is the contract`);
+  assert.match(said, /exige pelo menos 200,000 tokens/, 'and the Ordem line is where');
 });
