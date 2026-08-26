@@ -674,6 +674,10 @@
     /* When the router last TRIED this elo (card t_0a3cff85): history, not a
        state, so the same muted metadata treatment — no hue of its own. */
     .hop-tried { color: var(--muted); font-size: var(--t-small); }
+    /* Above the group's price ceiling at this hour (card t_eed59abb): a cost
+       CONDITION, so the warn hue — the same meaning the clock line gives a
+       peak, and the attention the "cannot be used at this hour" state needs. */
+    .hop-cap { color: var(--warn-text); font-size: var(--t-small); }
     /* How the request is PAID for. A badge, not a state: billing is not a
        condition, so it takes the metadata treatment (11px, tracked, uppercase)
        and no hue — until it is missing, which an operator cannot cost a
@@ -3893,6 +3897,21 @@
           if (words && (multiplier !== 1 || o.showPrice)) {
             row.append(el('span', `hop-price${expensive ? ' peak' : ''}`, words));
           }
+          // Card t_eed59abb: above the group's price ceiling AT THIS HOUR. The
+          // cap is the group's max_multiplier (null when none is declared — no
+          // cap means no cap line anywhere, rule 4), the multiplier is the SAME
+          // number the price span just read, and the hour is the `when` already
+          // in hand — nothing here reads a clock (§7). Amber: "this attempt
+          // cannot be used at this hour" is exactly the attention state the
+          // warn hue exists for. A null cap must NOT pass through Number() —
+          // Number(null) is 0, and a 0× ceiling would mark every attempt above
+          // it, which is rule 4's failure mode exactly.
+          const cap = (o.cap === null || o.cap === undefined) ? null
+            : (Number.isFinite(Number(o.cap)) ? Number(o.cap) : null);
+          if (cap !== null) {
+            const capWords = capOverWords(cap, multiplier, eloWindows(caps), o.when || null);
+            if (capWords) row.append(el('span', 'hop-cap', capWords));
+          }
         }
         // Why it sits where it sits: the tier's time policy moved it, and a
         // position an operator cannot explain reads as a bug in the console.
@@ -3979,6 +3998,7 @@
               live: o.live && o.live[model],
               flags: o.flags && o.flags[model],
               routes: o.routes,
+              cap: o.cap,
             }));
           });
           return ul;
@@ -4872,8 +4892,12 @@
           // A per-tier floor is a condition on every elo in the chain, so it is
           // said in the same chips a rule's own conditions use.
           if (floorChips.length) block.append(chipList(floorChips));
+          // Card t_eed59abb: the group's ceiling, legible only as the
+          // documented mapping — a bare number keeps the Ordem line's §5.4
+          // sentence and marks nothing.
+          const tierCap = legibleCap(t.time_cap);
           block.append(chainList(hops, {
-            strategy, registry, billing, when, live,
+            strategy, registry, billing, when, live, cap: tierCap,
             // The log the dating line reads: the Modelos tab is where "quando
             // foi tentado" separates a hot elo from an abandoned one.
             routes: state.routes,
@@ -5004,6 +5028,40 @@
           : (p.time_cap !== undefined ? p.time_cap : p.max_multiplier);
         const value = Number(raw);
         return Number.isFinite(value) ? value : null;
+      }
+      // Card t_eed59abb: the ceiling the per-attempt marks may compare against.
+      // Only the documented `{max_multiplier: N}` mapping is legible. A bare
+      // number (`time_cap: 1.5`) is a form the lint refuses (§5.4) — marking
+      // attempts against a ceiling the router cannot enforce would make the
+      // console louder than the policy it describes, so that shape keeps the
+      // "formato que o roteador não lê" sentence in the Ordem line and earns
+      // NO mark anywhere. Absent or null is no cap, and no cap means no cap
+      // line anywhere (DESIGN.md rule 1).
+      function legibleCap(value) {
+        const v = value && typeof value === 'object' ? value : {};
+        const cap = Number(v.max_multiplier);
+        return Number.isFinite(cap) ? cap : null;
+      }
+      // One attempt at one hour: is it above the group's ceiling, and when does
+      // it come back under it? `cap` is legibleCap's answer (null ⇒ no line),
+      // `multiplier` is the effective multiplier at the hour in use, and `when`
+      // is the SAME {hour, weekday} every price function takes (DESIGN.md §7) —
+      // the clock is the caller's, never read here. Strictly above: equal to the
+      // cap is not above, the same boundary capabilities.apply_time_cap draws
+      // (multiplier - cap <= 1e-9 is eligible). The second half needs the next
+      // window turn to bring the multiplier back WITHIN the cap: claiming
+      // "entra no teto" at a turn that keeps it over would state a future that
+      // never happens.
+      function capOverWords(cap, multiplier, windows, when) {
+        if (cap === null || cap === undefined) return '';
+        const ceiling = Number(cap);
+        const m = Number(multiplier);
+        if (!Number.isFinite(ceiling) || !Number.isFinite(m) || !(m > ceiling)) return '';
+        const next = nextWindowChange(windows, when);
+        if (next && next.multiplier <= ceiling) {
+          return `acima do teto agora · entra no teto às ${hourLabel(next.hour)}`;
+        }
+        return 'acima do teto agora';
       }
       // Elos the cap refused that the capability filter did not already report, so
       // the Dropped list names each elo exactly once.
@@ -5297,6 +5355,10 @@
         // later is a different request's price.
         const live = past ? {} : liveMultipliers(state.liveness, when);
         const cap = timeCapOf(plan);
+        // The per-attempt marks compare against a LEGIBLE ceiling only: the
+        // documented {max_multiplier} mapping, never the bare-number form the
+        // lint refuses (§5.4) — the Ordem line owns that sentence.
+        const capMark = legibleCap(plan.time_cap);
         const outcome = droppedElos(plan);
 
         // THE REQUIREMENT BEFORE THE ROSTER. This line is the CAUSE of the bypass
@@ -5396,6 +5458,15 @@
                        `${strategy.label}${note ? ` — ${note}` : ''}`
                        + (hourNote ? ` · ${hourNote}` : '')));
         group.append(head);
+        // Card t_eed59abb: the auto-shutdown is said where it happens. The loud
+        // warn-line above reports the EVENT (the cap gave way, and what the
+        // operator can do); this line says the MECHANISM on the group whose
+        // queue was restored — and only when the plan's own flag says it
+        // happened. A false bypass never earns the sentence (DESIGN.md §2 rule 2).
+        if (outcome.capBypassed) {
+          group.append(el('div', 'tier-note',
+            'o teto se desligou nesta decisão: aplicá-lo deixaria a fila vazia'));
+        }
 
         if (chips.length) group.append(chipList(chips));
         else group.append(el('p', 'nothing', 'Nenhuma exigência de capacidade foi derivada, então toda tentativa da fila atende.'));
@@ -5412,7 +5483,7 @@
 
         if (chain.length) {
           group.append(chainList(chain, {
-            strategy, registry, billing, when, flags, multipliers, live,
+            strategy, registry, billing, when, flags, multipliers, live, cap: capMark,
             // The Explain panel is where the cost comparison is audited, so every
             // eligible elo shows the prices it was compared on — not only the ones
             // that happen to be inside a window.
@@ -8007,6 +8078,13 @@
         PRESETS, presetPatch, activePreset, tierPresetOf, renderPresets, previewPreset, applyPreset,
         requestRevert, disarmRevert,
         planWhen, timeCapOf, cappedEntries, renderClock, nowUtc,
+        // Card t_eed59abb: the per-attempt ceiling mark. legibleCap refuses the
+        // bare-number form the lint rejects (§5.4), and capOverWords says which
+        // attempts are above the group's ceiling at the hour in use and when
+        // they come back under it. Exported so the boundary (equal is not
+        // above), the true/false bypass pair and the absent-cap silence are
+        // pinned by tests, not eyeballed.
+        legibleCap, capOverWords,
         // The server's own numbers, and the two questions the console must answer
         // from the RUNNING path rather than from the declared config: which elos are
         // really out of the chain, and where this task actually goes.

@@ -536,6 +536,35 @@ def test_last_tried_dating_says_tried_never_served():
         assert "nunca" not in t, f"a dating phrase invents an absence: {t!r}"
 
 
+def test_cap_mark_and_bypass_speak_the_cards_own_words():
+    """Card t_eed59abb: the per-attempt ceiling mark is one fixed vocabulary.
+
+    ``acima do teto agora`` names the condition and ``entra no teto às``
+    names the hour the multiplier falls back within the cap; the auto-shutdown
+    phrase says the mechanism on the group with the card's exact literal. The
+    true/false pairing of the bypass sentence (present only when
+    ``time_cap_bypassed`` is true) is pinned by the render test in
+    test_console_logic.js; this test pins that the words exist as renderable
+    text at all — and that the group phrase never drifts into the preset's,
+    because ``se isso fosse deixar a fila vazia`` describes the CONFIG while
+    ``aplicá-lo deixaria a fila vazia`` describes a decision that happened.
+    """
+
+    prose = _console_rendered_text()
+    mark = [t for _, _, t in prose if "acima do teto agora" in t]
+    assert mark, "the per-attempt mark must be renderable text"
+    assert any("entra no teto às" in t for _, _, t in prose), (
+        "the coming-back-under sentence (second half of the mark) must exist"
+    )
+    bypass = [t for _, _, t in prose if "o teto se desligou nesta decisão" in t]
+    assert bypass, "the auto-shutdown phrase must exist as renderable text"
+    for t in bypass:
+        assert "se isso fosse" not in t, (
+            "the group phrase must not reuse the preset's config sentence: "
+            f"{t!r}"
+        )
+
+
 def test_console_write_surface_speaks_one_pt_br_vocabulary():
     """§4.7/§6.10: the write surface has no English labels or messages.
 

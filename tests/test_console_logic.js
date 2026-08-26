@@ -4395,6 +4395,166 @@ test('a bypassed time cap is as loud as a bypassed capability filter', () => {
   assert.match(said, /aumente o teto|fora do pico/, 'and what the operator can do');
 });
 
+// ── Card t_eed59abb: the price ceiling bites per hour, and the row says who ──
+// A ceiling is not a property of the elo, it is a property of THE HOUR: the
+// same group shows four attempts of which one is affordable at 14:00 UTC and
+// all four at 03:00. The mark reads the multiplier at the hour in use against
+// the group's max_multiplier — strictly above, the same boundary
+// capabilities.apply_time_cap draws (multiplier - cap <= 1e-9 is eligible).
+
+// Four attempts with windows that put three of them over a 1.5× ceiling at
+// 14:00 UTC and none over at 03:00 UTC. The plan carries no hour of its own,
+// so the console reads the declared windows at the hour state.clock pins —
+// the one authority the injected clock exists to be (DESIGN.md §3c).
+function capChain(extra) {
+  return chainPlan(Object.assign({
+    time_cap: { max_multiplier: 1.5 },
+    chain: [
+      { model: 'm-before', provider: 'deepseek', price_windows: [{ hours_utc: [6, 10], multiplier: 2 }] },
+      { model: 'm-noon', provider: 'zai', price_windows: [{ hours_utc: [10, 16], multiplier: 2 }] },
+      { model: 'm-after', provider: 'xiaomi', price_windows: [{ hours_utc: [12, 18], multiplier: 2 }] },
+      { model: 'm-late', provider: 'openai-codex', price_windows: [{ hours_utc: [13, 17], multiplier: 2 }] },
+    ],
+  }, extra || {}));
+}
+
+test('the cap mark counts the attempts above the ceiling at the hour in use', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = tierPolicy();
+  const at = (hour) => {
+    api.state.clock = new Date(Date.UTC(2026, 7, 17, hour, 0));
+    api.renderChainPlan(capChain());
+  };
+  at(14);
+  const box = dom.get('chainPlan');
+  assert.equal(findAll(box, 'hop-cap').length, 3,
+    'at 14:00 UTC three of the four attempts bill above the 1.5× ceiling');
+  assert.match(flat(box), /acima do teto agora/);
+  assert.match(flat(box), /entra no teto às 16:00 UTC/,
+    "m-noon's window ends at 16:00, when the multiplier falls back within the cap");
+  at(3);
+  assert.equal(findAll(dom.get('chainPlan'), 'hop-cap').length, 0,
+    'at 03:00 UTC every attempt is at base — the ceiling is not biting');
+});
+
+test('no time_cap means no cap mark anywhere (rule 4)', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = tierPolicy();
+  api.state.clock = new Date(Date.UTC(2026, 7, 17, 14, 0));
+  // Same windows, same hour — three of the four would bill over 1.5× — but the
+  // plan declares no ceiling, so the console must not invent one: a cap line
+  // without a cap would assert a policy the file lacks (DESIGN.md rule 1).
+  api.renderChainPlan(capChain({ time_cap: undefined }));
+  assert.equal(findAll(dom.get('chainPlan'), 'hop-cap').length, 0);
+  // The pure contract, called directly: Number(null) is 0, and a 0× ceiling
+  // would mark every attempt above it — the exact failure rule 4 forbids.
+  assert.equal(api.legibleCap({ max_multiplier: 1.5 }), 1.5, 'the documented mapping is legible');
+  assert.equal(api.legibleCap(1.5), null, 'a bare number the lint refuses is not a ceiling');
+  assert.equal(api.legibleCap(undefined), null, 'absent is no cap');
+  assert.equal(api.capOverWords(null, 2, [], { hour: 14, weekday: 0 }), '',
+    'a null ceiling marks nothing, even called directly');
+  assert.equal(api.capOverWords(undefined, 2, [], { hour: 14, weekday: 0 }), '');
+});
+
+test('a ceiling the lint refuses earns no mark — the Ordem line owns that sentence', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.clock = PEAK;   // 07:14 UTC: both elos inside their 2.0× window
+  api.state.policy = {
+    rules: [], default: {},
+    tiers: {
+      T1: {
+        model: 'glm-4.7', provider: 'zai', billing_mode: 'plan',
+        fallback: [{ model: 'gpt-5.6-luna', provider: 'openai-codex', billing_mode: 'subscription' }],
+        time_cap: 1.5,
+      },
+    },
+  };
+  api.state.capabilities = {
+    'glm-4.7': { provider: 'zai', billing_mode: 'plan', price_windows: [{ hours_utc: [6, 10], multiplier: 2 }] },
+    'gpt-5.6-luna': { provider: 'openai-codex', billing_mode: 'subscription', price_windows: [{ hours_utc: [6, 10], multiplier: 2 }] },
+  };
+  api.renderLadder();
+  const text = flat(dom.get('ladder'));
+  assert.match(text, /formato que o roteador não lê/, 'the §5.4 sentence stays');
+  assert.doesNotMatch(text, /sem teto de preço/, 'a refused form is not an absent cap');
+  assert.equal(findAll(dom.get('ladder'), 'hop-cap').length, 0,
+    'a ceiling the router cannot enforce marks nothing');
+});
+
+test('the group line says the cap turned itself off only when the plan says it did', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = tierPolicy();
+  const said = () => flat(dom.get('chainPlan'));
+  api.renderChainPlan(chainPlan({ time_cap_bypassed: true, time_cap: { max_multiplier: 1.5 } }));
+  assert.match(said(), /o teto se desligou nesta decisão: aplicá-lo deixaria a fila vazia/);
+  api.renderChainPlan(chainPlan({ time_cap_bypassed: false, time_cap: { max_multiplier: 1.5 } }));
+  assert.doesNotMatch(said(), /o teto se desligou nesta decisão/,
+    'a false bypass never earns the sentence (DESIGN.md §2 rule 2)');
+});
+
+test('a multiplier exactly AT the ceiling is not above it', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = tierPolicy();
+  // The plan's own multipliers are the numbers the ordering decision ran on,
+  // so the mark reads them — and 1.5× against a 1.5× ceiling is eligible.
+  api.renderChainPlan(chainPlan({
+    time_cap: { max_multiplier: 1.5 },
+    utc_hour: 14, utc_weekday: 0,
+    multipliers: { 'm-at': 1.5, 'm-over': 2.0 },
+    chain: [{ model: 'm-at', provider: 'zai' }, { model: 'm-over', provider: 'deepseek' }],
+  }));
+  const caps = findAll(dom.get('chainPlan'), 'hop-cap');
+  assert.equal(caps.length, 1, '2.0× is above the ceiling, 1.5× is not');
+  assert.match(caps[0].textContent, /acima do teto agora/);
+});
+
+test('the mark says when the attempt comes back under the ceiling — and only then', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = tierPolicy();
+  // At 06:00 both attempts bill 2.0×, over the 1.5× ceiling. m-drop's window
+  // ends at 10:00, back at base; m-hike's window hands over to ANOTHER peak at
+  // 10:00 (3.0×), so it never comes back under: claiming "entra no teto" there
+  // would state a future that never happens.
+  api.renderChainPlan(chainPlan({
+    time_cap: { max_multiplier: 1.5 },
+    utc_hour: 6, utc_weekday: 0,
+    chain: [
+      { model: 'm-drop', provider: 'zai', price_windows: [{ hours_utc: [6, 10], multiplier: 2 }] },
+      { model: 'm-hike', provider: 'deepseek', price_windows: [{ hours_utc: [6, 10], multiplier: 2 }, { hours_utc: [10, 14], multiplier: 3 }] },
+    ],
+  }));
+  const caps = findAll(dom.get('chainPlan'), 'hop-cap').map((n) => n.textContent);
+  assert.deepEqual(caps,
+    ['acima do teto agora · entra no teto às 10:00 UTC', 'acima do teto agora'],
+    "the next turn ends m-drop's peak but keeps m-hike over the ceiling");
+});
+
+test('the ladder marks the attempts above the group ceiling at the console hour', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.clock = new Date(Date.UTC(2026, 7, 17, 14, 0));
+  api.state.policy = {
+    rules: [], default: {},
+    tiers: {
+      T1: {
+        model: 'glm-4.7', provider: 'zai', billing_mode: 'plan',
+        fallback: [{ model: 'gpt-5.6-luna', provider: 'openai-codex', billing_mode: 'subscription' }],
+        time_cap: { max_multiplier: 1.5 },
+      },
+    },
+  };
+  api.state.capabilities = {
+    'glm-4.7': { provider: 'zai', billing_mode: 'plan', price_windows: [{ hours_utc: [12, 16], multiplier: 2 }] },
+    'gpt-5.6-luna': { provider: 'openai-codex', billing_mode: 'subscription', price_windows: [{ hours_utc: [6, 10], multiplier: 2 }] },
+  };
+  api.renderLadder();
+  const marks = findAll(dom.get('ladder'), 'hop-cap');
+  assert.equal(marks.length, 1,
+    'at 14:00 the primary bills 2.0× (over 1.5×) and the fallback is at base');
+  assert.match(marks[0].textContent, /acima do teto agora/);
+});
+
 test('a degraded strategy names the DECLARED word and the router\'s own reason', () => {
   const { api, dom } = loadConsole();
   api.state.policy = tierPolicy();
