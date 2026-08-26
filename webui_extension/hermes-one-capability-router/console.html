@@ -402,6 +402,23 @@
     .group-head.later { margin-top: 26px; }
     .nothing { color: var(--muted); font-size: var(--t-body); padding: 4px 0; }
 
+    /* ── ONE MEASURE FOR PROSE, WHEREVER PROSE LANDS ────────────────────────
+       Every class here carries sentences, and at the panel's full width they ran to
+       146 characters — measured on the preset lede — which is twice a readable line.
+       The cap was first attached to the two group classes a review pointed at, and
+       prose simply landed elsewhere: a measure that belongs to a class only holds
+       where that class went, so it belongs to the KIND of content instead.
+       `balance` and not `pretty` for the same reason recorded above: measured on this
+       surface, `pretty` left last lines at 24%, 13% and 5% of the first line's width
+       and `balance` puts them at 91-95%.
+       Absent on purpose: the chain rows, the chips, the `Ordem:` knob line and every
+       mono value. Those are data, not prose, and a measure would only wrap them. */
+    .section-lead, .tier-what, .tier-fact:not(.tier-order), .tier-note,
+    .preset-metric, .preset-consequence, .row-why, .editor-scope,
+    .field-note, .step-when, .verdict {
+      max-width: 74ch; text-wrap: balance;
+    }
+
     /* Rows: the console's one structural primitive. */
     .row {
       display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
@@ -713,12 +730,12 @@
        all four at 91-95%, which is the two-line block these facts want. They are two
        or three lines, well inside the engine's balancing cap. Unsupported engines fall
        back to `wrap`, which is what these lines did before the cap. */
-    .tier-fact { color: var(--muted); font-size: var(--t-small); max-width: 74ch; text-wrap: balance; }
+    .tier-fact { color: var(--muted); font-size: var(--t-small); }
     /* WHAT WORK LANDS HERE is the group's own answer, so it is the one line in the
        block at text weight. The rest — who sends to it, how it orders, what it will
        decline to pay — are supporting facts and stay one step down. Four kinds of
        fact at one voice is a block that has to be read whole to be read at all. */
-    .tier-what { color: var(--text); font-size: var(--t-body); max-width: 74ch; text-wrap: balance; }
+    .tier-what { color: var(--text); font-size: var(--t-body); }
     .tier-fact.thin { color: var(--warn-text); }
     /* A finding about the chain, in a line — the same shape the console uses for
        every other condition that needs an operator, one step quieter. */
@@ -4394,8 +4411,7 @@
             item.setAttribute('aria-current', 'true');
             // The form, physically next to the row it edits. One #inspector node
             // exists, so attaching it here is also what enforces "one editor open".
-            const box = $('inspector');
-            if (box) item.append(box);
+            item.append(inspectorBox());
           }
           return item;
         };
@@ -5017,8 +5033,7 @@
           warnings.forEach((warn) => block.append(el('div', 'tier-note', warn)));
           // The form, inside the group it edits — the same rule the sheet follows.
           if (open) {
-            const inspector = $('inspector');
-            if (inspector) block.append(inspector);
+            block.append(inspectorBox());
           }
           box.append(block);
         });
@@ -5059,7 +5074,31 @@
         const group = el('div', 'group');
         const head = el('div', 'group-head');
         head.append(el('h2', '', 'Último recurso'));
+        // WHERE THIS ONE IS EDITED, said on the block that shows it. Every group above
+        // carries an Editar in this column and this block carried nothing, while
+        // `fail_safe` is in the file's own EDITABLE set — the object is editable and the
+        // surface that displays it did not say so, which is the shape of the complaint
+        // this build exists to answer.
+        //
+        // It JUMPS to the row that owns the editor instead of opening a second one, and
+        // that is deliberate: this block and the sheet's last step are two views of ONE
+        // object, and two attach points for one singleton editor means the form lands in
+        // whichever renderer ran last. One place to edit it, named, with the way there.
+        const act = el('div', 'step-act');
+        const go = el('button', 'btn btn-quiet', 'Editar');
+        go.type = 'button';
+        go.title = 'Editar o último recurso, em Regras · Quando tudo falha';
+        go.addEventListener('click', () => {
+          openEditor({ id: 'fail_safe', name: 'Quando tudo falha', bind: 'fail_safe' });
+          const row = findRuleRow('__fail_safe');
+          if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' });
+        });
+        act.append(go);
+        head.append(act);
         group.append(head);
+        // The note BEFORE the chain, which is the order every other block on this screen
+        // reads in: what this queue is, then the queue. It sat after the rows.
+        group.append(el('div', 'tier-what', 'Esta fila não passa pelos grupos. É a última coisa que o roteador tenta.'));
         const when = whenOf(nowUtc());
         group.append(chainList(tierChain(fs), {
           strategy: strategyWords('sequential'),
@@ -5069,9 +5108,6 @@
           live: liveMultipliers(state.liveness, when),
           showPrice: false,
         }));
-        // The note the sheet's synthetic row already carries — one fact, two
-        // surfaces, one sentence.
-        group.append(el('div', 'tier-fact', 'Esta fila não passa pelos grupos. É a última coisa que o roteador tenta.'));
         box.append(group);
       }
 
@@ -5120,8 +5156,7 @@
           }
           row.append(act);
           if (opts.open) {
-            const inspector = $('inspector');
-            if (inspector) row.append(inspector);
+            row.append(inspectorBox());
           }
           box.append(row);
         };
@@ -6663,8 +6698,29 @@
         render();
       }
 
+      // The editor's own node, which OUTLIVES the row that adopted it.
+      //
+      // The form is a singleton moved next to whatever is being edited, so it ends up a
+      // child of a sheet row — and the next renderSheet() starts with clear(), which
+      // removes that row and destroys the editor with it. Measured in the browser: the
+      // first Editar built its form, and every Editar after it set the state, marked the
+      // row and rendered nothing, because getElementById answered null from then on.
+      // That is the complaint this whole build exists to fix, one interaction later.
+      //
+      // So the node is fetched through here and rebuilt when the document no longer has
+      // one. The id is unchanged, which is what the tests and the CSS match on. The DOM
+      // stub cannot reproduce the loss — it creates any id on demand — so this accessor
+      // is checked statically and the behaviour is verified in a real browser.
+      function inspectorBox() {
+        const found = $('inspector');
+        if (found) return found;
+        const fresh = el('div');
+        fresh.id = 'inspector';
+        return fresh;
+      }
+
       function renderInspector(node) {
-        const box = $('inspector');
+        const box = inspectorBox();
         clear(box);
         // The node object behind `selected`: the staleness guard re-renders the
         // inspector from it after a refused write, so the panel cannot keep
