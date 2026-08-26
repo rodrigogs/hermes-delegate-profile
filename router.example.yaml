@@ -20,7 +20,7 @@
 #      06:00-10:00; zai's window is Mon-Fri); on the reference install (UTC-03)
 #      06:00-10:00 UTC is 03:00-07:00 local, i.e. overnight unattended work pays
 #      double on both primary rails at once. Where the two windows DIVERGE is
-#      where T3/T4's `avoid_peak` reorders — 29 of the week's 168 hours — so work
+#      where T3/T4's `avoid_peak` reorders — 15 of the week's 168 hours — so work
 #      out where BOTH blocks land in your timezone before tuning anything
 #      time-related.
 #   3. WHETHER TO ENABLE the commented-out `defer-heavy-work-off-peak` rule

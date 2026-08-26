@@ -2431,8 +2431,8 @@ def test_capabilities_serves_the_facts_the_price_audit_needs(capability_config_p
     assert flash["in_registry"] is True
     # Windows verbatim, so a consumer can price ANY hour instead of one.
     assert flash["price_windows"] == [
-        {"hours_utc": [1, 4], "multiplier": 2.0},
-        {"hours_utc": [6, 10], "multiplier": 2.0},
+        {"hours_utc": [1, 4], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
+        {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
     ]
     # A catalogue, not a credential store — and no free-text `notes` either,
     # which is the field a pasted key would land in.

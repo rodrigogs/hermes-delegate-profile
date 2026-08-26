@@ -1038,7 +1038,7 @@ def test_the_reference_clocks_are_the_weekdays_they_claim():
 # ---------------------------------------------------------------------------
 
 def test_deepseek_peak_boundaries_are_half_open():
-    # 01:00-04:00 and 06:00-10:00 UTC, every day.
+    # 01:00-04:00 and 06:00-10:00 UTC, Monday through Friday (WED here).
     expected = {
         0: 1.0, 1: 2.0, 2: 2.0, 3: 2.0, 4: 1.0, 5: 1.0,
         6: 2.0, 7: 2.0, 9: 2.0, 10: 1.0, 23: 1.0,
@@ -1052,15 +1052,35 @@ def test_deepseek_peak_boundaries_are_half_open():
         ) == multiplier, hour
 
 
+def test_deepseek_peak_does_not_reach_the_weekend():
+    """The vendor bills the whole weekend off-peak, and said so only on 2026-08-22.
+
+    Measured 2026-08-26 on api-docs.deepseek.com: "Peak hours are 01:00 - 04:00
+    and 06:00 - 10:00 UTC, Monday through Friday (all other hours are
+    off-peak)". The clause is NOT in the official changelog — Wayback snapshots
+    of the same URL bracket the edit between 21/08 15:13 (absent) and 24/08 17:18
+    (present). Our entry was right when it was written and went stale in four
+    days, which is the whole argument for checking a vendor page instead of
+    trusting the last reading of it.
+
+    Without the weekday gate the router priced 14 h/week (7 h on each weekend
+    day) at 2.0x while the invoice says 1.0x. That never overbills: it routes
+    away from deepseek toward rivals that are not actually cheaper, and the money
+    leaves through the other provider's bill where nobody is looking for it.
+    """
+    for day in (SAT, SUN):
+        for hour in (1, 2, 3, 6, 8, 9):
+            assert price_multiplier("deepseek-v4-pro", _at(day, hour)) == 1.0, (day, hour)
+            assert price_multiplier("deepseek-v4-flash", _at(day, hour)) == 1.0, (day, hour)
+    # and the weekday peak is untouched
+    assert price_multiplier("deepseek-v4-pro", _at(WED, 2)) == 2.0
+    assert price_multiplier("deepseek-v4-pro", _at(FRI, 8)) == 2.0
+
+
 def test_the_start_hour_is_inside_and_the_end_hour_is_outside():
     assert price_multiplier("deepseek-v4-pro", _at(WED, 6)) == 2.0
     assert price_multiplier("deepseek-v4-pro", _at(WED, 9, 59)) == 2.0
     assert price_multiplier("deepseek-v4-pro", _at(WED, 10)) == 1.0
-
-
-def test_deepseek_peak_applies_on_the_weekend_too():
-    assert price_multiplier("deepseek-v4-pro", _at(SAT, 7)) == 2.0
-    assert price_multiplier("deepseek-v4-pro", _at(SUN, 2)) == 2.0
 
 
 def test_xiaomi_night_window_is_a_discount_not_a_peak():
@@ -1238,8 +1258,8 @@ def test_price_multiplier_never_mutates_the_registry():
     declared = {"price_windows": [{"hours_utc": [0, 1], "multiplier": 5.0}]}
     price_multiplier("deepseek-v4-pro", _at(WED, 0), declared)
     assert MODEL_CAPABILITIES["deepseek-v4-pro"]["price_windows"] == [
-        {"hours_utc": [1, 4], "multiplier": 2.0},
-        {"hours_utc": [6, 10], "multiplier": 2.0},
+        {"hours_utc": [1, 4], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
+        {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
     ]
 
 
@@ -2899,11 +2919,11 @@ def _week() -> list:
     ]
 
 
-def test_the_shipped_t3_policy_reorders_for_29_hours_of_the_week():
+def test_the_shipped_t3_policy_reorders_for_15_hours_of_the_week():
     """The claim router.yaml used to make — "REORDERS NOTHING", "the permutation
     is the IDENTITY", verified at 07:00Z and 15:00Z — swept across the week.
 
-    It is wrong for 29 of 168 hours (17.26%), and what changes is which model
+    It is wrong for 15 of 168 hours (8.93%), and what changes is which model
     serves the SECOND hop of every hard task: metered deepseek-v4-pro out,
     plan-billed glm-5.3 in. The identity holds only where BOTH named providers
     peak together, which is the four weekday hours 07:00Z happens to land in.
@@ -2927,9 +2947,9 @@ def test_the_shipped_t3_policy_reorders_for_29_hours_of_the_week():
         )
         seen.setdefault(key, []).append((when.weekday(), when.hour))
 
-    # deepseek peaks 01:00-04:00 and 06:00-10:00 EVERY day; zai only 06:00-10:00
-    # MON-FRI. So the pair separates whenever deepseek peaks alone: 01:00-04:00
-    # all week (21h) plus 06:00-10:00 at the weekend (8h).
+    # Both vendors peak MON-FRI only (deepseek narrowed to weekdays on
+    # 2026-08-22), so the pair separates exactly where deepseek peaks alone:
+    # 01:00-04:00 Mon-Fri, 15 hours. The weekend is quiet for both.
     reordered = (
         ("gpt-5.6-terra", "glm-5.3", "deepseek-v4-pro"),
         ("deepseek-v4-pro",),
@@ -2938,12 +2958,11 @@ def test_the_shipped_t3_policy_reorders_for_29_hours_of_the_week():
     both_peaking = (tuple(declared), (), ("deepseek-v4-pro", "glm-5.3"))
     quiet = (tuple(declared), (), ())
     assert set(seen) == {reordered, both_peaking, quiet}
-    assert len(seen[reordered]) == 29
+    assert len(seen[reordered]) == 15
     assert len(seen[both_peaking]) == 20
-    assert len(seen[quiet]) == 119
+    assert len(seen[quiet]) == 133
     assert sorted(seen[reordered]) == sorted(
-        [(day, hour) for day in range(7) for hour in (1, 2, 3)]
-        + [(day, hour) for day in (5, 6) for hour in (6, 7, 8, 9)]
+        [(day, hour) for day in range(5) for hour in (1, 2, 3)]
     )
     assert sorted(seen[both_peaking]) == sorted(
         [(day, hour) for day in range(5) for hour in (6, 7, 8, 9)]
@@ -2951,7 +2970,10 @@ def test_the_shipped_t3_policy_reorders_for_29_hours_of_the_week():
     # The identity IS what 07:00Z on a weekday reports — the comment's sample was
     # true about its hour and false about the week.
     assert (_at(MON, 7).weekday(), 7) in seen[both_peaking]
-    assert (_at(SAT, 7).weekday(), 7) in seen[reordered]
+    # Saturday 07:00 used to be deepseek peaking alone, which is why the old
+    # sample landed in `reordered`. Since 2026-08-22 the vendor bills the whole
+    # weekend off-peak, so the same hour is now quiet for both.
+    assert (_at(SAT, 7).weekday(), 7) in seen[quiet]
 
 
 def test_the_shipped_t2_tail_flips_on_deepseeks_window_alone():
@@ -2989,9 +3011,9 @@ def test_the_shipped_t2_tail_flips_on_deepseeks_window_alone():
         else:
             assert not in_expensive_window("deepseek-v4-flash", when), when
 
-    assert len(flipped) == 49
+    assert len(flipped) == 35
     assert sorted(flipped) == sorted(
-        [(day, hour) for day in range(7) for hour in (1, 2, 3, 6, 7, 8, 9)]
+        [(day, hour) for day in range(5) for hour in (1, 2, 3, 6, 7, 8, 9)]
     )
     # Every one of those hours is deepseek's alone; zai's Mon-Fri window overlaps
     # 20 of them and explains none of them.

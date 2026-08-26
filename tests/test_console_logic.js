@@ -4117,9 +4117,11 @@ test('the verified windows price the hour they say they do', () => {
   const zai = api.eloWindows(catalogueEntry('glm-4.7'));
   const xiaomi = api.eloWindows(catalogueEntry('mimo-v2.5'));
 
-  // deepseek: both peaks, every day.
+  // deepseek: both peaks, Mon-Fri. The vendor narrowed it to weekdays on
+  // 2026-08-22 (silent edit of the pricing page, absent from the changelog).
   assert.equal(api.priceMultiplier(deepseek, { hour: 1, weekday: 0 }), 2);
-  assert.equal(api.priceMultiplier(deepseek, { hour: 3, weekday: 6 }), 2, 'every day, including Sunday');
+  assert.equal(api.priceMultiplier(deepseek, { hour: 3, weekday: 4 }), 2, 'Friday still peaks');
+  assert.equal(api.priceMultiplier(deepseek, { hour: 3, weekday: 6 }), 1, 'Sunday bills off-peak');
   assert.equal(api.priceMultiplier(deepseek, { hour: 4, weekday: 0 }), 1, 'half-open: hour 4 is already base');
   assert.equal(api.priceMultiplier(deepseek, { hour: 7, weekday: 0 }), 2);
   assert.equal(api.priceMultiplier(deepseek, { hour: 10, weekday: 0 }), 1, 'half-open: hour 10 is already base');
@@ -4138,8 +4140,14 @@ test('the verified windows price the hour they say they do', () => {
   assert.equal(api.priceMultiplier(zai, { hour: 7, weekday: null }), 1);
   assert.deepEqual(plain(api.planWhen({ utc_hour: 7 }, PEAK)).when, { hour: 7, weekday: null },
     'the shape the console really builds');
-  assert.equal(api.priceMultiplier(deepseek, { hour: 7, weekday: null }), 2,
+  // The ungated exemplar is xiaomi's night discount: it carries no `weekdays`, so
+  // an unknown day cannot block it. deepseek used to play this role and stopped
+  // being ungated on 2026-08-22 — a test that needs "ungated" must not depend on
+  // a vendor's current calendar to still have one.
+  assert.equal(api.priceMultiplier(xiaomi, { hour: 18, weekday: null }), 0.8,
     'an ungated window still matches — an unknown day only blocks a gated one');
+  assert.equal(api.priceMultiplier(deepseek, { hour: 7, weekday: null }), 1,
+    'and deepseek is gated now, so an unknown day blocks it too');
 
   // xiaomi is the one that goes the other way — a discount, not a peak.
   assert.equal(api.priceMultiplier(xiaomi, { hour: 18, weekday: 0 }), 0.8);
@@ -4179,7 +4187,10 @@ test('the next change is a real hour, so "until when" is not invented', () => {
   // would count down to may be two days off, so null is the only honest answer. An
   // ungated window is unaffected, because it does not depend on the day.
   assert.equal(api.nextWindowChange(zai, { hour: 7, weekday: null }), null);
-  assert.equal(api.nextWindowChange(deepseek, { hour: 7, weekday: null }).hour, 10);
+  assert.equal(api.nextWindowChange(deepseek, { hour: 7, weekday: null }), null,
+    'deepseek is weekday-gated since 2026-08-22, so it answers null too');
+  assert.equal(api.nextWindowChange(xiaomi, { hour: 18, weekday: null }).hour, 0,
+    'an ungated window still answers — the discount ends at midnight');
 });
 
 test('a rail says what it costs now and until when, in one clause', () => {

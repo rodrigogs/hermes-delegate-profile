@@ -2884,12 +2884,21 @@ class TestTimeCap(_NeedsRegistry):
         assert plan["capped"] == []
         assert plan["time_cap_bypassed"] is False
 
-    def test_the_weekend_exempts_zai_but_not_deepseek(self):
-        """The `weekdays` key is the whole point: same hour, different answer."""
+    def test_the_weekend_exempts_both_vendors_now(self):
+        """The weekend is off-peak for zai AND deepseek, so nothing is capped.
+
+        This test used to be named for an asymmetry — zai exempt on Saturday,
+        deepseek not — and that asymmetry ended on 2026-08-22, when deepseek
+        narrowed its peak to Monday-Friday (measured 2026-08-26 on
+        api-docs.deepseek.com; the vendor edited the page without a changelog
+        entry). The `weekdays` mechanism itself stays covered without depending on
+        a vendor calendar: test_capabilities pins zai's Saturday exemption and
+        deepseek's in test_deepseek_peak_does_not_reach_the_weekend.
+        """
         plan = plan_chain(resolve_tiers({"model": "T1"}, TIME_TIERS), _mkf(),
                           when=PEAK_SATURDAY)
-        assert _models(plan) == ["gpt-5.6-terra", "glm-5.3"]
-        assert [c["model"] for c in plan["capped"]] == ["deepseek-v4-pro"]
+        assert _models(plan) == ["gpt-5.6-terra", "deepseek-v4-pro", "glm-5.3"]
+        assert plan["capped"] == []
 
     def test_bypass_restores_the_chain_and_keeps_the_diagnostics(self):
         """A cost control must never be able to cause an outage.

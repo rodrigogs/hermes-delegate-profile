@@ -71,9 +71,16 @@ Vendor context that does not fit a registry field, kept here so it is not lost:
     06:00-10:00 UTC on WEEKDAYS ONLY, encoded as a weekday-gated 2.0x window on
     the four plan-covered models. The whole weekend bills off-peak.
   deepseek — prices changed 2026-08-16 16:00 UTC and gained a peak/off-peak
-    split: "Off-peak rates are half of the peak rates. Peak hours are
-    01:00 - 04:00 and 06:00 - 10:00 UTC (all other hours are off-peak)", input,
-    cached input and output alike. ``price_in``/``price_out`` hold the OFF-PEAK
+    split. The vendor then narrowed it to WEEKDAYS on 2026-08-22 16:00 UTC, by a
+    SILENT edit of the pricing page: the change is absent from the official
+    changelog, and Wayback snapshots of the same URL bracket it (21/08 15:13 has
+    no day clause; 24/08 17:18 has it). Current literal text, read 2026-08-26:
+    "Off-peak rates are half of the peak rates. Peak hours are 01:00 - 04:00 and
+    06:00 - 10:00 UTC, Monday through Friday (all other hours are off-peak)" —
+    input, cached input and output alike. The weekday gate below was added then;
+    without it the router priced 14 h/week at 2.0x that the vendor bills at 1.0x,
+    which never overbills but routes AWAY from deepseek to rivals that are not
+    actually cheaper. ``price_in``/``price_out`` hold the OFF-PEAK
     (base) price and peak is a 2.0x ``price_windows`` entry, EVERY day.
   xiaomi — the one provider whose window is CHEAP rather than expensive: 0.8x
     during 16:00-00:00 UTC (the 00:00-08:00 UTC+8 night discount).
@@ -531,8 +538,8 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         # Peak is EVERY day, so no `weekdays` gate. Two entries because
         # 01:00-04:00 and 06:00-10:00 are disjoint, not one wrapping window.
         "price_windows": [
-            {"hours_utc": [1, 4], "multiplier": 2.0},
-            {"hours_utc": [6, 10], "multiplier": 2.0},
+            {"hours_utc": [1, 4], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
+            {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
         ],
         "notes": "cache-hit input 0.007 off-peak",
     },
@@ -547,8 +554,8 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "price_in": 0.66,
         "price_out": 1.98,
         "price_windows": [
-            {"hours_utc": [1, 4], "multiplier": 2.0},
-            {"hours_utc": [6, 10], "multiplier": 2.0},
+            {"hours_utc": [1, 4], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
+            {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
         ],
         "notes": "cache-hit input 0.022 off-peak",
     },
