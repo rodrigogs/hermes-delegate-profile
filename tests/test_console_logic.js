@@ -6543,12 +6543,15 @@ test('the staleness comparison is JSON-deep: reordered keys are equal, different
 test('a write is refused when the file changed since the screen read it', async () => {
   // The disk now carries a rule this screen has never seen (a CLI edit or
   // another tab since load()). The refusal is a reload, not a "are you sure":
-  // the message is the §4.7 literal and the /apply never fires.
+  // the message is the §4.7 literal — grown to NAME the rule that appeared —
+  // and neither /plan nor /apply ever fires.
   const applied = [];
+  const planned = [];
   const { api } = loadConsole({
     csrfToken: 'tok',
-    fetch: (url) => {
+    fetch: (url, opts) => {
       if (/\/apply$/.test(url)) applied.push(url);
+      if (opts && opts.method === 'POST' && /\/plan$/.test(url)) planned.push(url);
       if (url.endsWith('/policy')) {
         return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ rules: [{ id: 'concurrent' }] })) });
       }
@@ -6559,8 +6562,11 @@ test('a write is refused when the file changed since the screen read it', async 
   const msg = { textContent: '', className: '' };
   await api.doApply('/apply', msg, { rules: [{ id: 'mine' }] });
 
-  assert.match(msg.textContent, /O arquivo mudou por fora desde que esta tela leu\. Recarreguei tudo; confira e tente de novo\./);
+  assert.equal(msg.textContent,
+    'O arquivo mudou por fora desde que esta tela leu: a regra 1 mudou. Recarreguei tudo; confira e tente de novo.',
+    'the refusal names the object that drifted, in the §4.7 sentence');
   assert.match(msg.className, /bad/);
+  assert.deepEqual(planned, [], 'a refused write must not reach /plan');
   assert.deepEqual(applied, [], 'a refused write must not reach /apply');
   assert.equal(api.state.plan, null, 'the stale plan must not survive to be applied');
   assert.equal(api.state.draft, null, 'the stale draft must not survive to be re-applied');
@@ -6588,6 +6594,96 @@ test('a write proceeds when the file is exactly the snapshot the screen shows', 
 
   assert.equal(applied.length, 1, 'the write happens when nothing changed underneath');
   assert.match(msg.textContent, /Vale para as próximas tarefas/, '§2.7: the write names its scope');
+});
+
+// ── the staleness guard names the object that drifted (§4.7) ────────────
+// The refusal used to say "the file changed" and stop; the operator replanned
+// in the dark. diffObjects names the four projections /policy carries — rules
+// by POSITION (order IS the semantics), tiers by key, the two fallbacks as
+// single objects — and the clause the refusal grows names them with the words
+// this console already uses for them.
+
+test('diffObjects names rules by position, tiers by key, and the two fallbacks', () => {
+  const { api } = loadConsole();
+  const base = {
+    rules: [
+      { id: 'a', status: 'stable', when: { size_lines: { gt: 10 } }, then: { model: 'glm-5.3', provider: 'zai' } },
+      { id: 'b', status: 'stable', when: { size_lines: { gt: 400 } }, then: { model: 'glm-4.7', provider: 'zai' } },
+    ],
+    default: { model: 'glm-5.3', provider: 'zai' },
+    tiers: {
+      T1: { model: 'glm-4.7', provider: 'zai', fallback: ['glm-4.6'] },
+      T2: { model: 'glm-5.2', provider: 'zai' },
+    },
+    fail_safe: { model: 'glm-4.6', provider: 'zai' },
+  };
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+  const cases = [
+    { name: 'só then.model de uma regra', mutate: (p) => { p.rules[1].then.model = 'glm-5.2'; }, expect: [{ kind: 'rule', index: 1 }] },
+    { name: 'só a ordem de duas regras — posição é a semântica', mutate: (p) => { p.rules.reverse(); }, expect: [{ kind: 'rule', index: 0 }, { kind: 'rule', index: 1 }] },
+    { name: 'grupo com fallback diferente', mutate: (p) => { p.tiers.T1.fallback = ['glm-4.5']; }, expect: [{ kind: 'tier', key: 'T1' }] },
+    { name: 'fail_safe removido', mutate: (p) => { delete p.fail_safe; }, expect: [{ kind: 'fail_safe' }] },
+    { name: 'default alterado', mutate: (p) => { p.default.model = 'glm-5.4'; }, expect: [{ kind: 'default' }] },
+    { name: 'nada mudou', mutate: () => {}, expect: [] },
+  ];
+  cases.forEach((c) => {
+    const lido = clone(base);
+    const atual = clone(base);
+    c.mutate(atual);
+    assert.deepEqual(plain(api.diffObjects(lido, atual)), c.expect, c.name);
+  });
+});
+
+test('inserting a rule in the middle names the inserted AND the shifted ones', () => {
+  // Position is the semantics: a rule inserted at index 1 moves everything
+  // after it, so the diff names the insertion and both displaced rules. The
+  // phrase does not try to be smarter than the comparison is.
+  const { api } = loadConsole();
+  const lido = { rules: [{ id: 'a' }, { id: 'b' }, { id: 'c' }], tiers: {}, default: {}, fail_safe: {} };
+  const atual = { rules: [{ id: 'a' }, { id: 'x' }, { id: 'b' }, { id: 'c' }], tiers: {}, default: {}, fail_safe: {} };
+  assert.deepEqual(plain(api.diffObjects(lido, atual)),
+    [{ kind: 'rule', index: 1 }, { kind: 'rule', index: 2 }, { kind: 'rule', index: 3 }]);
+});
+
+test('the staleness clause names 1, 2 and 4 objects, exact', () => {
+  const { api } = loadConsole();
+  assert.equal(api.staleClause([{ kind: 'rule', index: 0 }]), 'a regra 1 mudou');
+  assert.equal(api.staleClause([{ kind: 'rule', index: 2 }, { kind: 'tier', key: 'T2' }]),
+    'a regra 3 e o grupo T2 mudaram');
+  assert.equal(api.staleClause([
+    { kind: 'rule', index: 2 }, { kind: 'tier', key: 'T2' },
+    { kind: 'default' }, { kind: 'fail_safe' },
+  ]), 'a regra 3, o grupo T2, o destino padrão e o último recurso mudaram');
+  assert.equal(api.staleClause([]), 'mudou em algo que esta tela não sabe nomear',
+    'an empty diff is the "cannot name" clause, never a green light');
+});
+
+test('a refusal still happens when the drift is in something the screen cannot name', async () => {
+  // Mutation 1: the guard must not relax to "refuse only when the diff names
+  // something". Two snapshots that differ OUTSIDE the four /policy projections
+  // (here a key the route does not project today — the point is the comparison
+  // sees the file changed and diffObjects finds nothing to name) still refuse,
+  // with the "cannot name" clause, and never reach /plan.
+  const planned = [];
+  const { api } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.method === 'POST' && /\/plan$/.test(url)) planned.push(url);
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ rules: [], future_projection: 1 })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = { rules: [] };
+  const msg = { textContent: '', className: '' };
+  await api.doApply('/apply', msg, { rules: [{ id: 'mine' }] });
+
+  assert.equal(msg.textContent,
+    'O arquivo mudou por fora desde que esta tela leu: mudou em algo que esta tela não sabe nomear. Recarreguei tudo; confira e tente de novo.');
+  assert.match(msg.className, /bad/);
+  assert.deepEqual(planned, [], 'a refused write never reaches /plan');
+  assert.equal(api.state.plan, null);
 });
 
 test('the inspector Apply sends the touched fragment, never the whole policy (§5.2)', async () => {
@@ -6808,8 +6904,9 @@ test('a refused write rebuilds the inspector from the reloaded policy, dropping 
   apply._listeners.click();
   await tick();
 
-  assert.match(dom.get('nodeMsg').textContent, /mudou por fora/,
-    'the rebuilt panel carries the conflict text on its message line');
+  assert.equal(dom.get('nodeMsg').textContent,
+    'O arquivo mudou por fora desde que esta tela leu: o grupo T2 mudou. Recarreguei tudo; confira e tente de novo.',
+    'the rebuilt panel names the group that drifted, on its message line');
   assert.deepEqual(api.state.policy, { tiers: { T2: { model: 'new', provider: 'zai' } } },
     'the reload replaced the snapshot');
   const fresh = byLabel(dom.get('inspector'), 'Provedor').children.find((c) => c.tagName === 'input');
@@ -6852,6 +6949,9 @@ test('the §4.7 write literals are exact, and each lives in exactly one place: t
     `'${api.WRITE.revert}'`, `'${api.WRITE.revertConfirm}'`, `'${api.WRITE.checking}'`,
     `'${api.WRITE.noDraft}'`, `'${api.WRITE.noop}'`, `'${api.WRITE.lintError}'`,
     `'${api.WRITE.conflict}'`, `'${api.WRITE.inFlight}'`, `'${api.WRITE.saved}'`,
+    // This card's additions — the named staleness refusal and its "cannot
+    // name" fallback live in the map, once each, like the sentence they grow.
+    `'${api.WRITE.conflictNamed}'`, `'${api.WRITE.conflictUnknown}'`,
     `'${api.WRITE.httpError}'`, `'${api.WRITE.invalid}'`,
     'Não é possível {action} com esta tela aberta fora do Hermes One: o navegador não manda a credencial da sessão. Abra o Hermes One e volte aqui pelo menu lateral.',
     // This card's additions — every new surface word lives in the map, once.
@@ -8847,8 +8947,9 @@ test('removing a ban refuses when the blocklist moved since the screen read it',
   findAll(dom.get('bans'), 'btn')[0]._listeners.click();
   await tick();
 
-  assert.match(dom.get('bansMsg').textContent, /mudou por fora/,
-    '§4.7: the refusal says the file moved and that the screen reloaded');
+  assert.equal(dom.get('bansMsg').textContent,
+    'O arquivo mudou por fora desde que esta tela leu: mudou em algo que esta tela não sabe nomear. Recarreguei tudo; confira e tente de novo.',
+    '§4.7: the blocklist drift refuses with the "cannot name" clause — blocklist is not one of the four named projections');
   assert.match(dom.get('bansMsg').className, /bad/);
   assert.equal(calls.filter((u) => u.endsWith('/blocklist')).length, 2,
     'the guard re-read the blocklist, and the refusal reloaded the screen');

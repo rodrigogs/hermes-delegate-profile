@@ -3121,6 +3121,17 @@
         noop: 'Nada mudou em relação ao arquivo atual, então não há o que salvar. Salvar do mesmo jeito apagaria a cópia que "Voltar à versão anterior" restauraria.',
         lintError: 'Não é possível salvar enquanto houver erro. {N} erro(s) no arquivo.',
         conflict: 'O arquivo mudou por fora desde que esta tela leu. Recarreguei tudo; confira e tente de novo.',
+        // The staleness refusal NAMES the object that drifted — the guard
+        // holds the two snapshots, so "the file changed" alone sent the
+        // operator back to the plan in the dark. The template is the same
+        // sentence, with the clause grown in; conflictUnknown is that clause
+        // when the drift is in something this screen cannot name, and the
+        // refusal still happens — a diff that names nothing must not become
+        // a write. The plain conflict above stays for the 409 path, which
+        // has no snapshot to diff: the server caught the race at write time,
+        // and the next Salvar goes through the guard, which names.
+        conflictNamed: 'O arquivo mudou por fora desde que esta tela leu: {clause}. Recarreguei tudo; confira e tente de novo.',
+        conflictUnknown: 'mudou em algo que esta tela não sabe nomear',
         inFlight: 'Uma gravação já está em andamento.',
         saved: 'Salvo. Vale para as próximas tarefas. Tarefas já em execução continuam no modelo que já escolheram. Não precisa reiniciar nada.',
         httpError: 'Falhou (HTTP {st}).',
@@ -6954,6 +6965,66 @@
         return false;
       }
 
+      // ── what the staleness guard names (§4.7) ──────────────────────────
+      // The refusal used to say "the file changed" without saying WHAT, and
+      // the operator replanned in the dark. diffObjects names the four
+      // projections /policy carries — rules by POSITION (list order IS the
+      // semantics: inserting a rule in the middle shifts everything after
+      // it, so the inserted one and the shifted ones are all named, and the
+      // phrase does not try to be smarter than that), tiers by KEY, and the
+      // two fallbacks as single objects. It reuses samePolicy per node —
+      // there is no second notion of "equal", because a second comparator
+      // is how the guard and the diff would come to disagree. A drift the
+      // two snapshots carry OUTSIDE these four (blocklist, a future
+      // projection) yields an empty list: the guard still refuses, saying
+      // it changed in something this screen cannot name.
+      function diffObjects(lido, atual) {
+        const out = [];
+        if (!lido || typeof lido !== 'object' || !atual || typeof atual !== 'object') return out;
+        const lr = Array.isArray(lido.rules) ? lido.rules : [];
+        const ar = Array.isArray(atual.rules) ? atual.rules : [];
+        const rules = Math.max(lr.length, ar.length);
+        for (let i = 0; i < rules; i += 1) {
+          if (!samePolicy(lr[i], ar[i])) out.push({ kind: 'rule', index: i });
+        }
+        const lt = (lido.tiers && typeof lido.tiers === 'object') ? lido.tiers : {};
+        const at = (atual.tiers && typeof atual.tiers === 'object') ? atual.tiers : {};
+        const tierKeys = new Set(Object.keys(lt).concat(Object.keys(at)));
+        tierKeys.forEach((key) => {
+          if (!samePolicy(lt[key], at[key])) out.push({ kind: 'tier', key });
+        });
+        if (!samePolicy(lido.default, atual.default)) out.push({ kind: 'default' });
+        if (!samePolicy(lido.fail_safe, atual.fail_safe)) out.push({ kind: 'fail_safe' });
+        return out;
+      }
+
+      // The clause the refusal grows into the §4.7 template. Each object is
+      // named by the words this console already uses for it: a rule by its
+      // 1-based ordinal — the same one the sheet rows and the lint jumps
+      // show; the diff carries the 0-based position, the phrase adds one —
+      // a tier by its key as "o grupo T2", and the two fallbacks by their
+      // screen names. One object is singular; two join with "e"; three or
+      // more join with commas and "e" before the last. Never "N objetos" —
+      // the operator wants the names. An empty diff is the "cannot name"
+      // clause, never a green light.
+      const STALE_PHRASE = {
+        rule: (d) => `a regra ${d.index + 1}`,
+        tier: (d) => `o grupo ${d.key}`,
+        default: () => 'o destino padrão',
+        fail_safe: () => 'o último recurso',
+      };
+      function staleClause(diff) {
+        const names = (diff || []).map((d) => {
+          const say = d && STALE_PHRASE[d.kind];
+          return say ? say(d) : null;
+        }).filter(Boolean);
+        if (!names.length) return WRITE.conflictUnknown;
+        const list = names.length === 1 ? names[0]
+          : names.length === 2 ? `${names[0]} e ${names[1]}`
+          : `${names.slice(0, -1).join(', ')} e ${names[names.length - 1]}`;
+        return `${list} ${names.length === 1 ? 'mudou' : 'mudaram'}`;
+      }
+
       // Plan a policy and record it. Returns true only if the result is safe to
       // write, and leaves the reason in `msg` when it is not.
       //
@@ -6967,8 +7038,16 @@
       // One refusal for both staleness reads below — the same §4.7 text, the
       // same reload, the same discarded draft, so a snapshot the guard refused
       // cannot be re-applied from anywhere else on the screen.
-      async function refuseStale(msg) {
-        setMsg(msg, WRITE.conflict, 'bad');
+      async function refuseStale(msg, diff) {
+        // The clause names what drifted; an empty diff — the drift is in
+        // something this screen cannot name, or the blocklist that the
+        // policy comparison does not project — still refuses, with the §4.7
+        // fallback. Both message lines below carry the SAME sentence: the
+        // panel rebuilt by the reload cannot say a different word than the
+        // refusal that rebuilt it.
+        const sentence = fill(WRITE.conflictNamed,
+          { clause: diff && diff.length ? staleClause(diff) : WRITE.conflictUnknown });
+        setMsg(msg, sentence, 'bad');
         state.plan = null;
         // The draft dies with the refusal: re-applying it would write the
         // stale snapshot the guard just refused. The open inspector (if any)
@@ -6981,7 +7060,7 @@
         await load();
         if (openNode) renderInspector(openNode);
         const freshMsg = $('nodeMsg');
-        if (freshMsg) setMsg(freshMsg, WRITE.conflict, 'bad');
+        if (freshMsg) setMsg(freshMsg, sentence, 'bad');
         return false;
       }
 
@@ -7009,7 +7088,7 @@
         const fresh = await call('/policy');
         if (!fresh.error && !fresh.missing && fresh.data && typeof fresh.data === 'object'
             && !samePolicy(fresh.data, state.policy)) {
-          return refuseStale(msg);
+          return refuseStale(msg, diffObjects(state.policy, fresh.data));
         }
         const res = await call('/plan', { method: 'POST', body: { policy } });
         if (res.missing) { setMsg(msg, WRITE.missingPlan, 'bad'); return false; }
@@ -7810,6 +7889,12 @@
         // tests/test_router_nav_writespine.js used to pin an equivalent path in
         // router-nav.js, and that file is now only a mount.
         plan, doPreview, doApply, setMsg, surfacePatch, samePolicy,
+        // The staleness guard's naming layer: what changed (pure, over the
+        // same comparator the guard trusts) and the clause that grows into
+        // the §4.7 refusal template. Exported so the table of drift shapes
+        // and the exact 1/2/4-object sentences are pinned by tests, not
+        // eyeballed.
+        diffObjects, staleClause,
         // §4.7: the write vocabulary and its interpolator, exported so the map
         // being the single source is asserted rather than eyeballed.
         WRITE, fill,
