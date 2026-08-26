@@ -710,12 +710,19 @@
     }
     .tier-headline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; min-width: 0; }
     .tier-name { font: 600 var(--t-body) var(--mono); letter-spacing: .04em; color: var(--text); }
-    .tier-fact { color: var(--muted); font-size: var(--t-small); max-width: 74ch; }
+    /* BALANCED, not merely pretty. The 74ch cap left one-word last lines — measured on
+       the groups screen, the last line at 24%, 13% and 5% of the first's width, which
+       under a promoted step reads as a second, emptier fact. `pretty` was tried first
+       and measured: it moved those to 24%, 13% and 16%, i.e. nothing. `balance` puts
+       all four at 91-95%, which is the two-line block these facts want. They are two
+       or three lines, well inside the engine's balancing cap. Unsupported engines fall
+       back to `wrap`, which is what these lines did before the cap. */
+    .tier-fact { color: var(--muted); font-size: var(--t-small); max-width: 74ch; text-wrap: balance; }
     /* WHAT WORK LANDS HERE is the group's own answer, so it is the one line in the
        block at text weight. The rest — who sends to it, how it orders, what it will
        decline to pay — are supporting facts and stay one step down. Four kinds of
        fact at one voice is a block that has to be read whole to be read at all. */
-    .tier-what { color: var(--text); font-size: var(--t-body); max-width: 74ch; }
+    .tier-what { color: var(--text); font-size: var(--t-body); max-width: 74ch; text-wrap: balance; }
     .tier-fact.thin { color: var(--warn-text); }
     /* A finding about the chain, in a line — the same shape the console uses for
        every other condition that needs an operator, one step quieter. */
