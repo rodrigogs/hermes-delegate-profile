@@ -6,6 +6,9 @@ The installer is deliberately narrow and idempotent:
 * copies versioned assets, never symlinks (WebUI rejects escaping symlinks);
 * replaces only the ``hermes-one-capability-router`` entry in ``extensions.json``;
 * preserves every sibling entry and its ordering (for example Office 3D);
+* refuses to render production units that would bake an agent profile's
+  ``HERMES_HOME``/``HERMES_WEBUI_STATE_DIR`` into the unit (see
+  ``ProfileHomeRefused``);
 * renders a loopback-only systemd user unit pointing at the effective plugin
   installation; and
 * does not start services or grant WebUI proxy consent. Those are explicit
@@ -23,6 +26,47 @@ from pathlib import Path
 from typing import Any, Dict
 
 EXTENSION_ID = "hermes-one-capability-router"
+
+# The unit directory of the *operator* — the one systemd --user loads at boot.
+# Compared by SHAPE (suffix match), not against Path.home(): in the 2026-08-26
+# incident the installer ran inside an agent shell whose HOME was remapped to
+# the profile sandbox, so "is this the default dir" answered False for the very
+# directory that mattered. The shape `.config/systemd/user` cannot be spoofed
+# into existence by an environment variable.
+_UNIT_DIR_SUFFIX = (".config", "systemd", "user")
+
+
+class ProfileHomeRefused(ValueError):
+    """A production unit would have baked an agent profile's paths into itself.
+
+    Raised when an inherited HERMES_HOME/HERMES_WEBUI_STATE_DIR resolves under
+    an agent profile (a `profiles` component below `.hermes`) and the units are
+    headed for the operator's systemd user directory. Measured 2026-08-26: such
+    a unit served /health "ok" for hours while every tokened route answered
+    503 "sidecar token not provisioned" and the trace log read from a path that
+    did not exist. Explicit flags, or --allow-profile-hermes-home, are the ways
+    out; the guard is about INHERITING, never about the value itself.
+    """
+
+
+def _is_operator_unit_dir(systemd_dir: Path) -> bool:
+    """True when units land in the directory the operator's systemd loads."""
+    return systemd_dir.parts[-3:] == _UNIT_DIR_SUFFIX
+
+
+def _under_agent_profile(path: Path) -> bool:
+    """True when a `profiles` component sits directly under a `.hermes` one.
+
+    The `profiles` component must itself have something under it: the profile
+    home is `.hermes/profiles/<name>...`, and a path ending AT `profiles` names
+    the container, not a profile — refusing it would be noise.
+    """
+    parts = path.parts
+    for index in range(len(parts) - 2):
+        if parts[index] == ".hermes" and parts[index + 1] == "profiles":
+            return True
+    return False
+
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -127,6 +171,48 @@ def _default_hermes_home() -> Path:
     return Path(configured) if configured else Path.home() / ".hermes"
 
 
+def _refuse_inherited_profile_home(
+    systemd_dir: Path,
+    hermes_home: Path,
+    webui_state_dir: Path,
+    *,
+    hermes_home_flag: Path | None,
+    webui_state_dir_flag: Path | None,
+) -> None:
+    """Refuse a production unit that would inherit an agent profile's paths.
+
+    Two conditions, both required — the unit is headed for the operator's
+    systemd user directory, and an *inherited* effective path sits under an
+    agent profile. Explicit flags always win because the danger is not the
+    value but the silence of where it came from: someone who wrote the path
+    down can be held to it, an environment variable nobody read cannot. The
+    escape hatch exists for the rare deliberate case, and pays for itself by
+    being named on the command line of the deploy that used it.
+    """
+    inherited: list[tuple[str, Path]] = []
+    if hermes_home_flag is None and _under_agent_profile(hermes_home):
+        inherited.append(("HERMES_HOME", hermes_home))
+    if webui_state_dir_flag is None and _under_agent_profile(webui_state_dir):
+        inherited.append(("HERMES_WEBUI_STATE_DIR", webui_state_dir))
+    if not inherited:
+        return
+    facts = "\n".join(
+        f"  Environment={name}={path}  <- inherited, not passed as a flag"
+        for name, path in inherited
+    )
+    raise ProfileHomeRefused(
+        "refusing to write a production systemd unit that bakes an agent "
+        f"profile's paths into it. Unit directory: {systemd_dir}. Paths that "
+        f"would be written:\n{facts}\n"
+        "Fix: pass --hermes-home and --webui-state-dir explicitly (always "
+        "allowed, any value), or --allow-profile-hermes-home if this profile "
+        "path is genuinely what you want. Measured 2026-08-26: such a unit "
+        "kept /health answering ok for hours while every tokened route "
+        "returned 503 and the trace log was read from a path that did not "
+        "exist."
+    )
+
+
 def install(
     repo_root: Path,
     extension_root: Path,
@@ -136,6 +222,7 @@ def install(
     hermes_home: Path | None = None,
     webui_state_dir: Path | None = None,
     python: str | None = None,
+    allow_profile_hermes_home: bool = False,
 ) -> None:
     """Copy assets, merge manifest and render the systemd unit atomically enough.
 
@@ -152,6 +239,14 @@ def install(
         if webui_state_dir
         else Path(configured_state_dir) if configured_state_dir else effective_hermes_home / "webui"
     )
+    if not allow_profile_hermes_home and _is_operator_unit_dir(systemd_dir):
+        _refuse_inherited_profile_home(
+            systemd_dir,
+            effective_hermes_home,
+            effective_webui_state_dir,
+            hermes_home_flag=hermes_home,
+            webui_state_dir_flag=webui_state_dir,
+        )
 
     entry = _bundle_entry(_read_extension_entry(repo_root))
     manifest_path = extension_root / "extensions.json"
@@ -207,21 +302,40 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Interpreter for the unit's ExecStart (default: the one running this script).",
     )
+    parser.add_argument(
+        "--allow-profile-hermes-home",
+        action="store_true",
+        help=(
+            "Escape hatch: let inherited HERMES_HOME/HERMES_WEBUI_STATE_DIR that "
+            "sit under an agent profile (.hermes/profiles/...) be written into "
+            "the operator's systemd unit. Only for a deliberate profile-scoped "
+            "install; the default is to refuse."
+        ),
+    )
     parser.set_defaults(repo_root=repo_root)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    install(
-        args.repo_root,
-        args.extension_root,
-        args.systemd_dir,
-        args.plugin_dir,
-        hermes_home=args.hermes_home,
-        webui_state_dir=args.webui_state_dir,
-        python=args.python,
-    )
+    try:
+        install(
+            args.repo_root,
+            args.extension_root,
+            args.systemd_dir,
+            args.plugin_dir,
+            hermes_home=args.hermes_home,
+            webui_state_dir=args.webui_state_dir,
+            python=args.python,
+            allow_profile_hermes_home=args.allow_profile_hermes_home,
+        )
+    except ProfileHomeRefused as exc:
+        # An uncaught exception would print a traceback and exit 2 anyway, but
+        # the operator reading a terminal deserves the three facts without the
+        # stack noise. Still a hard failure — the incident lasted hours because
+        # every signal looked healthy, so this must be impossible to skim past.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     print(f"installed {EXTENSION_ID} extension into {args.extension_root}")
     print("next: daemon-reload/start sidecar, reload Hermes One, approve token-v1 proxy in Settings → Extensions")
     return 0

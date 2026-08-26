@@ -9,10 +9,27 @@ from pathlib import Path
 
 import pytest
 import scripts.install_hermes_one_router as installer
-from scripts.install_hermes_one_router import install
+from scripts.install_hermes_one_router import ProfileHomeRefused, install
 
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_hermes_home(monkeypatch, tmp_path):
+    """Pin HOME and clear the HERMES_* environment for every test in this file.
+
+    The flagless install() calls in the older tests resolve hermes_home from
+    the environment, so what they asserted depended on who ran the suite: in a
+    kanban worker shell HERMES_HOME points at the agent sandbox (measured:
+    trama-engineer sets it), and the rendered unit silently carried that path.
+    Same disease the installer guard exists for, one level down — a test that
+    cannot fail in the environment that matters. Tests that WANT a specific
+    inherited value set it after this fixture, and win.
+    """
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.delenv("HERMES_WEBUI_STATE_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "runner-home"))
 
 
 def test_install_preserves_manifest_entries_and_is_idempotent(tmp_path):
@@ -238,3 +255,225 @@ def test_unit_execstart_honours_an_explicit_python(tmp_path):
     )
     unit = (tmp_path / "systemd" / "hermes-router-sidecar.service").read_text(encoding="utf-8")
     assert "ExecStart=/opt/custom/bin/python3 -m router.one_sidecar" in unit
+
+
+def test_install_preserves_operator_unit_dir_under_a_clean_home(monkeypatch, tmp_path):
+    """A clean operator install writes units and does not refuse itself.
+
+    Companion to the refusal tests: the guard must keep the ordinary path
+    (default `~/.hermes`, no profile involved) working, otherwise it is not a
+    guard but a roadblock. Uses monkeypatch, not the live environment: this
+    suite runs inside agent shells where HERMES_HOME points at the sandbox
+    (measured: the trama-engineer worker has it set), which is exactly the
+    environment the guard exists to catch — an ordinary-path test must not
+    depend on which side of the fence the runner sits on.
+    """
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.delenv("HERMES_WEBUI_STATE_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # tmp_path + ".config/systemd/user": the operator's unit-directory shape,
+    # reproducible without touching any real directory.
+    systemd_dir = tmp_path / ".config/systemd/user"
+    plugin_dir = tmp_path / "plugin"
+    plugin_dir.mkdir()
+
+    install(ROOT, tmp_path / "extensions", systemd_dir, plugin_dir)
+
+    assert (systemd_dir / "hermes-router-sidecar.service").is_file()
+    unit = (systemd_dir / "hermes-router-sidecar.service").read_text(encoding="utf-8")
+    # _default_hermes_home() resolved from the patched HOME: the unit that a
+    # clean operator install produces, unchanged by the guard.
+    assert f"Environment=HERMES_HOME={tmp_path / '.hermes'}" in unit
+
+
+def test_install_refuses_inherited_profile_home_in_operator_unit_dir(
+    monkeypatch, tmp_path
+):
+    """HERMES_HOME from an agent profile + operator unit dir => hard refusal.
+
+    This is the 2026-08-26 incident as a test: the worker's environment carried
+    HERMES_HOME under .hermes/profiles/, the flags were missing, and the unit
+    was written anyway. The refusal must (a) raise, (b) name the path that
+    would be written, (c) name the unit directory, (d) name both ways out.
+    Nothing may be written — not the units, and not the extension bundle
+    either, which did not exist before the guard.
+    """
+    profile_home = tmp_path / "agent-home/.hermes/profiles/some-worker"
+    systemd_dir = tmp_path / "operator/.config/systemd/user"
+    extension_root = tmp_path / "extensions"
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.delenv("HERMES_WEBUI_STATE_DIR", raising=False)
+
+    with pytest.raises(ProfileHomeRefused) as excinfo:
+        install(ROOT, extension_root, systemd_dir, tmp_path / "plugin")
+
+    message = str(excinfo.value)
+    assert str(profile_home) in message
+    assert str(systemd_dir) in message
+    assert "--hermes-home" in message and "--webui-state-dir" in message
+    assert "--allow-profile-hermes-home" in message
+    assert not (systemd_dir / "hermes-router-sidecar.service").exists()
+    assert not extension_root.exists()
+
+
+def test_install_refuses_inherited_webui_state_dir_from_profile(monkeypatch, tmp_path):
+    """HERMES_WEBUI_STATE_DIR alone must trip the same guard.
+
+    The incident leaked BOTH variables, but each is its own failure surface:
+    this one alone is what made /status answer 503 while /health said ok. It
+    is inherited via environment (flag absent), while HERMES_HOME here is a
+    clean operator default, so the refusal isolates the state dir.
+    """
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "operator"))
+    monkeypatch.setenv(
+        "HERMES_WEBUI_STATE_DIR", str(tmp_path / "agent/.hermes/profiles/w/webui")
+    )
+    systemd_dir = tmp_path / "operator/.config/systemd/user"
+
+    with pytest.raises(ProfileHomeRefused) as excinfo:
+        install(
+            ROOT,
+            tmp_path / "extensions",
+            systemd_dir,
+            tmp_path / "plugin",
+        )
+
+    message = str(excinfo.value)
+    assert str(tmp_path / "agent/.hermes/profiles/w/webui") in message
+    assert str(systemd_dir) in message
+    assert "--allow-profile-hermes-home" in message
+    assert not systemd_dir.exists()
+
+
+def test_install_explicit_flags_bypass_the_guard_for_any_value(monkeypatch, tmp_path):
+    """Explicit --hermes-home/--webui-state-dir always install.
+
+    The guard is about INHERITING, not about the value: a caller who spells
+    the profile path out on the command line can be held to it. The card's
+    second acceptance case.
+    """
+    profile_home = tmp_path / "agent/.hermes/profiles/deliberate"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "unrelated-inherited"))
+    monkeypatch.setenv(
+        "HERMES_WEBUI_STATE_DIR", str(tmp_path / "other-inherited/webui")
+    )
+    systemd_dir = tmp_path / "operator/.config/systemd/user"
+
+    install(
+        ROOT,
+        tmp_path / "extensions",
+        systemd_dir,
+        tmp_path / "plugin",
+        hermes_home=profile_home,
+        webui_state_dir=profile_home / "webui",
+    )
+
+    unit = (systemd_dir / "hermes-router-sidecar.service").read_text(encoding="utf-8")
+    assert f"Environment=HERMES_HOME={profile_home}" in unit
+    assert f"Environment=HERMES_WEBUI_STATE_DIR={profile_home / 'webui'}" in unit
+
+
+def test_install_escape_hatch_allows_the_inherited_profile_home(monkeypatch, tmp_path):
+    """--allow-profile-hermes-home installs with the inherited values.
+
+    The card's third acceptance case: the escape hatch is explicit, and the
+    unit bakes exactly the inherited paths (proving nothing was silently
+    swapped to a different default).
+    """
+    profile_home = tmp_path / "agent-home/.hermes/profiles/wanted"
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.delenv("HERMES_WEBUI_STATE_DIR", raising=False)
+    systemd_dir = tmp_path / "operator/.config/systemd/user"
+
+    install(
+        ROOT,
+        tmp_path / "extensions",
+        systemd_dir,
+        tmp_path / "plugin",
+        allow_profile_hermes_home=True,
+    )
+
+    unit = (systemd_dir / "hermes-router-sidecar.service").read_text(encoding="utf-8")
+    assert f"Environment=HERMES_HOME={profile_home}" in unit
+    assert f"Environment=HERMES_WEBUI_STATE_DIR={profile_home / 'webui'}" in unit
+
+
+def test_install_profile_paths_only_refuse_in_operator_unit_dir(monkeypatch, tmp_path):
+    """A throwaway systemd dir takes the inherited profile home in stride.
+
+    The guard is scoped to production units. A scratch dir (e.g. a test or a
+    dry run into tmp) is not the operator's systemd, so refusing there would
+    be noise, and noise trains operators to reach for the escape hatch.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes/profiles/x"))
+    monkeypatch.delenv("HERMES_WEBUI_STATE_DIR", raising=False)
+    systemd_dir = tmp_path / "scratch-units"
+
+    install(ROOT, tmp_path / "extensions", systemd_dir, tmp_path / "plugin")
+
+    unit = (systemd_dir / "hermes-router-sidecar.service").read_text(encoding="utf-8")
+    assert f"Environment=HERMES_HOME={tmp_path / '.hermes/profiles/x'}" in unit
+
+
+@pytest.mark.parametrize(
+    "candidate,expected",
+    [
+        ("/home/u/.hermes/profiles/coder", True),
+        ("/home/u/.hermes/profiles/a/b/c", True),
+        ("/tmp/x/.hermes/profiles", False),  # 'profiles' must sit UNDER .hermes, not be it
+        ("/home/u/.hermes", False),
+        ("/home/u/hermes/profiles/coder", False),  # missing the dot: not the marker
+        ("/home/u/.hermes/plugins/delegate-profile", False),
+        ("/tmp/pytest-123/.hermes/profiles/trama-engineer", True),  # tmp_path has the same shape
+    ],
+)
+def test_under_agent_profile_measures_the_path_shape(candidate, expected):
+    """The 'came from a profile' predicate, measured on path shape alone.
+
+    The card is explicit: the test is the PATH that would be written, not the
+    environment. These cases pin the predicate so a future edit cannot loosen
+    it (e.g. matching `profiles` anywhere, which would refuse legitimate
+    /home/u/profiles work dirs) nor tighten it into refusing plain ~/.hermes.
+    """
+    assert installer._under_agent_profile(Path(candidate)) is expected
+
+
+@pytest.mark.parametrize(
+    "candidate,expected",
+    [
+        ("/home/u/.config/systemd/user", True),
+        ("/tmp/pytest-9/.config/systemd/user", True),
+        ("/home/u/.config/systemd", False),
+        ("/home/u/opt/units", False),
+    ],
+)
+def test_is_operator_unit_dir_matches_the_suffix(candidate, expected):
+    """Operator unit dir by shape, so tmp_path can stand in for the real one."""
+    assert installer._is_operator_unit_dir(Path(candidate)) is expected
+
+
+def test_cli_refusal_names_the_three_facts_and_exits_nonzero(monkeypatch, tmp_path, capsys):
+    """End to end through main(): exit != 0, message on stderr, three facts.
+
+    main() is what router-deploy.sh calls; the refusal is only real if it
+    survives the CLI boundary as a legible error rather than a traceback.
+    """
+    profile_home = tmp_path / "agent/.hermes/profiles/cli-case"
+    systemd_dir = tmp_path / "operator/.config/systemd/user"
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.delenv("HERMES_WEBUI_STATE_DIR", raising=False)
+
+    code = installer.main([
+        "--extension-root", str(tmp_path / "extensions"),
+        "--systemd-dir", str(systemd_dir),
+        "--plugin-dir", str(tmp_path / "plugin"),
+    ])
+
+    assert code != 0
+    err = capsys.readouterr().err
+    assert str(profile_home) in err
+    assert str(systemd_dir) in err
+    assert "--hermes-home" in err and "--webui-state-dir" in err
+    assert "--allow-profile-hermes-home" in err
+    assert not systemd_dir.exists()
