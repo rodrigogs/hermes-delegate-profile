@@ -49,7 +49,8 @@
 #     multiplier. Declared windows, half-open [start, end):
 #         deepseek  2.0x at 01:00-04:00 and 06:00-10:00 UTC, EVERY day
 #         zai       2.0x at 06:00-10:00 UTC, MON-FRI only (weekends off-peak)
-#         xiaomi    0.8x at 16:00-00:00 UTC — a CHEAP window, not a peak
+#         xiaomi    NO window: the 0.8x night rate is a prepaid Token Plan credit
+#                   coefficient, and pay-as-you-go bills flat (measured 2026-08-26)
 #     06:00-10:00 covers 06:00 through 09:59; hour 10 already bills at base.
 #   * Order of operations in one decision is fixed: capability filter -> time_cap
 #     -> time_policy -> fallback_strategy ordering. Filtering first, so a trace

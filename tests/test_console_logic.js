@@ -3938,7 +3938,7 @@ function routerMultipliers(cases) {
 test('a window the router refuses is priced flat here too, never reinterpreted', () => {
   const { api } = loadConsole();
   const cases = [
-    // The well-formed control: xiaomi's own cheap window, and the answer both
+    // The well-formed control: a whole-hour cheap window, and the answer both
     // sides must give for it.
     { why: 'a whole-hour window prices its own hours', window: { hours_utc: [16, 24], multiplier: 0.8 }, at: { hour: 17, weekday: 0 } },
     { why: 'and hour 24 is a legal end, so a full day is one entry', window: { hours_utc: [0, 24], multiplier: 2 }, at: { hour: 0, weekday: 0 } },
@@ -4112,10 +4112,15 @@ test('an overlap resolves the way the router resolves it, not the other way', ()
 test('the verified windows price the hour they say they do', () => {
   const { api } = loadConsole();
   // Per ELO, from the registry's own declarations: deepseek-v4-flash carries both
-  // peaks, glm-4.7 the weekday-gated one, mimo-v2.5 the cheap night window.
+  // peaks and glm-4.7 the weekday-gated one. No registry entry declares a CHEAP
+  // window any more, so that exemplar is declared inline below.
   const deepseek = api.eloWindows(catalogueEntry('deepseek-v4-flash'));
   const zai = api.eloWindows(catalogueEntry('glm-4.7'));
-  const xiaomi = api.eloWindows(catalogueEntry('mimo-v2.5'));
+  // O exemplar de janela BARATA e sem porta de dia é declarado aqui, não lido do
+  // registry: o 0,8× do xiaomi era escopado ao Token Plan pré-pago e saiu das
+  // entradas em 2026-08-26 (este install é pay-as-you-go). Um teste de mecanismo
+  // não pode depender da promoção vigente de um fornecedor para ter exemplo.
+  const desconto = api.eloWindows({ price_windows: [{ hours_utc: [16, 24], multiplier: 0.8 }] });
 
   // deepseek: both peaks, Mon-Fri. The vendor narrowed it to weekdays on
   // 2026-08-22 (silent edit of the pricing page, absent from the changelog).
@@ -4144,15 +4149,18 @@ test('the verified windows price the hour they say they do', () => {
   // an unknown day cannot block it. deepseek used to play this role and stopped
   // being ungated on 2026-08-22 — a test that needs "ungated" must not depend on
   // a vendor's current calendar to still have one.
-  assert.equal(api.priceMultiplier(xiaomi, { hour: 18, weekday: null }), 0.8,
+  assert.equal(api.priceMultiplier(desconto, { hour: 18, weekday: null }), 0.8,
     'an ungated window still matches — an unknown day only blocks a gated one');
   assert.equal(api.priceMultiplier(deepseek, { hour: 7, weekday: null }), 1,
     'and deepseek is gated now, so an unknown day blocks it too');
 
-  // xiaomi is the one that goes the other way — a discount, not a peak.
-  assert.equal(api.priceMultiplier(xiaomi, { hour: 18, weekday: 0 }), 0.8);
-  assert.equal(api.priceMultiplier(xiaomi, { hour: 23, weekday: 0 }), 0.8);
-  assert.equal(api.priceMultiplier(xiaomi, { hour: 0, weekday: 0 }), 1, 'half-open at midnight, so no wrap-around');
+  // The other direction — a discount, not a peak. And the real xiaomi entry is
+  // flat now, which is the fact this pair of assertions keeps honest.
+  assert.equal(api.priceMultiplier(desconto, { hour: 18, weekday: 0 }), 0.8);
+  assert.equal(api.priceMultiplier(desconto, { hour: 23, weekday: 0 }), 0.8);
+  assert.equal(api.priceMultiplier(desconto, { hour: 0, weekday: 0 }), 1, 'half-open at midnight, so no wrap-around');
+  assert.equal(api.priceMultiplier(api.eloWindows(catalogueEntry('mimo-v2.5')), { hour: 18, weekday: 0 }), 1,
+    'xiaomi bills flat: the 0.8x is a prepaid Token Plan credit rate, not a metered one');
 
   // The two primary rails share the 06:00-10:00 peak, which is the fact that
   // makes overnight cron traffic pay double on both at once.
@@ -4164,7 +4172,11 @@ test('the next change is a real hour, so "until when" is not invented', () => {
   const { api } = loadConsole();
   const deepseek = api.eloWindows(catalogueEntry('deepseek-v4-flash'));
   const zai = api.eloWindows(catalogueEntry('glm-4.7'));
-  const xiaomi = api.eloWindows(catalogueEntry('mimo-v2.5'));
+  // O exemplar de janela BARATA e sem porta de dia é declarado aqui, não lido do
+  // registry: o 0,8× do xiaomi era escopado ao Token Plan pré-pago e saiu das
+  // entradas em 2026-08-26 (este install é pay-as-you-go). Um teste de mecanismo
+  // não pode depender da promoção vigente de um fornecedor para ter exemplo.
+  const desconto = api.eloWindows({ price_windows: [{ hours_utc: [16, 24], multiplier: 0.8 }] });
 
   const out = plain(api.nextWindowChange(deepseek, { hour: 7, weekday: 0 }));
   assert.equal(out.hour, 10, 'the peak ends at 10:00 UTC');
@@ -4172,8 +4184,8 @@ test('the next change is a real hour, so "until when" is not invented', () => {
   assert.equal(out.multiplier, 1);
   // From base, the next change is the peak OPENING.
   assert.equal(api.nextWindowChange(deepseek, { hour: 5, weekday: 0 }).hour, 6);
-  assert.equal(api.nextWindowChange(xiaomi, { hour: 12, weekday: 0 }).hour, 16);
-  assert.equal(api.nextWindowChange(xiaomi, { hour: 18, weekday: 0 }).hour, 0, 'the discount ends at midnight');
+  assert.equal(api.nextWindowChange(desconto, { hour: 12, weekday: 0 }).hour, 16);
+  assert.equal(api.nextWindowChange(desconto, { hour: 18, weekday: 0 }).hour, 0, 'the discount ends at midnight');
   // Saturday inside zai's peak hours: the next 2x is Monday, and the search has to
   // cross days to find it rather than reporting "no change".
   const monday = api.nextWindowChange(zai, { hour: 7, weekday: 5 });
@@ -4189,17 +4201,21 @@ test('the next change is a real hour, so "until when" is not invented', () => {
   assert.equal(api.nextWindowChange(zai, { hour: 7, weekday: null }), null);
   assert.equal(api.nextWindowChange(deepseek, { hour: 7, weekday: null }), null,
     'deepseek is weekday-gated since 2026-08-22, so it answers null too');
-  assert.equal(api.nextWindowChange(xiaomi, { hour: 18, weekday: null }).hour, 0,
+  assert.equal(api.nextWindowChange(desconto, { hour: 18, weekday: null }).hour, 0,
     'an ungated window still answers — the discount ends at midnight');
 });
 
 test('a rail says what it costs now and until when, in one clause', () => {
   const { api } = loadConsole();
   const deepseek = api.eloWindows(catalogueEntry('deepseek-v4-flash'));
-  const xiaomi = api.eloWindows(catalogueEntry('mimo-v2.5'));
+  // O exemplar de janela BARATA e sem porta de dia é declarado aqui, não lido do
+  // registry: o 0,8× do xiaomi era escopado ao Token Plan pré-pago e saiu das
+  // entradas em 2026-08-26 (este install é pay-as-you-go). Um teste de mecanismo
+  // não pode depender da promoção vigente de um fornecedor para ter exemplo.
+  const desconto = api.eloWindows({ price_windows: [{ hours_utc: [16, 24], multiplier: 0.8 }] });
   assert.equal(api.windowWords(deepseek, { hour: 7, weekday: 0 }), '2× em hora de pico até 10:00 UTC');
   assert.equal(api.windowWords(deepseek, { hour: 12, weekday: 0 }), 'tarifa base até 01:00 UTC, depois 2×');
-  assert.equal(api.windowWords(xiaomi, { hour: 18, weekday: 0 }), '0.8× em hora barata até 00:00 UTC');
+  assert.equal(api.windowWords(desconto, { hour: 18, weekday: 0 }), '0.8× em hora barata até 00:00 UTC');
   assert.equal(api.windowWords([], { hour: 7, weekday: 0 }), 'sem preço que varia com a hora');
   // Time-agnostic is its own answer and must not read as off-peak.
   assert.match(api.windowWords(deepseek, null), /independe da hora/);

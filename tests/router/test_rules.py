@@ -93,7 +93,10 @@ PEAK_MONDAY = datetime(2026, 8, 17, 7, 0, tzinfo=timezone.utc)
 PEAK_SATURDAY = datetime(2026, 8, 15, 7, 0, tzinfo=timezone.utc)
 # Monday midday: off-peak on every rail in the registry.
 OFF_PEAK = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
-# Inside xiaomi's 16:00-24:00 CHEAP window (0.8x), which must never read as peak.
+# 18:00 UTC: no rail is inside any window here. It used to be inside xiaomi's
+# 0.8x night discount, which was removed on 2026-08-26 (Token-Plan-only rate on a
+# pay-as-you-go install), and the name is kept because the invariant it guards is
+# the same: a multiplier that is not > 1.0 must never read as "avoid this now".
 CHEAP_WINDOW = datetime(2026, 8, 17, 18, 0, tzinfo=timezone.utc)
 
 
@@ -2996,12 +2999,20 @@ class TestTimePolicy(_NeedsRegistry):
         assert _models(plan)[0] == "mimo-v2.5"
         assert plan["promoted"] == ["mimo-v2.5"]
 
-    def test_a_cheap_window_is_not_a_peak(self):
-        """xiaomi's 0.8x window must never read as "avoid this now"."""
+    def test_a_preferred_rail_is_promoted_on_its_own_merit(self):
+        """`prefer` promotes; the multiplier does not have to be a discount.
+
+        This asserted xiaomi's 0.8x until 2026-08-26, when the window was removed
+        (the vendor scopes it to the prepaid Token Plan and this install bills
+        pay-as-you-go). Promotion never depended on the discount — it is driven by
+        the policy's `prefer` list — and that is exactly what is pinned here now.
+        The "a multiplier below 1.0 is not a peak" mechanism lives in
+        test_capabilities, on a declared rail instead of a vendor promotion.
+        """
         plan = plan_chain(resolve_tiers({"model": "T4"}, TIME_TIERS), _mkf(),
                           when=CHEAP_WINDOW)
         assert plan["promoted"] == ["mimo-v2.5"]
-        assert plan["multipliers"]["mimo-v2.5"] == 0.8
+        assert plan["multipliers"]["mimo-v2.5"] == 1.0
 
     def test_no_clock_means_no_policy(self):
         plan = plan_chain(resolve_tiers({"model": "T2"}, TIME_TIERS), _mkf())

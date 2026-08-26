@@ -82,8 +82,19 @@ Vendor context that does not fit a registry field, kept here so it is not lost:
     which never overbills but routes AWAY from deepseek to rivals that are not
     actually cheaper. ``price_in``/``price_out`` hold the OFF-PEAK
     (base) price and peak is a 2.0x ``price_windows`` entry, EVERY day.
-  xiaomi — the one provider whose window is CHEAP rather than expensive: 0.8x
-    during 16:00-00:00 UTC (the 00:00-08:00 UTC+8 night discount).
+  xiaomi — the 0.8x night discount (00:00-08:00 UTC+8 == 16:00-00:00 UTC) is NOT
+    modelled, and the absence is deliberate. Measured 2026-08-26 on the vendor's
+    own docs: the coefficient is scoped to the credit consumption of the PREPAID
+    Token Plan (「Credit 消耗系数」, 套餐), and the pay-as-you-go page
+    (mimo.mi.com/docs/zh-CN/price/pay-as-you-go) has no time dimension at all —
+    its five billing bullets are unit, cache-hit, cache-write, ASR duration and
+    search calls, and the page has zero hits for 错峰/优惠时段/时段. This install
+    bills pay-as-you-go (operator confirmed 2026-08-26), so the discount does not
+    apply to it; carrying it anyway told the router that metered cost fell 20% for
+    8 h/day, which means real cost was 1.25x its own estimate in that window. The
+    vendor also lists it under 「限时优惠活动」 (limited-time promotions), so it is
+    not a durable rate either. If this install ever buys the Token Plan, the entry
+    needs billing_mode: plan AND the window back — both halves, never one.
   openai-codex — reachable flat-rate through a ChatGPT subscription OR metered
     by API key. Listed prices are the metered short-context rates; input above
     272K tokens is billed 2x input and 1.5x output. Because those prices ARE the
@@ -650,10 +661,6 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "billing_mode": "metered",
         "price_in": 0.14,
         "price_out": 0.28,
-        # A CHEAP window, not a peak: the 00:00-08:00 UTC+8 night discount.
-        "price_windows": [
-            {"hours_utc": [16, 24], "multiplier": 0.8},
-        ],
         "notes": (
             "omnimodal text+image+audio+video; cache-hit 0.0028; "
             "no free tier exists"
@@ -669,9 +676,6 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "billing_mode": "metered",
         "price_in": 0.435,
         "price_out": 0.87,
-        "price_windows": [
-            {"hours_utc": [16, 24], "multiplier": 0.8},
-        ],
         "notes": "cache-hit 0.0036",
     },
     # -- minimax -----------------------------------------------------------

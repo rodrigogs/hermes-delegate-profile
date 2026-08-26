@@ -1083,13 +1083,30 @@ def test_the_start_hour_is_inside_and_the_end_hour_is_outside():
     assert price_multiplier("deepseek-v4-pro", _at(WED, 10)) == 1.0
 
 
-def test_xiaomi_night_window_is_a_discount_not_a_peak():
-    assert price_multiplier("mimo-v2.5", _at(WED, 15)) == 1.0
-    assert price_multiplier("mimo-v2.5", _at(WED, 16)) == 0.8
-    assert price_multiplier("mimo-v2.5", _at(WED, 23)) == 0.8
+def test_xiaomi_bills_flat_because_the_discount_is_plan_only():
+    """The 0.8x night rate is a Token Plan credit coefficient, not a metered rate.
+
+    Measured 2026-08-26 on the vendor's docs: the coefficient is scoped to
+    「Credit 消耗系数」 of the prepaid 套餐, and the pay-as-you-go page enumerates
+    its billing in five bullets — unit, cache-hit, cache-write, ASR duration,
+    search calls — with zero hits for 错峰/优惠时段/时段. This install bills
+    pay-as-you-go, so every hour costs the same. Carrying the window anyway made
+    the router believe metered cost fell 20% for 8 h/day, i.e. real cost was
+    1.25x its own estimate there.
+    """
+    for hour in (0, 15, 16, 20, 23):
+        assert price_multiplier("mimo-v2.5", _at(WED, hour)) == 1.0, hour
+        assert price_multiplier("mimo-v2.5-pro", _at(WED, hour)) == 1.0, hour
+    assert "price_windows" not in MODEL_CAPABILITIES["mimo-v2.5"]
+
+
+def test_a_declared_discount_window_scales_below_the_base_rate():
+    """The discount MECHANISM, on a declared rail instead of a vendor promotion."""
+    assert price_multiplier(DISCOUNT_RAIL, _at(WED, 15), DISCOUNT_CAPS) == 1.0
+    assert price_multiplier(DISCOUNT_RAIL, _at(WED, 16), DISCOUNT_CAPS) == 0.8
+    assert price_multiplier(DISCOUNT_RAIL, _at(WED, 23), DISCOUNT_CAPS) == 0.8
     # end == 24 is midnight-exclusive: the next day's 00:00 is outside.
-    assert price_multiplier("mimo-v2.5", _at(WED, 0)) == 1.0
-    assert price_multiplier("mimo-v2.5-pro", _at(WED, 20)) == 0.8
+    assert price_multiplier(DISCOUNT_RAIL, _at(WED, 0), DISCOUNT_CAPS) == 1.0
 
 
 def test_zai_peak_is_gated_to_weekdays():
@@ -1264,9 +1281,9 @@ def test_price_multiplier_never_mutates_the_registry():
 
 
 def test_a_merged_view_cannot_mutate_the_registry_windows():
-    caps = capabilities_for("mimo-v2.5")
+    caps = capabilities_for("deepseek-v4-pro")
     caps["price_windows"][0]["multiplier"] = 99.0
-    assert MODEL_CAPABILITIES["mimo-v2.5"]["price_windows"][0]["multiplier"] == 0.8
+    assert MODEL_CAPABILITIES["deepseek-v4-pro"]["price_windows"][0]["multiplier"] == 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -1283,10 +1300,10 @@ def test_effective_price_scales_the_base_rate_inside_a_peak():
 
 
 def test_effective_price_scales_the_base_rate_inside_a_discount():
-    assert effective_price("mimo-v2.5", _at(WED, 20)) == pytest.approx(
+    assert effective_price(DISCOUNT_RAIL, _at(WED, 20), DISCOUNT_CAPS) == pytest.approx(
         (0.112, 0.224)
     )
-    assert effective_price("mimo-v2.5", _at(WED, 12)) == pytest.approx(
+    assert effective_price(DISCOUNT_RAIL, _at(WED, 12), DISCOUNT_CAPS) == pytest.approx(
         (0.14, 0.28)
     )
 
@@ -1344,8 +1361,8 @@ def test_in_expensive_window_only_for_a_multiplier_above_one():
 
 
 def test_a_cheap_window_is_not_an_expensive_one():
-    assert price_multiplier("mimo-v2.5", _at(WED, 20)) == 0.8
-    assert in_expensive_window("mimo-v2.5", _at(WED, 20)) is False
+    assert price_multiplier(DISCOUNT_RAIL, _at(WED, 20), DISCOUNT_CAPS) == 0.8
+    assert in_expensive_window(DISCOUNT_RAIL, _at(WED, 20), DISCOUNT_CAPS) is False
 
 
 def test_in_expensive_window_without_a_clock_is_false():
@@ -1356,6 +1373,25 @@ def test_in_expensive_window_without_a_clock_is_false():
 # ---------------------------------------------------------------------------
 # next_window_change
 # ---------------------------------------------------------------------------
+
+#: A rail with a CHEAP window, DECLARED here instead of read from the registry.
+#: No registry entry carries a discount any more: xiaomi's 0.8x was scoped to the
+#: prepaid Token Plan (measured 2026-08-26; this install bills pay-as-you-go), so
+#: it was removed. A mechanism test must not depend on a vendor's current
+#: promotion to still have an example — that lesson cost two rounds of red on
+#: 2026-08-26, first when deepseek stopped being ungated and then here.
+DISCOUNT_RAIL = "discount-rail"
+DISCOUNT_CAPS = {
+    # A capability assertion is what makes a model KNOWN to capabilities_for();
+    # commercial fields alone deliberately do not (see its docstring), so a rail
+    # declared only by price would silently answer 1.0 at every hour.
+    "context_window": 200_000,
+    "provider": "synthetic",
+    "billing_mode": "metered",
+    "price_in": 0.14,
+    "price_out": 0.28,
+    "price_windows": [{"hours_utc": [16, 24], "multiplier": 0.8}],
+}
 
 #: Weekday numbers for the reference week, matching ``datetime.weekday()``.
 MONDAY, WEDNESDAY, THURSDAY = 0, 2, 3
@@ -1395,12 +1431,12 @@ def test_next_window_change_crosses_the_day_boundary():
     assert next_window_change("deepseek-v4-pro", _at(WED, 23)) == _change(
         1, THURSDAY, 2, 2.0
     )
-    # Inside the 16:00-00:00 discount, the change is midnight — Thursday's.
-    assert next_window_change("mimo-v2.5", _at(WED, 20)) == _change(
+    # Inside a 16:00-00:00 discount, the change is midnight — Thursday's.
+    assert next_window_change(DISCOUNT_RAIL, _at(WED, 20), DISCOUNT_CAPS) == _change(
         0, THURSDAY, 4, 1.0
     )
     # Windows begin on the hour, so minutes do not move the count.
-    assert next_window_change("mimo-v2.5", _at(WED, 23, 59)) == _change(
+    assert next_window_change(DISCOUNT_RAIL, _at(WED, 23, 59), DISCOUNT_CAPS) == _change(
         0, THURSDAY, 1, 1.0
     )
 
@@ -1429,18 +1465,18 @@ def test_next_window_change_crosses_the_weekend():
 
 def test_next_window_change_hours_ahead_lands_on_the_hour_it_names():
     """hour/weekday and hours_ahead must describe the SAME instant."""
-    for model, when in (
-        ("glm-4.7", _at(SAT, 7)),
-        ("glm-5.3", _at(FRI, 20)),
-        ("deepseek-v4-pro", _at(WED, 10)),
-        ("mimo-v2.5", _at(WED, 20)),
+    for model, when, declared in (
+        ("glm-4.7", _at(SAT, 7), None),
+        ("glm-5.3", _at(FRI, 20), None),
+        ("deepseek-v4-pro", _at(WED, 10), None),
+        (DISCOUNT_RAIL, _at(WED, 20), DISCOUNT_CAPS),
     ):
-        change = next_window_change(model, when)
+        change = next_window_change(model, when, declared)
         landed = when + timedelta(hours=change["hours_ahead"])
         assert (landed.hour, landed.weekday()) == (
             change["hour"], change["weekday"]
         ), model
-        assert price_multiplier(model, landed) == change["multiplier"], model
+        assert price_multiplier(model, landed, declared) == change["multiplier"], model
 
 
 def test_next_window_change_of_a_flat_model_is_none():
@@ -1623,8 +1659,8 @@ def test_cheapest_now_prefers_a_plan_rail_over_a_cheaper_metered_one():
 
     glm-4.7 is covered by the z.ai Coding Plan and ALSO carries a 2.20 list
     price. Compared in dollars it loses to metered mimo-v2.5 at every hour —
-    4.40 against 0.28 inside zai's weekday peak, 2.20 against 0.224 inside
-    xiaomi's night discount — and every one of those dollars is already sunk. An
+    4.40 against 0.28 inside zai's weekday peak, 2.20 against 0.28 outside it,
+    since xiaomi bills flat — and every one of those dollars is already sunk. An
     hour already bought is the cheapest marginal token there is.
     """
     chain = [
@@ -1640,12 +1676,12 @@ def test_cheapest_now_prefers_a_plan_rail_over_a_cheaper_metered_one():
         chain, "cheapest_now", pin_primary=False, when=peak)] == [
         "glm-4.7", "mimo-v2.5"]
 
-    # Monday 20:00 UTC: glm-4.7 off its peak, mimo inside its 0.8x discount —
-    # the widest the dollar gap ever gets, and still not a reason to move.
+    # Monday 20:00 UTC: glm-4.7 off its peak, mimo flat as it always is now — the
+    # narrowest the dollar gap ever gets, and still not a reason to move.
     off_peak = _at(MON, 20)
     assert price_multiplier("glm-4.7", off_peak) == 1.0
     assert effective_price("glm-4.7", off_peak)[1] == 2.2
-    assert effective_price("mimo-v2.5", off_peak)[1] == pytest.approx(0.224)
+    assert effective_price("mimo-v2.5", off_peak)[1] == pytest.approx(0.28)
     assert [hop["model"] for hop in order_chain(
         chain, "cheapest_now", pin_primary=False, when=off_peak)] == [
         "glm-4.7", "mimo-v2.5"]
