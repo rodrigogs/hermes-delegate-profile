@@ -40,7 +40,7 @@ ativas, foi removido explicitamente do bundle.
 | Tool Agent | `delegate_profile` | `delegate_profile` | — | **manter** |
 | Biblioteca de extensões One | `hermes-one-extension-kit` | `hermes-one-extension-kit` | Hermes One Extension Kit | **concluído** |
 | Painel Office | `hermes-one-office-3d` | `hermes-one-office-3d` | Office 3D | **concluído** |
-| Painel/sidecar de roteamento | `hermes-one-capability-router` | `hermes-one-capability-router` | Capability Router | **concluído — nome mantido** |
+| Painel/sidecar de roteamento | `hermes-one-capability-router` | `hermes-smart-router` | Smart Router | **concluído — Fase E, decisão do operador 2026-08-26** |
 | Painel/sidecar de memória | `hermes-one-fact-explorer` | `hermes-one-fact-explorer` | Fact Explorer | **concluído** |
 | Unit Router | `hermes-router-sidecar.service` | manter inicialmente | Profile Router sidecar | label agora; ID depois |
 | Unit Memory | `hermes-memory-sidecar.service` | manter inicialmente | Fact Explorer sidecar | label agora; ID depois |
@@ -157,6 +157,36 @@ A unit mantém o ID de arquivo atual nesta fase e passa a ter descrição
 
 **Aceite:** console read-only abre por proxy, facts/lista/pesquisa/grafo
 funcionam, não há escrita no store e o updater inclui a nova origem.
+
+### Fase E — Smart Router (2026-08-26)
+
+Decisão do operador, registrada sem discutir: o id `hermes-one-capability-router`
+passa a `hermes-smart-router` e o label visível passa a **Smart Router**. A
+convenção do pack (`hermes-one-*`) e a precisão descritiva de "capability" foram
+pesadas e rejeitadas; a escolha é do operador.
+
+Renomeados no repo: o diretório de assets, o `EXTENSION_ID` do sidecar (o caminho
+do token e o do console derivam dele), o manifest (`id` e `name`), o instalador,
+a `navClass` e os títulos visíveis (rail title, sidebar head, iframe title, card
+do dashboard, `Description=` das units, descrição da CLI). Specs datadas em
+`docs/superpowers/specs/` mantêm o nome da época — são histórico, não contrato
+vigente.
+
+O instalador ganhou `_RETIRED_EXTENSION_IDS`: o merge do manifesto casa pelo id
+CORRENTE, então a entrada sob o id antigo sobreviveria a todo install — dois
+botões na rail, um apontando para um consentimento que não existe. O sweep tira
+a entrada do `extensions.json` E o diretório de assets do disco.
+
+A unit **não** foi renomeada (`hermes-router-sidecar.service` mantém o nome de
+arquivo): renomear deixaria a unit antiga enabled segurando a porta 8791 enquanto
+a nova falhava com "address already in use". Só a `Description=` mudou.
+
+Migração de estado (token e consentimento são indexados pelo id): o token
+`~/.hermes/webui/sidecar-auth/hermes-smart-router.token` é cunhado pela WebUI no
+ato de conceder o consentimento; o consentimento antigo sob o id aposentado foi
+removido do `extension-overrides.json` e o novo concedido em Settings →
+Extensions. O token antigo foi removido junto — um arquivo de credencial sem
+consumidor não fica no disco.
 
 ## 5. Reversão
 

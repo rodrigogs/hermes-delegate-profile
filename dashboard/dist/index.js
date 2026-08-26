@@ -1,5 +1,5 @@
 /**
- * Capability Router dashboard panel.
+ * Smart Router dashboard panel.
  *
  * Uses the official Hermes Plugin SDK (window.__HERMES_PLUGIN_SDK__).
  * API: /api/plugins/delegate-profile/
@@ -71,7 +71,7 @@
         React.createElement("div", {
           style: { display: "flex", alignItems: "center", gap: "8px" },
         },
-          React.createElement(CardTitle, null, "Capability Router"),
+          React.createElement(CardTitle, null, "Smart Router"),
           React.createElement(StatusPill, { enabled: data.enabled }),
         ),
       ),

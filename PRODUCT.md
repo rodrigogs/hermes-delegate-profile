@@ -76,7 +76,7 @@ Interfaces auxiliares devem preservar a terminologia do core: profile, model, pr
 - `router.yaml`: fonte declarativa da política de roteamento.
 - `router/`: implementação do router, classificação, fallbacks, blocklist, breaker, cache e decision log.
 - `dashboard/`: interface operacional existente para o Dashboard Hermes.
-- `docs/superpowers/specs/2026-07-21-hermes-one-capability-router-design.md`: especificação de arquitetura do capability router.
+- `docs/superpowers/specs/2026-07-21-capability-router-design.md`: especificação de arquitetura do router (nome da época; o projeto hoje é hermes-smart-router).
 - `tests/` e `.github/workflows/ci.yml`: suíte automatizada e gate de cobertura do comportamento atual.
 
 Não há no repositório depoimentos, estudos de adoção, métricas de produção ou garantias de desempenho que possam ser apresentados como prova externa.

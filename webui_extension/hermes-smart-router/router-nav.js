@@ -12,7 +12,7 @@
    * FIRST VIEWPORT: The console's own — this file adds no chrome above it.
    * FORM: Existing Hermes One rail/sidebar extension, not a new application route.
    */
-  // Capability Router — Hermes One extension.
+  // Smart Router — Hermes One extension.
   //
   // This file used to carry a five-tab UI that duplicated every read the console
   // already does, which meant two surfaces to keep true and only one of them
@@ -32,9 +32,9 @@
   // (hermes-webui/docs/EXTENSIONS.md:551-580): toggle `hidden` across
   // main > .main-view, and drive the host's own switchPanel rather than writing its
   // classes off behind its back. See that module for what each rule fixes.
-  const EXT_ID = 'hermes-one-capability-router';
+  const EXT_ID = 'hermes-smart-router';
   const SIDE = `/api/extensions/${EXT_ID}/sidecar`;
-  const PANEL_ID = 'hermes-one-capability-router-panel';
+  const PANEL_ID = 'hermes-smart-router-panel';
   const ICON = '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/>'
     + '<circle cx="18" cy="12" r="3"/><path d="M9 6h4a2 2 0 0 1 2 2v1"/>'
     + '<path d="M9 18h4a2 2 0 0 0 2-2v-1"/>';
@@ -51,14 +51,14 @@
   function ensurePanel() {
     let panel = document.getElementById(PANEL_ID);
     if (panel) return panel;
-    panel = el('section', 'main-view hermes-panel hermes-one-capability-router-panel');
+    panel = el('section', 'main-view hermes-panel hermes-smart-router-panel');
     panel.id = PANEL_ID;
     // srcdoc, not src: the sidecar sends X-Frame-Options DENY and
     // frame-ancestors 'none', so the served page cannot be framed by URL. srcdoc
     // inherits this document's origin, which is the whole point — it is what lets
     // the console reach the proxy with cookies and read the host's token.
     const frame = el('iframe', 'hp-frame');
-    frame.title = 'Capability Router console';
+    frame.title = 'Smart Router console';
     frame.dataset.consoleFrame = 'true';
     panel.append(frame);
     document.querySelector('main')?.append(panel);
@@ -150,8 +150,8 @@
 
   // The Office's shape, applied here.
   //
-  // This console carried a 45px masthead reading "Capability Router" directly under
-  // a rail icon that is already lit and labelled Capability Router, and a row of
+  // This console carried a 45px masthead reading the panel name directly under
+  // a rail icon that is already lit and labelled, and a row of
   // section tabs below it — 82px of chrome above the content. The Office lost the
   // same masthead for the same reason and gave its column to the host sidebar.
   //
@@ -163,7 +163,7 @@
   function buildSidebar(view) {
     const head = el('div', 'panel-head');
     const title = document.createElement('span');
-    title.textContent = 'Capability Router';
+    title.textContent = 'Smart Router';
     head.append(title);
     view.append(head);
 
@@ -196,7 +196,7 @@
   let sectionObserver = null;
 
   function watchSections() {
-    const frame = document.querySelector('.hermes-one-capability-router-panel [data-console-frame]');
+    const frame = document.querySelector('.hermes-smart-router-panel [data-console-frame]');
     if (!frame) return;
     let doc = null;
     try { doc = frame.contentDocument; } catch (error) { return; }
@@ -213,13 +213,13 @@
 
   /** Drive the console's own tab, then mirror its state back into the sidebar. */
   function selectSection(tab) {
-    const frame = document.querySelector('.hermes-one-capability-router-panel [data-console-frame]');
+    const frame = document.querySelector('.hermes-smart-router-panel [data-console-frame]');
     try {
       const doc = frame && frame.contentDocument;
       const button = doc && doc.getElementById(`tab-${tab}`);
       if (button) button.click();
     } catch (error) {
-      console.warn('[hermes-one-capability-router] cannot reach the console tabs', error);
+      console.warn('[hermes-smart-router] cannot reach the console tabs', error);
     }
     syncSections();
   }
@@ -227,7 +227,7 @@
   /** Mirror aria-selected from the console's tabs onto the sidebar rows. */
   function syncSections() {
     if (!sideNav) return;
-    const frame = document.querySelector('.hermes-one-capability-router-panel [data-console-frame]');
+    const frame = document.querySelector('.hermes-smart-router-panel [data-console-frame]');
     let doc = null;
     try { doc = frame && frame.contentDocument; } catch (error) { return; }
     for (const row of sideNav.querySelectorAll('.router-section')) {
@@ -248,18 +248,18 @@
   }
 
   if (!window.HermesPanelNav) {
-    console.error('[hermes-one-capability-router] Hermes One Extension Kit did not load; '
+    console.error('[hermes-smart-router] Hermes One Extension Kit did not load; '
       + 'the Router button cannot be installed. Check that "hermes-one-extension-kit" is '
-      + 'listed BEFORE "hermes-one-capability-router" in extensions.json.');
+      + 'listed BEFORE "hermes-smart-router" in extensions.json.');
     return;
   }
 
   nav = window.HermesPanelNav.register({
     token: 'router',
     label: 'Router',
-    title: 'Capability Router',
+    title: 'Smart Router',
     iconPath: ICON,
-    navClass: 'hermes-one-capability-router-nav',
+    navClass: 'hermes-smart-router-nav',
     onOpen,
     sidebarView: buildSidebar,
   });

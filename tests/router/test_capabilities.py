@@ -690,7 +690,7 @@ def test_independent_rails_ignores_hops_without_a_provider():
 
 _CONSOLE_HTML = (
     Path(__file__).resolve().parents[2]
-    / "webui_extension" / "hermes-one-capability-router" / "console.html"
+    / "webui_extension" / "hermes-smart-router" / "console.html"
 )
 
 

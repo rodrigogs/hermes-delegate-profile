@@ -27,7 +27,7 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parent.parent
-EXTENSION = ROOT / "webui_extension" / "hermes-one-capability-router"
+EXTENSION = ROOT / "webui_extension" / "hermes-smart-router"
 
 
 def _node() -> str:
@@ -45,7 +45,7 @@ def _node() -> str:
 
 def test_extension_manifest_declares_token_v1_sidecar():
     manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["id"] == "hermes-one-capability-router"
+    assert manifest["id"] == "hermes-smart-router"
     assert manifest["scripts"] == ["router-nav.js"]
     assert manifest["stylesheets"] == ["router-nav.css"]
     assert manifest["sidecar"] == {
@@ -761,7 +761,7 @@ def test_extension_css_only_dresses_the_nav_button():
 
     css = (EXTENSION / "router-nav.css").read_text(encoding="utf-8")
 
-    assert ".hermes-one-capability-router-nav" in css
+    assert ".hermes-smart-router-nav" in css
     assert "hover" in css, "the nav button needs a hover state"
     assert "@media" in css, "the sidebar label collapses on a narrow shell"
     # Colour means state in this system, so a nav button uses contrast, not a hue.
@@ -791,7 +791,7 @@ def test_embedded_console_hides_its_own_title_and_tabs():
     and tab row must not be drawn a second time. The review counted "Capability
     Router" three times on one screen (router-01-abertura.png). The
     .is-embedded class is set by the init path (window.self !== window.top),
-    and the standalone page at /capability-router still draws both."""
+    and the standalone page at /console still draws both."""
     html = (EXTENSION / "console.html").read_text(encoding="utf-8")
     assert ".is-embedded nav.tabs { display: none; }" in html, "tabs stay in the DOM but are not drawn twice"
     assert ".is-embedded .view-title { display: none; }" in html, "the shell names the surface; the title must not repeat it"

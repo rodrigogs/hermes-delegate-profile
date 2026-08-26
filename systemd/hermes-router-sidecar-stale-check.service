@@ -1,5 +1,5 @@
 [Unit]
-Description=Check the Capability Router sidecar for stale code
+Description=Check the Smart Router sidecar for stale code
 Documentation=https://github.com/rodrigogs/hermes-delegate-profile
 After=network.target
 

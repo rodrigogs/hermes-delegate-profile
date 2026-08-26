@@ -112,10 +112,10 @@ jobs:
 
       - name: Syntax-check shipped browser assets
         run: |
-          node --check webui_extension/hermes-one-capability-router/router-nav.js
+          node --check webui_extension/hermes-smart-router/router-nav.js
           python3 - <<'PY'
           import re, subprocess, sys, tempfile, pathlib
-          html = pathlib.Path("webui_extension/hermes-one-capability-router/console.html").read_text(encoding="utf-8")
+          html = pathlib.Path("webui_extension/hermes-smart-router/console.html").read_text(encoding="utf-8")
           scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
           assert len(scripts) == 1, f"console.html must carry exactly one inline script, found {len(scripts)}"
           with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:

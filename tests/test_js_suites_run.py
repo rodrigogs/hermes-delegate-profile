@@ -37,7 +37,7 @@ def test_javascript_suite_passes(suite: Path):
         pytest.skip("node is not installed")
 
     # cwd is the plugin root: the suites read their subject with paths relative to
-    # it (e.g. 'webui_extension/hermes-one-capability-router/console.html').
+    # it (e.g. 'webui_extension/hermes-smart-router/console.html').
     result = subprocess.run(
         [node, "--test", str(suite)],
         cwd=TESTS.parent,

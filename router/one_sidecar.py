@@ -1,4 +1,4 @@
-"""Hermes One Capability Router sidecar.
+"""Hermes One Smart Router sidecar.
 
 A stdlib-only loopback HTTP service consumed through Hermes One's consented
 extension-sidecar proxy.  Its only state-changing credential is WebUI's
@@ -36,7 +36,7 @@ except ImportError:  # pragma: no cover - bare-script/flat layout
     from router.service import RouterService
     from router.threshold import apply_dynamic_thresholds, compute_model_thresholds, p_eff
 
-EXTENSION_ID = "hermes-one-capability-router"
+EXTENSION_ID = "hermes-smart-router"
 TOKEN_HEADER = "X-Hermes-Sidecar-Token"
 _VERSION = 1
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "[::1]", "localhost"}
@@ -76,7 +76,7 @@ _CODE_MTIME = _code_mtime()
 _CONSOLE_PATH = (
     Path(__file__).resolve().parent.parent
     / "webui_extension"
-    / "hermes-one-capability-router"
+    / "hermes-smart-router"
     / "console.html"
 )
 

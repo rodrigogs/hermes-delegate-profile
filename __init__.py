@@ -586,7 +586,7 @@ def _is_exhaustion(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Capability Router integration
+# Smart Router integration
 # ---------------------------------------------------------------------------
 
 # Thread-local recursion guard for the capability router. The classifier LLM
@@ -666,7 +666,7 @@ def _make_classify_fn(ctx: Any) -> Optional[Callable[[str, Dict[str, Any]], Dict
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
-            purpose="hermes-one-capability-router.classify",
+            purpose="hermes-smart-router.classify",
         )
         # Parse JSON response — model may wrap in markdown fences
         text = result.text.strip()
@@ -813,7 +813,7 @@ def _route_task(
 
         return result
     except Exception as exc:
-        logger.debug("hermes-one-capability-router: _route_task failed: %s", exc)
+        logger.debug("hermes-smart-router: _route_task failed: %s", exc)
         return None
     finally:
         _router_guard.active = False

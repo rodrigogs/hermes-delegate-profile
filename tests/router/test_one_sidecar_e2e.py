@@ -46,7 +46,7 @@ def _get(url: str, token: str | None = None, method: str = "GET"):
 
 @pytest.fixture()
 def running_sidecar(tmp_path, monkeypatch):
-    token_file = tmp_path / "hermes-one-capability-router.token"
+    token_file = tmp_path / "hermes-smart-router.token"
     token_file.write_text("s3cret-token", encoding="utf-8")
     # The second-reader trap: if /health ever resolves the token through the
     # ENVIRONMENT instead of the same injected path _authorize reads, this
@@ -162,7 +162,7 @@ def test_status_provenance_obeys_injected_stamps(tmp_path):
     # The process start and the code on disk are BOTH after the config mtime.
     started_at = datetime(2026, 1, 2, tzinfo=timezone.utc)
 
-    token_file = tmp_path / "hermes-one-capability-router.token"
+    token_file = tmp_path / "hermes-smart-router.token"
     token_file.write_text("s3cret-token", encoding="utf-8")
     app = SidecarApp(
         RouterService(config),

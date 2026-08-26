@@ -1154,7 +1154,7 @@ def _add_time_args(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="router",
-        description="Capability Router governance CLI",
+        description="Smart Router governance CLI",
     )
     parser.add_argument("--config", default="router.yaml",
                        help="Path to router.yaml (default: router.yaml)")

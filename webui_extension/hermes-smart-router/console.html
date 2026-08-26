@@ -1028,14 +1028,14 @@
     }
   
     /* ── embedded in the Hermes One panel ────────────────────────────────────
-       The rail icon is lit and labelled Capability Router, and the console's
+       The rail icon is lit and labelled, and the console's
        sections are the shell's sidebar now, so the 45px masthead title and the
        37px tab row were 82px of chrome repeating what the shell already shows —
-       and the review counted "Capability Router" THREE times on one screen: the
+       and the review counted the panel name THREE times on one screen: the
        rail label, the sidebar's panel head, and this title. The tabs and the
        title stay in the DOM — the tabs are the state the sidebar reads,
        clicking a sidebar row clicks the tab, and the standalone page at
-       /capability-router still draws both — they are just not drawn twice.
+       /console still draws both — they are just not drawn twice.
        The head survives without its title: it carries the freshness chip and the
        Edit/Refresh actions, which have no other home. */
     .is-embedded nav.tabs { display: none; }
@@ -1396,7 +1396,7 @@
     (() => {
       'use strict';
 
-      const SIDECAR = '/api/extensions/hermes-one-capability-router/sidecar';
+      const SIDECAR = '/api/extensions/hermes-smart-router/sidecar';
       const NARROW_BELOW = 1120;
 
       const state = {

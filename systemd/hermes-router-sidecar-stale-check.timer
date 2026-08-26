@@ -1,5 +1,5 @@
 [Unit]
-Description=Restart the Capability Router sidecar when its modules change (poll)
+Description=Restart the Smart Router sidecar when its modules change (poll)
 Documentation=https://github.com/rodrigogs/hermes-delegate-profile
 
 [Timer]

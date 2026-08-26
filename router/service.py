@@ -1,4 +1,4 @@
-"""Service over the hermes-one-capability-router policy.
+"""Service over the Smart Router policy.
 
 The Dashboard, CLI and Hermes One sidecar must observe the same ``router.yaml``
 and core routing functions.  Read paths are fail-safe: they reload the YAML on

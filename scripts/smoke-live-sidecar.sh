@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Live smoke test for the Capability Router sidecar — run ON the box.
+# Live smoke test for the Smart Router sidecar — run ON the box.
 #
 # The pytest suite proves behaviour against fixtures; this proves the SERVICE:
 # the deployed console is served, the token gate holds, the write path refuses a
@@ -12,7 +12,7 @@
 # Exits non-zero on the first failed assertion count, so it is CI-usable.
 set -u
 P=/home/rodrigo/.hermes/plugins/delegate-profile
-TOK=$(cat ${HERMES_HOME:-$HOME/.hermes}/webui/sidecar-auth/hermes-one-capability-router.token)
+TOK=$(cat ${HERMES_HOME:-$HOME/.hermes}/webui/sidecar-auth/hermes-smart-router.token)
 H="X-Hermes-Sidecar-Token: $TOK"
 B=http://127.0.0.1:8791
 pass=0; fail=0

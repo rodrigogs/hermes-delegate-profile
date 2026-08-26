@@ -31,7 +31,7 @@ ROUTER_DIR = PLUGIN_DIR / "router"
 # same fallback the smoke script uses.
 TOKEN_PATH = (
     Path(os.environ.get("HERMES_HOME", "/home/rodrigo/.hermes"))
-    / "webui/sidecar-auth/hermes-one-capability-router.token"
+    / "webui/sidecar-auth/hermes-smart-router.token"
 )
 SIDECAR = "http://127.0.0.1:8791/status"
 UNIT = "hermes-router-sidecar.service"

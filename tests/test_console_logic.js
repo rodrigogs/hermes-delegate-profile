@@ -19,7 +19,7 @@ const setTimeoutReal = setTimeout;
 // they start, so a test drains the microtask+macrotask queue before asserting.
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-const sourcePath = 'webui_extension/hermes-one-capability-router/console.html';
+const sourcePath = 'webui_extension/hermes-smart-router/console.html';
 
 // A DOM stub good enough for the console's init path.
 function fakeDom() {

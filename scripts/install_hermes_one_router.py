@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Install Capability Router assets into a Hermes One extension bundle.
+"""Install Smart Router assets into a Hermes One extension bundle.
 
 The installer is deliberately narrow and idempotent:
 
 * copies versioned assets, never symlinks (WebUI rejects escaping symlinks);
-* replaces only the ``hermes-one-capability-router`` entry in ``extensions.json``;
+* replaces only the ``hermes-smart-router`` entry in ``extensions.json``, and
+  sweeps retired ids (``_RETIRED_EXTENSION_IDS``) out of the bundle — a merge
+  keyed on the CURRENT id never matches the old entry, and an unswept one
+  leaves a second, dead nav button beside the live one;
 * preserves every sibling entry and its ordering (for example Office 3D);
 * refuses to render production units that would bake an agent profile's
   ``HERMES_HOME``/``HERMES_WEBUI_STATE_DIR`` into the unit (see
@@ -25,7 +28,14 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-EXTENSION_ID = "hermes-one-capability-router"
+EXTENSION_ID = "hermes-smart-router"
+
+# Ids this installer superseded. The 2026-08-26 rename (hermes-one-capability-
+# router -> hermes-smart-router) is the reason this exists: the manifest merge
+# replaces the entry whose id matches EXTENSION_ID, so the old entry under the
+# old id would survive every install — two nav buttons, one of them pointing at
+# a consent that no longer exists. Swept from extensions.json AND from disk.
+_RETIRED_EXTENSION_IDS = ("hermes-one-capability-router",)
 
 # The unit directory of the *operator* — the one systemd --user loads at boot.
 # Compared by SHAPE (suffix match), not against Path.home(): in the 2026-08-26
@@ -102,8 +112,20 @@ def _bundle_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _merge_entry(manifest: Dict[str, Any], entry: Dict[str, Any]) -> Dict[str, Any]:
-    """Replace our entry in place; append only when it is new."""
-    entries = list(manifest["extensions"])
+    """Replace our entry in place; append only when it is new.
+
+    Retired ids are dropped: their entries can never be matched by the
+    EXTENSION_ID-keyed replace, so keeping them would leave a second nav
+    button wired to a nonexistent consent/token after a rename.
+    """
+    entries = [
+        candidate
+        for candidate in manifest["extensions"]
+        if not (
+            isinstance(candidate, dict)
+            and candidate.get("id") in _RETIRED_EXTENSION_IDS
+        )
+    ]
     for index, candidate in enumerate(entries):
         if isinstance(candidate, dict) and candidate.get("id") == EXTENSION_ID:
             entries[index] = entry
@@ -122,6 +144,13 @@ def _copy_assets(repo_root: Path, extension_root: Path) -> None:
     if destination.exists():
         shutil.rmtree(destination)
     shutil.copytree(source, destination)
+    # Sweep retired ids off the disk side of the bundle too: the manifest entry
+    # removal alone would leave the old asset directory behind, serving stale
+    # bytes to anything that still walks the tree.
+    for retired in _RETIRED_EXTENSION_IDS:
+        retired_dir = extension_root / retired
+        if retired_dir.exists():
+            shutil.rmtree(retired_dir)
 
 
 def _default_python() -> str:

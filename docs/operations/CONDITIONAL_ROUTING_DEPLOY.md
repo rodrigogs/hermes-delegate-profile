@@ -267,7 +267,7 @@ change that invalidates the table fails the suite instead of quietly outdating t
   Treat it as live behaviour, not as a dormant knob.
 - `unsatisfiable` and `peak_priced` **do** render on human-facing surfaces — an earlier version of this
   bullet said nothing did. Both are rendered by the router console
-  (`webui_extension/hermes-one-capability-router/console.html`: `unsatisfiableWords()` emits the amber
+  (`webui_extension/hermes-smart-router/console.html`: `unsatisfiableWords()` emits the amber
   "Requirement no model can meet." line, `peakPriceWords()` the peak-pricing line) and by the CLI
   (`router/cli.py`: `_unsatisfiable_lines()`, and `peak_priced` in the time-flag block, including the
   extra "nothing moved" line when `demoted` is empty). They also reach the plan, the trace and the JSON

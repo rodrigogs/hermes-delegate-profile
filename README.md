@@ -177,7 +177,7 @@ For missing required args, returns `{"error": "prompt is required"}` or
    recursive delegation inside the child.
 6. Returns a JSON envelope (see [Result format](#result-format)).
 
-### Capability Router
+### Smart Router
 
 When `profile` is omitted or set to `auto`, the plugin runs a **capability
 router** that picks the best profile + model for the task:
@@ -215,7 +215,7 @@ want subprocess isolation).
 
 ### Hermes One extension
 
-The repository ships a **read-only** Capability Router panel for
+The repository ships a **read-only** Smart Router panel for
 [Hermes One](https://github.com/nesquena/hermes-webui). It is an extension
 inside the existing WebUI, not a second public application:
 
@@ -248,7 +248,7 @@ systemctl --user enable --now hermes-router-sidecar.service
 curl http://127.0.0.1:8791/health
 ```
 
-Reload Hermes One, then approve the declared **Capability Router** sidecar in
+Reload Hermes One, then approve the declared **Smart Router** sidecar in
 **Settings → Extensions**. That approval is intentionally manual: Hermes One
 mints the private `token-v1` file and injects it only into consented proxy
 requests. Until then `/status` returns `503`; do not create a token file

@@ -1,6 +1,6 @@
 {
-  "id": "hermes-one-capability-router",
-  "name": "Capability Router",
+  "id": "hermes-smart-router",
+  "name": "Smart Router",
   "scripts": ["router-nav.js"],
   "stylesheets": ["router-nav.css"],
   "sidecar": {

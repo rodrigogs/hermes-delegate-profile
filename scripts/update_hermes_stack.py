@@ -62,7 +62,7 @@ LOCK_NAME = "update-locks/hermes-stack.lock"
 # phase A renamed it to hermes-one-extension-kit, which meant a validation failure
 # on a healthy manifest.
 #
-# Only the two extensions this install actually ships are required. hermes-one-capability-router
+# Only the two extensions this install actually ships are required. hermes-smart-router
 # and hermes-one-fact-explorer carry sidecars that run on the old box and are absent
 # from extensions.json here, so requiring them would fail the same way.
 REQUIRED_EXTENSION_IDS = {
@@ -553,7 +553,7 @@ def _validate_sources(paths: RuntimePaths, components: Sequence[Component]) -> N
 def _reinstall_router_bundle(paths: RuntimePaths) -> None:
     if not paths.installer.exists():
         raise UpdateError(f"Router installer not found after plugin update: {paths.installer}")
-    _print("install: refreshing Capability Router extension and service unit")
+    _print("install: refreshing Smart Router extension and service unit")
     _run(
         (
             str(paths.python),
@@ -584,7 +584,7 @@ def _restart_and_healthcheck(paths: RuntimePaths) -> None:
         _systemctl(paths, "restart", unit)
         _systemctl(paths, "is-active", "--quiet", unit)
 
-    _wait_health("http://127.0.0.1:8791/health", "Capability Router")
+    _wait_health("http://127.0.0.1:8791/health", "Smart Router")
     _wait_health("http://127.0.0.1:8792/health", "Memory Graph")
     _wait_health("http://127.0.0.1:8787/health", "Hermes One")
 

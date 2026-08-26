@@ -11,7 +11,7 @@ const fs = require('node:fs');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const sourcePath = 'webui_extension/hermes-one-capability-router/router-nav.js';
+const sourcePath = 'webui_extension/hermes-smart-router/router-nav.js';
 
 function fakeDom() {
   const make = (tag) => {

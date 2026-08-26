@@ -64,13 +64,13 @@ def test_install_preserves_manifest_entries_and_is_idempotent(tmp_path):
     )
 
     payload = json.loads(root_manifest.read_text(encoding="utf-8"))
-    assert [entry["id"] for entry in payload["extensions"]] == ["office", "hermes-one-capability-router"]
+    assert [entry["id"] for entry in payload["extensions"]] == ["office", "hermes-smart-router"]
     router = payload["extensions"][1]
-    assert router["scripts"] == ["hermes-one-capability-router/router-nav.js"]
-    assert router["stylesheets"] == ["hermes-one-capability-router/router-nav.css"]
+    assert router["scripts"] == ["hermes-smart-router/router-nav.js"]
+    assert router["stylesheets"] == ["hermes-smart-router/router-nav.css"]
     assert router["sidecar"]["proxy_auth"] == "token-v1"
 
-    installed = extension_root / "hermes-one-capability-router"
+    installed = extension_root / "hermes-smart-router"
     assert (installed / "router-nav.js").is_file()
     assert (installed / "router-nav.css").is_file()
     assert not (installed / "router-nav.js").is_symlink()
@@ -109,7 +109,7 @@ def test_install_replaces_existing_router_entry_without_reordering_others(tmp_pa
             {
                 "extensions": [
                     {"id": "first"},
-                    {"id": "hermes-one-capability-router", "scripts": ["stale.js"]},
+                    {"id": "hermes-smart-router", "scripts": ["stale.js"]},
                     {"id": "last"},
                 ]
             }
@@ -122,8 +122,51 @@ def test_install_replaces_existing_router_entry_without_reordering_others(tmp_pa
     install(ROOT, extension_root, tmp_path / "systemd", plugin_dir)
 
     entries = json.loads((extension_root / "extensions.json").read_text(encoding="utf-8"))["extensions"]
-    assert [entry["id"] for entry in entries] == ["first", "hermes-one-capability-router", "last"]
-    assert entries[1]["scripts"] == ["hermes-one-capability-router/router-nav.js"]
+    assert [entry["id"] for entry in entries] == ["first", "hermes-smart-router", "last"]
+    assert entries[1]["scripts"] == ["hermes-smart-router/router-nav.js"]
+
+
+def test_install_sweeps_the_retired_id_out_of_the_bundle(tmp_path):
+    """A rename must not leave the old id behind in manifest or on disk.
+
+    The manifest merge replaces the entry keyed on the CURRENT id, so the old
+    entry is unreachable by that path: without an explicit sweep an install
+    over a bundle that shipped the previous name ends with TWO router entries
+    (two nav buttons, one dead) and the retired asset directory still on disk.
+    Provisions the bundle exactly as the pre-rename pack looked.
+    """
+    extension_root = tmp_path / "extensions"
+    extension_root.mkdir()
+    retired = installer._RETIRED_EXTENSION_IDS[0]
+    (extension_root / "extensions.json").write_text(
+        json.dumps(
+            {
+                "extensions": [
+                    {"id": "hermes-one-extension-kit"},
+                    {
+                        "id": retired,
+                        "scripts": [f"{retired}/router-nav.js"],
+                        "stylesheets": [f"{retired}/router-nav.css"],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    retired_dir = extension_root / retired
+    retired_dir.mkdir()
+    (retired_dir / "router-nav.js").write_text("// stale bytes\n", encoding="utf-8")
+    plugin_dir = tmp_path / "plugin"
+    plugin_dir.mkdir()
+
+    install(ROOT, extension_root, tmp_path / "systemd", plugin_dir)
+
+    payload = json.loads((extension_root / "extensions.json").read_text(encoding="utf-8"))
+    ids = [entry["id"] for entry in payload["extensions"]]
+    assert retired not in ids, f"retired id survived the manifest merge: {ids}"
+    assert "hermes-smart-router" in ids
+    assert not retired_dir.exists(), "retired asset directory survived on disk"
+    assert (extension_root / "hermes-smart-router" / "router-nav.js").is_file()
 
 
 def test_installer_rejects_malformed_inputs_and_missing_templates(tmp_path):
@@ -144,7 +187,7 @@ def test_installer_rejects_malformed_inputs_and_missing_templates(tmp_path):
         installer._read_extension_entry(tmp_path)
 
     source_root = tmp_path / "source"
-    manifest = source_root / "webui_extension/hermes-one-capability-router/manifest.json"
+    manifest = source_root / "webui_extension/hermes-smart-router/manifest.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text('{"id":"wrong"}', encoding="utf-8")
     with pytest.raises(ValueError, match="must declare"):
@@ -217,7 +260,7 @@ def test_installer_cli_builds_defaults_and_invokes_install(monkeypatch, tmp_path
         "--plugin-dir", str(tmp_path / "plugin"),
     ]) == 0
     assert captured["extension_root"] == tmp_path / "extensions"
-    assert "installed hermes-one-capability-router" in capsys.readouterr().out
+    assert "installed hermes-smart-router" in capsys.readouterr().out
 
 def test_unit_execstart_uses_a_python_that_exists(tmp_path):
     """The unit must not hardcode one install's venv layout.

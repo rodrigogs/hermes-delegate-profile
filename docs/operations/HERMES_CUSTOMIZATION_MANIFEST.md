@@ -24,7 +24,7 @@
 flowchart LR
   U[Operador] --> ONE[Hermes One\nWebUI :8787]
   ONE --> EXT[Bundle de extensões]
-  EXT --> ROUTER[Capability Router\n127.0.0.1:8791]
+  EXT --> ROUTER[Smart Router\n127.0.0.1:8791]
   EXT --> GRAPH[Memory Graph\n127.0.0.1:8792]
   ROUTER --> DP[delegate-profile\nplugin Hermes]
   DP --> H[Hermes Agent]
@@ -38,12 +38,12 @@ flowchart LR
 |---|---|---:|---:|---:|---|
 | Core Hermes | Holographic Memory / recall híbrido | sim | sim | sim | `/usr/local/lib/hermes-agent` |
 | Plugin Hermes | `delegate-profile` v0.3.0 | parcialmente | sim | sim | `~/.hermes/plugins/delegate-profile` |
-| Routing | Capability Router + sidecar | parcialmente | sim | sim | plugin + `router.yaml` |
+| Routing | Smart Router + sidecar | parcialmente | sim | sim | plugin + `router.yaml` |
 | Hermes One | labels de custom providers | sim | sim | sim | `/home/rodrigo/hermes-webui` |
 | Hermes One | rota e página `/insights` | não | sim | sim | WebUI working tree |
 | Extensão One | Hermes Panel System | bundle local | sim | carregado pelo One | `~/hermes-one-extensions` |
 | Extensão One | Office 3D | bundle local | sim | carregado pelo One | `~/hermes-one-extensions` |
-| Extensão One | Capability Router | plugin + bundle local | sim | sidecar saudável | `~/hermes-one-extensions` |
+| Extensão One | Smart Router | plugin + bundle local | sim | sidecar saudável | `~/hermes-one-extensions` |
 | Extensão One | Memory Graph | bundle local | sim | sidecar saudável | plugin local + bundle |
 | Integração | MCPs e serviços auxiliares | configuração | sim | varia | perfil `rodrigo` |
 
@@ -137,7 +137,7 @@ Isso é distinto de `delegate_task(profile=...)`, que é in-process.
 | Plugin loader | habilitado no perfil `rodrigo` |
 | Repositório público | `rodrigogs/hermes-delegate-profile` |
 
-## Capability Router embutido
+## Smart Router embutido
 
 O plugin também hospeda o Router, que escolhe profile/model/provider quando a
 delegação recebe `profile=auto` ou não recebe profile explícito.
@@ -151,7 +151,7 @@ delegação recebe `profile=auto` ou não recebe profile explícito.
 | Log de decisão | `router/decision_log.py`, `router/durable_decision_log.py` |
 | Integração com tool | `__init__.py` |
 | HTTP sidecar | `router/one_sidecar.py` |
-| Console One | `webui_extension/hermes-one-capability-router/` |
+| Console One | `webui_extension/hermes-smart-router/` |
 
 ### Sidecar do Router
 
@@ -174,7 +174,7 @@ curl -fsS http://127.0.0.1:8791/health
 Resultado esperado:
 
 ```json
-{"ok": true, "service": "hermes-one-capability-router", "version": 1, "token": "present"}
+{"ok": true, "service": "hermes-smart-router", "version": 1, "token": "present"}
 ```
 
 `token` é o estado do token-v1 (`present`/`missing`), lido da mesma fonte que a
@@ -231,7 +231,7 @@ isso pode descartar o Router efetivo.
    systemctl --user stop hermes-router-sidecar.service
    ```
 
-2. Remova **somente** a entrada `hermes-one-capability-router` de
+2. Remova **somente** a entrada `hermes-smart-router` de
    `~/hermes-one-extensions/extensions.json` e o diretório correspondente do
    bundle; não remova `hermes-one-extension-kit`, `hermes-one-fact-explorer` ou `hermes-one-office-3d`.
 3. Recarregue/reinicie o serviço WebUI fora de uma conversa que dependa dele.
@@ -319,7 +319,7 @@ rm -rf webui_extension
 |---|---|---|---|
 | `hermes-one-extension-kit` | Sistema comum de navegação, painel e ponte de temas. | `hermes-panel/` | não |
 | `hermes-one-office-3d` | Abre Office 3D no painel central sem abandonar a shell. | `hermes-one-office-3d/` | não |
-| `hermes-one-capability-router` | Console operacional do Router. | `hermes-one-capability-router/` | `127.0.0.1:8791` |
+| `hermes-smart-router` | Console operacional do Router. | `hermes-smart-router/` | `127.0.0.1:8791` |
 | `hermes-one-fact-explorer` | Lista de fatos read-only; grafo como segundo modo. | `hermes-one-fact-explorer/` | `127.0.0.1:8792` |
 
 ## Hermes Panel System
@@ -338,7 +338,7 @@ O launcher monta o Office em iframe no painel central. O objetivo é manter
 rail, sidebar e sessão atual em vez de fazer `window.location.assign('/office')`
 e abandonar o One.
 
-## Capability Router extension
+## Smart Router extension
 
 **Estado:** aplicada; depende do sidecar saudável e da aprovação de proxy
 `token-v1` em Settings → Extensions.
@@ -347,7 +347,7 @@ Manifesto:
 
 ```json
 {
-  "id": "hermes-one-capability-router",
+  "id": "hermes-smart-router",
   "sidecar": {
     "origin": "http://127.0.0.1:8791",
     "health_path": "/health",
@@ -491,7 +491,7 @@ Contrato de uma execução `apply`:
    unit do Router e cache de modelos do One.
 3. Faz `fetch`, guarda alterações pendentes em stash temporário, executa merge
    e reaplica o stash. Conflito é falha, não uma resolução improvisada.
-4. Reinstala somente a extensão `hermes-one-capability-router`, preservando as extensões
+4. Reinstala somente a extensão `hermes-smart-router`, preservando as extensões
    irmãs; roda regressões da memória, suíte do plugin e compilação Python.
 5. Reinicia Router → Memory Graph → Hermes One e exige healthchecks loopback.
 6. Qualquer falha restaura fontes e artefatos a partir do snapshot e tenta
@@ -546,7 +546,7 @@ vez de deixar um serviço rodando com árvore parcialmente atualizada.
 | Versão Hermes | `Hermes Agent v0.19.0 (2026.7.20)` |
 | Core memory suite | `72 passed` |
 | Plugin/router suite | `424 passed, 2 skipped` |
-| Router health | `{"ok": true, "service": "hermes-one-capability-router", "version": 1, "token": "present"}` |
+| Router health | `{"ok": true, "service": "hermes-one-capability-router", "version": 1, "token": "present"}` (id na época do snapshot; hoje `hermes-smart-router`) |
 | Memory health | `{"ok": true, "store": "…/memory_store.db", "present": true}` |
 | Router unit | `active (running)` |
 | Memory unit | `active (running)` |

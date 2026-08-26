@@ -1,4 +1,4 @@
-# Capability Router Console — Information Design (Operate)
+# Smart Router Console — Information Design (Operate)
 
 The durable contract for this console. It governs **what earns a place on screen**
 and how state is signalled. This is an Operate surface: an operator's control
@@ -431,7 +431,7 @@ facts echoed other surfaces. The rules the fixes encode:
   matter.
 - **A title is not drawn twice.** Inside the panel, the shell already names the
   surface twice (rail label, sidebar head), so the console's own masthead is
-  hidden under `.is-embedded`; the standalone page at /capability-router still
+  hidden under `.is-embedded`; the standalone page at /console still
   draws it. The tabs hide for the same reason — the sidebar IS the tab strip —
   but stay in the DOM because the sidebar drives them.
 
