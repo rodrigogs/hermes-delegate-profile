@@ -583,3 +583,28 @@ def test_an_out_of_range_clock_reads_as_no_clock_not_as_a_plausible_hour():
     # in the policy, so a scalar reaching here is corrupt rather than a ceiling.
     for bad in (1.5, "1.5", [1.5], None, True):
         assert "time_cap" not in chain_plan_of({"chain_plan": {"time_cap": bad}}), bad
+
+
+def test_module_docstring_cause_set_matches_VALID_CAUSES():
+    """The docstring enumeration must match the authoritative VALID_CAUSES set.
+
+    Prevents the defect that introduced ``role_out_of_scope`` without updating
+    the prose at lines 6-9, leaving a false claim about the closed set.
+    """
+    import re
+
+    doc = decision_log_mod.__doc__
+    # Extract the enumeration block: "Closed cause set — the only valid strings:\n  X, Y, Z,\n  A, B, C\n"
+    match = re.search(
+        r"Closed cause set — the only valid strings:\s*\n\s*(.+?)\n\n",
+        doc,
+        re.DOTALL,
+    )
+    assert match, "docstring missing the 'Closed cause set' enumeration"
+    enum_block = match.group(1)
+    # Split by commas and whitespace, filter empty strings
+    docstring_causes = {c.strip() for c in enum_block.replace("\n", ",").split(",") if c.strip()}
+    assert docstring_causes == VALID_CAUSES, (
+        f"docstring enumeration ({sorted(docstring_causes)}) != "
+        f"VALID_CAUSES ({sorted(VALID_CAUSES)})"
+    )

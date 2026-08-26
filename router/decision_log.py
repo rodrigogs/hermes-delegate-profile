@@ -6,7 +6,8 @@ the only IO, and guards it.)
 Closed cause set — the only valid strings:
   blocklist_veto, breaker_cooldown, keyword_match, size_rule,
   has_code_rule, hard_rule, classifier, session_pin, default_fallthrough,
-  fail_safe_strong, profile_ignored, selection_vetoed, unknown_cause
+  fail_safe_strong, profile_ignored, role_out_of_scope, selection_vetoed,
+  unknown_cause
 
 A cause outside the closed set is recorded AS ``unknown_cause`` — it used to
 be coerced to ``fail_safe_strong``, which painted an inventing caller as the
