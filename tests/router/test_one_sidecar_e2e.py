@@ -8,9 +8,11 @@ SidecarApp.dispatch() unit test cannot reach.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -74,14 +76,65 @@ def test_status_requires_valid_token(running_sidecar):
     status, payload = _get(f"{base}/status", token="s3cret-token")
     assert status == 200
     assert "enabled" in payload
-    # Provenance: the live sidecar stamps boot provenance so the console can say
-    # which source is stale. A freshly booted test sidecar must serve code and
-    # config older than its own start — the exact invariant the header warns
-    # about when it is violated.
+
+
+def test_status_reports_real_boot_provenance(running_sidecar):
+    """The production stamp path: the sidecar captures the three ages at boot
+    (module import) and /status reports them. What this can assert without
+    depending on who wrote the config file first is the SHAPE — all three
+    fields present and ISO 8601 UTC parseable. The staleness inequality is
+    proven over injected values in test_status_provenance_obeys_injected_stamps;
+    asserting it here would re-introduce the import-order fragility this test
+    used to have (a seed writing router.yaml after the boot stamp broke it on
+    every clean checkout)."""
+    base, _token = running_sidecar
+    _status, payload = _get(f"{base}/status", token="s3cret-token")
+    for field in ("process_started_at", "code_mtime", "config_mtime"):
+        assert field in payload, f"/status must report {field}"
+        stamp = datetime.fromisoformat(payload[field])
+        assert stamp.tzinfo is not None, f"{field} must carry a UTC offset"
+
+
+def test_status_provenance_obeys_injected_stamps(tmp_path):
+    """The staleness invariant, proven over values the test controls.
+
+    SidecarApp accepts process_started_at/code_mtime, and the config lives in
+    tmp_path (copied from router.example.yaml) with its mtime pinned by the
+    test. The three ages are therefore known BEFORE the assertion: code and
+    config are both older than the process start, and the /status payload
+    must say exactly that — the same two inequalities a stale service
+    violates. No time tolerance, no ordering dependence on the suite's own
+    files."""
+    config = tmp_path / "router.yaml"
+    config.write_text(
+        (ROOT / "router.example.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    # Pin the config mtime to a fixed past instant so the inequality holds by
+    # construction, independent of wall-clock timing between write and assert.
+    config_mtime = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    os.utime(config, (config_mtime.timestamp(), config_mtime.timestamp()))
+    # The process start and the code on disk are BOTH after the config mtime.
+    started_at = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+    token_file = tmp_path / "hermes-one-capability-router.token"
+    token_file.write_text("s3cret-token", encoding="utf-8")
+    app = SidecarApp(
+        RouterService(config),
+        token_path=lambda: token_file,
+        process_started_at=started_at.isoformat(),
+        code_mtime=started_at.isoformat(),
+    )
+
+    status, payload = app.dispatch(
+        "GET", "/status", {"X-Hermes-Sidecar-Token": "s3cret-token"}
+    )
+    assert status == 200
     for field in ("process_started_at", "code_mtime", "config_mtime"):
         assert field in payload, f"/status must report {field}"
     assert payload["code_mtime"] <= payload["process_started_at"]
     assert payload["config_mtime"] <= payload["process_started_at"]
+    assert payload["config_mtime"] < payload["process_started_at"]
 
 
 def test_policy_explain_and_unknown_route(running_sidecar):

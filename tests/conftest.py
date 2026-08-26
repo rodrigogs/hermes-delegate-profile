@@ -44,14 +44,16 @@ def _seed_live_router_config() -> None:
         live.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
 
 
-# Called at MODULE level, not as a session fixture. pytest imports this conftest
-# before any test module — and one_sidecar.py stamps _PROCESS_STARTED_AT at its
-# own import time, which is the provenance /status reports. A session-scoped
-# autouse fixture ran only AFTER collection, so on a fresh checkout (router.yaml
-# absent) the seed wrote the file AFTER the process-start stamp: config_mtime >
-# process_started_at, and test_status_requires_valid_token — which asserts the
-# exact invariant a stale service violates — failed on every clean CI run (and
-# dropped coverage below the 100% gate with it).
+# Called at MODULE level, not as a session fixture, so the seed is in place
+# before any test module reads the live policy. On a fresh checkout
+# router.yaml is absent (gitignored) and the tests that exercise the REAL
+# policy file — test_adapter._live_config, test_classifier_trust, and the
+# sidecar e2e that boots over ROOT/router.yaml — expect it to exist. This
+# seed is a hermetic-checkout convenience, NOT the proof of anything: the
+# /status provenance invariant is proven in test_one_sidecar_e2e.py over
+# values the test itself injects (SidecarApp accepts process_started_at/
+# code_mtime, config in tmp_path), so it no longer matters whether this
+# module ran before or after one_sidecar's import-time stamp.
 _seed_live_router_config()
 
 
