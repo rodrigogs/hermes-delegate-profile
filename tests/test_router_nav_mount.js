@@ -126,22 +126,61 @@ test('the frame is srcdoc, because a served page cannot be framed at all', async
   assert.equal(frame.attrs.src, undefined, 'never framed by URL');
   assert.match(fetched[0].url, /\/console$/);
   assert.equal(fetched[0].credentials, 'same-origin', 'the proxy needs the session cookie');
-  // A busca acontece UMA vez por carregamento (ver o teste seguinte), então uma
-  // entrada de cache do navegador sobreviveria ao deploy e mostraria a tela
-  // antiga com o servidor certo. Medido em 2026-08-26.
+  // Os dois lados dizem no-store (o sidecar na ida, isto na volta). O que faz um
+  // deploy aparecer sem recarregar a página é o refetch por abertura, no teste
+  // seguinte. Medido em 2026-08-26.
   assert.equal(fetched[0].cache, 'no-store', 'um console cacheado é um deploy que não aparece');
 });
 
-test('reopening the panel does not refetch or reset the console', async () => {
+test('reopening refetches, and an unchanged console keeps the operator in place', async () => {
   let calls = 0;
   const { api } = loadNav({
     fetchStub: () => { calls += 1; return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('<html/>') }); },
   });
   const panel = api.ensurePanel();
   await api.load(panel);
+  const frame = panel.querySelector('[data-console-frame]');
+  const first = frame.srcdoc;
   await api.load(panel);
-  // Reloading would throw away the operator's tab, filter and selected trace.
-  assert.equal(calls, 1);
+  // Refetched: a tab left open across a deploy was holding the old document, and a
+  // full page reload was the only way out of it (measured 2026-08-26).
+  assert.equal(calls, 2);
+  // ...and nothing was replaced, because the bytes were identical: the operator's
+  // tab, filter and selected trace survive.
+  assert.equal(frame.srcdoc, first);
+});
+
+test('a console replaced by a deploy shows up when the panel is reopened', async () => {
+  const bodies = ['<html>antigo</html>', '<html>novo</html>'];
+  const { api } = loadNav({
+    fetchStub: () => Promise.resolve({
+      ok: true, status: 200, text: () => Promise.resolve(bodies.shift() || '<html>novo</html>'),
+    }),
+  });
+  const panel = api.ensurePanel();
+  await api.load(panel);
+  await api.load(panel);
+  assert.equal(panel.querySelector('[data-console-frame]').srcdoc, '<html>novo</html>');
+});
+
+test('a refetch that fails keeps the console already on screen', async () => {
+  let first = true;
+  const { api } = loadNav({
+    fetchStub: () => {
+      if (first) {
+        first = false;
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('<html>ok</html>') });
+      }
+      return Promise.resolve({ ok: false, status: 502, text: () => Promise.resolve('') });
+    },
+  });
+  const panel = api.ensurePanel();
+  await api.load(panel);
+  await api.load(panel);
+  const frame = panel.querySelector('[data-console-frame]');
+  assert.ok(frame, 'um 502 passageiro não pode custar um console que funciona');
+  assert.equal(frame.srcdoc, '<html>ok</html>');
+  assert.equal(panel.querySelector('.hp-error'), null, 'nada de erro sobre um console vivo');
 });
 
 test('a console that cannot be fetched says which fix applies', async () => {

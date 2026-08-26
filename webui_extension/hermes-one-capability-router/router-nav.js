@@ -66,29 +66,47 @@
     return panel;
   }
 
-  // Load the console shell once; reopening the panel must not refetch it or throw
-  // away the operator's place in it.
+  // Load the console shell, and on every reopen check whether a deploy replaced it.
+  //
+  // Reported three times as "ainda vejo a tela antiga", and all three times the
+  // server was right. Measured 2026-08-26: the sidecar and the proxy both send
+  // `Cache-Control: no-store`, and the WebUI access log shows ZERO console requests
+  // from the client in the 30 minutes after a deploy. The console was fetched once
+  // per PAGE load, so a tab left open across a deploy held the old document
+  // forever. An app whose panels live for hours cannot make a full page reload the
+  // only way to see a deploy.
+  //
+  // Replacing the frame costs the operator their place in the console — scroll, the
+  // open tab, a half-typed edit — so the document is swapped only when the bytes
+  // actually differ. Bytes that differ ARE the deploy, and that is exactly what
+  // must become visible.
   async function load(panel) {
     const frame = panel.querySelector('[data-console-frame]');
-    if (!frame || frame.dataset.loaded === 'true') return;
+    if (!frame) return;
+    const loaded = frame.dataset.loaded === 'true';
     try {
       const response = await fetch(`${SIDE}/console`, {
         credentials: 'same-origin',
-        // O console é buscado UMA vez por carregamento de página (ver o teste do
-        // reabrir), então uma entrada de cache do navegador sobrevive ao deploy e
-        // o operador vê a tela antiga sem nada no servidor estar errado. O
-        // sidecar agora manda `Cache-Control: no-store`; isto aqui é a outra
-        // ponta, para não depender de o proxy repassar o cabeçalho.
+        // Both ends say no-store: the sidecar on the way out and this on the way
+        // in, so a stale copy cannot arrive from a cache the proxy forgot to pass
+        // the header to.
         cache: 'no-store',
         headers: { Accept: 'text/html' },
       });
       if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status });
+      const html = await response.text();
+      // Unchanged: leave the document the operator is working in untouched.
+      if (loaded && frame.srcdoc === html) return;
       // Not once: a reload replaces the document and the observer with it.
       frame.addEventListener('load', watchSections);
-      frame.srcdoc = await response.text();
+      frame.srcdoc = html;
       frame.dataset.loaded = 'true';
     } catch (error) {
-      renderError(panel, error);
+      // A failed REFETCH must not destroy a console that is already on screen:
+      // renderError removes the frame, and a transient 502 would cost the operator
+      // a working document. The console's own data layer already reports a router
+      // it cannot reach.
+      if (!loaded) renderError(panel, error);
     }
   }
 
