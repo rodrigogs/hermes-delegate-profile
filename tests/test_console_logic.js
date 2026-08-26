@@ -2162,27 +2162,18 @@ test('a window older than the policy demotes every count and says why', () => {
 
   // The counter REFUSES: no row carries a count or an amber "never fired" —
   // even though this corpus would have painted both rules amber before.
+  // THE COLUMN IS ABSENT, not dashed. `stale` means there is no count to give, and a
+  // fixed column spending every row on an em dash is a column that survives only to be
+  // explained by the line above it. It used to carry the sentence "sem histórico: o
+  // registro de decisões não cobre este período" — 60 characters repeated on ten rows
+  // in the widest column, which is what overflowed the sheet by 236px in the host
+  // panel; the dash was the first correction and the absence is the right one.
   const hits = findAll(dom.get('sheet'), 'step-hits');
-  // 2 rules + classifier: no blocklist row, because this policy declares no
-  // manual ban (spec 1.3).
-  assert.ok(hits.length >= 3, '2 rules + classifier carry hits');
-  // The column carries a COUNT, and a demoted one is an em dash. It used to carry
-  // the sentence "sem histórico: o registro de decisões não cobre este período" —
-  // 60 characters repeated on every row in the widest column, which is what
-  // overflowed the sheet by 236px in the host panel. The REASON is a fact about the
-  // log, not about a rule, so it is said once: in the disclosure banner asserted
-  // above and in the section note asserted below.
-  assert.ok(hits.every((n) => n.textContent === '—'),
-    `every count demoted, got ${JSON.stringify(hits.map((n) => n.textContent))}`);
-  assert.ok(hits.every((n) => /o registro de decisões não cobre este período/.test(n.title)),
-    'and each one can still be resolved in place');
+  assert.equal(hits.length, 0, `a stale window renders no count cells, got ${hits.length}`);
   // ONE AUTHORITY: the disclosure above the list owns the fact, because it names the
-  // gap and the real window, which a column header cannot. The section note goes
-  // quiet rather than saying a shorter version of it two lines away.
+  // gap and the real window, which a column header cannot. Nothing repeats it.
   assert.equal(dom.get('sheetNote').textContent, '',
-    'the disclosure owns the reason; the column header does not repeat it');
-  assert.ok(hits.every((n) => /empty/.test(n.className)), 'all demoted rows carry the muted class');
-  assert.ok(hits.every((n) => !/zero/.test(n.className)), 'no amber zero survives on a stale sheet');
+    'the disclosure owns the reason; nothing else repeats it');
   assert.doesNotMatch(flat(dom.get('sheet')), /never fired/);
   // The fail-safe % would have been computed from a window that predates the
   // rule; stale means the plain sentence, never a percentage about old data.
@@ -2260,11 +2251,8 @@ test('an empty log demotes every count and says nothing is recorded yet', () => 
 
   assert.equal(dom.get('windowStale').hidden, false);
   assert.match(flat(dom.get('windowStale')), /Nenhuma decisão registrada ainda/);
-  const words = findAll(dom.get('sheet'), 'step-hits').map((n) => n.textContent);
-  assert.ok(words.length >= 2, 'every rule-bearing row renders a hits cell');
-  // A demoted count is an em dash, and the reason is said once — here, by the
-  // section note, and by the disclosure banner asserted above.
-  assert.ok(words.every((w) => w === '—'), `got ${JSON.stringify(words)}`);
+  // No log, no counts, no column: the disclosure above says why, once.
+  assert.equal(findAll(dom.get('sheet'), 'step-hits').length, 0);
   assert.equal(dom.get('sheetNote').textContent, '', 'the disclosure above owns the reason');
   assert.doesNotMatch(flat(dom.get('sheet')), /never fired/);
   // No window exists, so no window is claimed.
