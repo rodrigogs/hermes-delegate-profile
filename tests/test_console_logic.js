@@ -6660,6 +6660,7 @@ test('the §4.7 write literals are exact, and each lives in exactly one place: t
   assert.equal(api.WRITE.plan, 'Ver o que muda');
   assert.equal(api.WRITE.save, 'Salvar');
   assert.equal(api.WRITE.remove, 'Remover o bloqueio');
+  assert.equal(api.WRITE.removing, 'Removendo o bloqueio…');
   assert.equal(api.WRITE.saving, 'Salvando…');
   assert.equal(api.WRITE.revert, 'Voltar à versão anterior');
   assert.equal(api.WRITE.revertConfirm, 'Confirmar: voltar à versão anterior');
@@ -6679,7 +6680,7 @@ test('the §4.7 write literals are exact, and each lives in exactly one place: t
   // own sentence, quoting the button it refuses to press.
   const code = stripCommentsForCounting(fs.readFileSync(sourcePath, 'utf8'));
   const once = [
-    `'${api.WRITE.plan}'`, `'${api.WRITE.save}'`, `'${api.WRITE.remove}'`, `'${api.WRITE.saving}'`,
+    `'${api.WRITE.plan}'`, `'${api.WRITE.save}'`, `'${api.WRITE.remove}'`, `'${api.WRITE.removing}'`, `'${api.WRITE.saving}'`,
     `'${api.WRITE.revert}'`, `'${api.WRITE.revertConfirm}'`, `'${api.WRITE.checking}'`,
     `'${api.WRITE.noDraft}'`, `'${api.WRITE.noop}'`, `'${api.WRITE.lintError}'`,
     `'${api.WRITE.conflict}'`, `'${api.WRITE.inFlight}'`, `'${api.WRITE.saved}'`,
@@ -8730,4 +8731,68 @@ test('an empty substitute queue renders no frame and no empty phrase', () => {
   api.state.blocklist = { manual_bans: [{ model: 'glm-5.3' }], breaker_cooldowns: [] };
   api.renderHealth();
   assert.equal(findAll(dom.get('bans'), 'chain-head').length, 0);
+});
+
+test('the unban button says the gesture in flight and rests after the write (§3.3)', async () => {
+  // The mocks that resolve on the spot cannot pin the in-flight label — the
+  // write is over by the first tick. A gate the test releases keeps the write
+  // airborne long enough to read the button mid-flight.
+  let releaseWrite;
+  const gate = new Promise((resolve) => { releaseWrite = resolve; });
+  const server = {
+    blocklist: {
+      manual_bans: [{ model: 'glm-5.3' }],
+      fallback_chain: [],
+      breaker_enabled: true,
+      breaker_cooldowns: [],
+    },
+  };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (url.endsWith('/blocklist')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(server.blocklist)) });
+      }
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+      }
+      if (url.endsWith('/plan')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: JSON.parse(opts.body).policy, diff: '- glm-5.3', base_hash: 'h' })) });
+      }
+      if (url.endsWith('/apply')) {
+        return gate.then(() => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) }));
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
+    },
+  });
+  api.state.policy = {};
+  api.state.blocklist = server.blocklist;
+  api.setMode('editing');
+  const btn = findAll(dom.get('bans'), 'btn')[0];
+  btn._listeners.click();
+  await tick();
+  assert.equal(btn.textContent, 'Removendo o bloqueio…',
+    '§3.3: in flight the unban button says the gesture, not the generic Salvando…');
+  releaseWrite();
+  await tick();
+  assert.equal(btn.textContent, 'Remover o bloqueio',
+    'and rests as the §3.3 gesture once the write is over');
+});
+
+test('with nobody banned the substitute queue is not mounted (§2.6)', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = {};
+  api.state.blocklist = {
+    manual_bans: [],
+    breaker_cooldowns: [],
+    fallback_chain: ['deepseek-v4-flash', 'glm-5.2'],
+  };
+  api.renderHealth();
+  assert.equal(dom.get('bansGroup').hidden, true,
+    'zero bans and zero cooldowns: the block itself is hidden');
+  assert.equal(findAll(dom.get('bans'), 'chain-head').length, 0,
+    'the queue is not mounted while its block is off screen (DESIGN.md rule 1)');
+  assert.equal(findAll(dom.get('bans'), 'hop').length, 0, 'and no substitute line either');
+  assert.doesNotMatch(flat(dom.get('bans')), /deepseek-v4-flash/,
+    'the substitute models stay off the screen');
 });

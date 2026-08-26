@@ -2993,6 +2993,10 @@
         // names the GESTURE, so a refusal below reads "não é possível remover o
         // bloqueio…", never a generic "salvar" that does not match the button.
         remove: 'Remover o bloqueio',
+        // §3.3: the unban's in-flight word. The gesture is named twice —
+        // resting and flying — and the pair lives in the map so a rename of one
+        // cannot orphan the other; IN_FLIGHT below pairs them.
+        removing: 'Removendo o bloqueio…',
         saving: 'Salvando…',
         revert: 'Voltar à versão anterior',
         revertConfirm: 'Confirmar: voltar à versão anterior',
@@ -3041,6 +3045,14 @@
         // it, it ships.
         loading: 'Carregando…',
       };
+      // §3.3: the in-flight word of a named gesture, keyed by the resting label
+      // the button pressed. The action that already travels — the same one the
+      // refusal lowercases — picks the pair, so a write that lifts a ban reads
+      // "Removendo o bloqueio…", never the generic "Salvando…". The key is the
+      // map's own value, computed, so renaming the label cannot orphan the
+      // pair. A gesture without a gerund flies as WRITE.saving, which stays the
+      // in-flight of save (§4.7).
+      const IN_FLIGHT = { [WRITE.remove]: WRITE.removing };
       function fill(template, vars) {
         return String(template).replace(/\{(\w+)\}/g, (m, k) =>
           (vars && Object.prototype.hasOwnProperty.call(vars, k)) ? String(vars[k]) : m);
@@ -3636,7 +3648,7 @@
         // block itself is on screen: with nobody banned the queue has nothing
         // to substitute for.
         const chain = Array.isArray(bl.fallback_chain) ? bl.fallback_chain : [];
-        if (chain.length) {
+        if (chain.length && (bans.length || breakers.length)) {
           const sub = el('div');
           sub.append(el('div', 'chain-head', 'Substituto da lista de reserva geral'));
           const ul = el('ul', 'hops drawn');
@@ -6940,6 +6952,11 @@
         if (!writable(msg, action || WRITE.save)) return;
         if (applying) { setMsg(msg, WRITE.inFlight, 'bad'); return; }
         applying = true;
+        // The in-flight word follows the action that pressed the button — the
+        // same route as the refusal, so the gesture is named twice and neither
+        // copy can drift. A write that does not name a gesture falls back to
+        // WRITE.saving, which stays the in-flight of save (§4.7).
+        const inFlight = (action && IN_FLIGHT[action]) || WRITE.saving;
         try {
         if (path !== '/apply/revert') {
           const policy = draft !== undefined ? draft : (state.draft || (state.plan && state.plan.policy));
@@ -6969,7 +6986,7 @@
           // moment the plan is approved until the write is over. It travels in
           // as a reference, not a re-lookup: the caller knows which surface
           // pressed it, and a detached node cannot be found by id.
-          if (saveBtn) saveBtn.textContent = WRITE.saving;
+          if (saveBtn) saveBtn.textContent = inFlight;
         }
         const body = path === '/apply/revert' ? {} : { plan: state.plan, policy: state.plan.policy };
         const res = await call(path, { method: 'POST', body });
@@ -6990,7 +7007,7 @@
         }
         } finally {
           applying = false;
-          if (saveBtn && saveBtn.textContent === WRITE.saving) saveBtn.textContent = action || WRITE.save;
+          if (saveBtn && saveBtn.textContent === inFlight) saveBtn.textContent = action || WRITE.save;
         }
       }
 
