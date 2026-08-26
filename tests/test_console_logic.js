@@ -9065,3 +9065,144 @@ test('with nobody banned the substitute queue is not mounted (§2.6)', () => {
   assert.doesNotMatch(flat(dom.get('bans')), /deepseek-v4-flash/,
     'the substitute models stay off the screen');
 });
+// ── the decision phrase names the mechanism only where the log proves it ──
+// Card t_9388289e: "T2 → glm-5.3" read the same whether the group had a
+// fail-safe behind it or not, and a decision the fail-safe SERVED never said
+// so. The log records the decision's cause and the rule that made it, and the
+// policy says whether a fail-safe exists — no more. Two clauses, only two,
+// inside the row's phrase: "atendido pelo último recurso (fail-safe)" when
+// the cause is the fail-safe the screen already resolves, and "este grupo não
+// tem último recurso (fail-safe)" when the decision went through a group the
+// policy backs with nothing. Everything else is silence: attempt outcomes are
+// not recorded (backlog t_1c6a002d), so "reserva não acionada" and
+// "substituição na 2ª tentativa" are never promised on this screen.
+
+// A policy whose rule routes to a real group, with or without a fail-safe
+// behind it — the two worlds the card says must read differently.
+function groupPolicy(withFailSafe) {
+  const policy = {
+    rules: [{ id: 'hard', then: { model: 'T2' } }],
+    default: {},
+    tiers: { T2: { model: 'glm-5.3', provider: 'zai' } },
+  };
+  if (withFailSafe) policy.fail_safe = { model: 'glm-4.7', provider: 'zai' };
+  return policy;
+}
+
+test('a decision the fail-safe served names the mechanism', () => {
+  const { api } = loadConsole();
+  const clause = api.decisionMechanismClause(
+    { id: 'r1', cause: 'fail_safe_strong', rule_id: 'hard', model: 'glm-4.7' },
+    groupPolicy(false));
+  assert.equal(clause.word, 'atendido pelo último recurso (fail-safe)');
+  assert.equal(clause.cls, 'bad', 'a serve by the last resort is a bad-news fact');
+});
+
+test('a veto is a refusal, never a fail-safe catch', () => {
+  const { api } = loadConsole();
+  assert.equal(
+    api.decisionMechanismClause({ id: 'r1', cause: 'blocklist_veto', model: '' }, groupPolicy(false)),
+    null, 'nothing served a refusal, so no clause may claim a serve');
+  assert.equal(
+    api.decisionMechanismClause({ id: 'r1', cause: 'selection_vetoed', model: '' }, groupPolicy(false)),
+    null);
+});
+
+test('a group with no fail-safe behind it says so', () => {
+  const { api } = loadConsole();
+  const clause = api.decisionMechanismClause(
+    { id: 'r1', cause: 'hard_rule', rule_id: 'hard', model: 'glm-5.3', provider: 'zai' },
+    groupPolicy(false));
+  assert.equal(clause.word, 'este grupo não tem último recurso (fail-safe)');
+  assert.equal(clause.cls, 'info');
+});
+
+test('a group backed by a fail-safe stays silent on a normal decision', () => {
+  const { api } = loadConsole();
+  assert.equal(
+    api.decisionMechanismClause(
+      { id: 'r1', cause: 'hard_rule', rule_id: 'hard', model: 'glm-5.3', provider: 'zai' },
+      groupPolicy(true)),
+    null, 'a group with a last resort behind it and a normal decision carries no clause');
+});
+
+test('a decision whose group cannot be determined carries no clause', () => {
+  const { api } = loadConsole();
+  // Rule targets a fixed model, not a group.
+  const fixed = { rules: [{ id: 'hard', then: { model: 'glm-5.3', provider: 'zai' } }], default: {}, tiers: { T2: {} } };
+  assert.equal(
+    api.decisionMechanismClause({ id: 'r1', cause: 'hard_rule', rule_id: 'hard' }, fixed),
+    null, 'a fixed-model destination is not a group, so no group can lack a fail-safe');
+  // Rule id not in the policy on screen.
+  assert.equal(
+    api.decisionMechanismClause({ id: 'r1', cause: 'hard_rule', rule_id: 'ghost' }, groupPolicy(false)),
+    null, 'a rule the policy on screen does not have names no group');
+  // Classifier-bound decision: the group is chosen at runtime.
+  const classify = { rules: [{ id: 'rev', then: { action: 'classify' } }], default: {}, tiers: { T2: {} } };
+  assert.equal(
+    api.decisionMechanismClause({ id: 'r1', cause: 'classifier', rule_id: 'rev' }, classify),
+    null);
+});
+
+test('an unknown cause invents no clause', () => {
+  const { api } = loadConsole();
+  // The row renders an empty cause as "—": the screen knows nothing to attest.
+  assert.equal(
+    api.decisionMechanismClause({ id: 'r1', cause: '', rule_id: 'hard', model: 'glm-5.3' }, groupPolicy(false)),
+    null);
+  assert.equal(
+    api.decisionMechanismClause({ id: 'r1', cause: null, rule_id: 'hard', model: 'glm-5.3' }, groupPolicy(false)),
+    null);
+});
+
+test('a cause the screen has not learned invents no clause', () => {
+  const { api } = loadConsole();
+  // 'size_rule' is a real decision-log cause, but the screen's vocabulary
+  // never resolves it — the phrase must not speak for decisions it cannot
+  // read, even where the group is determinable and the policy has no
+  // fail-safe (the "nenhuma cláusula inventada" fixture of the card).
+  assert.equal(
+    api.decisionMechanismClause({ id: 'r1', cause: 'size_rule', rule_id: 'hard', model: 'glm-5.3' }, groupPolicy(false)),
+    null);
+});
+
+test('the decision row renders the mechanism clause in words', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = groupPolicy(true);
+  api.state.routes = [{ id: 'r1', cause: 'fail_safe_strong', model: 'glm-4.7', provider: 'zai', task: 't', ts: 1 }];
+  api.renderRoutes();
+  const row = dom.get('routesTable').children[0];
+  assert.match(flat(row), /atendido pelo último recurso \(fail-safe\)/,
+    'the word is on the row, so colour is never the only channel');
+});
+
+test('a row says the group has no last resort only when it has none', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.routes = [{ id: 'r1', cause: 'hard_rule', rule_id: 'hard', model: 'glm-5.3', provider: 'zai', task: 't', ts: 1 }];
+
+  api.state.policy = groupPolicy(false);
+  api.renderRoutes();
+  assert.match(flat(dom.get('routesTable')), /este grupo não tem último recurso \(fail-safe\)/);
+
+  api.state.policy = groupPolicy(true);
+  api.renderRoutes();
+  assert.doesNotMatch(flat(dom.get('routesTable')), /último recurso/,
+    'a group with a fail-safe behind it says nothing on a normal decision');
+
+  api.state.policy = groupPolicy(false);
+  api.state.routes = [{ id: 'r1', cause: '', model: 'glm-5.3', provider: 'zai', task: 't', ts: 1 }];
+  api.renderRoutes();
+  assert.doesNotMatch(flat(dom.get('routesTable')), /último recurso/,
+    'an unknown cause invents no clause even where the group lacks a fail-safe');
+});
+
+test('the decision phrase never promises attempt data the log does not record', () => {
+  // Backlog card t_1c6a002d measured zero per-attempt fields in routes.jsonl;
+  // the screen must not promise what the log cannot attest.
+  const html = fs.readFileSync(sourcePath, 'utf8');
+  for (const banned of ['reserva não acionada', 'substituição na', 'classe da tarefa']) {
+    assert.ok(!html.includes(banned), `'${banned}' is backlog, and this file must not promise it`);
+  }
+});

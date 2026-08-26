@@ -375,6 +375,14 @@
     .row:last-child { border-bottom: 0; }
     .row-name { font: 500 var(--t-body) var(--mono); overflow-wrap: anywhere; }
     .row-note { color: var(--muted); font: var(--t-small) var(--mono); margin-top: 2px; }
+    /* The mechanism clause on a decision row (card t_9388289e): words inside
+       the row's phrase — a serve by the last resort, or a group the policy
+       backs with nothing. The colour is the semantic text token the cause
+       chip already wears; the word is there so colour is never the only
+       channel (DESIGN.md §3 rule 8). */
+    .mechanism { display: block; font: var(--t-small) var(--sans); margin-top: 2px; }
+    .mechanism.bad { color: var(--bad-text); }
+    .mechanism.info { color: var(--info-text); }
     /* The role an elo plays in the policy, on the Health row that monitors it:
        which tiers use it and at which position ("T2 primária, T3 hop 3").
        Tier ids and hop numbers dominate the phrase, so it takes the small mono
@@ -7310,6 +7318,75 @@
         return state.scope === 'off-rule' ? isOffRulePath(route) : true;
       }
 
+      // ── the decision's phrase names the mechanism only where the log proves it ─
+      // Card t_9388289e: "T2 → glm-5.3" read the same whether the group had a
+      // fail-safe behind it or not, and a decision the fail-safe SERVED never
+      // said so. Two clauses, and only two, inside the row's phrase:
+      //   * the fail-safe cause the screen already resolves (causeTitle)
+      //     proves the last resort served the decision — "atendido pelo
+      //     último recurso", a bad-news fact;
+      //   * the rule's own destination proves which group the decision went
+      //     through, and the policy proves whether a fail-safe sits behind
+      //     it — when it does not, "este grupo não tem último recurso".
+      // Everything else is silence: per-attempt outcomes are not recorded
+      // (routes.jsonl has no attempts/duration/outcome — backlog card
+      // t_1c6a002d), so the mechanism claims that need that data — that a
+      // reserve stayed quiet, that a later attempt took over, what the
+      // classifier classed the task as — are never promised on this screen.
+      function decisionGroup(route, policy) {
+        const r = route && typeof route === 'object' ? route : {};
+        const id = r.rule_id == null ? null : String(r.rule_id);
+        const p = policy && typeof policy === 'object' ? policy : {};
+        const rules = Array.isArray(p.rules) ? p.rules : [];
+        const tiers = p.tiers && typeof p.tiers === 'object' ? p.tiers : {};
+        if (!id) return null;
+        const rule = rules.find((x) => x && x.id != null && String(x.id) === id);
+        const then = rule && typeof rule === 'object' ? rule.then : null;
+        const target = then && then.model != null ? String(then.model) : null;
+        if (!target || !Object.prototype.hasOwnProperty.call(tiers, target)) return null;
+        return target;
+      }
+
+      // The same presence test renderFailSafe uses: a fail_safe with no
+      // primary is not configured — one authority, so a decision row and the
+      // Modelos block cannot disagree about whether a last resort exists.
+      function hasConfiguredFailSafe(policy) {
+        const p = policy && typeof policy === 'object' ? policy : {};
+        const fs = p.fail_safe && typeof p.fail_safe === 'object' ? p.fail_safe : {};
+        return fs.model != null;
+      }
+
+      // The causes the row renders as routine rule decisions — the real
+      // values measured in the trace for this card (profile_ignored,
+      // has_code_rule, hard_rule, keyword_match). A cause the screen has not
+      // learned invents no clause: the phrase only speaks for decisions it
+      // can read, and a new cause lands here with its test, never silently.
+      const ROUTINE_CAUSES = new Set(['profile_ignored', 'has_code_rule', 'hard_rule', 'keyword_match']);
+
+      function decisionMechanismClause(route, policy) {
+        const cause = String((route && route.cause) || '');
+        // Clause 1: served by the last resort. Only the fail-safe cause can
+        // attest it — the screen's own resolution names the fail-safe as the
+        // mechanism. A refusal (veto) was NOT served by anything, so it never
+        // gets this clause.
+        if (cause.includes('fail_safe')) {
+          return { word: 'atendido pelo último recurso (fail-safe)', cls: 'bad' };
+        }
+        // A refusal, or a cause the screen has not learned, invents no clause
+        // (DESIGN.md rule 2: a fact nobody measured is not a fact).
+        if (cause.includes('veto') || !ROUTINE_CAUSES.has(cause)) return null;
+        // Clause 2: the group the decision went through has no last resort
+        // behind it. Facts only — the rule names the group, the policy says
+        // whether a fail-safe exists. A group with a fail-safe behind it, or
+        // a decision with no determinable group (classifier, fixed model,
+        // rule absent from the policy on screen), stays silent.
+        const group = decisionGroup(route, policy);
+        if (group && !hasConfiguredFailSafe(policy)) {
+          return { word: 'este grupo não tem último recurso (fail-safe)', cls: 'info' };
+        }
+        return null;
+      }
+
       // ── the log versus today's policy ────────────────────────────────
       // The ids TODAY's router.yaml can dispatch: fail_safe, every tier, the
       // classifier, and all their fallback hops. A decision whose model is not
@@ -7525,6 +7602,13 @@
             name.append(mark);
           }
           mid.append(name);
+          // The mechanism clause, INSIDE the row's phrase (card t_9388289e):
+          // words, so colour is never the only channel (DESIGN.md rule 8).
+          // No second chip — the row is the one authority on the decision.
+          const mechanism = decisionMechanismClause(r, state.policy);
+          if (mechanism) {
+            mid.append(el('span', `mechanism ${mechanism.cls}`, mechanism.word));
+          }
           if (r.task) mid.append(el('div', 'row-note', r.task));
           const when = [ago(r.ts, nowUtc()), utcClock(r.ts)].filter(Boolean).join(' · ');
           row.append(mid, el('span', 'row-value', when));
@@ -7853,6 +7937,12 @@
         // chip), and the definition of an off-rule cause (causeTitle). Each is
         // exported because the strings an operator reads are the contract.
         tierRoles, causeTitle,
+        // The mechanism clause of a decision row (card t_9388289e): which
+        // group the decision went through (decisionGroup), whether the policy
+        // backs it with a fail-safe (hasConfiguredFailSafe), and the one or
+        // two clauses the phrase may say (decisionMechanismClause) — exported
+        // so the four fixtures and the exact words are pinned, not eyeballed.
+        decisionGroup, hasConfiguredFailSafe, decisionMechanismClause,
         // The time layer. Every one of these takes its clock as a PARAMETER, which
         // is what keeps them pure and what keeps these tests from passing at 05:00
         // UTC and failing at 07:00 — the failure mode the injected clock exists to
