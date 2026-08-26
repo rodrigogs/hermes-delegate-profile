@@ -145,7 +145,12 @@
 
     const list = el('nav', 'router-sections');
     list.setAttribute('aria-label', 'Se\u00e7\u00f5es do console');
-    for (const [tab, label] of [['pipeline', 'Tarefas'], ['health', 'Modelos'], ['routes', 'Decis\u00f5es']]) {
+    // TWO SECTIONS, named by what the operator DOES there. They were three nouns \u2014
+    // Tarefas / Modelos / Decis\u00f5es \u2014 and no noun says where a setting lives: the rule
+    // list, the file editor and the compaction action lived under the first while the
+    // presets and the group chains lived under the second. The console's own tab
+    // strip is the source of this list's truth, so the two must name the same pair.
+    for (const [tab, label] of [['pipeline', 'Configura\u00e7\u00e3o'], ['routes', 'Opera\u00e7\u00e3o']]) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'router-section';

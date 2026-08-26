@@ -177,10 +177,26 @@ def test_console_html_declares_its_three_screens_and_their_surfaces():
     needs. Both Pipeline and Routes read as ordered vertical sequences — a policy
     is a first-match table and a trace is a short path, so neither is a free-form
     canvas and the operator learns one way of reading this console."""
+
+
+def test_console_html_declares_its_two_screens_and_their_surfaces():
+    """The console is TWO screens, split by what the operator is doing; each must
+    exist with the hooks its screen needs. Both read as ordered vertical sequences —
+    a policy is a first-match table and a trace is a short path, so neither is a
+    free-form canvas and the operator learns one way of reading this console.
+
+    It was three screens named by NOUN (Tarefas / Modelos / Decisões), and no noun
+    says where a setting lives: the rule list, the file editor and the compaction
+    action were under the first while the presets and the group chains were under the
+    second, which is the whole of the operator's "I don't know where I can edit the
+    settings". Configuração holds everything writable; Operação holds the runtime.
+    """
     html = (EXTENSION / "console.html").read_text(encoding="utf-8")
-    for tab in ("health", "pipeline", "routes"):
+    for tab in ("pipeline", "routes"):
         assert f'data-tab="{tab}"' in html
         assert f'id="panel-{tab}"' in html
+    assert 'data-tab="health"' not in html, "the third destination is gone, not hidden"
+    assert 'id="panel-health"' not in html
     assert 'id="sheet"' in html, "the Pipeline screen is the ordered decision sheet"
     assert 'id="probeTask"' in html, "an operator must be able to try a task"
     assert 'id="ladder"' in html, "the capability ladder shows where tasks can land"
@@ -190,13 +206,20 @@ def test_console_html_declares_its_three_screens_and_their_surfaces():
     assert "<svg" not in html, "no canvas survives: both screens are read as lists"
 
 
-def test_console_tabs_read_as_tasks_models_decisions():
-    """CA1 of the redesign spec: the three tabs are Tarefas / Modelos / Decisões.
+def test_console_tabs_are_named_by_what_you_do_there():
+    """The two tabs are Configuração / Operação, and the names are the point.
 
-    The task list is the axis the whole redesign hangs on, so it is the FIRST
-    tab and the one born selected; ids stay ``tab-pipeline``/``tab-health``/
-    ``tab-routes`` because router-nav.js and the tests match by id. The sidebar
-    mirrors the same three words in the same order — one vocabulary, not two.
+    CA1 of the earlier spec asked for three tabs named Tarefas / Modelos / Decisões.
+    That criterion is OVERTURNED here, out loud, on the operator's own verdict: three
+    nouns partition the screen by which object you are looking at, and the thing an
+    operator arrives wanting is a place to CHANGE something. The rule list, the file
+    editor and the compaction action were under Tarefas; the presets and the group
+    chains were under Modelos; the classifier and the groups had no edit path at all.
+    Configuração now holds everything writable, so "where do I edit the settings" has
+    exactly one answer, and Operação holds the runtime the policy produced.
+
+    The ids stay ``tab-pipeline`` / ``tab-routes`` because router-nav.js and the JS
+    suite match by id: a re-partition must not also be a rename.
     """
     import re
 
@@ -205,33 +228,34 @@ def test_console_tabs_read_as_tasks_models_decisions():
     assert nav, "the console declares its tab list"
 
     order = re.findall(r'id="(tab-\w+)".*?<span class="tab-name">([^<]+)</span>', nav.group(0), re.S)
-    assert [tab for tab, _ in order] == ["tab-pipeline", "tab-health", "tab-routes"], (
-        "Tarefas leads; ids keep their historic names"
+    assert [tab for tab, _ in order] == ["tab-pipeline", "tab-routes"], (
+        "Configuração leads; ids keep their historic names"
     )
-    assert [label for _, label in order] == ["Tarefas", "Modelos", "Decisões"]
+    assert [label for _, label in order] == ["Configuração", "Operação"]
 
     # Born selected: the markup itself carries the state, not a script pass.
     first = re.search(r'<button class="tab" id="tab-pipeline"[^>]*>', nav.group(0))
-    assert first and 'aria-selected="true"' in first.group(0), "Tarefas is the tab an operator lands on"
-    for other in ("tab-health", "tab-routes"):
-        line = re.search(rf'<button class="tab" id="{other}"[^>]*>', nav.group(0))
-        assert line and 'aria-selected="false"' in line.group(0)
+    assert first and 'aria-selected="true"' in first.group(0), (
+        "Configuração is the tab an operator lands on"
+    )
+    line = re.search(r'<button class="tab" id="tab-routes"[^>]*>', nav.group(0))
+    assert line and 'aria-selected="false"' in line.group(0)
 
     panel = re.search(r'<section class="screen active" id="panel-pipeline"', html)
-    assert panel, "the Tarefas panel is born active"
-    assert re.search(r'<section class="screen" id="panel-health"', html), "Modelos starts inactive"
+    assert panel, "the Configuração panel is born active"
+    assert re.search(r'<section class="screen" id="panel-routes"', html), "Operação starts inactive"
 
     # The script state agrees with the markup it is born into.
-    assert re.search(r"tab: 'pipeline',", html), "state.tab starts on Tarefas"
+    assert re.search(r"tab: 'pipeline',", html), "state.tab starts on Configuração"
 
-    # And the sidebar says the same three words in the same order. The source
-    # escapes non-ASCII, so compare the escaped spellings it actually ships.
+    # And the sidebar says the same two words in the same order. The source escapes
+    # non-ASCII, so compare the escaped spellings it actually ships.
     nav_js = (EXTENSION / "router-nav.js").read_text(encoding="utf-8")
     sections = re.search(r"for \(const \[tab, label\] of \[\[(.*?)\]\]\)", nav_js, re.S)
     assert sections, "the sidebar declares its section list"
     pairs = re.findall(r"\['(\w+)', '([^']+)'\]", sections.group(0))
     assert pairs == [
-        ("pipeline", "Tarefas"), ("health", "Modelos"), ("routes", "Decis\\u00f5es"),
+        ("pipeline", "Configura\\u00e7\\u00e3o"), ("routes", "Opera\\u00e7\\u00e3o"),
     ], "the sidebar mirrors the tabs: same words, same order"
 
 
@@ -638,7 +662,9 @@ def test_console_text_editor_warning_is_present_once_from_the_map():
     """
 
     html = (EXTENSION / "console.html").read_text(encoding="utf-8")
-    details = html.split("<summary>Editar como texto</summary>", 1)[1].split("</details>", 1)[0]
+    # "Editar O ARQUIVO como texto": the twisty needs the noun now that every ROW has
+    # its own Editar — without it, two controls a screen apart read as the same offer.
+    details = html.split("<summary>Editar o arquivo como texto</summary>", 1)[1].split("</details>", 1)[0]
     assert 'id="jsonNote"' in details, "the warning's paragraph lives inside the <details>"
     strings = _console_ui_strings()
     sent = [(w, ln, t) for w, ln, t in strings if "Aqui você edita o arquivo de política inteiro" in t]
@@ -714,7 +740,9 @@ def test_health_facts_are_only_the_two_that_exist_nowhere_else():
     """The summary keeps ROUTING and CLASSIFIER — the rules count repeated the
     sheet's numbered list and the invalid count repeated the lint banner."""
     html = (EXTENSION / "console.html").read_text(encoding="utf-8")
-    assert "fact(WRITE.routing" in html and "fact('classifier'" in html
+    # Both labels come from the WRITE map now: `classifier` was the last
+    # English label the screen said, and §4.7 keeps a phrase in one place.
+    assert "fact(WRITE.routing" in html and "fact(WRITE.classifier" in html
     assert "fact('rules'" not in html and "fact('invalid'" not in html
 
 
@@ -2028,33 +2056,46 @@ def _panel(html: str, name: str) -> str:
 
 
 def test_console_reads_in_the_order_the_spec_fixes():
-    """§1.2: each tab carries its own subject, in the order the reader needs it.
+    """Each screen carries its own subject, in the order the reader needs it.
 
-    Two moves this pins, both measured as reading problems before they were made:
+    The earlier §1.2 put the groups of models and the presets on a third tab and the
+    rule list on the first. That split is overturned: every one of those is something
+    the operator CHANGES, so all of them are read on Configuração, in the order a
+    change is decided — the rules first (what the tab is for), then the probe that
+    checks one case against them, then the groups those rules point at, then the
+    preset that rewrites the groups wholesale, then the two settings that are neither.
 
-    * **The groups of models live on Modelos, under the presets.** They were on Tarefas,
-      below the rule list, which put "which models exist and in what order each group
-      tries them" as a second subject under "where does a task land". CA4 is verified by
-      opening Modelos, so the placement is part of the criterion and not decoration.
-    * **On Tarefas the list comes before the probe.** With the probe first the screen
-      opened with an empty box above the answer, which reads as "type something to see
-      anything" — and the list is what the tab is for.
+    Two moves survive from the earlier reading and are still pinned here:
+
+    * **The list comes before the probe.** With the probe first the screen opened with
+      an empty box above the answer, which reads as "type something to see anything".
+    * **The presets come before the groups they rewrite** — choose the strategy, then
+      read what it produced.
     """
     html = (EXTENSION / "console.html").read_text(encoding="utf-8")
-    health = _panel(html, "health")
-    pipeline = _panel(html, "pipeline")
+    config = _panel(html, "pipeline")
+    operation = _panel(html, "routes")
 
-    assert 'id="ladder"' in health, "the groups of models are read on Modelos"
-    assert 'id="ladder"' not in pipeline, "and are not a second subject under the rule list"
-    assert 'id="presetBox"' in health, "the presets are the first control on Modelos"
-    assert health.index('id="presetBox"') < health.index('id="ladder"'), (
-        "choose the strategy, then read what it produced"
-    )
-
-    assert 'id="sheet"' in pipeline
-    assert pipeline.index('id="sheet"') < pipeline.index('id="probeForm"'), (
+    assert 'id="sheet"' in config
+    assert config.index('id="sheet"') < config.index('id="probeForm"'), (
         "the ordered list of task types is the answer; the probe checks one case against it"
     )
+    assert 'id="ladder"' in config, "the groups are configuration, not observation"
+    assert 'id="presetBox"' in config
+    assert 'id="settings"' in config, "the classifier finally has a home, and it is here"
+    assert config.index('id="probeForm"') < config.index('id="ladder"') < config.index('id="presetBox"'), (
+        "rules, then the probe, then the groups the rules point at, then what rewrites them"
+    )
+    assert config.index('id="presetBox"') < config.index('id="settings"')
+    # The file editor is last: it is the escape hatch, not the way in.
+    assert config.index('id="jsonActions"') > config.index('id="settings"')
+
+    # Operação is the runtime, and nothing on it is editable.
+    assert 'id="models"' in operation and 'id="routesTable"' in operation
+    assert operation.index('id="models"') < operation.index('id="routesTable"'), (
+        "what can be reached, then what it decided with it"
+    )
+    assert 'id="jsonActions"' not in operation and 'id="presetBox"' not in operation
 
     # The ids themselves are the contract router-nav.js and the JS suite match on, so
     # a move must never be a rename.

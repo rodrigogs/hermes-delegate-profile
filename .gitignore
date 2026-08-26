@@ -42,3 +42,7 @@ state/
 *.db
 # Live config (seeded from router.example.yaml on first run; edit freely)
 router.yaml
+
+# Design-review screenshots. They are captured against the REAL decision log, whose
+# task text is the operator own work, so they stay local: this repository is public.
+.impeccable/review/
