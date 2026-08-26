@@ -151,6 +151,7 @@ def test_console_html_declares_its_three_screens_and_their_surfaces():
     assert 'id="sheet"' in html, "the Pipeline screen is the ordered decision sheet"
     assert 'id="probeTask"' in html, "an operator must be able to try a task"
     assert 'id="ladder"' in html, "the capability ladder shows where tasks can land"
+    assert 'id="failSafeBox"' in html, "§1.2 item 5: the last resort has its own block on the Modelos tab"
     assert 'id="routesTable"' in html
     assert 'id="replayPath"' in html, "replay lists the steps a real decision took"
     assert "<svg" not in html, "no canvas survives: both screens are read as lists"

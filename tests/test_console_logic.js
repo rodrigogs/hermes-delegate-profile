@@ -2468,6 +2468,131 @@ test('no tiers is an instruction, not a blank panel', () => {
   assert.match(flat(dom.get('ladder')), /não for possível falar com o roteador/);
 });
 
+// ── §2.3: who uses each group (the inverted index of rules[].then.model) ────
+
+function usedByPolicy() {
+  return {
+    rules: [
+      { id: 'a', when: { keywords: { contains: 'audit' } }, then: { model: 'T2' } },
+      { id: 'b', when: { has_code: { eq: true } }, then: { model: 'T1' } },
+      { id: 'c', when: { keywords: { contains: 'review' } }, then: { model: 'T2' } },
+    ],
+    default: {},
+    tiers: {
+      T1: { model: 'glm-4.7', provider: 'zai' },
+      T2: { model: 'glm-5.3', provider: 'zai', fallback: [{ model: 'gpt-5.5', provider: 'openai-codex' }] },
+      T3: { model: 'mimo-v2.5', provider: 'xiaomi' },
+      T4: { model: 'gpt-5.6-terra', provider: 'openai-codex' },
+    },
+  };
+}
+
+test('each group names who uses it — one, two, or nobody (nobody gets no line)', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = usedByPolicy();
+  api.renderLadder();
+
+  const text = flat(dom.get('ladder'));
+  // The titles are the sheet's own (ruleTitle), so the same rule reads the same
+  // on both surfaces. File order inside the line: a then T2, c then T2.
+  assert.match(text, /Usado por: Trabalho de código padrão/, 'T1 is used by one rule');
+  assert.match(text, /Usado por: Pedido de auditoria, Pedido de revisão/, 'T2 by two, in file order');
+  // T3 and T4 are used by nobody: "Usado por: ninguém" is a frame around nothing.
+  assert.doesNotMatch(text, /Usado por: ninguém/);
+  const lines = findAll(dom.get('ladder'), 'tier-fact')
+    .filter((n) => String(n.textContent || '').startsWith('Usado por:'));
+  assert.equal(lines.length, 2, 'exactly the two groups with consumers carry the line');
+});
+
+test('the default enters the Usado por line named as the destino padrão', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  const policy = usedByPolicy();
+  policy.default = { model: 'T2' };
+  api.state.policy = policy;
+  api.renderLadder();
+
+  const text = flat(dom.get('ladder'));
+  assert.match(text, /Usado por: Pedido de auditoria, Pedido de revisão, e o destino padrão/,
+    'the default follows the rules, named as what it is');
+  // The inverted index must not put the default under the WRONG group.
+  assert.doesNotMatch(text, /Usado por: [^.]*e o destino padrão[^.]*Trabalho de código padrão/,
+    'the default belongs to T2, not to T1');
+});
+
+test('a group used only by the default says just that', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [],
+    default: { model: 'T1' },
+    tiers: { T1: { model: 'glm-4.7', provider: 'zai' }, T2: { model: 'glm-5.3', provider: 'zai' } },
+  };
+  api.renderLadder();
+  const text = flat(dom.get('ladder'));
+  assert.match(text, /Usado por: o destino padrão/, 'no leading comma, no "e" for an empty rule list');
+  assert.doesNotMatch(text, /e o destino padrão/);
+});
+
+// ── §2.6 + §5.4: o último recurso como bloco próprio na aba Modelos ─────────
+
+test('the last-resort block draws the fail_safe chain with the same chain renderer', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [], default: {},
+    fail_safe: {
+      model: 'glm-4.7', provider: 'zai', billing_mode: 'plan',
+      fallback: [
+        { model: 'gpt-5.6-luna', provider: 'openai-codex', billing_mode: 'subscription' },
+        { model: 'mimo-v2.5', provider: 'xiaomi', billing_mode: 'metered' },
+      ],
+    },
+    tiers: {},
+  };
+  api.renderFailSafe();
+
+  const box = dom.get('failSafeBox');
+  const text = flat(box);
+  assert.match(text, /Último recurso/, 'the block carries the §2.6 heading');
+  assert.match(text, /glm-4\.7/);
+  assert.match(text, /gpt-5\.6-luna/);
+  assert.match(text, /mimo-v2\.5/);
+  assert.match(text, /Esta fila não passa pelos grupos\. É a última coisa que o roteador tenta\./);
+  const lists = findAll(box, 'hops');
+  assert.equal(lists.length, 1, 'one chain, drawn by the same chainList the groups use');
+  assert.match(lists[0].className, /ordered/, 'a fixed queue is drawn in the order it runs');
+  assert.deepEqual(findAll(lists[0], 'hop-ord').map((n) => n.textContent), ['1', '2', '3'],
+    'and numbered like a group chain — no surface mints its own chain vocabulary');
+});
+
+test('a missing fail_safe is NO block at all — only the §5.4 phrase where it would be', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  api.renderFailSafe();
+
+  const box = dom.get('failSafeBox');
+  const text = flat(box);
+  assert.match(text, /Não há último recurso configurado\. Se todas as filas falharem, a tarefa falha\./);
+  // "bloco ausente" (DESIGN.md rule 1): no heading (the phrase's own lowercase
+  // "último recurso" is the sentence, not the §2.6 heading), no group frame,
+  // no chain.
+  assert.doesNotMatch(text, /Último recurso/, 'the block heading does not exist');
+  assert.equal(findAll(box, 'group').length, 0, 'no block frame around nothing');
+  assert.equal(findAll(box, 'hops').length, 0, 'no chain is drawn for a non-config');
+
+  // An empty fail_safe object is the same fact as an absent one — and so is a
+  // fail_safe with reserves but no primary (the sheet's own presence test).
+  api.state.policy = { rules: [], default: {}, fail_safe: {}, tiers: {} };
+  api.renderFailSafe();
+  assert.match(flat(box), /Não há último recurso configurado/, 'an empty fail_safe is not configured');
+  api.state.policy = { rules: [], default: {}, fail_safe: { fallback: [{ model: 'glm-4.7', provider: 'zai' }] }, tiers: {} };
+  api.renderFailSafe();
+  assert.match(flat(box), /Não há último recurso configurado/, 'no primary means no last resort');
+});
+
 // ── the chain plan for a probed task ─────────────────────────────────────
 
 function chainPlan(extra) {
@@ -5622,6 +5747,99 @@ test('a concrete model id at a destination is NOT a missing group — it is the 
   const said = flat(dom.get('warnings'));
   assert.doesNotMatch(said, /não existe na sua tabela de grupos/);
   assert.match(said, /Primeiro erro: tier 'T2'/, 'the raw path is what an untranslated error gets');
+});
+
+test('a default pointing at a missing group gets ITS OWN phrase and a jump to the default panel', () => {
+  // §3.4(a) applied to the default (the review card t_1064aa8c left this case in
+  // the server's raw text): the lint says `default: 'model' references unknown
+  // tier 'T9'`, and the console translates it — written FOR the default, never by
+  // reusing the rule sentence with an empty title.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [{ id: 'code', when: { has_code: { eq: true } }, then: { model: 'T2' } }],
+    default: { model: 'T9' },
+    classifier: { model: 'glm-4.7' },
+    fail_safe: { model: 'glm-4.7', provider: 'zai' },
+    tiers: { T2: { model: 'glm-5.3', provider: 'zai' } },
+  };
+  api.state.status = {
+    validation_errors: ["default: 'model' references unknown tier 'T9'"],
+    error_targets: [null],
+    enabled: true,
+  };
+  api.renderWarnings();
+
+  const said = flat(dom.get('warnings'));
+  assert.match(said, /O destino padrão manda para o Grupo T9, que não existe na sua tabela de grupos\./);
+  assert.match(said, /o roteador tenta chamar um modelo chamado “T9”, a chamada falha, e a tarefa cai no último recurso/);
+  // The default's phrase must not be the rule's sentence with an empty title —
+  // the mutation the review card named.
+  assert.doesNotMatch(said, /A regra “” manda/);
+  assert.doesNotMatch(said, /unknown tier/, 'the server English is not forwarded');
+  // NO [ Ir para a regra ] anywhere: there is no rule row to jump to, and a
+  // button claiming one would lie about the file.
+  const toRule = (dom.get('warnings').children || []).flatMap((line) => (line.children || [])
+    .filter((k) => /Ir para a regra/.test(String(k.textContent || ''))));
+  assert.equal(toRule.length, 0, 'no rule jump exists for a default finding');
+  const toDefault = (dom.get('warnings').children || []).flatMap((line) => (line.children || [])
+    .filter((k) => String(k.textContent || '') === 'Ir para o destino padrão'));
+  assert.equal(toDefault.length, 1, 'the jump to the default panel is there');
+
+  // The jump goes to the DEFAULT — not to rule 0 (the mutation: a default jump
+  // that lands on a rule). The row is the synthetic "__default" one, marked and
+  // scrolled, and the inspector opens on the default.
+  toDefault[0]._listeners.click();
+  assert.equal(api.state.selected, 'default', 'the inspector opened on the default, not on a rule');
+  const row = dom.get('sheet').children.find((c) => c.dataset.ruleId === '__default');
+  assert.ok(row, 'the synthetic default row is on the sheet');
+  assert.deepEqual(plain(row._scrolledTo), { block: 'center' }, 'and it was scrolled into view');
+  assert.match(flat(dom.get('inspector')), /default/, 'the inspector names the default');
+
+  // The sheet row itself carries the §4.3 fifth prefix, like a rule's would.
+  api.renderSheet();
+  assert.match(flat(dom.get('sheet')), /⚠ Grupo T9 — não existe/);
+});
+
+test('a rule AND the default pointing at missing groups get two phrases, each with its own jump', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [{ id: 'audit', when: { keywords: { contains: 'audit' } }, then: { model: 'T9' } }],
+    default: { model: 'T8' },
+    classifier: { model: 'glm-4.7' },
+    fail_safe: { model: 'glm-4.7', provider: 'zai' },
+    tiers: { T2: { model: 'glm-5.3', provider: 'zai' } },
+  };
+  api.state.status = {
+    validation_errors: [
+      "rule 'audit': 'then.model' references unknown tier 'T9'",
+      "default: 'model' references unknown tier 'T8'",
+    ],
+    error_targets: [null, null],
+    enabled: true,
+  };
+  api.renderWarnings();
+
+  const said = flat(dom.get('warnings'));
+  // Two DISTINCT phrases — the rule's names the rule, the default's names the
+  // destino padrão; neither is the other with an empty title.
+  assert.match(said, /A regra “Pedido de auditoria” manda para o Grupo T9/);
+  assert.match(said, /O destino padrão manda para o Grupo T8/);
+  assert.doesNotMatch(said, /A regra “” manda/);
+  // Each finding is matched to ITS OWN error: the rule phrase names T9 under the
+  // rule error, the default phrase names T8 under the default error.
+  const toRule = (dom.get('warnings').children || []).flatMap((line) => (line.children || [])
+    .filter((k) => /Ir para a regra/.test(String(k.textContent || ''))));
+  const toDefault = (dom.get('warnings').children || []).flatMap((line) => (line.children || [])
+    .filter((k) => String(k.textContent || '') === 'Ir para o destino padrão'));
+  assert.equal(toRule.length, 1, 'one rule jump');
+  assert.equal(toDefault.length, 1, 'one default jump');
+
+  toRule[0]._listeners.click();
+  assert.equal(api.state.selected, 'rule:audit', 'the rule jump lands on the rule');
+  toDefault[0]._listeners.click();
+  assert.equal(api.state.selected, 'default', 'the default jump lands on the default');
 });
 
 // ── CA5 + CA6: the write path of the presets, and the one write that asks ───
