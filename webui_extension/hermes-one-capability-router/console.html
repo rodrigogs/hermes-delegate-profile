@@ -6105,22 +6105,46 @@
         if (!t.requirements || typeof t.requirements !== 'object') t.requirements = {};
         const REQUIREMENTS = t.requirements;
         const knownBilling = Object.keys(BILLING);
+        // The strategy keys are the GROUP's, not any attempt's: they say how
+        // the chain falls back (fallback, fallback_strategy, pin_primary,
+        // time_cap, time_policy, requirements) and stay on the tier whenever
+        // an attempt moves. Declared ONCE, by name, and shared by the swap
+        // and the remove — a second list in either operation would drift, and
+        // the next group key added would leak into fallback.
+        const STRATEGY_KEYS = ['fallback', 'fallback_strategy', 'pin_primary', 'time_cap', 'time_policy', 'requirements'];
+        // The attempt's own keys inside an object: for the primary that is the
+        // tier minus the strategy set; for a reserve the WHOLE object is the
+        // attempt. "Move the attempt" means move this set — however many keys
+        // it holds (model, provider, billing_mode, declared, ...), never three
+        // names.
+        const attemptKeys = (obj) => Object.keys(obj).filter((k) => STRATEGY_KEYS.indexOf(k) === -1);
         // A structural change can move the primary, the reserves, or both, so
-        // the patch keys it touches are all four at once.
+        // the patch touches the tier's whole attempt — every key the swap left
+        // on it, explicit nulls included, because a null is how the patch says
+        // a key left (§2.1) — plus the fallback list.
         const touchAll = () => {
-          touched.add('model'); touched.add('provider');
-          touched.add('billing_mode'); touched.add('fallback');
+          attemptKeys(t).forEach((k) => touched.add(k));
+          touched.add('fallback');
         };
         const touchList = () => touched.add('fallback');
-        // Swap the three editable fields of two attempts. billing_mode
-        // normalizes undefined to null so the patch can SAY the key was
-        // removed (§2.1: removing a key is an explicit null) — dropping it
-        // silently would leave the file's old mode behind a draft that shows
-        // none.
+        // Swap the WHOLE attempts of a and b — every key each side carries
+        // rides with its attempt (reserve = all keys; primary = tier minus the
+        // strategy set, which never leaves the tier). billing_mode normalizes
+        // undefined to null so the patch can SAY the key was removed (§2.1:
+        // removing a key is an explicit null) — dropping it silently would
+        // leave the file's old mode behind a draft that shows none. A key the
+        // old primary carried that the promoted attempt does not becomes an
+        // explicit null on the tier for the same reason: an absent key would
+        // read as "untouched" on the server's deep merge, and the stale
+        // override would keep describing the new primary.
         const swapFields = (a, b) => {
-          const model = a.model, provider = a.provider, billing = a.billing_mode;
-          a.model = b.model; a.provider = b.provider; a.billing_mode = b.billing_mode;
-          b.model = model; b.provider = provider; b.billing_mode = billing;
+          const ka = attemptKeys(a), kb = attemptKeys(b);
+          const va = {}, vb = {};
+          ka.forEach((k) => { va[k] = a[k]; delete a[k]; });
+          kb.forEach((k) => { vb[k] = b[k]; delete b[k]; });
+          ka.forEach((k) => { b[k] = va[k]; });
+          kb.forEach((k) => { a[k] = vb[k]; });
+          if (a === t) ka.forEach((k) => { if (kb.indexOf(k) === -1) a[k] = null; });
           if (a.billing_mode === undefined) a.billing_mode = null;
           if (b.billing_mode === undefined) b.billing_mode = null;
         };

@@ -8241,3 +8241,210 @@ test('tierPresetOf is the per-group reader: the applied preset matches that grou
   assert.equal(api.tierPresetOf(factory.tiers.T1, 'T1', factory).key, 'equilibrio',
     'a factory group matches Equilíbrio — A→B→C order resolves the tie');
 });
+// ── the move carries the WHOLE attempt, not three fields ─────────────
+// A reserve may declare `declared` (router/capabilities.py:23 — per-elo
+// overrides that WIN over the registry). Reordering or removing used to
+// swap only {model, provider, billing_mode} and leave the extra keys
+// behind, so an override started describing the neighbour's model. These
+// tests pin the set semantics: every key rides with its attempt, the
+// strategy keys never leave the tier, and a removed key leaves as an
+// explicit null (§2.1).
+
+test('↓ on the primary and ↑ on the first reserve: the declared override follows its model both ways', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  const policy = tierPolicy();
+  policy.tiers.T1.declared = { context_window: 123456 };
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+  const box = dom.get('inspector');
+  let rows = findAll(box, 'chain-row');
+  rowButtons(rows[0]).children.find((b) => b.textContent === '↓')._listeners.click();
+
+  let draft = api.state.draft.tiers.T1;
+  assert.equal(draft.model, 'gpt-5.6-luna', 'the first reserve is promoted');
+  assert.equal(draft.declared, null,
+    'the promoted attempt carries no declared — the explicit null says the old override left the tier (§2.1)');
+  assert.equal(draft.fallback[0].model, 'glm-4.7', 'the old primary is now the first reserve');
+  assert.deepEqual(plain(draft.fallback[0].declared), { context_window: 123456 },
+    'the override rode DOWN with its model into the list');
+
+  rows = findAll(box, 'chain-row');
+  rowButtons(rows[1]).children.find((b) => b.textContent === '↑')._listeners.click();
+  draft = api.state.draft.tiers.T1;
+  assert.equal(draft.model, 'glm-4.7', 'the first reserve is promoted back');
+  assert.deepEqual(plain(draft.declared), { context_window: 123456 },
+    'the override rode UP with its model onto the tier');
+  assert.equal(draft.fallback[0].model, 'gpt-5.6-luna');
+  assert.equal(draft.fallback[0].declared, null, 'the demoted attempt now carries no override');
+  assert.equal(draft.fallback[0].billing_mode, 'subscription',
+    'and the whole attempt round-tripped, billing mode included');
+});
+
+test('a promoted attempt with no billing mode leaves an explicit null on the tier, never a silent stale mode', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  const policy = tierPolicy();
+  delete policy.tiers.T1.fallback[0].billing_mode;
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+  const box = dom.get('inspector');
+  const rows = findAll(box, 'chain-row');
+  rowButtons(rows[0]).children.find((b) => b.textContent === '↓')._listeners.click();
+  const draft = api.state.draft.tiers.T1;
+  assert.equal(draft.billing_mode, null,
+    'the swap SAYS the mode was removed (§2.1) — not undefined, which the patch would drop silently');
+  assert.equal(draft.fallback[0].billing_mode, 'plan', 'the old primary took its own mode down with it');
+});
+
+test('↑/↓ between two reserves move the whole attempt: the declared override follows its model either way', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  const policy = tierPolicy();
+  policy.tiers.T1.fallback[0].declared = { context_window: 123456 };
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+  const box = dom.get('inspector');
+  let rows = findAll(box, 'chain-row');
+  rowButtons(rows[1]).children.find((b) => b.textContent === '↓')._listeners.click();
+  let fb = api.state.draft.tiers.T1.fallback;
+  assert.equal(fb[0].model, 'mimo-v2.5', 'the second reserve came up');
+  assert.ok(!('declared' in fb[0]), 'a reserve without an override gained none');
+  assert.equal(fb[1].model, 'gpt-5.6-luna', 'the first reserve went down');
+  assert.deepEqual(plain(fb[1].declared), { context_window: 123456 },
+    'the override rode DOWN one position with its model');
+
+  rows = findAll(box, 'chain-row');
+  rowButtons(rows[2]).children.find((b) => b.textContent === '↑')._listeners.click();
+  fb = api.state.draft.tiers.T1.fallback;
+  assert.equal(fb[0].model, 'gpt-5.6-luna', 'the first reserve is back up');
+  assert.deepEqual(plain(fb[0].declared), { context_window: 123456 },
+    'the override rode UP with its model');
+  assert.ok(!('declared' in fb[1]), 'the other reserve is clean again');
+});
+
+test('Remover on the primary promotes the first reserve WITH its declared override', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  const policy = tierPolicy();
+  policy.tiers.T1.fallback[0].declared = { context_window: 123456 };
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+  const box = dom.get('inspector');
+  const rows = findAll(box, 'chain-row');
+  rowButtons(rows[0]).children.find((b) => b.textContent === 'Remover')._listeners.click();
+  const draft = api.state.draft.tiers.T1;
+  assert.equal(draft.model, 'gpt-5.6-luna', 'the first reserve becomes the primary');
+  assert.deepEqual(plain(draft.declared), { context_window: 123456 },
+    'the promoted reserve KEEPS its declared — nothing is discarded on the way up');
+  assert.deepEqual(draft.fallback.map((e) => e.model), ['mimo-v2.5'],
+    'the removed attempt left the queue, override and all');
+  assert.ok(!('declared' in draft.fallback[0]), 'the remaining reserve never gained an override');
+});
+
+test('the strategy keys stay on the tier through every move — they never travel into fallback', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  const policy = tierPolicy();
+  const t1 = policy.tiers.T1;
+  t1.pin_primary = true;
+  t1.time_cap = { max_multiplier: 2 };
+  t1.time_policy = { avoid_peak: ['zai'] };
+  t1.requirements = { min_context: 900000 };
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+  const box = dom.get('inspector');
+  const strategyKeys = ['fallback', 'fallback_strategy', 'pin_primary', 'time_cap', 'time_policy', 'requirements'];
+  const assertStrategy = (label) => {
+    const t = api.state.draft.tiers.T1;
+    assert.equal(t.fallback_strategy, 'sequential', `${label}: fallback_strategy stays on the tier`);
+    assert.equal(t.pin_primary, true, `${label}: pin_primary stays on the tier`);
+    assert.deepEqual(plain(t.time_cap), { max_multiplier: 2 }, `${label}: time_cap stays on the tier`);
+    assert.deepEqual(plain(t.time_policy), { avoid_peak: ['zai'] }, `${label}: time_policy stays on the tier`);
+    assert.deepEqual(plain(t.requirements), { min_context: 900000 }, `${label}: requirements stays on the tier`);
+    t.fallback.forEach((e, i) => {
+      strategyKeys.forEach((k) => {
+        assert.ok(!Object.prototype.hasOwnProperty.call(e, k),
+          `${label}: fallback[${i}] carries no '${k}'`);
+      });
+    });
+  };
+  let rows = findAll(box, 'chain-row');
+  rowButtons(rows[0]).children.find((b) => b.textContent === '↓')._listeners.click();
+  assertStrategy('after ↓ on the primary');
+  rows = findAll(box, 'chain-row');
+  rowButtons(rows[1]).children.find((b) => b.textContent === '↑')._listeners.click();
+  assertStrategy('after ↑ on the first reserve');
+  rows = findAll(box, 'chain-row');
+  rowButtons(rows[0]).children.find((b) => b.textContent === 'Remover')._listeners.click();
+  assertStrategy('after Remover on the primary');
+});
+
+test('the /plan body after a move carries the queue with each override on its own model', async () => {
+  const posted = [];
+  const policy = tierPolicy();
+  policy.tiers.T1.declared = { context_window: 111111 };
+  policy.tiers.T1.fallback[0].declared = { context_window: 123456 };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (opts && opts.body) posted.push({ url: String(url).replace(/^.*\/sidecar/, ''), body: JSON.parse(opts.body) });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '+x', base_hash: 'h' })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+  const box = dom.get('inspector');
+  const rows = findAll(box, 'chain-row');
+  rowButtons(rows[0]).children.find((b) => b.textContent === '↓')._listeners.click();
+
+  const apply = findAll(box, 'btn').find((b) => b.textContent === 'Salvar');
+  apply._listeners.click();
+  await tick();
+  const planCall = posted.find((c) => c.url === '/plan');
+  assert.ok(planCall, 'an /plan went out');
+  const tier = planCall.body.policy.tiers.T1;
+  assert.equal(tier.model, 'gpt-5.6-luna', 'the promoted reserve is the written primary');
+  assert.deepEqual(tier.declared, { context_window: 123456 },
+    "the promoted reserve's override rides the tier patch — never the stale primary's");
+  assert.equal(tier.fallback[0].model, 'glm-4.7', 'the old primary is the first written reserve');
+  assert.deepEqual(tier.fallback[0].declared, { context_window: 111111 },
+    "the old primary's override followed it into the list — each override sits on its own model");
+  assert.ok(!('declared' in tier.fallback[1]), 'the untouched reserve carries no override');
+});
+
+test('a reserve-reserve swap says a missing billing mode out loud, on the attempt that lacks it', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  const policy = tierPolicy();
+  delete policy.tiers.T1.fallback[0].billing_mode;
+  api.state.policy = policy;
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.setMode('editing');
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+  const box = dom.get('inspector');
+  const rows = findAll(box, 'chain-row');
+  rowButtons(rows[1]).children.find((b) => b.textContent === '↓')._listeners.click();
+  const fb = api.state.draft.tiers.T1.fallback;
+  assert.equal(fb[0].model, 'mimo-v2.5', 'the second reserve came up');
+  assert.equal(fb[0].billing_mode, 'metered', 'the mode rode down with its own attempt');
+  assert.equal(fb[1].model, 'gpt-5.6-luna', 'the first reserve went down');
+  assert.equal(fb[1].billing_mode, null,
+    'the attempt that has no mode says so explicitly (§2.1) — the list replaces wholesale, so an absent key would write nothing');
+});
