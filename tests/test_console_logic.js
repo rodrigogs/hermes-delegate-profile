@@ -1030,12 +1030,117 @@ test('an off-rule cause carries the definition of what it names', () => {
   decisionLog(api2);
   api2.renderRoutes();
   const rows = findAll(dom.get('routesTable'), 'cause');
-  const failSafe = rows.find((c) => /fail safe strong/.test(c.textContent));
+  const failSafe = rows.find((c) => /último recurso/i.test(c.textContent));
   assert.ok(failSafe, 'a fail-safe row is rendered');
   assert.match(failSafe.title, /rede de segurança/);
-  const veto = rows.find((c) => /blocklist veto/.test(c.textContent));
+  const veto = rows.find((c) => /bloqueio/i.test(c.textContent));
   assert.ok(veto, 'a veto row is rendered');
   assert.match(veto.title, /recusou/);
+});
+
+// ── the cause is read in Portuguese, over the closed vocabulary ─────────
+// Card t_e10949c5: the column rendered the raw log enum ("PROFILE IGNORED",
+// "HAS CODE RULE") on a screen that is otherwise all pt-BR — and the most
+// frequent label asserted the OPPOSITE of the mechanism: profile_ignored
+// read as "the profile was ignored" when the router's choice was refused
+// BECAUSE it would move the worker's role and the profile prevailed. The
+// closed set lives in router/decision_log.py (VALID_CAUSES); the Python
+// suite pins this map against that set member-for-member, so what these
+// tests pin is the WORDS and the rendering path.
+
+// The exact phrases, transcribed once so the assertions below and the
+// static parity test stay in agreement with the map.
+const CAUSE_WORDS_EXPECTED = {
+  blocklist_veto: 'Bloqueio',
+  breaker_cooldown: 'Auto-bloqueio',
+  keyword_match: 'Por palavra',
+  size_rule: 'Por tamanho',
+  has_code_rule: 'Por ter código',
+  hard_rule: 'Verbo difícil',
+  classifier: 'Classificador',
+  session_pin: 'Piso da sessão',
+  default_fallthrough: 'Nenhuma casou',
+  fail_safe_strong: 'Último recurso',
+  profile_ignored: 'Valeu o perfil',
+  role_out_of_scope: 'Só o modelo',
+  selection_vetoed: 'Seleção vetada',
+  unknown_cause: 'Desconhecida',
+};
+
+test('every closed-set cause renders as its pt-BR word', () => {
+  const { api } = loadConsole();
+  // The whole set, one by one: a member rendered raw (or as the wrong word)
+  // must fail HERE, not in front of an operator.
+  for (const [cause, word] of Object.entries(CAUSE_WORDS_EXPECTED)) {
+    assert.equal(api.causeWord(cause), word, `${cause} must read as the operator's word`);
+  }
+  // The two mechanisms the card names explicitly, checked as WORDS because
+  // they were the misread: profile_ignored says who PREVAILED (the profile),
+  // role_out_of_scope says which half applied (the model's).
+  assert.match(api.causeWord('profile_ignored'), /perfil/i);
+  assert.match(api.causeWord('role_out_of_scope'), /modelo/i);
+  assert.doesNotMatch(api.causeWord('profile_ignored'), /ignorado/i,
+    'the word that asserted the opposite of the mechanism must be gone');
+});
+
+test('the two words the operator misread are pinned verbatim', () => {
+  const { api } = loadConsole();
+  // profile_ignored (135 of 158 measured decisions) read as "the profile was
+  // ignored" while the mechanism was the opposite: the router's choice was
+  // refused for wanting to move the role, so the card's profile prevailed.
+  assert.equal(api.causeWord('profile_ignored'), 'Valeu o perfil');
+  // role_out_of_scope: the rule's model half applied; the role half was
+  // never this path's to move — whoever creates the card already chose it.
+  assert.equal(api.causeWord('role_out_of_scope'), 'Só o modelo');
+});
+
+test('a cause outside the closed set renders raw, underscores and all', () => {
+  const { api } = loadConsole();
+  // The screen must not hide a caller that invented vocabulary: an unknown
+  // cause stays visible AS IT CAME, '_' for ' ', exactly as before.
+  assert.equal(api.causeWord('caboose_invented'), 'caboose invented');
+  assert.equal(api.causeWord('TWO_WORDS'), 'TWO WORDS');
+  // Empty/absent cause is the row's em dash, never a translated word.
+  assert.equal(api.causeWord(''), '');
+  assert.equal(api.causeWord(null), '');
+  assert.equal(api.causeWord(undefined), '');
+});
+
+test('both rendering points go through the one map', () => {
+  // The row's column and the replay step's chip are the two surfaces a
+  // cause reaches; if either kept its own replace, the screen would speak
+  // two vocabularies for the same fact. Both are asserted on the DOM the
+  // console itself built, not on the function in isolation.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.routes = [
+    { id: 'r1', cause: 'profile_ignored', model: 'glm-5.3', provider: 'zai', task: 't', ts: 1 },
+  ];
+  api.renderRoutes();
+  const column = findAll(dom.get('routesTable'), 'cause')[0];
+  assert.equal(column.textContent, 'Valeu o perfil',
+    'the row column reads the map');
+
+  api.state.replay = {
+    id: 'r1', at: 0,
+    steps: [{ stage: 'rules', cause: 'profile_ignored', out: { rule_id: 'hard-verbs' } }],
+  };
+  api.drawPath();
+  const chip = findAll(dom.get('replayPath'), 'cause')[0];
+  assert.equal(chip.textContent, 'Valeu o perfil',
+    'the replay chip reads the same map');
+});
+
+test('a raw cause stays raw on the rendered row too', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.routes = [
+    { id: 'r1', cause: 'caboose_invented', model: 'glm-5.3', provider: 'zai', task: 't', ts: 1 },
+  ];
+  api.renderRoutes();
+  const column = findAll(dom.get('routesTable'), 'cause')[0];
+  assert.equal(column.textContent, 'caboose invented',
+    'the invented vocabulary is visible, not translated away');
 });
 
 test('a truncated log says so, and an untruncated one stays quiet', () => {

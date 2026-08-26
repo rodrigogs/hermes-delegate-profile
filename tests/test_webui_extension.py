@@ -2157,3 +2157,66 @@ def test_console_reads_in_the_order_the_spec_fixes():
     # a move must never be a rename.
     for element_id in ("sheet", "probeTask", "ladder", "routesTable", "replayPath", "chainPlan", "clockbar"):
         assert f'id="{element_id}"' in html, f"{element_id} keeps its historic id"
+
+
+def test_console_cause_map_covers_the_closed_set_exactly():
+    """The cause column reads pt-BR over the engine's CLOSED vocabulary.
+
+    ``router.decision_log.VALID_CAUSES`` is the one authority for which cause
+    strings exist; ``CAUSE_WORDS`` in console.html is the one authority for
+    how they read. This test binds the two: every member has a phrase, no
+    phrase exists without a member, and both rendering points call the map.
+    It is the gate half of card t_e10949c5 — the JS suite pins the rendered
+    words, this pins that a NEW VALID_CAUSES member cannot reach production
+    without its phrase (the raw enum on an all-Portuguese screen is exactly
+    the defect the card fixes, and "a new cause lands with its test, never
+    silently" is ROUTINE_CAUSES' own rule for the clause side).
+    """
+    from router.decision_log import VALID_CAUSES
+
+    script = _console_inline_script()
+
+    # The map, parsed out of the inline script the way the harness runs it:
+    # a static read here, the rendered behaviour in test_console_logic.js.
+    match = _re.search(r"const CAUSE_WORDS = \{([\s\S]*?)\};", script)
+    assert match, "console.html must define the one CAUSE_WORDS map"
+    members = _re.findall(r"^\s{8}(\w+):\s*'([^']+)'", match.group(1), _re.M)
+    assert members, "the map parsed empty — the regex no longer matches the file"
+    words = dict(members)
+
+    missing = VALID_CAUSES - set(words)
+    assert not missing, (
+        f"cause(s) without a pt-BR phrase: {sorted(missing)} — add them to "
+        "CAUSE_WORDS in console.html, or the column renders the raw enum"
+    )
+    invented = set(words) - VALID_CAUSES
+    assert not invented, (
+        f"phrase(s) for causes the engine does not produce: {sorted(invented)} — "
+        "the log's closed set coerces unknowns to unknown_cause, so these rows "
+        "can never render"
+    )
+    # The two mechanisms the card named as the misread, pinned as WORDS:
+    # profile_ignored must say who PREVAILED (the profile), and
+    # role_out_of_scope must say which half applied (the model's).
+    assert "perfil" in words["profile_ignored"].lower(), (
+        "profile_ignored read as 'the profile was ignored' for 135 of 158 "
+        "measured decisions while the mechanism was the opposite — the word "
+        "must name who prevailed"
+    )
+    assert "modelo" in words["role_out_of_scope"].lower(), (
+        "role_out_of_scope must name the half that applied: the rule's model "
+        "half ran, the role half was never this path's to move"
+    )
+
+    # ONE authority, used by BOTH rendering points: the row's column and the
+    # replay step's chip. A second replace() beside the map is how the two
+    # surfaces drift into two vocabularies for the same fact.
+    assert script.count("causeWord(") >= 3, (
+        "causeWord must be called at both rendering points (plus its own "
+        "definition) — a point that renders a cause without it speaks a "
+        "second vocabulary"
+    )
+    assert "'cause', String(" not in script, (
+        "a rendering point still builds the cause span from the raw value "
+        "('cause', String(...)) — both points must go through causeWord"
+    )

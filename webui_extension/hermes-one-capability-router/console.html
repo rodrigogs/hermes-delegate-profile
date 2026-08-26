@@ -2737,6 +2737,51 @@
           return (RANK[s] ?? -1) > (RANK[worst] ?? -1) ? s : worst;
         }, 'alive');
       }
+
+      // ── the cause vocabulary: one map, one authority ─────────────────
+      // The decision log's cause is a CLOSED set (router/decision_log.py,
+      // VALID_CAUSES) and this map is the only thing that turns a member
+      // into words — both places a cause reaches the DOM (the row's column
+      // and the replay step's chip) call causeWord, never their own
+      // replace. The Python suite pins the map against the engine's set,
+      // so a new VALID_CAUSES member without a phrase fails the gate
+      // instead of rendering as the raw enum on an all-Portuguese screen.
+      // A value OUTSIDE the set still renders raw, '_' for ' ': hiding it
+      // would hide a caller that invented vocabulary (DESIGN.md §2.6).
+      //
+      // Column width (118px budget): the longest phrase is "Nenhuma casou"
+      // at ~105px, measured in DejaVu Bold 11px + .05em tracking and scaled
+      // against the one live-host width this file records ("FAIL SAFE
+      // STRONG" = 112px) — every phrase sits under that anchor, so no
+      // translated row wraps where the raw ones did not.
+      const CAUSE_WORDS = {
+        blocklist_veto: 'Bloqueio',
+        breaker_cooldown: 'Auto-bloqueio',
+        keyword_match: 'Por palavra',
+        size_rule: 'Por tamanho',
+        has_code_rule: 'Por ter código',
+        hard_rule: 'Verbo difícil',
+        classifier: 'Classificador',
+        session_pin: 'Piso da sessão',
+        default_fallthrough: 'Nenhuma casou',
+        fail_safe_strong: 'Último recurso',
+        // HISTORICAL — produced until 2026-08-26, still carried by traces
+        // already written. The mechanism was the OPPOSITE of "profile
+        // ignored": the router's choice was refused BECAUSE it would move
+        // the worker's role, so the card's profile is who prevailed. The
+        // word must say who won, not who lost.
+        profile_ignored: 'Valeu o perfil',
+        // The rule's model half applied; the role half was never this
+        // path's to move — whoever creates the card already chose it.
+        role_out_of_scope: 'Só o modelo',
+        selection_vetoed: 'Seleção vetada',
+        unknown_cause: 'Desconhecida',
+      };
+      function causeWord(cause) {
+        const c = String(cause || '');
+        return CAUSE_WORDS[c] || c.replace(/_/g, ' ');
+      }
+
       function causeColor(cause) {
         const c = String(cause || '');
         if (c.includes('veto') || c.includes('fail_safe')) return 'var(--bad-text)';
@@ -6243,7 +6288,7 @@
           if (outcome) what.append(el('div', 'trace-outcome', outcome));
           node.append(what);
           if (step.cause) {
-            const c = el('span', 'cause', String(step.cause).replace(/_/g, ' '));
+            const c = el('span', 'cause', causeWord(step.cause));
             c.style.color = causeColor(step.cause);
             node.append(c);
           }
@@ -7956,7 +8001,7 @@
           row.type = 'button';
           row.dataset.routeId = r.id;
           if (state.replay && state.replay.id === r.id) row.setAttribute('aria-current', 'true');
-          const cause = el('span', 'cause', String(r.cause || '—').replace(/_/g, ' '));
+          const cause = el('span', 'cause', r.cause ? causeWord(r.cause) : '—');
           cause.style.color = causeColor(r.cause);
           // The definition of an off-rule cause rides with the term, resolved
           // in the same hover idiom as the "fora da política" mark below.
@@ -8296,7 +8341,7 @@
         // twelve-case table and the exact phrase are pinned, not eyeballed.
         shadowPairs, shadowPairFor, shadowReasonWords,
         showDefaultPanel, verDefaultButton,
-        drawPath, pickRoute, stepNode, stepOutcome, causeColor, worstOf, modelState,
+        drawPath, pickRoute, stepNode, stepOutcome, causeColor, causeWord, worstOf, modelState,
         phraseCondition, phraseWhen, renderSheet, renderLadder, ruleHits, probe,
         // The log window: named by its endpoints (never by the oldest's age) and
         // judged against the policy that is on screen — the two facts that
