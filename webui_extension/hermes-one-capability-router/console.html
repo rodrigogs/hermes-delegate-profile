@@ -6769,6 +6769,8 @@
         // controls below write their feedback to it; appended once, after the
         // actions, so the message reads where the buttons are.
         const msg = el('p', 'msg'); msg.id = 'nodeMsg'; msg.setAttribute('aria-live', 'polite');
+        // A message the write parked before its reload, put back into the rebuilt form.
+        if (state.editorMsg) setMsg(msg, state.editorMsg.text, state.editorMsg.kind);
         const field = (label, key, get, set, options) => {
           const wrap = el('div', 'field');
           wrap.append(el('label', '', label));
@@ -7118,6 +7120,11 @@
         // alone. After that the line stays as the message until the next write
         // or read replaces it.
         setMsg(msg, WRITE.saved, 'ok');
+        // The line has to survive the re-read this write triggers. It is written into
+        // the FORM's message node, and the reload rebuilds that form — so the text is
+        // parked in state and renderInspector puts it back. Measured in the browser: the
+        // write landed, the .bak held the previous file, and the screen said nothing.
+        state.editorMsg = { text: WRITE.saved, kind: 'ok' };
         state.plan = null; state.draft = null;
         await load();
         if (saveBtn && path !== '/apply/revert') {
@@ -7548,6 +7555,9 @@
       // Open the editor for one object: arm the write, remember which object, and
       // let the three renderers put the form next to the row that owns it.
       function openEditor(node) {
+        // A parked confirmation belongs to the write that produced it, not to the next
+        // thing the operator opens.
+        if (state.selected !== node.id) state.editorMsg = null;
         state.selected = node.id;
         state.mode = 'editing';
         disarmRevert();
@@ -7565,6 +7575,7 @@
       function closeEditor() {
         state.selected = null;
         state.draft = null;
+        state.editorMsg = null;
         setMode('reading');
       }
 
