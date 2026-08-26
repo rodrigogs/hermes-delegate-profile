@@ -9337,3 +9337,52 @@ test('the last-resort block says where it is edited, and reads in the same order
     `both the sentence and the chain are drawn, got ${JSON.stringify(fresh.children.map((c) => c.className))}`);
   assert.ok(what < hops, 'the sentence comes before the chain, not after it');
 });
+
+test('the saved line survives the re-read the write triggers', async () => {
+  // Found in the browser after proving a real write: the file changed, the .bak held
+  // the previous version, and the SCREEN said nothing. doApply writes WRITE.saved into
+  // the FORM's own message node and then awaits load(), and the reload rebuilds that
+  // form with a fresh, empty message. The old renderAll skipped a selected inspector,
+  // so the line used to survive by accident; making the editor re-attach on every
+  // render took the accident away. A write with no feedback is NN/g's first
+  // application-design mistake, on the one action that matters most here.
+  const calls = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      const tail = String(url).replace(/^.*\/sidecar/, '').replace(/\?.*$/, '');
+      calls.push(tail);
+      if (tail === '/policy') {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(tierPolicy())) });
+      }
+      if (tail === '/plan') {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: tierPolicy(), diff: '+x', base_hash: 'h' })) });
+      }
+      if (tail === '/lint') {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ validation_errors: [] })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
+    },
+  });
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.openEditor({ id: 'tier:T2', name: 'o grupo T2', bind: 'tier', tier: 'T2' });
+
+  const msg = inspectorMsg(dom);
+  await api.doApply('/apply', msg, { tiers: { T2: { provider: 'deepseek' } } }, dom.get('nodeDiff'));
+
+  // The reload really happened — this is a claim about a message surviving one.
+  assert.ok(calls.includes('/apply'), 'the write went out');
+  assert.ok(calls.filter((c) => c === '/policy').length >= 2, 'and the console re-read after it');
+  // And the line is still on screen, in the rebuilt form.
+  const after = inspectorMsg(dom);
+  assert.ok(after, 'the rebuilt form still has a message node');
+  assert.match(after.textContent, /^Salvo\./, `the saved line survives, got ${JSON.stringify(after.textContent)}`);
+  assert.match(after.className, /ok/);
+
+  // It belongs to the write that produced it, not to the next thing opened.
+  api.openEditor({ id: 'tier:T1', name: 'o grupo T1', bind: 'tier', tier: 'T1' });
+  assert.equal(api.state.editorMsg, null, 'opening another object drops it');
+  api.closeEditor();
+  assert.equal(api.state.editorMsg, null);
+});
