@@ -9204,3 +9204,136 @@ test("a group's capability floor is stated exactly once", () => {
   assert.equal(hits, 1, `the floor is said ${hits} times, and once is the contract`);
   assert.match(said, /exige pelo menos 200,000 tokens/, 'and the Ordem line is where');
 });
+
+// ── THE EDITOR NODE OUTLIVES THE ROW THAT ADOPTED IT ─────────────────────────
+// Found by driving a real browser, not by this suite, and the gap is worth naming:
+// the form is ONE node moved next to whatever is being edited, so it becomes a child
+// of a sheet row — and the next renderSheet() begins with clear(), which removes that
+// row and destroys the editor with it. Measured: the first Editar built its form, and
+// every Editar after it set the state, marked the row, and rendered nothing.
+//
+// The DOM stub cannot reproduce that: `dom.get(id)` CREATES any id on demand, so the
+// node it hands back exists whether the document holds one or not. So the contract is
+// pinned where it can be — the source must reach that node through the one accessor
+// that rebuilds it — and the behaviour is verified in a browser.
+test('the editor node is reached through the accessor that can rebuild it', () => {
+  const script = fs.readFileSync(sourcePath, 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1]
+    .replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.match(script, /function inspectorBox\(\) \{/, 'the accessor exists');
+  // It must be able to answer with a NEW node, or it is just getElementById.
+  const body = script.slice(script.indexOf('function inspectorBox()'));
+  const end = body.indexOf('\n      }');
+  assert.match(body.slice(0, end), /fresh\.id = 'inspector'/,
+    'the accessor rebuilds the node when the document no longer has one');
+  // And nothing else may fetch it raw: a single raw read is how the bug comes back.
+  const raw = [...script.matchAll(/\$\('inspector'\)/g)].length;
+  assert.equal(raw, 1, `only inspectorBox may read the id raw, found ${raw} reads`);
+  // Every place that attaches the form goes through the accessor: the sheet row, the
+  // group block and the settings row.
+  const attaches = [...script.matchAll(/append\(inspectorBox\(\)\)/g)].length;
+  assert.equal(attaches, 3, `three surfaces attach the editor, found ${attaches}`);
+  assert.match(script, /const box = inspectorBox\(\);/, 'and renderInspector fills that same node');
+});
+
+test('a second Editar builds a second form', () => {
+  // The stub cannot lose the node, so what this can still catch is the state half:
+  // opening B after closing A must leave B selected, B's row open, and A's closed.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [
+      { id: 'a', when: {}, then: { model: 'T1' } },
+      { id: 'b', when: {}, then: { model: 'T1' } },
+    ],
+    default: {}, classifier: { model: 'm' }, fail_safe: { model: 'm' }, tiers: { T1: {} },
+  };
+  api.renderSheet();
+  const editar = () => findAll(dom.get('sheet'), 'step-act')
+    .map((slot) => (slot.children || [])[0]).filter(Boolean);
+
+  editar()[0]._listeners.click({ stopPropagation() {} });
+  assert.equal(api.state.selected, 'rule:a');
+  assert.ok(findAll(dom.get('inspector'), 'field').length >= 1, 'A has a form');
+
+  api.closeEditor();
+  editar()[1]._listeners.click({ stopPropagation() {} });
+  assert.equal(api.state.selected, 'rule:b', 'the second press selects the second row');
+  assert.ok(findAll(dom.get('inspector'), 'field').length >= 1, 'and B has a form too');
+  const open = dom.get('sheet').children.filter((r) => /is-open/.test(r.className));
+  assert.equal(open.length, 1, 'exactly one row is open');
+  assert.equal(open[0].dataset.ruleId, 'b');
+});
+
+test('the prose measure belongs to the KIND of content, not to two classes', () => {
+  // The cap was attached to the two group classes a review pointed at, and prose landed
+  // elsewhere anyway: the preset block's lede measured 146 characters on one line and
+  // its first consequence sentence 126, same size, same screen. A measure that belongs
+  // to a class only holds where that class went.
+  const { style } = consoleStyle();
+  const rule = style.match(/([^}]*)\{\s*max-width: 74ch; text-wrap: balance;\s*\}/);
+  assert.ok(rule, 'one rule caps the measure');
+  const selector = rule[1];
+  for (const prose of [
+    '.section-lead', '.tier-what', '.tier-fact', '.tier-note',
+    '.preset-metric', '.preset-consequence', '.row-why', '.editor-scope',
+    '.field-note', '.step-when',
+  ]) {
+    assert.ok(selector.includes(prose), `${prose} carries sentences and must be capped`);
+  }
+  // The knob line is a list of short values with a trailing control, not prose: capped,
+  // it orphaned its own "+N no padrão do motor" onto a line of its own.
+  assert.match(selector, /\.tier-fact:not\(\.tier-order\)/,
+    'the Ordem line is exempt, and exempt by name');
+  // Data is not prose. A measure on these would only wrap them.
+  for (const data of ['.hop-model', '.step-target', '.row-name', '.chip']) {
+    assert.ok(!selector.includes(data), `${data} is data, not prose`);
+  }
+  // `balance`, not `pretty`: measured on this surface, pretty left last lines at 24%,
+  // 13% and 5% of the first line's width while balance puts them at 91-95%.
+  assert.doesNotMatch(style, /text-wrap: pretty/);
+});
+
+test('the last-resort block says where it is edited, and reads in the same order as every other block', () => {
+  // Every group above it carries an Editar in that column and this block carried
+  // nothing, while `fail_safe` is in the file's own EDITABLE set — the object is
+  // editable and the surface showing it did not say so.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [{ id: 'r1', when: {}, then: { model: 'T1' } }],
+    default: {}, classifier: { model: 'm' },
+    fail_safe: { model: 'glm-4.7', provider: 'zai' },
+    tiers: { T1: { model: 'x', provider: 'p' } },
+  };
+  api.renderSheet();
+  api.renderFailSafe();
+
+  const block = dom.get('failSafeBox').children[0];
+  assert.ok(block, 'a configured last resort gets its block');
+  const edit = findAll(block, 'btn-quiet').find((b) => b.textContent === 'Editar');
+  assert.ok(edit, 'and the block says it can be edited');
+  assert.match(edit.title, /em Regras · Quando tudo falha/,
+    'naming where the one editor for it lives');
+
+  // It opens the SAME object the sheet's last step owns — one editor, one place. Two
+  // attach points for one singleton editor would put the form in whichever renderer
+  // ran last.
+  edit._listeners.click();
+  assert.equal(api.state.selected, 'fail_safe');
+  assert.equal(api.state.mode, 'editing');
+  const openRow = dom.get('sheet').children.find((r) => /is-open/.test(r.className));
+  assert.ok(openRow, 'and the row that owns it is the one that opens');
+  assert.equal(openRow.dataset.ruleId, '__fail_safe');
+
+  // WHAT IT IS, then the queue — the order every other block on the screen reads in.
+  api.renderFailSafe();
+  const fresh = dom.get('failSafeBox').children[0];
+  // chainList returns an unclassed wrapper around the `ul.hops`, so the chain's
+  // position is the position of the child that CONTAINS one.
+  const what = fresh.children.findIndex((c) => /tier-what/.test(c.className || ''));
+  const hops = fresh.children.findIndex((c) => findAll(c, 'hops').length > 0
+    || /hops/.test(c.className || ''));
+  assert.ok(what >= 0 && hops >= 0,
+    `both the sentence and the chain are drawn, got ${JSON.stringify(fresh.children.map((c) => c.className))}`);
+  assert.ok(what < hops, 'the sentence comes before the chain, not after it');
+});
