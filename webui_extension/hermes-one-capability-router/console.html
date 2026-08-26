@@ -1430,7 +1430,7 @@
         // panel must show the policy that was actually read, never the draft the
         // refusal just discarded.
         selectedNode: null, replay: null,
-        pending: new Set(), unreachable: false, checkedAt: null,
+        pending: new Set(), readFailures: {}, unreachable: false, checkedAt: null,
         // Until the first response lands, "nothing here" is not a fact yet.
         loading: true, query: '',
         // How many decisions the sidecar says exist, which is not always how many
@@ -1532,7 +1532,15 @@
       // to tell them apart: we have not asked yet, we cannot ask, or we asked and
       // there is genuinely nothing. Claiming the third while the first is true is
       // the most common lie a console tells.
-      const absence = (empty) => state.loading ? WRITE.loading
+      const readFailureWords = (failure) => {
+        const reason = String(failure && failure.data && failure.data.error || '').toLowerCase();
+        if (reason.includes('token not provisioned')) {
+          return 'Não consegui ler o roteador: o proxy não encontrou o token que o WebUI escreveu.';
+        }
+        return 'Não consegui ler o roteador. Tente novamente quando o proxy responder.';
+      };
+      const absence = (empty, path) => state.loading ? WRITE.loading
+        : (path && state.readFailures[path]) ? readFailureWords(state.readFailures[path])
         : state.unreachable ? 'Indisponível enquanto não for possível falar com o roteador.'
         : empty;
 
@@ -1569,11 +1577,18 @@
           try { data = raw ? JSON.parse(raw) : {}; } catch (_) { data = { raw }; }
           if (res.status === 404) { state.pending.add(key); return { missing: true, data }; }
           state.pending.delete(key);
-          if (!res.ok) return { error: true, status: res.status, data };
+          if (!res.ok) {
+            const failure = { error: true, status: res.status, data };
+            state.readFailures[path.replace(/\?.*$/, '')] = failure;
+            return failure;
+          }
+          delete state.readFailures[path.replace(/\?.*$/, '')];
           return { data, status: res.status };
         } catch (error) {
           state.unreachable = true;
-          return { error: true, offline: true, data: { message: error.message } };
+          const failure = { error: true, offline: true, data: { message: error.message } };
+          state.readFailures[path.replace(/\?.*$/, '')] = failure;
+          return failure;
         }
       }
 
@@ -2752,7 +2767,8 @@
             else badge.classList.remove('is-warn');
           }
         };
-        const health = state.unreachable ? 'dead' : (models.length ? worstOf(models) : '');
+        const cannotRead = state.unreachable || Object.keys(state.readFailures).length > 0;
+        const health = cannotRead ? 'dead' : (models.length ? worstOf(models) : '');
         // The Health badge counts EXCEPTIONS, not elos: a ban or a breaker
         // cooldown is what an operator must act on, and the elo total already
         // lives in the lede ("all 8 reachable" / "2 of 3 not routable").
@@ -2801,7 +2817,7 @@
 
         const stale = !!(procStart && codeLoaded && new Date(codeLoaded) > new Date(procStart));
         reach.className = `reach${stale ? ' is-stale' : ''}`
-          + `${state.unreachable ? ' is-dead' : (state.health ? ' is-alive' : '')}`;
+          + `${cannotRead ? ' is-dead' : (state.health ? ' is-alive' : '')}`;
 
         // Three ages replace the one "checked HH:MM" clock, so the operator can
         // see WHICH source is old — code or policy — instead of trusting a single
@@ -2809,7 +2825,7 @@
         // console says it is still checking, and a dead sidecar names the failure
         // instead of drawing three dashes.
         const reachText = $('reachText');
-        if (state.unreachable) {
+        if (cannotRead) {
           reachText.textContent = 'Não consegui falar com o roteador.';
         } else if (procStart) {
           reachText.textContent = [
@@ -3343,7 +3359,7 @@
         // file's, not the mode's.
         const editNote = $('editNote');
         if (editNote) editNote.hidden = lintErrors().length === 0;
-        if (state.unreachable) {
+        if (state.unreachable || Object.keys(state.readFailures).length > 0) {
           const line = el('div', 'warn-line bad');
           line.append(el('strong', '', 'Não consegui falar com o roteador.'),
                       el('span', '', 'Não é possível ler nem gravar até o proxy responder.'));
@@ -3617,7 +3633,7 @@
             : 'Suas configurações não batem com nenhum dos três presets. Escolher um substitui as suas em todos os grupos — a tela mostra o que muda antes de salvar.';
         }
         if (!policy) {
-          box.append(el('p', 'nothing', absence('Este serviço do roteador não tem tabela de grupos.')));
+          box.append(el('p', 'nothing', absence('Este serviço do roteador não tem tabela de grupos.', '/policy')));
           return;
         }
         PRESETS.forEach((preset) => {
@@ -3785,7 +3801,7 @@
             : `todos os ${models.length} alcançáveis`;
 
         if (!models.length) {
-          list.append(el('p', 'nothing', absence('Nenhum modelo roteável informado.')));
+          list.append(el('p', 'nothing', absence('Nenhum modelo roteável informado.', '/liveness')));
         } else {
           // Built once per render, from the policy that is already on screen —
           // no extra read: state.policy.tiers arrives in the same Promise.all
@@ -4358,7 +4374,14 @@
         const box = $('sheet');
         clear(box);
         const policy = state.policy;
-        if (!policy) { box.append(el('p', 'nothing', absence('Este serviço do roteador não tem lista de regras.'))); return; }
+        if (!policy) {
+          box.append(el('p', 'nothing', absence('Este serviço do roteador não tem lista de regras.', '/policy')));
+          const pipelineNote = $('pipelineNote');
+          if (pipelineNote && state.readFailures['/policy']) {
+            pipelineNote.textContent = readFailureWords(state.readFailures['/policy']);
+          }
+          return;
+        }
         const { byRule, byCause, total } = ruleHits();
         const rules = Array.isArray(policy.rules) ? policy.rules : [];
         // The sheet's shadow story is the pure detector's: the reason each
@@ -4643,7 +4666,9 @@
         const shadowCount = new Set(findings.map((f) => f.later_index)).size;
         const note = $('pipelineNote');
         if (note) {
-          note.textContent = rules.length
+          note.textContent = state.readFailures['/policy']
+            ? readFailureWords(state.readFailures['/policy'])
+            : rules.length
             ? `${rules.length} tipos de tarefa, em ordem. A primeira que casar decide.${shadowCount ? ` ${shadowCount} ${shadowCount === 1 ? 'está' : 'estão'} sem efeito.` : ' Todas valem.'}`
             : 'Nenhuma regra de roteamento no arquivo. Toda tarefa cai no último recurso.';
         }
@@ -5002,7 +5027,7 @@
         const names = Object.keys(tiers);
         if (!names.length) {
           note.textContent = '';
-          box.append(el('p', 'nothing', absence('Nenhum grupo. Nenhuma regra pode mandar tarefa para um grupo.')));
+          box.append(el('p', 'nothing', absence('Nenhum grupo. Nenhuma regra pode mandar tarefa para um grupo.', '/policy')));
           return;
         }
         const registry = state.capabilities;
@@ -5138,7 +5163,9 @@
         // more than "unverified" — it says the queues are right and what is
         // missing is capability and price per option — never a note about an
         // endpoint (DESIGN.md:558-563).
-        note.textContent = unverified
+        note.textContent = state.readFailures['/capabilities']
+          ? readFailureWords(state.readFailures['/capabilities'])
+          : unverified
           ? (state.capabilities
             ? `${unverified} tentativa${unverified === 1 ? '' : 's'} com capacidades não verificadas — sem registro no catálogo, o filtro não pode conferir.`
             : 'Este serviço do roteador não tem catálogo de modelos. As filas acima estão certas; o que falta é a informação de capacidade e preço de cada opção. Não é erro de configuração.')
@@ -5159,9 +5186,13 @@
         clear(box);
         const fs = (state.policy && typeof state.policy === 'object' && state.policy.fail_safe
           && typeof state.policy.fail_safe === 'object') ? state.policy.fail_safe : {};
+        if (state.readFailures['/policy']) {
+          box.append(el('p', 'nothing', readFailureWords(state.readFailures['/policy'])));
+          return;
+        }
         if (fs.model == null) {
           box.append(el('p', 'nothing',
-            'Não há último recurso configurado. Se todas as filas falharem, a tarefa falha.'));
+            absence('Não há último recurso configurado. Se todas as filas falharem, a tarefa falha.', '/policy')));
           return;
         }
         const group = el('div', 'group');
@@ -7905,7 +7936,7 @@
         }
 
         if (!all.length) {
-          box.append(el('p', 'nothing', absence('Nenhuma decisão gravada ainda. O roteador grava uma linha aqui a cada tarefa que ele decide.')));
+          box.append(el('p', 'nothing', absence('Nenhuma decisão gravada ainda. O roteador grava uma linha aqui a cada tarefa que ele decide.', '/routes')));
           return;
         }
         if (!routes.length) {
@@ -8129,6 +8160,7 @@
 
       async function fetchAll() {
         state.unreachable = false;
+        state.readFailures = {};
         const [health, status, policy, blocklist, liveness, routes, capabilities] = await Promise.all([
           call('/health'), call('/status'), call('/policy'), call('/blocklist'),
           call('/liveness'), call('/routes?limit=200'),
@@ -8137,13 +8169,13 @@
           // reports those elos as unverified, which is the truth either way.
           call('/capabilities'),
         ]);
-        state.health = health.data || null;
-        state.status = status.data || null;
-        state.policy = policy.data || null;
-        state.blocklist = blocklist.data || null;
-        state.liveness = liveness.data || null;
+        state.health = health.error ? null : (health.data || null);
+        state.status = status.error ? null : (status.data || null);
+        state.policy = policy.error ? null : (policy.data || null);
+        state.blocklist = blocklist.error ? null : (blocklist.data || null);
+        state.liveness = liveness.error ? null : (liveness.data || null);
         state.capabilities = capabilityRegistry(capabilities);
-        state.routes = (routes.data && Array.isArray(routes.data.routes)) ? routes.data.routes : [];
+        state.routes = routes.error ? [] : ((routes.data && Array.isArray(routes.data.routes)) ? routes.data.routes : []);
         // The envelope reports how many decisions EXIST; we were discarding it and
         // then presenting the page we happened to receive as the whole record.
         // Measured: the console asked for the default 50 while 71 were recorded, so
@@ -8152,7 +8184,7 @@
         // have rendered "never fired" — a false negative on the exact question the
         // sheet exists to answer. Truncation drops the OLDEST rows, so this gets
         // worse as the log grows; raising the limit alone would only move the cliff.
-        state.routesTotal = Number(routes.data && routes.data.count) || state.routes.length;
+        state.routesTotal = routes.error ? 0 : (Number(routes.data && routes.data.count) || state.routes.length);
         state.checkedAt = nowUtc();
         state.loading = false;
         // §3.4(b): a fresh read brings the dismissed unknown-model warnings
@@ -8287,7 +8319,7 @@
         // (tierRoles), the chain a tier destination points at (renderSheet's
         // chip), and the definition of an off-rule cause (causeTitle). Each is
         // exported because the strings an operator reads are the contract.
-        tierRoles, causeTitle,
+        tierRoles, causeTitle, absence, readFailureWords,
         // The last-decision dating (card t_0a3cff85): the newest ts whose
         // attempted pair matches the elo, or null when the log never tried it.
         // Exported so the pair-identity and the "no decision ⇒ no line" rule

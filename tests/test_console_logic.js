@@ -585,6 +585,40 @@ test('an empty screen distinguishes "not asked yet" from "genuinely nothing"', (
   assert.equal(api.absence('Nenhum modelo roteável informado.'), 'Nenhum modelo roteável informado.');
 });
 
+test('a failed reading is not rendered as an empty result for its consumer', async () => {
+  const { api } = loadConsole({
+    fetch: () => Promise.resolve({
+      ok: false,
+      status: 503,
+      text: () => Promise.resolve(JSON.stringify({ error: 'sidecar token not provisioned' })),
+    }),
+  });
+  const result = await api.call('/policy');
+  api.state.loading = false;
+  assert.equal(result.error, true);
+  assert.match(api.absence('Este serviço do roteador não tem lista de regras.', '/policy'),
+    /não encontrou o token que o WebUI escreveu/);
+  assert.equal(api.absence('Este serviço do roteador não tem lista de regras.', '/routes'),
+    'Este serviço do roteador não tem lista de regras.',
+    'a failure in one reading must not erase a genuinely empty other reading');
+});
+
+test('a failed policy reading makes every policy absence claim actionable', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.readFailures['/policy'] = { status: 503, data: { error: 'sidecar token not provisioned' } };
+  api.renderPresets();
+  api.renderSheet();
+  api.renderLadder();
+  assert.doesNotMatch(flat(dom.get('presetOptions')), /não tem tabela de grupos/);
+  assert.doesNotMatch(flat(dom.get('sheet')), /não tem lista de regras/);
+  assert.doesNotMatch(flat(dom.get('ladder')), /Nenhum grupo/);
+  assert.match(dom.get('pipelineNote').textContent, /não encontrou o token/);
+  api.state.readFailures['/routes'] = { status: 503, data: { error: 'sidecar token not provisioned' } };
+  api.renderRoutes();
+  assert.doesNotMatch(flat(dom.get('routes')), /Nenhuma decisão gravada ainda/);
+});
+
 test('filtering decisions searches what an operator actually remembers', () => {
   const { api } = loadConsole();
   const route = { task: 'Rename getCwd in src/utils.py', model: 'glm-5.2-fast', cause: 'has_code_rule', rule_id: 'trivial-mechanical-edit' };
