@@ -309,13 +309,12 @@
     .btn.go:hover { border-color: var(--accent-strong); background: var(--accent-strong); color: var(--accent-fg); }
     .btn.warn { color: var(--bad-text); border-color: var(--line-strong); }
     .btn.warn:hover { border-color: var(--bad); background: var(--bad-bg); }
-    /* `.mode` was the global Editar button's pressed state and the button is gone.
-       The rule stays because the state it describes did not: a control that reads as
-       pressed while its mode is on is the host's own selected idiom, and the preset
-       radios and the scope pills use the same wash. */
-    .mode[aria-pressed="true"] {
-      border-color: var(--accent-bg-strong); background: var(--accent-bg); color: var(--accent-text);
-    }
+    /* `.mode` is GONE with the button it styled. The comment that kept it claimed the
+       preset radios and the scope pills used it, and they do not — they use the same
+       accent WASH through their own selectors (`.preset.is-chosen`, `.scope.is-on`).
+       An unreachable rule kept by a rationalisation is worse than a deleted one: the
+       next reader has to prove it is dead before touching it. The durable rule is the
+       wash for a selected control, and it lives on the selectors that use it. */
 
     /* ── THE BROWSER'S OWN SURFACES ────────────────────────────────────
        The parts nobody draws still carry the design, and here they were all

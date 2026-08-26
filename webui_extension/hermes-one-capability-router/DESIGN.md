@@ -1,578 +1,626 @@
-# Capability Router Console — Information Design (Operate)
+---
+name: Capability Router Console
+description: An operator's control room that wears the running Hermes One skin — two screens, rows of hairlines, and every change offered on the row it changes.
+colors:
+  # There is no palette here. Every value reads a --host-* property the theme
+  # bridge forwards from the running shell; the hex after the comma is the
+  # FAIL-SAFE — what the console looks like when the shell cannot be read at all.
+  skin-accent: "var(--host-accent, #f3f3f6)"
+  skin-accent-strong: "var(--host-accent-hover, #ffffff)"
+  accent-text: "var(--host-accent-text, var(--host-accent, #f3f3f6))"
+  accent-wash: "var(--host-accent-bg, rgba(243, 243, 246, .08))"
+  accent-wash-strong: "var(--host-accent-bg-strong, rgba(243, 243, 246, .15))"
+  accent-fg: "var(--host-accent-fg, #0a0a0c)"
+  plane-bg: "var(--host-bg, #0a0a0c)"
+  plane-surface: "var(--host-surface, #101013)"
+  plane-raised: "var(--host-surface-subtle, #15151a)"
+  plane-hover: "var(--host-hover-bg, #1c1c23)"
+  hairline: "var(--host-border, #212127)"
+  hairline-strong: "var(--host-border2, #33333d)"
+  text: "var(--host-text, #f3f3f6)"
+  muted: "var(--host-muted, #9a9aa8)"
+  ok: "var(--host-success, #4ade9b)"
+  warn: "var(--host-warning, #f7b955)"
+  bad: "var(--host-error, #ff6b7d)"
+  info: "var(--host-info, #b490ff)"
+  ok-text: "color-mix(in srgb, var(--host-success, #4ade9b) 45%, var(--host-text, #f3f3f6))"
+  warn-text: "color-mix(in srgb, var(--host-warning, #f7b955) 45%, var(--host-text, #f3f3f6))"
+  bad-text: "color-mix(in srgb, var(--host-error, #ff6b7d) 45%, var(--host-text, #f3f3f6))"
+  info-text: "color-mix(in srgb, var(--host-info, #b490ff) 45%, var(--host-text, #f3f3f6))"
+typography:
+  headline:
+    fontFamily: "var(--host-font-ui, Inter, ui-sans-serif, system-ui, sans-serif)"
+    fontSize: "18px"
+    fontWeight: 600
+    lineHeight: 1.3
+    letterSpacing: "-0.18px"
+  title:
+    fontFamily: "var(--host-font-ui, Inter, ui-sans-serif, system-ui, sans-serif)"
+    fontSize: "16px"
+    fontWeight: 600
+    lineHeight: 1.4
+    letterSpacing: "-0.15px"
+  body:
+    fontFamily: "var(--host-font-ui, Inter, ui-sans-serif, system-ui, sans-serif)"
+    fontSize: "var(--host-font-size-md, 14px)"
+    fontWeight: 400
+    lineHeight: 1.5
+    letterSpacing: "normal"
+  small:
+    fontFamily: "var(--host-font-ui, Inter, ui-sans-serif, system-ui, sans-serif)"
+    fontSize: "var(--host-font-size-sm, 12px)"
+    fontWeight: 400
+    lineHeight: 1.5
+  label:
+    fontFamily: "var(--host-font-ui, Inter, ui-sans-serif, system-ui, sans-serif)"
+    fontSize: "var(--host-font-size-xs, 11px)"
+    fontWeight: 600
+    lineHeight: 1.4
+    letterSpacing: "0.05em"
+  mono:
+    fontFamily: "var(--host-font-mono, ui-monospace, SFMono-Regular, Consolas, monospace)"
+    fontSize: "var(--host-font-size-sm, 12px)"
+    fontWeight: 500
+    lineHeight: 1.5
+rounded:
+  sm: "var(--host-radius-sm, 4px)"
+  md: "var(--host-radius-md, 8px)"
+  pill: "var(--host-radius-pill, 999px)"
+spacing:
+  hair: "2px"
+  tight: "6px"
+  inside: "11px"
+  row-gap: "14px"
+  block: "16px"
+  group: "34px"
+  gutter: "clamp(14px, 2.4vw, 32px)"
+  action-slot: "84px"
+components:
+  button:
+    backgroundColor: "{colors.plane-surface}"
+    textColor: "{colors.text}"
+    typography: "{typography.small}"
+    rounded: "{rounded.md}"
+    padding: "5px 11px"
+    height: "28px"
+  button-hover:
+    backgroundColor: "{colors.plane-hover}"
+  button-commit:
+    backgroundColor: "{colors.skin-accent}"
+    textColor: "{colors.accent-fg}"
+    rounded: "{rounded.md}"
+    padding: "5px 11px"
+  button-commit-hover:
+    backgroundColor: "{colors.skin-accent-strong}"
+    textColor: "{colors.accent-fg}"
+  button-quiet:
+    backgroundColor: "transparent"
+    textColor: "{colors.muted}"
+    typography: "{typography.small}"
+    rounded: "{rounded.md}"
+    padding: "5px 11px"
+  button-quiet-hover:
+    backgroundColor: "{colors.plane-hover}"
+    textColor: "{colors.text}"
+  button-destructive:
+    backgroundColor: "{colors.plane-surface}"
+    textColor: "{colors.bad-text}"
+    rounded: "{rounded.md}"
+    padding: "5px 11px"
+  chip-shape:
+    backgroundColor: "transparent"
+    textColor: "{colors.muted}"
+    typography: "{typography.small}"
+    rounded: "{rounded.pill}"
+    padding: "2px 9px"
+  chip-context:
+    backgroundColor: "{colors.plane-raised}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.pill}"
+    padding: "2px 9px"
+  chip-capability:
+    backgroundColor: "transparent"
+    textColor: "{colors.text}"
+    rounded: "{rounded.pill}"
+    padding: "2px 9px"
+  badge:
+    backgroundColor: "transparent"
+    textColor: "{colors.muted}"
+    typography: "{typography.label}"
+    rounded: "{rounded.pill}"
+    padding: "1px 8px"
+  scope:
+    backgroundColor: "transparent"
+    textColor: "{colors.muted}"
+    typography: "{typography.small}"
+    rounded: "{rounded.pill}"
+    padding: "5px 12px"
+  scope-selected:
+    backgroundColor: "{colors.accent-wash}"
+    textColor: "{colors.accent-text}"
+  tab:
+    backgroundColor: "transparent"
+    textColor: "{colors.muted}"
+    typography: "{typography.body}"
+    rounded: "{rounded.sm}"
+    padding: "9px 12px 10px"
+  tab-selected:
+    textColor: "{colors.accent-text}"
+  row:
+    backgroundColor: "transparent"
+    textColor: "{colors.text}"
+    typography: "{typography.body}"
+    rounded: "0"
+    padding: "11px 0"
+  row-open:
+    backgroundColor: "{colors.plane-raised}"
+  input:
+    backgroundColor: "var(--host-input-bg, var(--host-surface, #101013))"
+    textColor: "{colors.text}"
+    typography: "{typography.body}"
+    rounded: "{rounded.md}"
+    padding: "9px 12px"
+  editor-box:
+    backgroundColor: "{colors.plane-raised}"
+    textColor: "{colors.text}"
+    rounded: "0"
+    padding: "14px 16px 16px"
+  preset-chosen:
+    backgroundColor: "{colors.accent-wash}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.md}"
+    padding: "11px 12px"
+---
 
-The durable contract for this console. It governs **what earns a place on screen**
-and how state is signalled. This is an Operate surface: an operator's control
-room, not a dashboard demo. Fewer elements, each carrying a fact.
+# Design System: Capability Router Console
 
-The previous version of this file mandated a kicker + title + subtitle on every
-panel and a card around every block. That rule produced 53 cards, 21 subtitles
-and three competing health rollups, and the operator's verdict was "feio e muito
-poluído — pouco objetivo". The rules below exist to make that outcome
-impossible.
+## Overview
 
-## 1. The three questions
+**Creative North Star: "The Guest That Wears the House's Skin"**
 
-The console answers exactly three questions, in this order. Every screen belongs
-to one of them; anything serving none of them does not ship.
+This console is a panel inside Hermes One, and it owns no identity of its own. Every
+colour it paints reads a `--host-*` property the theme bridge forwards from the
+running shell, so it repaints with all 21 skins and both polarities; the hex after
+each comma is a fail-safe for a shell that cannot be read at all, not a palette. The
+measured reason: a copied palette is wrong in 20 skins out of 21, and in any light
+skin this console was a black rectangle inside a parchment shell — screenshotted.
 
-| Question | Screen | The one thing it must show |
-|---|---|---|
-| Is it healthy? | **Health** | which models can be routed to, right now |
-| How does it route? | **Pipeline** | where a task lands, and the ordered policy that put it there |
-| What did it decide? | **Routes** | recent real decisions, replayable step by step — with the chain the router persisted for each |
+It is an Operate surface: an operator's control room, not a dashboard. Groups are
+made of hairlines and space, never cards. The previous version of this file mandated
+a kicker + title + subtitle on every panel and a card around every block; that rule
+produced 53 cards, 21 subtitles and three competing health rollups, and the
+operator's verdict was "feio e muito poluído — pouco objetivo". Fewer elements, each
+carrying a fact.
 
-Blocklist and Compaction are subordinate detail, not peers: they live inside
-Health and Pipeline respectively unless they carry an active condition.
+The surface is TWO screens split by what the operator is DOING, not by which noun
+they are looking at. **Configuração** holds everything writable — the ordered rule
+sheet, the probe, the model groups, the last-resort block, the presets, the general
+settings, the file editor — and every change is offered on the row it changes.
+**Operação** holds the runtime: reachable models, out-of-rotation, the decision log
+and its replay, and nothing on it is editable. Three nouns (Tarefas / Modelos /
+Decisões) failed because no noun says where a setting lives: the rule list and the
+file editor sat under one while the presets and the group chains sat under another,
+which is the whole of "I don't know where I can edit the settings". `panel-health`
+is gone; `selectTab('health')` survives as an alias to Operação, because a caller
+asking for the models is still asking for a screen that exists.
 
-## 2. Rules of subtraction
+**Key Characteristics:**
+- No palette: every colour is the host's, forwarded live; the hexes are fail-safes.
+- The accent marks WHAT YOU PICKED; the semantic four report CONDITION. Never crossed.
+- Hairlines and space instead of cards; one structural primitive, the row.
+- Two type families — sans for prose and labels, mono for what an operator copies.
+- Writing is armed per object, on the row that owns it, in a fixed action slot.
+- No `<svg>` in the document and no markup injection: a control is a word.
+- Two screens, one column, `100dvh`, 44px targets and 16px inputs under a coarse pointer.
 
-Applied in order. When two rules conflict, the earlier one wins.
+## Colors
 
-1. **Render nothing for nothing.** No empty card, no dashed placeholder box, no
-   row that announces its own emptiness. A section with no data is absent, or a
-   single muted line — never a framed void.
-2. **One authority per fact.** Health is signalled by the Health tab's dot and the
-   model list. Write mode is signalled by the Edit control. Never a second chip
-   repeating a state something else already owns; two sources that can disagree
-   are worse than none. The header's reach chip is not an exception: its three
-   provenance ages (sidecar up / code loaded / router.yaml changed) report THIS
-   CONSOLE'S last read of the sidecar, which nothing else on screen can say.
-3. **A subtitle must carry a fact the title cannot imply.** "Circuit breaker /
-   Cooldown state and last failure kind" is one fact written twice. Prose that
-   explains the console's own internals ("metric cards below are the canonical
-   numbers") never ships — that belongs in this file.
-4. **No card without a reason.** A card exists to group things that are read
-   together. One list, one table, or one control does not need a frame.
-5. **Translate values.** `true` is not a metric. Booleans become words
-   ("enabled"), enums become their operator meaning, timestamps become relative
-   time. Raw JSON appears only where the operator is editing JSON.
-6. **No invented vocabulary.** PRODUCT.md owns the domain words: profile, model,
-   provider/rail, tier, rule, classifier, fail-safe, blocklist, breaker,
-   decision. "worst-of-N", "five-state liveness", "posture", "endpoint pending"
-   are ours, not the domain's — use plain words instead ("Health", "Models",
-   "not implemented").
-7. **The console never reports on itself.** An endpoint ledger, a proxy note, a
-   count of which routes answered — diagnostics about the console belong behind
-   a deliberate action, never in a primary viewport.
+The palette is whichever skin is running; this file only decides what each borrowed
+colour is allowed to MEAN.
 
-## 3. Signalling
+### Primary
+- **The Skin's Accent** (`{colors.skin-accent}`, gold in default/dark, purple in
+  catppuccin/light): marks WHERE YOU ARE and WHAT YOU PICKED — the selected tab's
+  20px x 2px bar, the focus ring, the open row's 1px rail, the chosen preset and
+  scope, the decision being replayed, the line a probed task matched, the caret, the
+  text selection, and the one committing button. It never reports a condition.
+- **Accent Foreground** (`{colors.accent-fg}`): the label on the single filled
+  button. The host declares its accent foreground only under `:root.dark`, so in
+  every light skin this fallback is what lands — and it is near-black, not `#fff`,
+  because against this file's own paper-white fail-safe accent a `#fff` foreground
+  measured 1.1:1: an invisible label on the only committing control there is.
 
-**Colour is split by MEANING, not by hue.** This console lives inside Hermes One,
-where the accent IS the skin's identity and the host uses exactly one at a time.
-So the old rule ("colour means state, and nothing else, which is why `--accent` is
-paper white") is restated in two halves that cannot be confused:
+### Secondary — the semantic four
+Condition, and only condition. Same colour, same meaning, on every screen.
+- **Alive** (`{colors.ok}`) · **Degraded / needs attention** (`{colors.warn}`) ·
+  **Quota, and inference happened** (`{colors.info}`) · **Dead or refused**
+  (`{colors.bad}`). Unknown is `{colors.muted}`.
+- **The four `-text` forms** (`{colors.ok-text}` and siblings): the same hue mixed
+  45% into the skin's own text colour, for a state written as a WORD.
 
-- **The skin's accent marks WHERE YOU ARE and WHAT YOU PICKED.** The selected
-  tab's underline (the host's own 20px x 2px bar), the focus ring, the armed Edit
-  mode, the selected scope, the decision being replayed, and the line a probed
-  task matched. It never reports a condition.
-- **The semantic four report CONDITION, and only condition.** Alive `--ok`,
-  degraded `--warn`, quota `--info`, dead or refused `--bad`; unknown is `--muted`.
-  The same colour means the same thing on every screen.
+### Neutral
+- **Planes** (`{colors.plane-bg}` / `{colors.plane-surface}` /
+  `{colors.plane-raised}` / `{colors.plane-hover}`): page, control face, the raised
+  plane an open row rises to, the pointed-at plane. Raised and hover take the host's
+  authored washes rather than a mix toward text: measured, mixing toward the text
+  colour INVERTS in catppuccin/light (bg `#EFF1F5`, surface `#FFFFFF`), so a raised
+  plane read as recessed.
+- **Hairlines** (`{colors.hairline}` / `{colors.hairline-strong}`): every group
+  boundary, every row separator, the spine of a sequence, the inset edge on a dot.
+- **Text** (`{colors.text}`) and **Muted** (`{colors.muted}`): exactly two steps.
 
-A gold underline therefore can never be read as health, and a green dot can never
-be read as selection.
+### Named Rules
+**The No Palette Rule.** No colour is authored here. If a value cannot be traced to
+a `--host-*` property, it is not a token — it is a bug, and the only hexes in the
+file are the fail-safes for an unreadable shell.
 
-**A state colour has two forms, and the difference is measured.** The host's
-`--success/--warning/--error/--info` are authored for FILLS. As text on their own
-skin's background they bottom out at 1.38:1 (`--info`, neon-paint/light) against a
-4.5:1 floor — measured across every palette in the host's style.css that declares
-a full set, both polarities. So:
+**The Split Meaning Rule.** The accent reports SELECTION; the four report CONDITION.
+A gold underline can therefore never be read as health, and a green dot can never be
+read as selection. A fifth meaning (predicate family, billing mode, destination kind)
+gets no hue at all — it is made in TYPE and PLANE, plus its own word.
 
-- a **dot** takes the raw hue, which is what makes it identifiable as green or
-  amber, plus a 1px inset edge on `--line-strong` so a 6px circle is locatable
-  even where the hue is nearly invisible;
-- a **word** takes `--ok-text` / `--warn-text` / `--bad-text` / `--info-text`,
-  each `color-mix(in srgb, <hue> 45%, var(--host-text))`. 45% is the measured
-  answer: it clears 4.5:1 in every skin (worst 5.08:1) where 50% does not (4.44:1),
-  and mixing toward the skin's TEXT rather than away from its background is what
-  makes it darken on parchment and lighten on navy automatically.
+**The 45% Mix Rule.** A state colour has two forms and the difference is measured.
+The host's `--success/--warning/--error/--info` are authored for FILLS; as text on
+their own skin's background they bottom out at 1.38:1 (`--info`, neon-paint/light).
+So a DOT takes the raw hue plus a 1px inset edge on `{colors.hairline-strong}`, and a
+WORD takes the `-text` form: 45% hue into the skin's TEXT. 45% clears 4.5:1 in every
+skin (worst 5.08:1) where 50% does not (4.44:1); mixing toward text rather than away
+from background is what makes it darken on parchment and lighten on navy.
 
-Colour is never the only channel: every dot sits beside the state in words.
-
-**Colour budget per viewport.** Only a refusal is painted in the decision sheet's
-destination column. "Goes to the classifier" is a KIND of destination, not a
-condition, and it is already named once on the Stage 1 heading — colouring it too
-put five cyan destinations against a gold underline, an amber finding and two reds
-in one viewport, which is what the host's guide forbids.
-
-- **Tab** = destination + its live state: a condition dot, plus a count when a
-  count is meaningful (recorded decisions; active bans). The Pipeline shows no
-  count — the sheet's numbered rule list is its own counter, and `rules.length`
-  undercounted the sheet (13 lines rendered, 8 counted: the fail-safe is not a
-  rule). The Health count counts EXCEPTIONS only (bans + breaker cooldowns) and
-  wears amber, because counting elos made the number FALL from 8 to 1 the
-  moment a problem appeared; the elo total lives in the lede.
-- **Cause colour** in a decision: deterministic rule `--ok-text`, classifier
-  `--info-text`, refusal (veto / fail-safe) `--bad-text`.
-- **A count without its window is a lie.** Hit counts on the sheet are taken over
-  the traces currently on disk, so the stage line names that window ("counts over
-  the last 47 decisions, since 6h ago"). Without it, a percentage measured before
-  a fix reads as a claim about right now — which is exactly how the sheet came to
-  advertise "34% fail-safe" hours after the cause was fixed.
-- **Sequences are read down one spine.** The policy is an ordered first-match
-  table and a trace is a short ordered path, so both are drawn as numbered
-  vertical lines against a single spine — never as a node canvas. Fifteen tiny
-  boxes to highlight three of them makes the reader hunt for the answer.
-- **Compare down a column.** Destination and hit count are fixed columns, so the
-  eye can scan them without re-finding them on each line.
-- **A sequence that has no order gets no ordinals and no spine.** A tier whose
-  `fallback_strategy` is `sequential` IS a list with a first and a next, so it is
-  numbered down the spine like everything else here. A `random` chain is a SET:
-  it loses the ordinals and the spine and wraps across the line instead of
-  stacking down it, because a numbered random chain is a lie about which elo runs
-  first. `pin_primary` is the honest middle — hop 1 is genuinely first, so it is
-  drawn ordered, and the tail is drawn as the set it is. A strategy word the
-  router does not know degrades to sequential (as `capabilities.order_chain`
-  does) and SAYS SO; silently drawing a typo as a random set describes routing
-  that never happens.
-- **`pin_primary` is THREE-valued, and unknown never reads as pinned.** `true`
-  and `false` are what a tier declares; absent from a CHAIN PLAN means nobody
-  reported it, and then no hop is drawn as first and the panel says the ordering
-  is unreported. Absent from the POLICY is different and is read as the router's
-  documented default (`rules._pin_primary_of` → True), because that file is the
-  one the router itself reads. The console once read absence as `true`
-  everywhere, so a tier configured `random` + `pin_primary: false` printed "the
-  primary stays first" and drew hop 1 as ordinal 1 over a chain whose index 0 had
-  been shuffled — the console stating the opposite of what ran.
-- **`cheapest_now` is ordered, and its order carries the hour it is true of.**
-  Ascending effective price IS a sequence, so it keeps its ordinals; but the
-  order differs from the declared YAML, and an order that differs for an unstated
-  reason is indistinguishable from a bug. So it is labelled TIME-RELATIVE with
-  the hour it was computed at. With no clock it degrades to sequential and says
-  that instead — an order labelled "cheapest" that is really declared order is
-  the most expensive kind of wrong this console can be.
-
-## 3a. The three families of predicate
-
-A rule's `when` block now mixes predicates about three different things, and
-reading one as another is how a rule gets "fixed" by changing a number that was
-never about what the operator thought:
-
-  SHAPE       what the task looks like — `verb_class`, `has_code`, `size_lines`,
-              `num_files`, `num_requirements`, `char_len`, `lang`, `keywords`
-  CONTEXT     how much it needs held — `est_input_tokens`
-  CAPABILITY  what the model must be able to do — `needs_vision`, `needs_tools`,
-              `needs_structured_output`, `attachment_kinds`
-
-Each clause renders as one chip in a real `<ul>`, so two conditions are never
-announced as one string. **The family is never a hue.** The four semantic colours
-report CONDITION and the accent reports SELECTION; a fifth colour meaning
-"family" would break both. So a family is marked the way this console makes its
-third text step — in TYPE and PLANE, plus its own word inside the chip:
-
-  shape       no label, transparent plane, `--muted`      "verb is hard"
-  context     CONTEXT label, `--surface-raised`, `--text` "over 400,000 tokens"
-  capability  NEEDS label, `--line-strong` hairline       "vision"
-
-The label is a word, not a border, so the family survives being read aloud. A
-field this console has not learned is SHAPE — what every signal was before
-context and capability arrived — never an invented fourth family.
-
-## 3b. What an elo has to say for itself
-
-An elo is a tier member: the primary or a fallback hop. Four facts, and each is
-one an operator acts on:
-
-- **model** and **rail**, in mono, because they are copied into a shell.
-- **billing mode**, in router.yaml's own words (plan / subscription / metered /
-  free) — a badge, not a state, so it takes the 11px metadata treatment and no
-  hue. A MISSING mode does take `--warn-text`: a request whose rail is
-  undeclared cannot be costed. A mode this console has not learned renders as
-  written rather than being swallowed.
-- **context window**, written to be compared and not counted — `1M`, `200K`.
-  Unknown is never rendered as zero, which would claim the elo can hold nothing.
-- **unverified**, when nothing published this elo's capabilities. It routes
-  UNCHECKED: the filter can neither clear it nor reject it, and that is the
-  operator's to know, not a blank cell.
-- **what it costs at this hour** — the multiplier applied and the two effective
-  prices the comparison ran on (`2× peak · $1.32 in / $3.96 out per 1M`), read
-  from the BASE rate the registry stores times the window's multiplier. Rendered
-  where it is news: inside a window, or wherever the ORDER is price-relative and
-  an operator has to be able to check it. A model with no published per-token
-  price is NEVER rendered as `$0` — it is billed in plan or subscription credits,
-  and a zero would both say the opposite of the truth and make it look like the
-  cheapest thing on screen. A genuine `0.00` (a free rail) is a price and stays.
-  **The UNIT travels with the number, and it is read off the BILLING MODE, never
-  off whether a rate exists.** Three plan-covered zai elos also carry the metered
-  list price they are separately purchasable at, so `plan` and "no dollar figure"
-  are not the same case: plan-billed glm-4.7 rendered `2× peak · $1.20 in / $4.40
-  out per 1M` — four figures of dollars for a rail that draws 16 output credits, 32
-  inside the window, and invoices none of it on a plan key. So a plan elo's prices
-  are named as the list price they are, with the credits qualifier the console
-  previously spent only where there was no number to misread. `subscription` gets
-  no qualifier: every seat elo here publishes the per-token rate its rail bills at,
-  which is exactly why the cost bucketing counts it as dollars.
-- **why the time policy moved it**, when it did: `capped`, `demoted` and
-  `promoted` in words that name the consequence ("moved to the end — deepseek is
-  in an expensive window, so it is tried only if everything ahead of it fails").
-  A flag alone describes a position, not a reason. `demoted` is the only field
-  that may say "moved": it is derived from the permutation
-  `apply_time_policy` RETURNED, and an empty `demoted` therefore means nothing
-  moved and must render as nothing.
-
-**Redundancy is counted in upstreams, not in vendor names.** Nous Portal resells
-OpenRouter, so a chain hopping from one to the other survives nothing. The tier
-head reports independent rails against hops, and a chain whose FIRST TWO hops
-share an upstream is called out by name with the reorder to make — that is the
-pair redundancy actually uses.
-
-**A declared knob is described by what it DOES, and a price ceiling is described
-IN ITS OWN UNIT.** The tier head carries `time_cap` and `time_policy` as
-consequences, not as config echoed back. A `time_cap` is a DOLLAR ceiling
-(`capabilities.apply_time_cap`): it removes only the `metered` and `subscription`
-hops over the multiplier, and it EXEMPTS `plan`, `free` and undescribable ones
-however dear their window gets — reporting them as `cap_exempt` rather than
-silently keeping them. "Declines any rail over 1.5×" was therefore false about
-precisely the rail it matters most for: T1's primary is plan-billed and doubles on
-weekday mornings, and the cap cannot touch it, because credits come off an
-allowance already bought and no multiplier on them adds a dollar. That claim was
-corrected twice in router.yaml's comments and then shipped here, so the line now
-says both halves — the two modes the ceiling can act on, and this tier's own
-exempt hops with the reason. Where nothing in the chain is priced in dollars the
-cap removes nothing at all and says so; where a hop's mode is UNDECLARED it does
-not, because a cost control must never be reported as inert on the strength of a
-gap. The unit table is `capabilities._BILLING_RANK`, the same one `cheapest_now`
-buckets on — one answer to "which unit is this quoted in?", not two.
-
-**Conditions an operator must never discover by accident**, all surfaced before
-anything else in a chain plan, each naming what the router will do AND what the
-operator can do:
-
-- `unsatisfiable` — the derived requirement NO elo could ever meet: a `min_context`
-  floor above every context window the router can reach. This is the CAUSE of the
-  bypass below whenever both fire, so it is said FIRST and the bypass line then
-  carries only what the router did — otherwise "no elo can meet these requirements"
-  is stated twice and "add an elo that qualifies" is offered when nothing could
-  qualify. It names the requirement and the ceiling it was measured against ("the
-  widest context window the router can reach holds 1,050,000, needs 1,050,002"),
-  read from the same two places `_unsatisfiable_requirements` reads: the registry,
-  and the windows this chain declares. When `GET /capabilities` never answered the
-  ceiling is scoped to the chain IN WORDS, because a ceiling taken from three
-  declared hops is not "every model the router can reach"; when nothing published
-  one, the requirement is named without a number, since a zero would claim the
-  router can hold nothing. It takes the AMBER line, not the red one — nothing was
-  refused, the router kept routing, and red is reserved for a control giving way.
-  It is independent of `bypassed` (the filter reports it with `bypassed` false when
-  a fail-open unknown hop stays eligible), and it is the whole difference between
-  "this request is pathological" and "these particular elos were rejected" — which
-  three coincidental `context_too_small` reasons carry only to an operator who
-  reconstructs it.
-- `bypassed` — the filter disqualified every elo and overrode itself to keep
-  routing alive, so the task runs on a model that cannot meet its own stated
-  requirements. When the bypass reports no per-elo reasons, that is said too: an
-  absent Dropped section beside "bypassed" otherwise reads as "nothing was
-  dropped", the opposite of what happened.
-- `peak_priced` — PRICE, and a different fact from `demoted`'s POSITION: every elo
-  `avoid_peak` matched inside a dearer window, whether or not moving it changed
-  anything. The shipped T3/T4 chain is the case the split exists for —
-  `avoid_peak: [deepseek, zai]` over hops that are already trailing leaves the order
-  byte-identical, so `demoted` is EMPTY while `peak_priced` names both. That has to
-  read as "these bill double and this chain cannot step around them", never as a
-  policy that failed to fire, so the line states the bill first and then how far the
-  reorder got: everything moved, nothing moved because the matches are already at
-  the back, or — the mixed case — it names only what could NOT go further back
-  (`peak_priced` minus `demoted`), because which hop moved is already said on that
-  hop's own row. Amber, the colour that means paying double needs attention
-  (§3c). The recovery — another hour, or a rail that is cheap at this one — is named
-  once per viewport, so it is omitted when the `time_cap_bypassed` line above
-  already carries it. Each elo's own multiplier and effective prices stay where
-  §3b puts them, on the elo; this line's subject is the tier's policy.
-- `time_cap_bypassed` — a COST control was dropped, deliberately, because
-  enforcing it would have left the task with no rail. Same volume as the filter
-  bypass, because it is the same class of event: the request pays peak price, and
-  an operator who learns that from an invoice has been failed by this console.
-- `strategy_degraded` — the declared strategy did not run (no clock, or no random
-  source). The plan reports the declared word either way, so the console must say
-  which one happened.
-- `independent_rails` of 1 on a POST-FILTER chain — this task has no fallback at
-  all, however wide the declared chain is. It is invisible in router.yaml because
-  it is a property of the task, and it looks exactly like a healthy tier unless
-  said out loud.
-- `capability_unknown` — eligible by assumption.
-
-**A rejection is words, never an enum.** `context_too_small` reads "its context
-window is smaller than this task needs", and where the numbers exist they follow
-it — "holds 200K, needs 500K" — because "too small" alone is not fixable. The
-reasons themselves stay `--muted`: the DROPPED heading already says these were
-refused, and painting every one of them put three reds beside the one real
-refusal in the same viewport.
-
-## 3c. The clock is one line, and it is injected
-
-Three rails price by wall-clock window and the swing is 2x, which is large enough
-to decide where a task goes. So the console carries exactly ONE persistent
-affordance for it — a line above the warnings, on every screen, because the hour
-is not any one screen's subject: it changes what all three of them mean.
-
-- **Both clocks, each labelled.** The windows are published in UTC; the operator
-  lives in UTC−03. A bare "07:14" is therefore wrong by exactly the difference
-  between "the peak is on now" and "the peak is three hours away", so the line
-  reads `07:14 UTC` beside `04:14 local (UTC−03:00)` and never one alone.
-- **Per rail: what it costs now, and until when.** `deepseek 2× peak until 10:00
-  UTC`. The multiplier is in the words, so colour is not the only channel; only
-  the EXPENSIVE state takes a hue (`--warn-text`, the colour that means "this
-  needs your attention", because paying double is exactly that). A cheap window
-  stays muted: a discount needs no alarm, and green here would collide with
-  alive. A flat rail is not listed — nothing to report is not a row.
-- **The clock is INJECTED, never read**, in every function but one. `nowUtc()` is
-  the only place a wall clock is touched; everything else takes `{hour, weekday}`
-  as a parameter, with weekday 0 = Monday (the router's convention, not JS's) and
-  `null` meaning time-agnostic — multiplier 1.0, no window reported, no guessing.
-  This is `rules.py`'s own contract and it is here for the same reason: a
-  formatter that read the clock itself would make every rendering test pass at
-  05:00 UTC and fail at 07:00.
-- **The declared windows live here, not behind a fetch.** `GET /capabilities` is
-  an optional read (§7), and a blank clock line is indistinguishable on screen
-  from "off-peak right now" — which is the confusion the line exists to remove.
-  So the three rails' windows are a table in the file, mirroring the registry, and
-  a registry entry that DOES publish `price_windows` wins over it, exactly as
-  `declared` wins over the registry elsewhere.
-- **A plan's own hour outranks the console's.** When a chain plan reports the hour
-  it was planned against, every price under it is read at that hour and the panel
-  says `planned at 03:00 UTC`. When it reports none, the console's hour is used —
-  which is the hour this line already names, so there is still one authority.
-- **A DECISION THAT ALREADY HAPPENED never falls back to the browser's hour.** On
-  Routes the subject is a recorded decision, and the clock line above reports NOW,
-  which is not when the decision was made. So a replayed plan is priced at its own
-  reported hour, then at the hour its TRACE records (`ts`, the log's own), then at
-  no hour at all — never at the console's, because putting this morning's
-  multipliers on last night's chain is the same error as reading a clock inside a
-  rule. The hour is always named there, with its source, since the line at the top
-  cannot name it: `planned at 03:00 UTC` when the router reported one, `priced at
-  03:00 UTC, the hour this decision was recorded` when only the trace did. Liveness
-  is not consulted at all for a replay: a read taken after the fact measures now.
-- **On Routes a SELECTED decision reprices the strip itself.** The same rule that
-  prices the replayed chain plan at its own hour extends to the price line: while
-  a decision is picked on Routes, the strip shows that decision's hour (`clockLocal`
-  gains `· hora da decisão`), because the question the operator is answering is
-  "what did THIS cost", not "what does it cost now". Leaving Routes hands the
-  strip back to the present. Every row also stamps its own UTC hour beside the
-  age — `17d ago · 03:20 UTC` — so a peak-hour decision stays a peak-hour decision
-  no matter how long ago the operator looks at it.
-- **A decision row says where it went and against what policy.** The destination is
-  `model @ provider` — the rail is the fact that makes a retired destination
-  readable — and a model today's policy cannot dispatch carries a discreet warn
-  mark (`· fora da política`) whose one-line popover resolves BY ID AND BY SOURCE:
-  the registry may know the id (glm-5.2) while the policy forbids it, or know
-  nothing of it at all (us.anthropic.claude-opus-5). One fixed phrase cannot say
-  which, and the operator's next move depends on it. The top line reconciles the
-  log against the policy on screen — `N modelos no log · M entre os monitorados ·
-  K fora da política atual` — a check that sums, visible without arithmetic.
-- **Adjacent identical decisions collapse to one line with the count.** Identity
-  is what the row renders minus its age: same cause, same destination, same task.
-  The run keeps the MOST RECENT entry (routes arrive newest-first) and its id, so
-  replay stays clickable on the decision an operator would actually open. Measured
-  on the live log: 40 lines → 29, eleven adjacent pairs in thirty-nine
-  adjacencies.
-
-## 3d. The tier vocabulary is defined where it decides
-
-The sheet's destinations and the Health rows once used words that assumed the
-reader already knew the policy's shape: "T3" read as a model id while meaning
-"try this chain", and a Health row for glm-5.3 looked like a one-tier elo while
-three tiers depended on it. The definitions now ride with the terms, in damage
-order — the misreading that costs most is the one defined first:
-
-- **A destination that names a tier is a CHIP, not a mute span.** `→ T3` is a
-  button; hover carries the compact chain (`gpt-5.6-terra · deepseek-v4-pro ·
-  glm-5.3`, primary first) and the click reveals the full chain in place — the
-  same `chainList` the Tier chains group draws, with the strategy label
-  ("tried in order" / "tried in a random order"), because the HOW is part of
-  what the destination means. A refusal or a classifier hop never becomes a
-  chip: those are not chains. The revealed chain is the definition of the tier,
-  and it is what exposes a shared-hop fact like "T3 and T4 both carry
-  deepseek-v4-pro and glm-5.3" — the reading that changes what "a regra manda
-  pra T4" means.
-- **A Health row names the roles its elo plays in the policy.** "T2 primária,
-  T3 hop 3, T4 hop 3" answers the tab's question ("o que quebra se este elo
-  morrer?") from the policy already on screen — no extra read. Hop numbering
-  counts the full chain the router walks (primary = 1). An elo in no tier gets
-  no line.
-- **"shadowed" is defined on the line that uses the word.** The lint banner
-  appends "nunca roda: uma regra anterior já cobre tudo o que esta cobriria"
-  after a shadowed finding, because the word alone describes a state, not the
-  mechanism that makes the row dead.
-- **An off-rule cause carries the definition of what it names.** "fail safe
-  strong" and "blocklist veto" get hover resolutions on the row (the same idiom
-  as the "fora da política" mark), and the "Not by rule" pill defines the
-  subset it offers before it is chosen. A cause this console has not learned
-  gets nothing invented (§2.6).
-
-## 3e. First viewport: counters count exceptions, facts echo nothing
-
-The 2026-08-19 review read the first screen and found four things that should
-not have been there: the router's own error was the 4th item of the page, the
-Health badge FELL when the situation got worse, and two of the four summary
-facts echoed other surfaces. The rules the fixes encode:
-
-- **A badge counts exceptions, not inventory.** The Health badge counts bans +
-  breaker cooldowns and wears amber (the attention colour); zero exceptions
-  hides it. Counting elos made the number fall from 8 to 1 exactly when a
-  problem appeared — the number moved the wrong way in the moment it mattered
-  most. The elo total lives in the lede ("all 8 reachable" / "2 of 3 not
-  routable"), where the unit is named.
-- **A list is its own counter.** The Pipeline badge is gone: the numbered rule
-  sheet already counts rules — and its 13 lines include the fail-safe, which
-  `rules.length` (8) never counted, so the badge undercounted the very sheet it
-  sat on. The dot keeps the condition; the list keeps the count.
-- **A summary fact must exist nowhere else.** The Health facts keep exactly
-  two — ROUTING on/off and the CLASSIFIER model — because those two are the
-  only ones no other surface says. The rules count repeated the sheet, and the
-  invalid count repeated the lint banner's "Policy invalid — N errors", which
-  is also the actionable home (it carries the jump-to-the-rule button).
-- **Elapsed beats clocked.** Two wall-clock reads of the same minute, 60px
-  apart, are one fact written twice. The provenance header (sidecar up / code
-  loaded / router.yaml changed) says which source is stale, which a bare HH:MM
-  cannot — it is the "checked HH:MM" clock replaced by the three ages that
-  matter.
-- **A title is not drawn twice.** Inside the panel, the shell already names the
-  surface twice (rail label, sidebar head), so the console's own masthead is
-  hidden under `.is-embedded`; the standalone page at /capability-router still
-  draws it. The tabs hide for the same reason — the sidebar IS the tab strip —
-  but stay in the DOM because the sidebar drives them.
-
-## 4. Writing is a mode, and it is off by default
-
-The earlier version of this section called it a lock and dressed it in `--amber`.
-Both were wrong and both are fixed: the sidecar has never heard of a client-side
-lock (every write is already gated by the per-extension token-v1 secret, the host's
-CSRF token, a loopback-only bind and an optimistic `base_hash` that answers 409 on
-drift), and amber is the colour that means "the ROUTER needs your attention" — an
-operator choosing to edit is not the router degrading.
-
-- One control owns write mode: **Edit / Done**. It names the action pressing it
-  performs, not the state it is in. Armed, it reads as pressed in the host's own
-  selected idiom — accent wash, accent text, accent-tinted border — because that
-  is a selection, not a condition.
-- Reading (the default): no write control is present in the DOM at all for the
-  inspector — not disabled, absent — and the JSON twisty's Apply/Revert, which are
-  static markup, are explicitly disabled.
-- Editing: write controls appear, and the Pipeline note says the surface is armed.
-- Every write still goes through plan → apply → confirm/revert with the
-  `base_hash` guard. The UI never invents a second path. A no-op apply is refused,
-  because the server snapshots to `.bak` before every write and applying nothing
-  would destroy the only thing Revert can restore. A second click while a write is
-  in flight is refused, because two overlapping plan+apply pairs race on the same
-  `base_hash`.
-- A write the environment cannot perform (no CSRF token, because the console is
-  standalone rather than inside the Hermes One page) is refused up front with
-  that reason.
-- The committing button is the only FILLED element on a screen, and it is filled
-  with the skin's accent over `--accent-fg` — the host's own primary-button rule.
-
-## 5. Layout
-
-- **The host's own panel shape, not a masthead of our own.** A `.view-head`
-  (18px/600 sans title left, actions right, one hairline under it, min-height 41px
-  and padding `8px clamp(14px,2.4vw,32px)` — all measured off the running shell's
-  `.main-view-header`), then a `.tabs` strip in the host's nav idiom, then a
-  scrolling `.body` that is the host's `.main-view-body`.
-- **NO WORDMARK.** "ROUTER / HERMES ONE" is gone. The host's rail already says
-  which surface you are on; a mark repeating it spent 9 characters and a whole
-  type voice the shell never uses on information the operator already had. The
-  header carries the view's name and its actions and nothing else.
-- **The screen's question is answered in its first line.** Health opens with the
-  rollup of the model set ("all 5 reachable"), Pipeline with the probe, Routes
-  with what the log holds. There is no second heading repeating the panel title.
-- **On a phone the clock yields, never the name of the surface.** At 390px the
-  header's three items claimed 232px and truncated the title to "Capability R…";
-  dropping the "checked HH:MM" text returns the 99px that fits it whole. The dot
-  stays, and the words come back at any width when there is something to report
-  (no read yet, or an unreachable sidecar).
-- **One column under that header.** Three destinations do not earn a permanent
-  vertical rail, and a host that already owns the left edge must never face a
-  second one. Measure is capped (`min(1180px, 100%)`) so a line of prose stays
-  readable on a wide monitor.
-- One screen fills its width; nothing letterboxes.
-- Density: 11–16px inside a group, 30–38px between groups. More space above a
-  heading than below it.
-
-## 6. Tokens (do not invent, and do not hard-code)
-
-**There is no palette in this file's console.** Every colour token reads a
-`--host-*` custom property that `hermes-theme-bridge.js` forwards from the running
-shell's resolved theme, and the hex after the comma is a FAIL-SAFE — what the
-console looks like when the shell cannot be read at all. The reason is measured:
-the host ships 21 skins x light/dark, so a copied palette is wrong in 20 of 21,
-and in any light skin this console was a black rectangle inside a parchment shell.
-
-  PLANES  `--bg` <- `--host-bg` · `--surface` <- `--host-surface` ·
-          `--surface-raised` <- `--host-surface-subtle` ·
-          `--surface-hover` <- `--host-hover-bg`
-  LINES   `--line` <- `--host-border` · `--line-strong` <- `--host-border2`
-  TEXT    `--text` <- `--host-text` · `--muted` <- `--host-muted` ·
-          `--faint` = `--host-muted` (the SAME value — see below)
-  ACCENT  `--accent` <- `--host-accent` · `--accent-text` <- `--host-accent-text` ·
-          `--accent-bg`/`-strong` <- the host's own washes ·
-          `--accent-fg` <- `--host-accent-fg`, falling back to NEAR-BLACK. The
-          host declares its accent foreground only under `:root.dark`, so in a
-          light skin the fallback is what lands on the one filled button; against
-          this file's own paper-white fail-safe accent a `#fff` fallback measured
-          1.1:1, i.e. an invisible label on the only committing control there is.
-  STATE   `--ok`/`--warn`/`--bad`/`--info` <- `--host-success`/`-warning`/`-error`/
-          `-info`, plus the four `-text` forms and four `-bg` washes derived in an
-          `@supports (color: color-mix(...))` block
-  TYPE    `--sans` <- `--host-font-ui` · `--mono` <- `--host-font-mono` ·
-          `--t-label` 11px <- `--host-font-size-xs` ·
-          `--t-small` 12px <- `--host-font-size-sm` ·
-          `--t-body` 14px <- `--host-font-size-md` · `--t-value` 16px ·
-          `--t-head` 18px
-  SHAPE   `--radius-sm`/`--radius`/`--radius-pill` <- the host's ladder ·
-          `--focus` <- `--host-focus-ring`
-
-`--faint` is deliberately the same colour as `--muted`: the host ships exactly two
-text steps, and `--host-muted` already bottoms out at 3.47:1. A third, fainter step
-derived from it measured 2.31:1. So the step below `--muted` is made in TYPE — 11px
+**The Two Text Steps Rule.** `--faint` is deliberately the same value as
+`{colors.muted}`, because `--host-muted` already bottoms out at 3.47:1 and a third
+step derived from it measured 2.31:1. The step below muted is made in TYPE — 11px
 uppercase tracked, the host's own metadata treatment — never in contrast.
 
-**Four type steps, and they are the HOST'S.** 11px metadata / 12px small / 14px
-body / 16px value / 18px heading. The previous 10.5px and 20px steps were a guest's
-scale and read as an accident beside host chrome. `--sans` carries prose, labels
-and section names; `--mono` carries model ids, counts, hashes, timestamps — things
-an operator would copy. Numerals are tabular everywhere, so counts in a column line
-up. A cause label ("fail safe strong") is a phrase, so it is sans, not mono.
+**The Colour Budget Rule.** Only a refusal is painted. Rejection reasons under a
+DROPPED heading stay muted (the heading already says they were refused; painting them
+put three reds beside the one real refusal); "goes to the classifier" is a KIND of
+destination and is named once on its stage heading rather than coloured five times.
 
-## 7. Invariants (tests depend on these)
+**The Never The Only Channel Rule.** Every dot sits beside its state in words; every
+multiplier is in the text beside its amber. Colour is confirmation, never the fact.
 
-- Exactly one inline `<script>` and one inline `<style>`; no build step, no CDN.
-- Never `innerHTML` / `insertAdjacentHTML` / `outerHTML` / `eval` /
-  `new Function` / `document.write`. All text via `textContent` — decision
-  traces contain attacker-influenceable task text.
-- Nav items keep `class="tab"` + `role="tab"` + `data-tab` + `aria-controls`,
-  and panels keep `id="panel-<tab>"`; one delegate drives selection.
-- These ids are load-bearing for tests: `sheet`, `probeTask`, `ladder`,
-  `routesTable`, `replayPath`, `chainPlan`, `replayPlan`, `clockbar`.
-- ONE chain renderer serves both surfaces. The Explain panel plans a task that has
-  not run and Routes replays one that has, and they are the same reading, so
-  `renderChainPlan` takes the box it draws into rather than either screen growing
-  its own chain vocabulary. `replayPlan` existed for a release with nothing ever
-  filling it, which left the one surface that answers "what did the router actually
-  do" showing a path and two blocks of JSON — while the head the executor really
-  dispatched (`output.attempted_model`, copied off `chain_plan.chain[0]` by
-  `decision_log.record`) was in the reply the whole time. Hop 1 of that panel and
-  that field are the same elo, and a test asserts they agree.
-- `nowUtc()` is the ONLY reader of a wall clock, and `state.clock` overrides it.
-  Every time-dependent function takes `{hour, weekday}` as a parameter, so the
-  console's own tests pin an hour instead of inheriting the one they run at.
-- The capability registry is an OPTIONAL read (`GET /capabilities`). A sidecar
-  without it is not an error and never produces a note about the endpoint: the
-  chain view reports those elos as unverified, which is the truth either way.
-  Per-elo `declared` keys in router.yaml WIN over the registry, exactly as
-  `capabilities.capabilities_for` resolves them, so an operator who corrects a
-  stale window sees their own number.
-- The chain plan is task-scoped: it is dropped the moment a new probe starts, and
-  kept in state so a Refresh re-renders it instead of silently losing it.
-- No `<svg>`: both sequences are lists, and the static test enforces it.
-- Writes send `X-Hermes-CSRF-Token` when the host provides one.
-- Under `(hover:none) and (pointer:coarse)`: 44px minimum targets, and inputs at
-  `max(16px, 1em)`. That guard must NAME THE CLASSES — `.probe-input`, `.editor`,
-  `.field input` — because a bare `input, textarea, select` scores (0,0,1) and
-  every input here is reached by a class, which scores (0,1,0) and wins. Measured
-  in a real iPhone 13 context, the bare form left all four inputs at 14px, i.e.
-  the iOS focus-zoom trap it exists to prevent.
-- Height is `100dvh`, not `100vh`: on iOS the visual viewport shrinks under the
-  toolbar and a vh column overflows by exactly the toolbar's height.
-- ONE authored moment: the screen you asked for eases in, 160ms, from an
-  already-visible layout. Exactly one `@keyframes` in the file, and it yields to
-  `prefers-reduced-motion`.
+**The Amber Is A Verdict Rule.** Amber means the ROUTER needs attention — an
+exception count, a rule that never fired, an expensive window, a missing billing
+mode. It never marks the operator's own doing (an open editor is not a degradation),
+and a disclosure about the DATA rather than the policy takes the muted dot instead
+(the window-stale line halos on the hairline, precisely so it cannot read as amber).
+
+## Typography
+
+**Display / Body Font:** the host's UI sans (`--host-font-ui`, Inter and the system
+stack behind it).
+**Mono Font:** the host's `--host-font-mono`.
+
+**Character:** the shell's own voice, borrowed whole. There is no guest face: the
+previous 10.5px and 20px steps were a guest's scale and read as an accident beside
+host chrome.
+
+### Hierarchy
+- **Headline** (600, 18px, 1.3, -0.18px): the panel title and the inspector head.
+  Measured off the running shell's `.main-view-title`. Hidden under `.is-embedded`.
+- **Title / value** (600, 16px, -0.15px): the lede's answer and a fact's value —
+  scannable from a metre away without being a headline. Mono variant at 500 for a
+  model id.
+- **Body** (400, 14px, 1.5): prose, rule names, section leads, verdicts.
+- **Small** (400, 12px): supporting facts, rails, prices, notes, JSON.
+- **Label** (600, 11px, 0.05em, uppercase): section names, fact labels, stage names,
+  cause words, `editando`, badges. This is the third text step.
+- **Mono** (500, 12–14px): model ids, rails, counts, hashes, timestamps, context
+  windows — anything an operator copies into a shell.
+
+### Named Rules
+**The Copy-It Rule.** Sans carries prose, labels and section names; mono carries
+machine facts. A cause label ("fail safe strong") is a phrase, so it is sans. A rule
+title is prose and its slug is a machine fact, so they do not share one face — at one
+size in one mono they made the pt-BR name and the id peers and left the row with no
+step of its own.
+
+**The Tabular Rule.** `font-variant-numeric: tabular-nums` on the body, so counts
+line up down a column.
+
+**The One Measure Rule.** Prose is capped at `74ch` with `text-wrap: balance`, and
+the cap is attached to the KIND of content, not to a particular class: a measure that
+belongs to a class only holds where that class went, and prose kept landing
+elsewhere. At full panel width lines ran to 146 characters, twice a readable line.
+`balance` and not `pretty`: measured on this surface, `pretty` left last lines at
+24%, 13% and 5% of the first line's width; `balance` puts them at 91–95%. Data is
+exempt on purpose — chain rows, chips, the `Ordem:` knob line and every mono value,
+which a measure would only wrap.
+
+**The Label Is Not A Sentence Rule.** Tracked uppercase is a treatment for a label;
+58 characters of it is a passage read by shape, so a sentence goes to a placeholder
+or a note instead.
+
+## Layout
+
+**The host's own panel shape.** A `.view-head` (18px/600 title left, actions right,
+one hairline under it, min-height 41px, padding `8px clamp(14px, 2.4vw, 32px)` — all
+measured off the running shell's `.main-view-header`), then a two-tab strip in the
+host's nav idiom, then a scrolling body that is the host's `.main-view-body`
+(`22px clamp(14px, 2.4vw, 32px) 44px`). The header does not scroll.
+
+**No wordmark.** The host's rail already says which surface you are on. The old
+"ROUTER · HERMES ONE" mark spent 9 characters and a whole type voice the shell never
+uses on information the operator already had. Under `.is-embedded` the title and the
+tab strip are not drawn at all — the review counted "Capability Router" three times
+on one screen (rail label, sidebar head, masthead) — but they stay in the DOM,
+because the host sidebar reads the tabs' state and clicking a sidebar row clicks a tab.
+
+**One column, capped measure.** Two destinations do not earn a permanent vertical
+rail, and a host that already owns the left edge must never face a second one.
+`min(1180px, 100%)`, centred. One screen fills its width; nothing letterboxes.
+
+**Density.** 11–16px inside a group, 30–38px between groups (`.group` is 34px), and
+more space above a heading than below it. The first group on a screen takes no top
+margin — the panel's own padding is that space.
+
+**The action slot is a column.** Every list that can be edited reserves a fixed 84px
+right-hand track, so "what can I do with this line" is answered at one x down the
+whole screen. This is a grid on the sheet row, the group head and the settings row
+alike: as flex, the group's control sat at 788px, 787px and 796px on three
+consecutive rows, and a reader hunting for it has to re-find it every time.
+
+**The warnings stack is sticky** at the scrollport top (`z-index: 2`, on the page
+plane). The invalid-policy warning is the only actionable message on the screen and
+it used to disappear the moment the operator scrolled to the rule it named.
+
+**Responsive.** At ≤860px the decision list and its replay stop being side by side;
+everywhere above that they stay side by side even inside the host panel, because
+stacked, picking a decision appeared to do nothing — the replay was below the fold.
+At ≤700px (the host panel with the workspace open) the lede stacks and payload grids
+go to one column. At ≤640px — the host's own breakpoint, where it hides the rail —
+the header becomes one column so the surface's name never truncates ("Roteador de
+modelos" ellipsed to "Roteado…" at 390px), the tab strip scrolls with snap instead of
+wrapping, facts go to two columns (four columns truncated "AGGRESSIVENESS" to
+"AGGRESSIVE", a label that silently lies about which number it names), rows become
+one wrapping line, and the action slot stops being a column and becomes a line
+left-aligned under the row it acts on.
+
+**Height is `100dvh`**, not `100vh`: on iOS the visual viewport shrinks under the
+toolbar and a vh column overflows by exactly the toolbar's height. Under
+`(hover: none) and (pointer: coarse)` targets are ≥44px (decision rows 56px) and
+inputs are `max(16px, 1em)` — and that guard NAMES THE CLASSES (`.probe-input`,
+`.editor`, `.field input`, `.field select`), because a bare `input, textarea, select`
+scores (0,0,1) and every input here is reached by a class, which scores (0,1,0) and
+wins. Measured in a real iPhone 13 context, the bare form left all four inputs at
+14px — the iOS focus-zoom trap the block exists to prevent. The keyboard inset is
+measured on this document with the host's own formula, because a separate document
+does not inherit the host's.
+
+### Named Rules
+**The Sequence Down One Spine Rule.** The policy is an ordered first-match table and
+a trace is a short ordered path, so both are drawn as numbered vertical lines against
+a single 1px spine — never as a node canvas. Fifteen tiny boxes to highlight three of
+them makes the reader hunt for the answer.
+
+**The Unordered Gets No Ordinals Rule.** A `sequential` chain is numbered down the
+spine; a `random` chain is a SET — it loses the ordinals and the spine and wraps
+across the line, keeping only the 26px indent so the eye does not have to re-find the
+model. A numbered random chain is a lie about which elo runs first.
+
+**The Compare Down A Column Rule.** Destination and count are fixed tracks
+(`fit-content(34%)` and 52px on the sheet; a 118px cause column on a decision row,
+because the longest real cause "FAIL SAFE STRONG" needs 112px at 11px and at 104px it
+wrapped and made every fail-safe row 20px taller than its neighbours). Two ways this
+has failed, both measured: `auto` on the destination track sized to its content's
+intrinsic width (278px) and starved the `minmax(0, 1fr)` rule column to 0px; and
+capping the CHILD with a percentage is circular — the child's containing block is a
+track the child itself sizes, so the destination resolved to 0px and every
+destination word vanished while the arrow stayed. The cap belongs on the TRACK.
+
+## Elevation & Depth
+
+Flat. There is no shadow vocabulary and no elevation ladder: depth is a hairline, a
+plane change, and space. A group is a heading, a 1px rule under it, and rows
+separated by 1px — never a card. The only `box-shadow`s in the file are not
+elevation: the focus ring, the 3px state halo behind a dot, the inset 1px accent rail
+on a selected or open row, and the inset 1px edge that makes a 6px dot locatable.
+
+### Named Rules
+**The No Card Without A Reason Rule.** A card exists to group things read together.
+One list, one table or one control does not need a frame, and nothing gets a second
+frame inside something already marked — the in-row editor is a raised plane with one
+hairline, not a box inside a box, and a payload is evidence under its label behind a
+single left hairline rather than two bordered cards inside a bordered column.
+
+**The 1px Accent Rail Rule.** Every "you picked this" mark is the same object: an
+inset 1px accent rail on the leading edge, plus the accent wash where a whole row is
+chosen. The open row, the probed rule that matched, the replayed trace step, the
+picked decision — one reading, learned once.
+
+**The Nothing Live Is Dimmed Rule.** No element is faded by opacity while its own
+controls stay pressable. Measured at `.55` on parchment: `Editar` fell to 2.54:1 and
+the row title to 3.95:1, against a 4.5:1 floor. Dimming survives only where nothing
+in the dimmed thing can be pressed — a rule switched off in the file, a trace step
+still ahead of the reader.
+
+**The Render Nothing For Nothing Rule.** No empty card, no dashed placeholder, no row
+that announces its own emptiness. A section with no data is absent (the bans group,
+the compaction group, the clock strip, the count column) or a single muted line. A
+count column with nothing to count disappears rather than filling with em dashes.
+
+## Shapes
+
+Radii come from the host's ladder and nowhere else: 4px for a control that sits
+against an edge (a tab's top corners, a row's trailing corners), 8px for buttons,
+inputs, code blocks and the preset row, and the pill for chips, badges and scope
+selectors only — the host reserves pills for chips and badges, so an action never
+becomes one. A row has no radius on its leading edge, because its leading edge is the
+spine or the accent rail.
+
+The recurring silhouette is the ROW: a grid of `auto | minmax(0, 1fr) | auto`, 11px
+of vertical padding, one hairline below, no border on the last one. The rule sheet
+row, the model row, the settings row and the decision row are all that primitive with
+different tracks — the third list on a screen must not be a third layout.
+
+## Components
+
+### Buttons
+- **Shape:** 8px radius, 1px hairline border, `{colors.plane-surface}` behind it,
+  12px/600 label on a 16px line box — so 5 + 16 + 5 + 2 = 28px, the measured height
+  of the host's own header button, which makes the header compute to 44px like every
+  native panel. Left to the inherited 1.5 line-height it came out 32px and the header
+  48px: the kind of drift that reads as "not quite ours" without ever being nameable.
+- **Quiet (the row action):** same shape and height, no plane and a transparent
+  border until pointed at, muted label. Ten filled rectangles down a list would
+  out-shout the policy they sit beside. The border is real and transparent, not
+  absent: a control that gains a border on hover shifts the text under it.
+- **Commit:** the only FILLED element on a screen, filled with the skin's accent over
+  `{colors.accent-fg}` — the host's own primary-button rule.
+- **Destructive:** `{colors.bad-text}` label on the plain face, strong hairline;
+  hover adds the 14%-alpha bad wash.
+- **Absent, not disabled,** where an action must not be offered: with a lint error the
+  save button is DETACHED from the DOM (and re-inserted before "Ver o que muda" when
+  the error clears), because a disabled control still reads as "this is the thing to
+  press", and pressing your way out of an error state is the wrong lesson.
+
+### Chips
+- **Predicate clauses** (one chip per clause, in a real `<ul>`, so two conditions are
+  never announced as one string): shape = pill, transparent, muted, no label; context
+  = raised plane, text colour, the word CONTEXT inside; capability = strong hairline,
+  text colour, the word NEEDS inside. The family is a WORD inside the chip, so it
+  survives being read aloud — which a border colour does not.
+- **Tier destination:** a real button in the pill shape that reveals the chain it
+  points at, in place, with the same list the groups draw. Expanded takes the accent
+  wash, accent text and accent-tinted border: that is a selection, not a condition.
+- **Badge** (billing mode): 11px tracked uppercase in the pill, no hue — billing is
+  not a condition. A MISSING mode takes `{colors.warn-text}`: a request whose rail is
+  undeclared cannot be costed.
+- **Scope selector:** pill, muted, `aria-pressed`; chosen takes the accent wash.
+  One chip vocabulary; a second near-identical shape for the same concept is how a
+  surface comes to look like two products.
+
+### Rows / Containers
+There are no cards. The container IS the row, and its states are: default (hairline
+below), hover (`{colors.plane-hover}`, only where the row leads somewhere), open
+(`{colors.plane-raised}` + 1px accent rail + accent-tinted bottom hairline),
+matched/picked (accent wash + rail). Internal padding 11–12px vertical, 0
+horizontal — no right padding on the sheet row, because its action slot has to end on
+the same x as the one on a group row and a settings row; 10px of it put two distinct
+x positions across sixteen slots.
+
+### Inputs / Fields
+1px hairline, `var(--host-input-bg, …)` behind it, 8px radius, mono text — these hold
+model ids, JSON and task text. Focus moves the BORDER to the accent, and the shared
+`:focus-visible` ring is a 3px accent-tinted halo on the host's own focus token. A
+field's label is 11px tracked uppercase; a field's own answer (how many models can
+serve this group) is a note inside the field, not an error bubble elsewhere. Under a
+coarse pointer every input is ≥16px.
+
+### Navigation
+Two tabs in the host's nav idiom: a quiet 14px/500 muted label that takes
+`{colors.accent-text}` when selected, plus the host's own 20px x 2px accent bar on
+the bottom edge. Each tab carries the live state of what it leads to — a condition
+dot, plus a count only when a count is meaningful. Full `role="tablist"` semantics:
+only the selected tab is in the tab order and arrows/Home/End move between them, and
+one `selectTab` serves the tab clicks, the lint jump and the host sidebar alike.
+Inside the host the strip is undrawn and the shell's sidebar mirrors it.
+
+### The In-Row Editor (signature)
+Writing is armed per OBJECT. Every row that can be edited carries its own `Editar` in
+the fixed action slot; pressing it opens the form INSIDE that row, the slot swaps to
+the word `editando` (with the same 11px of right padding the button spent, so the
+column does not shift), and `Salvar / Ver o que muda / Cancelar` stand where `Editar`
+stood. The form is a raised plane with one accent-tinted top hairline, and its first
+line says what is being changed and that nothing is written yet. Its entrance reuses
+the file's one keyframe.
+
+There is no global write mode, and its removal was measured rather than judged:
+inside the host document, arming it changed the body of the page by exactly 0
+characters (2207 before, 2207 after) — it wrote its one announcing sentence into a
+node the next render overwrote, so the whole visible payload of arming a write was a
+button label flipping. A mode whose scope is invisible is worse than no mode. The
+read-only default it was right about survives, and now comes from the affordance:
+a row with nothing to configure carries no control at all.
+
+### The Numbered Sheet, the Clock Strip, the Preset Choice
+- **Sheet:** an `<ol>` with a 1px spine down the left margin, a stage node on the
+  spine, a tick out to each row, ordinals in mono, and destination + count in fixed
+  tracks. Precedence is the vertical axis.
+- **Clock strip:** one persistent line above the warnings on every screen (the hour
+  changes what both screens mean), both clocks labelled, one rail per line, and only
+  the expensive state takes a hue. A flat rail is not a row.
+- **Presets:** a real radio group — each row is a `<label>` wrapping a real radio, so
+  the whole row is the target and the browser's own arrow keys move between them. The
+  chosen row takes the accent wash and the one in force says so in accent 11px.
+
+### Named Rules
+**The One Write Vocabulary Rule.** Every word a write can say lives in one `WRITE`
+map — plan, save, saving, revert, cancel, conflict, no-op, in-flight, lint error,
+missing action, no credential. Static markup carries no write vocabulary; boot stamps
+the three text-editor buttons from the map, and the draft hint names the buttons by
+the map's own labels so it cannot drift from them.
+
+**The Ranked, Not Recited Rule.** Where a thing has five knobs and four are the
+engine's default, the DECLARED ones are the line and the defaults collapse into one
+control that says how many there are. Recited inline they read "na ordem escrita
+(padrão do motor) · o primeiro fica fixo (padrão do motor) · teto de preço 1.5× · …":
+170 characters in which the same parenthesis appears three times and one knob is news.
+
+**The Count, Not A Sentence Rule.** A count column holds a count ("26×", "nunca") and
+disappears when there is nothing to count. The period it covers is stated once — by
+the section note or by the stale disclosure above the list — never per row: the
+sentence form put the same 60 characters on ten consecutive rows in the widest column
+and overflowed the host panel by 236px with the third column clipped.
+
+**The Editor Node Is Fetched, Never Held Rule.** The form is a singleton moved next
+to whatever is being edited, so it becomes a child of a row that the next render
+clears. It is fetched through an accessor that rebuilds it under the same id when the
+document no longer has one. Measured in a browser: without it, the first `Editar`
+built a form and every one after it marked a row and rendered nothing.
+
+**The Browser's Own Surfaces Take The Skin Rule.** Selection, caret and scrollbars
+are drawn too: a default blue selection inside a gold-on-navy shell, a white caret
+and a platform-grey scrollbar belong to no design system.
+
+## Do's and Don'ts
+
+### Do:
+- **Do** read every colour from a `--host-*` property, and treat the hex after the
+  comma as the fail-safe for an unreadable shell.
+- **Do** keep the accent for selection and the four for condition, and give a fifth
+  distinction TYPE and PLANE plus its own word instead of a hue.
+- **Do** write a state as a word in the 45%-mixed `-text` form, and a state as a dot
+  in the raw hue with a 1px inset edge — with the word always beside the dot.
+- **Do** make groups out of a heading, one hairline and space, at 34px apart, with
+  more space above a heading than below it.
+- **Do** put every editable object's own control in the fixed 84px action slot, and
+  open its form inside the row it changes.
+- **Do** keep the write vocabulary in the `WRITE` map and take button labels from it.
+- **Do** cap prose at `74ch` with `text-wrap: balance`, attached to the kind of
+  content rather than to a class, and leave data uncapped.
+- **Do** draw an ordered sequence numbered down one 1px spine, and an unordered one
+  as a wrapped set with no ordinals.
+- **Do** keep the domain's words — profile, model, provider/rail, tier, rule,
+  classifier, fail-safe, blocklist, breaker, decision — and invent none.
+- **Do** keep `100dvh`, 44px coarse-pointer targets, and `max(16px, 1em)` inputs
+  named BY CLASS.
+
+### Don't:
+- **Don't** author a palette, a wordmark, or a type step the host does not ship. The
+  10.5px and 20px steps were a guest's scale and read as an accident beside host chrome.
+- **Don't** frame a single list, table or control, and don't put a frame inside
+  something already marked as open or picked.
+- **Don't** derive a third, fainter text step: measured at 2.31:1. Make the step in
+  type instead.
+- **Don't** fade anything by opacity while its own controls stay pressable — measured
+  2.54:1 for a live `Editar` at `.55`.
+- **Don't** paint every reason, every destination kind, or the operator's own actions.
+  Amber is a verdict about the router; a disclosure about the DATA takes the muted dot.
+- **Don't** add a global mode, or any control whose scope is not the thing you can
+  see. Arming the old one changed the page by 0 characters.
+- **Don't** disable a control that must not be pressed if it can be absent instead.
+- **Don't** use `<svg>` or an icon font in this document, and never `innerHTML` /
+  `insertAdjacentHTML` / `outerHTML` / `document.write` — decision traces carry
+  attacker-influenceable task text, so all text goes through `textContent`. A control
+  is a word. (The rail icon the extension registers with the host is the host's own
+  `iconPath` API, outside this document.)
+- **Don't** size a destination or count column with `auto`, or cap it on the child:
+  both collapsed the column to 0px, measured.
+- **Don't** repeat a fact two surfaces already own — a second chip for a state
+  something else signals, a badge counting what a numbered list counts, a heading
+  repeating the panel title, or a per-row copy of the window a count was taken over.
+- **Don't** add a second `@keyframes`, a second button vocabulary, or a second chip
+  shape. One authored moment (160ms ease-out on the screen you asked for, reused by
+  the in-row form), and it yields to `prefers-reduced-motion`.
