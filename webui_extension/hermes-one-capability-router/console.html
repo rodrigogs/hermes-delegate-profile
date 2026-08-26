@@ -4420,7 +4420,9 @@
             // A zero is a FINDING only when the rule could have fired in the
             // counted window. On a stale sheet every count becomes a muted
             // disclosure about the DATA rather than an amber verdict on the rule.
-            const cls = opts.stale ? ' empty' : (opts.hits === 0 ? ' zero' : '');
+            // `stale` never reaches here — the cell is not built at all in that case —
+            // so the class is the finding or nothing.
+            const cls = opts.hits === 0 ? ' zero' : '';
             // A COUNT, not a sentence. The period it was counted over is a fact
             // about the whole list, so it is said once — in the section's own note
             // and in the disclosure above the list — instead of on every row.
@@ -4430,14 +4432,11 @@
             // overflowed the host panel by 236px horizontally with the third column
             // clipped. The reason is per-list; the number is per-row.
             const period = hitsWindow();
-            const words = opts.stale ? '—'
-              : (opts.hits === 0 ? 'nunca' : `${opts.hits}×`);
+            const words = opts.hits === 0 ? 'nunca' : `${opts.hits}×`;
             const h = el('span', `step-hits${cls}`, words);
-            h.title = opts.stale
-              ? 'Sem histórico: o registro de decisões não cobre este período.'
-              : (opts.hits === 0
-                ? `Nunca disparou${period ? ` ${period}` : ''}.`
-                : `Disparou ${opts.hits} vez${opts.hits === 1 ? '' : 'es'}${period ? ` ${period}` : ''}.`);
+            h.title = opts.hits === 0
+              ? `Nunca disparou${period ? ` ${period}` : ''}.`
+              : `Disparou ${opts.hits} vez${opts.hits === 1 ? '' : 'es'}${period ? ` ${period}` : ''}.`;
             to.append(h);
           }
           item.append(to);
