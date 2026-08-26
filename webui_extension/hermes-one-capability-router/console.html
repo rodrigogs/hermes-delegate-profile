@@ -1431,9 +1431,13 @@
         if (typeof v === 'object') return Array.isArray(v) ? String(v.length) : pretty(v);
         return String(v);
       };
-      const ago = (ts) => {
+      const ago = (ts, now) => {
         if (!ts) return '—';
-        const s = Math.max(0, Math.round(Date.now() / 1000 - Number(ts)));
+        // The instant is the CALLER's to resolve — the decision rows pass
+        // nowUtc(), the one wall-clock reader (§7). ago never reads the clock
+        // itself: a `now` the caller forgot is a programming error, and the
+        // throw says so instead of silently pricing off the machine.
+        const s = Math.max(0, Math.round(now.getTime() / 1000 - Number(ts)));
         if (s < 60) return `há ${s}s`;
         if (s < 3600) return `há ${Math.round(s / 60)}m`;
         if (s < 86400) return `há ${Math.round(s / 3600)}h`;
@@ -1453,8 +1457,8 @@
       };
       const clock = (d) => d.toTimeString().slice(0, 5);
       // The ONE place this console reads a wall clock. Everything time-dependent
-      // takes the result as a parameter, so the clock is injected exactly once and
-      // a test can pin it by setting state.clock.
+      // — ago included — takes the result as a parameter, so the clock is
+      // injected exactly once and a test can pin it by setting state.clock.
       const nowUtc = () => (state.clock instanceof Date ? state.clock : new Date());
       // Token counts are six digits here. 208352 has to be counted digit by digit
       // to be compared with 272000; 208,352 does not. Thin spaces would be prettier
@@ -3301,11 +3305,18 @@
       // in router.yaml (§5.1): the answer is read back off the five knobs of every
       // group the preset would touch, and "no match" is a real answer — Personalizado.
       // A→B→C resolves any tie, which is the order §2.4 fixes.
+      // A preset's five knobs are optional; a knob a group does not carry is
+      // `undefined`, while a preset patch spells removal as an explicit null.
+      // Both are "absent" — normalize before comparing, so {pin_primary:
+      // undefined} and {pin_primary: null} read as the same knob. One authority
+      // for "these two knob sets are equal", shared by activePreset (the whole
+      // table) and tierPresetOf (one group): two copies of the same fact is
+      // where they drift.
+      const same = (a, b) => JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b);
       function activePreset(policy) {
         const tiers = (policy && typeof policy === 'object' && policy.tiers
           && typeof policy.tiers === 'object') ? policy.tiers : {};
         if (!Object.keys(tiers).length) return null;
-        const same = (a, b) => JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b);
         for (const preset of PRESETS) {
           const patch = presetPatch(preset.key, policy);
           const names = Object.keys(patch.tiers);
@@ -3330,7 +3341,6 @@
           && typeof policy.tiers === 'object') ? policy.tiers : {};
         if (!Object.prototype.hasOwnProperty.call(tiers, tierName)) return null;
         const t = tier && typeof tier === 'object' ? tier : {};
-        const same = (a, b) => JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b);
         for (const preset of PRESETS) {
           const patch = presetPatch(preset.key, policy);
           const p = patch.tiers[tierName];
@@ -7286,7 +7296,7 @@
           }
           mid.append(name);
           if (r.task) mid.append(el('div', 'row-note', r.task));
-          const when = [ago(r.ts), utcClock(r.ts)].filter(Boolean).join(' · ');
+          const when = [ago(r.ts, nowUtc()), utcClock(r.ts)].filter(Boolean).join(' · ');
           row.append(mid, el('span', 'row-value', when));
           row.addEventListener('click', () => pickRoute(r.id));
           box.append(row);
@@ -7481,7 +7491,7 @@
         // sheet exists to answer. Truncation drops the OLDEST rows, so this gets
         // worse as the log grows; raising the limit alone would only move the cliff.
         state.routesTotal = Number(routes.data && routes.data.count) || state.routes.length;
-        state.checkedAt = new Date();
+        state.checkedAt = nowUtc();
         state.loading = false;
         // §3.4(b): a fresh read brings the dismissed unknown-model warnings
         // back — "Deixar como está" hides them ATÉ A PRÓXIMA LEITURA, never

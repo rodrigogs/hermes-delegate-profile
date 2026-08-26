@@ -197,10 +197,14 @@ test('values are translated for an operator, not dumped', () => {
   assert.equal(api.say(null), '—');
   assert.equal(api.say(['a', 'b']), '2', 'a list reports its size, not its JSON');
   // Timestamps become elapsed time; an operator cares how stale, not the epoch.
-  const now = Math.floor(Date.now() / 1000);
-  assert.match(api.ago(now - 5), /^há \d+s$/);
-  assert.match(api.ago(now - 600), /^há \d+m$/);
-  assert.equal(api.ago(null), '—');
+  // The instant is the caller's to resolve, so the clock is PINNED instead of
+  // inherited from the machine (DESIGN.md §7): the same text at any hour. This
+  // once called Date.now() inside ago() and passed by luck whenever the suite ran.
+  api.state.clock = PEAK;
+  const now = Math.floor(PEAK.getTime() / 1000);
+  assert.equal(api.ago(now - 5, api.state.clock), 'há 5s');
+  assert.equal(api.ago(now - 600, api.state.clock), 'há 10m');
+  assert.equal(api.ago(null, api.state.clock), '—');
 });
 
 test('replay renders the recorded path, not a map of the whole policy', () => {
@@ -1116,6 +1120,21 @@ test('a decision row carries the hour it happened, in UTC', () => {
   const value = dom.get('routesTable').children[0].children[2];
   assert.match(value.textContent, /há \d+[smhd] · 03:20 UTC$/,
     'the age and the hour ride the same column, in the unit windows are declared in');
+});
+
+test("a decision row's age is priced off the pinned clock, not the machine", () => {
+  // §7: the row used to call ago() with one argument, which read Date.now()
+  // inside — the exact class of error that makes a rendering test pass at
+  // 05:00 UTC and fail at 07:00. With the clock pinned, the whole row is the
+  // same text at any machine hour.
+  const { api, dom } = loadConsole();
+  api.state.clock = PEAK;                 // 2026-08-17 07:14 UTC
+  api.state.loading = false;
+  api.state.routes = [{ id: 'r1', cause: 'hard_rule', model: 'gpt-5.6-terra', task: 't', ts: TRACE_AT }];
+  api.renderRoutes();
+  const value = dom.get('routesTable').children[0].children[2];
+  assert.equal(value.textContent, 'há 4h · 03:20 UTC',
+    'the age comes from the injected clock — identical text whatever hour the suite runs at');
 });
 
 test('on Routes the price strip shows the selected decision hour, not now', () => {
@@ -5931,6 +5950,27 @@ test('the preset in force is READ off the groups, with no key remembering it', (
   // and must not stop the detection.
   assert.equal(api.activePreset(applied('equilibrio')), 'equilibrio');
   assert.equal(api.activePreset({ tiers: {} }), null, 'no groups, no preset');
+});
+
+test('a knob the policy omits and the preset\'s explicit null are the same absence', () => {
+  // §7/P3: the comparator was duplicated in activePreset and tierPresetOf, and
+  // two copies of a fact drift. Its one semantic: a group that never declared
+  // a knob (undefined) and a patch that spells removal (null) read as the same
+  // knob — or a hand-written file matches no preset the moment one group omits
+  // a key the preset removes. Both readers must agree on it.
+  const { api } = loadConsole();
+  const policy = presetPolicy();
+  const next = JSON.parse(JSON.stringify(policy));
+  const patch = plain(api.presetPatch('qualidade', policy)).tiers;
+  Object.keys(patch).forEach((name) => Object.assign(next.tiers[name], patch[name]));
+  // Delete the keys Qualidade spells as null: the group now OMITS them
+  // (undefined) instead of carrying the patch's explicit null.
+  delete next.tiers.T1.pin_primary;
+  delete next.tiers.T1.time_cap;
+  assert.equal(api.activePreset(next), 'qualidade',
+    'the whole-table reader treats undefined and null as the same absence');
+  assert.equal(api.tierPresetOf(next.tiers.T1, 'T1', next).key, 'qualidade',
+    '...and the per-group reader agrees');
 });
 
 test('a preset writes NOTHING until a plan for that same choice is on screen (CA5)', async () => {

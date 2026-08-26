@@ -139,6 +139,39 @@ def test_console_html_is_xss_safe_and_syntax_valid(tmp_path):
     assert checked.returncode == 0, checked.stderr
 
 
+def test_wall_clock_is_read_in_exactly_one_place():
+    """DESIGN.md §7: nowUtc() is the ONE wall-clock reader.
+
+    Every time-dependent value takes the instant as a parameter — ``ago``
+    receives it from the caller — so a second reader (a formatter that called
+    ``Date.now()``, or a bare ``new Date()`` anywhere else) would make every
+    rendering test pass at 05:00 UTC and fail at 07:00. ``new Date(x)`` with an
+    argument is a timestamp CONVERSION, not a read, and stays legal.
+    """
+    import re
+
+    script = _console_inline_script()
+    assert "Date.now()" not in script, (
+        "Date.now() must not appear anywhere in the console script; the only "
+        "wall-clock read is the bare new Date() inside nowUtc()"
+    )
+    # A `new Date` not followed by an argument list is a wall-clock read too
+    # (e.g. `(new Date).getTime()`); only the constructor-with-argument form
+    # converts a timestamp.
+    assert not re.search(r"new Date\s*(?!\()", script), (
+        "a paren-less new Date is a wall-clock read; convert with new Date(x)"
+    )
+    bare = [m.start() for m in re.finditer(r"new Date\s*\(\s*\)", script)]
+    assert len(bare) == 1, (
+        "the bare new Date() (no args) must appear exactly once, inside "
+        f"nowUtc() — found {len(bare)}"
+    )
+    definition = script.index("const nowUtc = ")
+    assert definition < bare[0] < definition + 200, (
+        "the one bare new Date() must live inside the nowUtc definition"
+    )
+
+
 def test_console_html_declares_its_three_screens_and_their_surfaces():
     """The console is three screens; each must exist with the hooks its screen
     needs. Both Pipeline and Routes read as ordered vertical sequences — a policy
