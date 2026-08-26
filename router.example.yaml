@@ -67,8 +67,27 @@ enabled: true
 #     the router takes control of the model each card's worker runs on. Live
 #     entries are written with shadow: False and never count in the gate.
 # The router master switch `enabled` above gates BOTH modes: false means no
-# routing and no trace at all. Decisions that change the card's profile are
-# refused in both modes (dispatch cannot move the worker's role).
+# routing and no trace at all.
+#
+# THE ROLE IS AN INPUT ON THIS PATH, NOT AN OUTPUT. Dispatch cannot move a
+# worker's role — the hook applies only model and provider — so a rule's
+# `then.profile` is not a destination here, just a note about the role the policy
+# had in mind. A decision whose profile differs from the card's assignee still
+# applies its MODEL half, and the trace records cause=role_out_of_scope. Until
+# 2026-08-26 such a decision was refused whole, and on a board whose cards ran as
+# one profile while every rule named another that came to 135 of 158 decisions
+# contributing nothing at all.
+#
+# A rule that must fire for one role only says so on the input side, where a role
+# actually lives:
+#
+#   when:
+#     keywords: {contains: audit}
+#     assignee: {eq: reviewer}
+#
+# `assignee` is an injected feature (signals.INJECTED_FEATURE_NAMES), like the
+# clock: absent wherever no role was fixed, so a role-scoped row is inert on the
+# delegation path instead of matching arbitrarily there.
 shadow:
   enabled: true
 
