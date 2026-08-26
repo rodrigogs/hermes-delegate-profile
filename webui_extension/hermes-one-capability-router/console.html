@@ -976,8 +976,8 @@
          `input, textarea, select` scores (0,0,1) and every input in this console is
          reached by a CLASS — .probe-input, .editor, .field input — which scores
          (0,1,0) and wins. Measured in a real iPhone 13 context, where
-         (pointer:coarse) genuinely matches: the probe field, the decision filter
-         and the COMPACT confirmation all computed 14px with this block present, so
+         (pointer:coarse) genuinely matches: the probe field and the decision filter
+         computed 14px with this block present, so
          the guard had been decorative. Naming the classes makes it apply.
          max() keeps anything already larger; .editor stays at --t-small on a mouse
          because it holds JSON, and gets 16px here for the same reason as the rest. */
@@ -1262,29 +1262,6 @@
              or nothing is recorded at all). Not a warning — a disclosure. -->
         <div class="window-stale" id="windowStale" hidden></div>
 
-        <!-- Compaction is a PIPELINE fact (DESIGN.md §1: Blocklist lives in
-             Health, Compaction in Pipeline), and it follows the Blocked group's
-             rule: hidden unless it carries an active condition — a sidecar that
-             reports no compaction data gets no group at all (Render nothing for
-             nothing, DESIGN.md §2.1). The type-to-confirm stays: this action
-             restarts the agent, and the server demands the same phrase
-             independently (one_sidecar.py:392), so the two cannot drift apart.
-             The summary carries the consequence, so the decision to open it is
-             informed. -->
-        <div class="group" id="compactionGroup" hidden>
-          <div class="group-head"><h2>Compaction</h2><span class="screen-note" id="compactionNote"></span></div>
-          <div class="facts" id="compaction"></div>
-          <details id="compactionApply">
-            <summary>Recalculate thresholds — restarts the agent</summary>
-            <div class="field" style="margin-top:10px">
-              <label for="compactConfirm">Type COMPACT to confirm</label>
-              <input id="compactConfirm" autocomplete="off" placeholder="COMPACT">
-            </div>
-            <div class="actions"><button class="btn warn" id="compactGo" type="button">Recalculate</button></div>
-            <p class="msg" id="compactMsg" aria-live="polite"></p>
-          </details>
-        </div>
-
         <div id="inspector"></div>
         <div class="group">
           <details>
@@ -1364,7 +1341,7 @@
       const state = {
         mode: 'reading',   // 'reading' or 'editing'
         health: null, status: null, policy: null, blocklist: null,
-        liveness: null, compaction: null, routes: [],
+        liveness: null, routes: [],
         // Which preset the operator is looking at, and which one the plan on screen
         // belongs to. Neither is persisted anywhere: §5.1 adds no key to router.yaml,
         // and "which preset is in force" is read back off the groups themselves.
@@ -3541,75 +3518,6 @@
           row.append(el('span', 'row-value', `${Math.ceil(Number(b.cooldown_remaining_s) || 0)}s left`));
           banBox.append(row);
         });
-      }
-
-      // ── Compaction: a pipeline fact, shown only when there is one ────
-      // DESIGN.md §1 gives Compaction its home in Pipeline (Blocklist lives in
-      // Health, Compaction in Pipeline — "subordinate detail, not peers"), and
-      // the Blocked group's rule governs its visibility: hidden unless it
-      // carries an active condition. A sidecar that reports no compaction data
-      // gets no group at all — the "not implemented by this sidecar" note was
-      // the console reporting on itself, which DESIGN.md §2.7 forbids, and an
-      // absent group is what "Render nothing for nothing" (§2.1) prescribes.
-      function renderCompaction() {
-        const group = $('compactionGroup');
-        const comp = $('compaction');
-        clear(comp);
-        const c = state.compaction;
-        group.hidden = !c;
-        $('compactionApply').hidden = !c;
-        if (!c) { $('compactionNote').textContent = ''; return; }
-
-        // The three numbers here were printed raw: "aggressiveness 50",
-        // "summarizer window 272000", "compacts at 208352". An operator cannot act
-        // on that without doing arithmetic — 208352 is only meaningful next to the
-        // window it is a fraction of. The sidecar already returns
-        // threshold_fraction and computes the ratio; the console was discarding it.
-        // So the sentence says the relationship, and the numbers back it up.
-        const window = Number(c.summarizer_window) || 0;
-        const at = Number(c.threshold_tokens) || 0;
-        const share = c.threshold_fraction !== undefined
-          ? Number(c.threshold_fraction)
-          : (window ? at / window : 0);
-        // "at 77% of the window" is the trigger POINT, not current usage — and next
-        // to a label reading COMPACTS AT it could be read as "we are at 77%", which
-        // is a wrong reading of an action that restarts the agent. So the sentence
-        // says when, explicitly. (Verified against router/threshold.py: p_eff(272000,
-        // 50) == 0.766 and 0.766 * 272000 == 208352, matching what the sidecar
-        // returns. The console does not know current usage — nothing in /compaction
-        // reports it — so it must not imply it.)
-        $('compactionNote').textContent = window && at
-          ? `fires once a conversation fills ${Math.round(share * 100)}% of the ${fmt(window)}-token window`
-          : '';
-
-        const fact2 = (label, value, note) => {
-          const f = el('div', 'fact');
-          f.append(el('span', 'fact-label', label), el('span', 'fact-value', value));
-          if (note) f.append(el('span', 'fact-note', note));
-          comp.append(f);
-        };
-        // The dial has NAMES on the server — router/threshold.py PRESETS maps
-        // Max-context 0, Conservative 25, Balanced 50, Aggressive 100 — so the
-        // console says the word and keeps the number, rather than printing a bare
-        // 50 that reads like a token count beside 272,000.
-        //
-        // The direction is counter-intuitive and worth stating: p_eff subtracts
-        // 0.002 per point (threshold.py:28), so MORE aggressive means a LOWER
-        // threshold, i.e. compacting sooner and more often. An operator raising this
-        // to "make it do less" would get the opposite.
-        const PRESETS = { 0: 'max context', 25: 'conservative', 50: 'balanced', 100: 'aggressive' };
-        const dial = Number(c.aggressiveness);
-        const preset = PRESETS[dial];
-        fact2('aggressiveness',
-              preset || `${say(c.aggressiveness)}/100`,
-              preset ? `${dial}/100 · compacts sooner as this rises` : 'compacts sooner as this rises');
-        fact2('compacts at', fmt(at), window ? `of ${fmt(window)}` : '');
-        if (c.warning) {
-          const line = el('div', 'warn-line');
-          line.append(el('strong', '', 'Threshold exceeds the window.'),
-                      el('span', '', 'Compaction would never fire — lower the aggressiveness.'));
-          comp.append(line);
-        }
       }
 
       // ── chain views: the shared vocabulary ──────────────────────────
@@ -6822,24 +6730,6 @@
         return doApply('/apply/revert', msg).then(() => true);
       }
 
-      async function doCompaction() {
-        const msg = $('compactMsg');
-        if (!writable(msg, 'Recalculate')) return;
-        if ($('compactConfirm').value !== 'COMPACT') { setMsg(msg, 'Type COMPACT exactly to confirm.', 'bad'); return; }
-        const aggressiveness = state.compaction && Number.isFinite(state.compaction.aggressiveness)
-          ? state.compaction.aggressiveness : 50;
-        const res = await call('/apply', { method: 'POST', body: { action: 'compaction', confirm: 'COMPACT', aggressiveness } });
-        if (res.error || res.missing) {
-          // The status alone sent an operator hunting: the real 400 was a
-          // resolvable path bug and the reason was in the body all along.
-          const why = (res.data && (res.data.error || res.data.message)) || `HTTP ${res.status || 'n/a'}`;
-          setMsg(msg, `Recusado — ${why}`, 'bad');
-          return;
-        }
-        $('compactConfirm').value = '';
-        setMsg(msg, 'Agendado — o agente reinicia e volta sozinho se não ficar saudável.', 'ok');
-      }
-
       // ── Routes + replay ─────────────────────────────────────────────
       // Free-text over the three things an operator remembers about a decision:
       // what it was asked, where it went, and why.
@@ -7251,7 +7141,6 @@
         renderRail();
         renderHealth();
         renderPresets();
-        renderCompaction();
         renderRoutes();
         renderSheet();
         renderLadder();
@@ -7282,9 +7171,9 @@
 
       async function fetchAll() {
         state.unreachable = false;
-        const [health, status, policy, blocklist, liveness, compaction, routes, capabilities] = await Promise.all([
+        const [health, status, policy, blocklist, liveness, routes, capabilities] = await Promise.all([
           call('/health'), call('/status'), call('/policy'), call('/blocklist'),
-          call('/liveness'), call('/compaction'), call('/routes?limit=200'),
+          call('/liveness'), call('/routes?limit=200'),
           // Optional: the capability registry is what turns a model id into a
           // context window. A sidecar without it is not an error — the chain view
           // reports those elos as unverified, which is the truth either way.
@@ -7295,7 +7184,6 @@
         state.policy = policy.data || null;
         state.blocklist = blocklist.data || null;
         state.liveness = liveness.data || null;
-        state.compaction = compaction.missing ? null : (compaction.data || null);
         state.capabilities = capabilityRegistry(capabilities);
         state.routes = (routes.data && Array.isArray(routes.data.routes)) ? routes.data.routes : [];
         // The envelope reports how many decisions EXIST; we were discarding it and
@@ -7359,7 +7247,6 @@
         });
         $('editMode').addEventListener('click', () => setMode(state.mode === 'editing' ? 'reading' : 'editing'));
         $('refresh').addEventListener('click', load);
-        $('compactGo').addEventListener('click', doCompaction);
         // One parse, used by both buttons. Malformed JSON is reported before any
         // request goes out, because "your text is not JSON" is not something the
         // server should have to tell you.
@@ -7434,7 +7321,7 @@
         // (tierRoles), the chain a tier destination points at (renderSheet's
         // chip), and the definition of an off-rule cause (causeTitle). Each is
         // exported because the strings an operator reads are the contract.
-        tierRoles, causeTitle, renderCompaction,
+        tierRoles, causeTitle,
         // The time layer. Every one of these takes its clock as a PARAMETER, which
         // is what keeps them pure and what keeps these tests from passing at 05:00
         // UTC and failing at 07:00 — the failure mode the injected clock exists to

@@ -896,59 +896,6 @@ test('a Health row says which tiers depend on the elo, and where', () => {
     'the answer to THIS tab\'s question sits on the elo\'s own row');
 });
 
-test('the compaction sentence states when it fires, not where usage is', () => {
-  // /compaction reports no current usage at all, so a sentence that reads as
-  // progress would be inventing a number — on a screen whose action restarts the
-  // agent. Verified against router/threshold.py: p_eff(272000, 50) == 0.766.
-  const { api, dom } = loadConsole();
-  api.state.loading = false;
-  api.state.compaction = {
-    aggressiveness: 50, summarizer_window: 272000,
-    threshold_tokens: 208352, threshold_fraction: 0.766,
-  };
-  api.renderCompaction();
-  const note = dom.get('compactionNote').textContent;
-  assert.match(note, /fires once/, 'it must read as a trigger, not a level');
-  assert.match(note, /77%/);
-  assert.match(note, /272,000/, 'the window is separated for comparison');
-  assert.doesNotMatch(note, /^at \d/, 'a bare "at 77%" reads as current usage');
-  assert.equal(dom.get('compactionGroup').hidden, false,
-    'the group is a PIPELINE fact now (DESIGN.md §1) — with data it is shown');
-});
-
-test('the aggressiveness dial says which way it points', () => {
-  // p_eff subtracts 0.002 per point (threshold.py:28), so a HIGHER dial gives a
-  // LOWER threshold — it compacts sooner. An operator raising it to "do less" gets
-  // the opposite, so the direction is on screen.
-  const { api, dom } = loadConsole();
-  api.state.loading = false;
-  api.state.compaction = {
-    aggressiveness: 50, summarizer_window: 272000,
-    threshold_tokens: 208352, threshold_fraction: 0.766,
-  };
-  api.renderCompaction();
-  const text = JSON.stringify(dom.get('compaction'));
-  assert.match(text, /balanced/, 'the server has names for these presets');
-  assert.match(text, /compacts sooner/, 'and the direction must be stated');
-});
-
-test('compaction is hidden when the sidecar reports no compaction data', () => {
-  // DESIGN.md §1: Compaction lives in Pipeline and, like the Blocked group,
-  // shows only when it carries an active condition. A sidecar without /compaction
-  // data gets no group at all — the old "not implemented by this sidecar" note
-  // was the console reporting on itself (§2.7) and is gone.
-  const { api, dom } = loadConsole();
-  api.state.loading = false;
-  api.state.compaction = null;
-  api.renderCompaction();
-  assert.equal(dom.get('compactionGroup').hidden, true,
-    'no data, no group — Render nothing for nothing (§2.1)');
-  assert.equal(dom.get('compactionNote').textContent, '',
-    'and no console-self-report note survives');
-  assert.equal(dom.get('compaction').children.length, 0,
-    'and no fact is painted for a state that does not exist');
-});
-
 // ── the decision log's own honesty ───────────────────────────────────────
 // Numbers on this screen are read as facts about the router. Two ways they lied:
 // the scope pill said "Refused" for decisions that successfully chose a model, and
@@ -1748,9 +1695,9 @@ test('the iOS zoom guard names the classes, or it does nothing at all', () => {
   // (0,0,1); every input in this console is reached by a class — .probe-input,
   // .editor, .field input — which scores (0,1,0) and wins. Measured in a real
   // iPhone 13 context (the only way (pointer:coarse) genuinely matches): the probe
-  // field, the decision filter and the COMPACT confirmation all computed 14px with
+  // field and the decision filter computed 14px with
   // the guard present, so iOS would zoom in on focus and never zoom back out.
-  // After naming the classes, all four measure 16px.
+  // After naming the classes, they measure 16px.
   const { style } = consoleStyle();
   const touch = style.slice(style.indexOf('@media (hover: none) and (pointer: coarse)'));
   assert.ok(touch, 'the coarse-pointer block must exist');
