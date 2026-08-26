@@ -9483,3 +9483,152 @@ test('the elo dating phrase never says "atendeu" or "nunca"', () => {
   assert.ok(!snippet.includes('atendeu'), `dating claims an outcome: ${snippet}`);
   assert.ok(!snippet.includes('nunca'), `dating invents an absence: ${snippet}`);
 });
+// ── the test hour (card t_fbdc3e38) ──────────────────────────────────────
+
+// A cheapest_now plan whose DISPLAYED order flips between 03:00 and 14:00 UTC.
+// deepseek-v4-pro doubles inside its real 01:00-04:00 window; the luna hop
+// DECLARES a metered rate of $2.50 out — declared keys win over the registry,
+// the same precedence capabilities_for applies — so at 03:00 luna leads a
+// doubled deepseek, and at 14:00 deepseek's base rate leads luna.
+function hourFlipPlan(extra) {
+  return chainPlan(Object.assign({
+    strategy: 'cheapest_now', strategy_declared: 'cheapest_now', pin_primary: false,
+    chain: [
+      { model: 'deepseek-v4-pro', provider: 'deepseek', billing_mode: 'metered' },
+      { model: 'gpt-5.6-luna', provider: 'openai-codex', billing_mode: 'metered',
+        price_in: 1.00, price_out: 2.50 },
+    ],
+    // The server planned at a flat hour: these are the numbers a chosen hour
+    // must NOT reuse — the display at 03:00 has to read deepseek's own window.
+    multipliers: { 'deepseek-v4-pro': 1, 'gpt-5.6-luna': 1 },
+  }, extra || {}));
+}
+
+test('the chosen test hour reprices and reorders a cheapest_now queue, and leaves sequential identical', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.clock = PEAK;   // Monday 07:14 UTC — the weekday frame for a chosen hour
+  api.state.policy = tierPolicy();
+  api.state.capabilities = api.capabilityRegistry(catalogue('deepseek-v4-pro', 'gpt-5.6-luna'));
+
+  // ── cheapest_now: the SAME plan, two chosen hours, two queues ──
+  api.state.testHour = 3;
+  api.renderChainPlan(hourFlipPlan());
+  assert.deepEqual(findAll(dom.get('chainPlan'), 'hop-model').map((n) => n.textContent),
+    ['gpt-5.6-luna', 'deepseek-v4-pro'],
+    'at 03:00 UTC deepseek doubles and luna\'s declared $2.50 out leads');
+  let text = flat(dom.get('chainPlan'));
+  assert.match(text, /hora escolhida: 03:00 UTC/, 'the queue says which chosen hour it is priced at');
+  assert.match(text, /2× em hora de pico · \$1\.32 entrada \/ \$3\.96 saída por 1M/,
+    'the chosen hour reached the price function: deepseek\'s own window doubles its rate');
+
+  api.state.testHour = 14;
+  api.renderChainPlan(hourFlipPlan());
+  assert.deepEqual(findAll(dom.get('chainPlan'), 'hop-model').map((n) => n.textContent),
+    ['deepseek-v4-pro', 'gpt-5.6-luna'],
+    'at 14:00 UTC deepseek is back at base and leads luna\'s declared rate');
+  text = flat(dom.get('chainPlan'));
+  assert.match(text, /hora escolhida: 14:00 UTC/);
+  assert.doesNotMatch(text, /2× em hora de pico/,
+    'at 14:00 the same elo is flat — the plan\'s own multipliers were NOT reused at a chosen hour');
+
+  // ── sequential: the field changes NOTHING, and nothing pretends it did ──
+  // The variant carries NO plan multipliers, so the prices below come from the
+  // elos' own windows at the hour in use — the clock's hour (07:00, inside
+  // deepseek's peak), never the chosen 14:00. If the chosen hour leaked into a
+  // sequential queue, deepseek would render flat at testHour 14.
+  api.state.testHour = 3;
+  api.renderChainPlan(hourFlipPlan({ strategy: 'sequential', strategy_declared: 'sequential', multipliers: {} }));
+  const at3 = flat(dom.get('chainPlan'));
+  api.state.testHour = 14;
+  api.renderChainPlan(hourFlipPlan({ strategy: 'sequential', strategy_declared: 'sequential', multipliers: {} }));
+  const at14 = flat(dom.get('chainPlan'));
+  assert.equal(at3, at14, 'a sequential queue is identical at every chosen hour (card decision 5)');
+  assert.doesNotMatch(at14, /hora escolhida/, 'no mark: the queue is NOT priced at a chosen hour');
+  assert.doesNotMatch(at14, /ordenada pelo preço/, 'no reorder claim either');
+  assert.match(at14, /2× em hora de pico/,
+    'the display kept the clock\'s hour (07:00 UTC, inside deepseek\'s peak), not the chosen 14:00');
+});
+
+test('the chosen hour reaches the ceiling marks too, and the plan hour is named', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.clock = PEAK;
+  api.state.policy = tierPolicy();
+  api.state.capabilities = api.capabilityRegistry(catalogue('deepseek-v4-pro', 'gpt-5.6-luna'));
+  // The engine planned at 14:00 UTC (a flat hour for deepseek); the operator
+  // asks how the queue looks at 03:00, where deepseek doubles past the cap.
+  api.state.testHour = 3;
+  api.renderChainPlan(hourFlipPlan({
+    utc_hour: 14, utc_weekday: 0,
+    time_cap: { max_multiplier: 1.5 },
+  }));
+  const text = flat(dom.get('chainPlan'));
+  assert.match(text, /acima do teto agora/,
+    'the TETO mark reads the chosen hour: deepseek 2× is above the 1.5× ceiling at 03:00');
+  assert.match(text, /planejado às 14:00/, 'the plan\'s own hour is named, since the display is at another');
+  assert.match(text, /hora escolhida: 03:00 UTC/);
+});
+
+test('the Hora do teste field marks the queue while overridden, and Agora clears it', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.clock = PEAK;   // 07:14 UTC
+  api.state.policy = tierPolicy();
+  api.state.capabilities = api.capabilityRegistry(catalogue('deepseek-v4-pro', 'gpt-5.6-luna'));
+  api.state.chainPlan = hourFlipPlan();
+
+  api.applyTestHour(3);
+  assert.equal(api.state.testHour, 3, 'picking an hour sets the override');
+  assert.equal(dom.get('probeHour').value, '3', 'the select shows the chosen hour');
+  assert.match(flat(dom.get('chainPlan')), /hora escolhida: 03:00 UTC/, 'the mark appears');
+
+  // Agora: back to the clock's hour — the mark leaves and the select repõe.
+  api.applyTestHour(null);
+  assert.equal(api.state.testHour, null, 'Agora clears the override');
+  assert.equal(dom.get('probeHour').value, '7', 'the select shows the clock\'s hour again (07:14 UTC)');
+  assert.doesNotMatch(flat(dom.get('chainPlan')), /hora escolhida/, 'the mark leaves with it');
+});
+
+test('displayOrder mirrors order_chain: the hour swaps the queue, non-time strategies never reorder', () => {
+  const { api } = loadConsole();
+  const registry = api.capabilityRegistry(catalogue('deepseek-v4-pro', 'gpt-5.6-luna', 'gpt-5.5'));
+  const hops = [
+    { model: 'deepseek-v4-pro', provider: 'deepseek', billing_mode: 'metered' },
+    { model: 'gpt-5.6-luna', provider: 'openai-codex', billing_mode: 'metered', price_in: 1.00, price_out: 2.50 },
+    { model: 'gpt-5.5', provider: 'openai-codex', billing_mode: 'subscription' },
+  ];
+  const models = (list) => plain(list.map((h) => h.model));
+  const monday3 = { hour: 3, weekday: 0 };
+  const monday14 = { hour: 14, weekday: 0 };
+
+  // The same three hops order differently at the two chosen hours: at 03:00
+  // doubled deepseek ($3.96) trails luna's declared $2.50; at 14:00 its base
+  // $1.98 leads. gpt-5.5 ($30) trails both, always.
+  assert.deepEqual(models(api.displayOrder(hops, 'cheapest_now', monday3, { registry })),
+    ['gpt-5.6-luna', 'deepseek-v4-pro', 'gpt-5.5'], '03:00: luna leads a doubled deepseek');
+  assert.deepEqual(models(api.displayOrder(hops, 'cheapest_now', monday14, { registry })),
+    ['deepseek-v4-pro', 'gpt-5.6-luna', 'gpt-5.5'], '14:00: base deepseek leads');
+
+  // pin_primary true keeps hop 1 fixed and sorts only the reserves — the same
+  // rule capabilities.order_chain applies.
+  assert.deepEqual(models(api.displayOrder(hops, 'cheapest_now', monday3, { registry, pinPrimary: true })),
+    ['deepseek-v4-pro', 'gpt-5.6-luna', 'gpt-5.5'],
+    'a pinned primary stays first; the tail sorts');
+
+  // An unpriced plan-credit hop leads the dollars bucket by billing — never as
+  // zero, and never behind a dollar rail it cannot be compared to.
+  const withPlan = [hops[0], hops[1], { model: 'glm-5.3', provider: 'zai', billing_mode: 'plan' }];
+  assert.deepEqual(models(api.displayOrder(withPlan, 'cheapest_now', monday3, { registry })),
+    ['glm-5.3', 'gpt-5.6-luna', 'deepseek-v4-pro'],
+    'plan credits bucket first, then the dollars at 03:00');
+
+  // No hour, sequential and random: the queue never reorders — the mutation
+  // "random passa a reordenar por hora" fails here.
+  assert.deepEqual(models(api.displayOrder(hops, 'cheapest_now', null, { registry })), models(hops),
+    'no hour means no reorder');
+  assert.deepEqual(models(api.displayOrder(hops, 'sequential', monday3, { registry })), models(hops),
+    'sequential is the written order at any hour');
+  assert.deepEqual(models(api.displayOrder(hops, 'random', monday3, { registry })), models(hops),
+    'random must not reorder by the hour either');
+});

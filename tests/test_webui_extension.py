@@ -565,6 +565,37 @@ def test_cap_mark_and_bypass_speak_the_cards_own_words():
         )
 
 
+def test_console_hour_field_speaks_the_honest_limit():
+    """Card t_fbdc3e38: the test-hour field and its limit sentence exist together.
+
+    The Hora do teste (UTC) field only reprices and reorders what the console
+    DISPLAYS; the engine's decision used the server's hour — the sentence is
+    the card's contract ("sem ela, o card não está feito"), so it must sit in
+    the markup beside the field, verbatim, and the "hora escolhida" mark the
+    override carries must be renderable text. The wall-clock rule (§7) is
+    already pinned by test_wall_clock_is_read_in_exactly_one_place; this test
+    pins that the field cannot exist without its limit.
+    """
+
+    html = (EXTENSION / "console.html").read_text(encoding="utf-8")
+    phrase = "Isto reprecifica e reordena a fila mostrada nesta hora. A decisão do motor usa a hora do servidor."
+    assert 'id="probeHour"' in html, "the task test carries a Hora do teste (UTC) field"
+    assert 'id="probeNow"' in html, "back-to-now is an explicit control (Agora)"
+    assert phrase in html, "the limit sentence must exist verbatim beside the field"
+    field_at = html.index('id="probeHour"')
+    phrase_at = html.index(phrase)
+    assert abs(field_at - phrase_at) < 1200, (
+        "the sentence must sit beside the field, not somewhere the operator "
+        "reading the field cannot see"
+    )
+    # The mark the override carries is renderable text, pinned the same way the
+    # other cards pin their literals (the ${...} interpolation is stripped, so
+    # the fixed prefix is what is asserted).
+    prose = _console_rendered_text()
+    mark = [t for _, _, t in prose if "hora escolhida" in t]
+    assert mark, "the 'hora escolhida: {HH}:00 UTC' mark must be renderable text"
+
+
 def test_console_write_surface_speaks_one_pt_br_vocabulary():
     """§4.7/§6.10: the write surface has no English labels or messages.
 

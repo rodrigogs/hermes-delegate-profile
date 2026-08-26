@@ -448,6 +448,13 @@
        never has to infer order from position. One spine runs down the left
        margin so the sheet reads as a single continuous flow. */
     .probe { display: flex; gap: 8px; }
+    /* Card t_fbdc3e38: the test-hour field keeps its two controls on one row
+       (the select and "Agora" are one gesture: pick an hour, or hand the queue
+       back to the clock) and the honesty note under them, in the field's own
+       muted voice — a limit disclosure, not a warning. */
+    .probe-hour { margin: 10px 0 4px; }
+    .probe-hour-row { display: flex; gap: 8px; align-items: center; }
+    .probe-hour-row select { flex: 1; min-width: 0; }
     .probe-input {
       flex: 1; min-width: 0; padding: 9px 12px; border: 1px solid var(--line);
       border-radius: var(--radius-input); background: var(--host-input-bg, var(--surface));
@@ -1239,6 +1246,28 @@
                invalid-policy banner. -->
           <button class="btn" type="submit" id="routeGo">Rotear</button>
         </form>
+        <!-- Card t_fbdc3e38: the HORA DO TESTE. The operator's question is "how
+             would this look at 03:00 UTC?" and the answer this console may give
+             is the queue it DISPLAYS — repriced, and reordered when the strategy
+             is time-relative — never the engine's decision, which used the
+             server's hour. That limit is said in the note, verbatim, because a
+             field that silently re-priced the queue would read as a simulation
+             of the run. The field is pre-filled once at boot by nowUtc(), the
+             one wall-clock reader, and "Agora" hands the queue back to the
+             clock. -->
+        <div class="field probe-hour" id="probeHourBox">
+          <label for="probeHour">Hora do teste (UTC)</label>
+          <div class="probe-hour-row">
+            <!-- 24 values, HH:00 — the window table's own granularity; the
+                 options are stamped in by initProbeHour so the markup stays a
+                 single <select> and the value list cannot drift from the
+                 hours priceMultiplier actually reads. -->
+            <select id="probeHour" aria-label="Hora do teste (UTC)"></select>
+            <button class="btn" type="button" id="probeNow"
+                    title="Repõe a hora do relógio no campo e volta a fila à hora do motor">Agora</button>
+          </div>
+          <p class="field-note" id="probeHourNote">Isto reprecifica e reordena a fila mostrada nesta hora. A decisão do motor usa a hora do servidor.</p>
+        </div>
         <!-- THE OTHER HALF OF THE QUESTION: HOW BIG IS THE TURN. Production sizes a
              turn from the text the child really receives — context PLUS goal — and
              routes on the est_input_tokens that text produces. This console sent the
@@ -1416,6 +1445,16 @@
         // rendering test pins an hour instead of passing at 05:59 and failing at
         // 06:00 — the same reason rules.py refuses to read a clock at all.
         clock: null,
+        // Card t_fbdc3e38: the operator's chosen test hour, or null when the
+        // display follows the engine's hour exactly as before. null until the
+        // Hora do teste (UTC) field is touched — boot prefills the field's
+        // face but leaves this null, and "Agora" restores it. While set, the
+        // probed task's queue is REPRICED (and, for cheapest_now, reordered)
+        // at that hour, and the queue carries the "hora escolhida" mark so
+        // nobody reads an out-of-time queue without knowing. The chosen hour
+        // reaches every price/order/cap function as the `when` parameter — no
+        // function here reads a clock of its own (§7).
+        testHour: null,
       };
 
       const $ = (id) => document.getElementById(id);
@@ -2833,6 +2872,49 @@
         });
       }
 
+      // ── the test hour (card t_fbdc3e38) ───────────────────────────────
+      // One entry point for BOTH controls of the Hora do teste field, so a test
+      // drives the same path the operator's gesture does: `hour` 0..23 sets the
+      // override, null is "Agora" — hand the queue back to the clock. The hour
+      // never touches the VERDICT (that is the engine's answer, at the server's
+      // hour — the note beside the field says so); it re-renders only the
+      // displayed queue, which is the one thing this console may repricify.
+      // state.testHour is the truth; the select's value is its face, so both
+      // are written together and can never disagree.
+      function applyTestHour(hour) {
+        const value = Number(hour);
+        if (hour === null || hour === undefined || !Number.isInteger(value) || value < 0 || value > 23) {
+          state.testHour = null;
+          // "Agora" repõe a hora do relógio no campo — one read at the edge,
+          // the same class of call renderClock's minute repaint makes.
+          const select = $('probeHour');
+          if (select) select.value = String(nowUtc().getUTCHours());
+        } else {
+          state.testHour = value;
+          const select = $('probeHour');
+          if (select) select.value = String(value);
+        }
+        if (state.chainPlan) renderChainPlan(state.chainPlan);
+      }
+      // The field's 24 options and its boot prefill. The prefill is ONE read of
+      // the single wall-clock reader and it only dresses the field: state.testHour
+      // stays null until the operator touches it, so an untouched field leaves the
+      // display on the engine's hour exactly as before.
+      function initProbeHour() {
+        const select = $('probeHour');
+        if (!select) return;
+        for (let hour = 0; hour < 24; hour += 1) {
+          const option = document.createElement('option');
+          option.value = String(hour);
+          option.textContent = hourLabel(hour);
+          select.append(option);
+        }
+        select.value = String(nowUtc().getUTCHours());
+        select.addEventListener('change', () => applyTestHour(Number(select.value)));
+        const agora = $('probeNow');
+        if (agora) agora.addEventListener('click', () => applyTestHour(null));
+      }
+
       // ── warnings: only conditions that need an operator ─────────────
       // The two read helpers are the ONE reading of the lint payload: the
       // banner, the probe gate and the jump button all derive from the same
@@ -3972,6 +4054,65 @@
           });
         });
         return index;
+      }
+
+      // Card t_fbdc3e38: the order the DISPLAYED queue would take at a chosen
+      // hour. Transcribed from capabilities.order_chain so the preview answers
+      // "how would this look at 03:00?" with the engine's own rule: cheapest_now
+      // sorts by the same (bucket, priced, output_price, declared_index) key —
+      // plan credits first, free next, the dollar-priced rails (subscription and
+      // metered TOGETHER) next, a mode nothing can describe last; inside a
+      // bucket, ascending effective OUTPUT price at `when`, stably, with a
+      // pinned primary keeping hop 1 fixed. The price is the elo's OWN rate
+      // (declared keys win over the registry, as capabilities_for applies) at
+      // the multiplier its OWN windows declare for `when` — the plan's
+      // `multipliers` are deliberately NOT used here, because they describe the
+      // hour the engine planned at, and a chosen hour is a different hour.
+      // Every other strategy — and a missing hour — leaves the chain as it is:
+      // nothing here pretends a sequential or random queue reorders by the
+      // clock (card decision 5). `when` is a PARAMETER; this function never
+      // reads a clock (§7).
+      function displayOrder(hops, strategyKey, when, opts) {
+        const o = opts || {};
+        const list = Array.isArray(hops) ? hops.filter((h) => h && typeof h === 'object') : [];
+        if (String(strategyKey).trim().toLowerCase() !== 'cheapest_now' || !when || list.length < 2) {
+          return list;
+        }
+        // The same marginal-cost buckets capabilities._BILLING_RANK assigns:
+        // plan credits are spent off an allowance already bought, free spends
+        // nothing, subscription and metered are quoted in the same dollars, and
+        // an undescribable mode sorts last — never first, never zero.
+        const BUCKET = { plan: 0, free: 1, subscription: 2, metered: 2 };
+        const keyOf = (hop, index) => {
+          const e = hop && typeof hop === 'object' ? hop : {};
+          const model = String(e.model || '');
+          const caps = hopCaps(e, o.registry).caps;
+          const mode = String(e.billing_mode !== undefined ? e.billing_mode
+            : (caps.billing_mode !== undefined ? caps.billing_mode : (o.billing || {})[model])
+          ).trim().toLowerCase();
+          const bucket = BUCKET[mode] === undefined ? 3 : BUCKET[mode];
+          const prices = effectivePrices(caps, priceMultiplier(eloWindows(caps), when));
+          // Unpublished sorts behind its priced bucket-mates, in declared order
+          // — never as 0.0 (effectivePrices refuses to invent a rate, and so
+          // does this key: the 0.0 in the unpriced branch is inert padding).
+          if (!prices) return [bucket, 1, 0, index];
+          return [bucket, 0, prices.out, index];
+        };
+        const compare = (a, b) => {
+          for (let i = 0; i < 4; i += 1) {
+            if (a.key[i] !== b.key[i]) return a.key[i] < b.key[i] ? -1 : 1;
+          }
+          return 0;
+        };
+        const sorted = (entries) => entries.slice().sort(compare).map((entry) => entry.hop);
+        // pin_primary true is order_chain's rule too: hop 1 stays first and
+        // only the reserves are sorted. Any other reading sorts everything.
+        if (o.pinPrimary === true) {
+          const head = list[0];
+          const tail = list.slice(1).map((hop, i) => ({ hop, key: keyOf(hop, i) }));
+          return [head].concat(sorted(tail));
+        }
+        return sorted(list.map((hop, i) => ({ hop, key: keyOf(hop, i) })));
       }
 
       // A chain, drawn as what it IS. Sequential gets ordinals down a spine;
@@ -5321,33 +5462,72 @@
         // names, so there is still one authority for it) and for a replay is the
         // moment the decision was recorded.
         const clock = planWhen(plan, past ? (o.at instanceof Date ? o.at : null) : nowUtc());
-        const when = clock.when;
+        const consoleWhen = whenOf(nowUtc());
+        // Card t_fbdc3e38: the operator's chosen test hour, or null. Only for the
+        // EXPLAIN panel — never a replay, because a recorded decision is priced at
+        // the moment it was recorded however the field is set — and never over a
+        // plan whose strategy already degraded: "a fila abaixo é a ordem que de
+        // fato rodou" must stay true of the queue this panel draws. The chosen
+        // hour carries the CURRENT WEEKDAY — the operator asks "how would this
+        // look at 03:00?" about today, and a weekday-gated window (zai's Mon-Fri
+        // peak) would otherwise go silent at every chosen hour.
+        const chosen = (!past && Number.isInteger(state.testHour)
+          && state.testHour >= 0 && state.testHour <= 23 && plan.strategy_degraded !== true)
+          ? { hour: state.testHour, weekday: consoleWhen ? consoleWhen.weekday : null }
+          : null;
+        // `plan.strategy` is the strategy that RAN, and it is the one that decides
+        // whether the chain below gets ordinals — so it is the one asked here. It
+        // is asked BEFORE `when` is resolved, because for cheapest_now its note
+        // ("ordenada pelo preço de saída às 03:00") is where a chosen hour first
+        // shows, and because the chosen hour only takes effect for a strategy
+        // that is actually time-relative.
+        const strategy = strategyWords(plan.strategy, {
+          pinPrimary: plan.pin_primary,
+          when: chosen || clock.when,
+          degraded: plan.strategy_degraded === true,
+        });
+        // The hour every price and every position below is relative to. A chosen
+        // hour takes over ONLY for a time-relative strategy: a sequential or
+        // random queue does not change with the field, and the screen does not
+        // pretend it does (card decision 5). Without an override the plan's own
+        // hour wins — that is the clock the router planned against; otherwise the
+        // fallback instant, which for the Explain panel is the console's own hour
+        // (the one the clock line at the top of the screen already names, so
+        // there is still one authority for it) and for a replay is the moment the
+        // decision was recorded.
+        const chosenInEffect = chosen !== null && strategy.key === 'cheapest_now';
+        const when = chosenInEffect ? chosen : clock.when;
+        // The mark that says the queue below is priced at a chosen hour — the
+        // operator never looks at an out-of-time queue without knowing.
+        const chosenMark = chosenInEffect ? `hora escolhida: ${hourLabel(chosen.hour)}` : '';
         // "planned at 03:00 UTC" is only worth a line when the hour below is NOT the
         // one the clock line at the top of the screen is reporting. Saying it about
         // the current hour is the same fact twice (DESIGN.md §2.3), and it was the
         // second "07:00 UTC" in one sentence. For a replay it is always worth the
         // line: the decision happened at an hour that line cannot name, and an
-        // unlabelled multiplier there would read as this hour's.
-        const consoleWhen = whenOf(nowUtc());
+        // unlabelled multiplier there would read as this hour's. With a chosen
+        // hour in effect the PLAN's own hour is the one to name — the display is
+        // at the chosen hour and the plan was made at the server's, and that
+        // difference is exactly what the mark exists to disclose.
         const elsewhere = !!when && (past || (clock.source === 'plan'
-          && (!consoleWhen || consoleWhen.hour !== when.hour)));
+          && (chosenInEffect
+            ? (clock.when ? clock.when.hour !== when.hour : false)
+            : (!consoleWhen || consoleWhen.hour !== when.hour))));
         // Which clock the hour came from, because the two answer different questions:
         // the router reported the hour it planned against, or the trace reported when
         // it happened and the prices below are read at that hour.
         const hourNote = !elsewhere ? ''
-          : clock.source === 'plan' ? `planejado às ${hourLabel(when.hour)}`
+          : clock.source === 'plan' ? `planejado às ${hourLabel((clock.when || when).hour)}`
           : `preço às ${hourLabel(when.hour)}, a hora em que esta decisão foi gravada`;
-        // `plan.strategy` is the strategy that RAN, and it is the one that decides
-        // whether the chain below gets ordinals — so it is the one asked here.
-        const strategy = strategyWords(plan.strategy, {
-          pinPrimary: plan.pin_primary,
-          when,
-          degraded: plan.strategy_degraded === true,
-        });
         const registry = state.capabilities;
         const billing = billingIndex(state.policy);
         const flags = timeFlagIndex(plan);
-        const multipliers = plan.multipliers && typeof plan.multipliers === 'object' ? plan.multipliers : null;
+        // The plan's multipliers describe the hour the engine planned at, so a
+        // chosen hour must NOT read them — eloRow then falls back to the elo's
+        // own declared windows at the chosen `when`, which is the honest price
+        // for that hour rather than the server's number for another one.
+        const multipliers = chosenInEffect ? null
+          : (plan.multipliers && typeof plan.multipliers === 'object' ? plan.multipliers : null);
         // liveness fills in an elo the plan priced no multiplier for, but only when it
         // was evaluated at the hour this plan was made at — never as a substitute for
         // the plan's own number, and never at all under a REPLAY: a liveness read
@@ -5456,7 +5636,8 @@
         const note = plan.strategy_degraded === true ? '' : strategy.note;
         head.append(el('span', 'screen-note',
                        `${strategy.label}${note ? ` — ${note}` : ''}`
-                       + (hourNote ? ` · ${hourNote}` : '')));
+                       + (hourNote ? ` · ${hourNote}` : '')
+                       + (chosenMark ? ` · ${chosenMark}` : '')));
         group.append(head);
         // Card t_eed59abb: the auto-shutdown is said where it happens. The loud
         // warn-line above reports the EVENT (the cap gave way, and what the
@@ -5482,14 +5663,22 @@
         }
 
         if (chain.length) {
-          group.append(chainList(chain, {
+          // A chosen hour reorders the DISPLAYED queue for cheapest_now — that is
+          // what the field's note promises and what the mark labels. The engine's
+          // own order (plan.chain) stays the one the verdict above reads.
+          const drawnChain = chosenInEffect
+            ? displayOrder(chain, strategy.key, chosen, {
+                pinPrimary: plan.pin_primary, registry, billing,
+              })
+            : chain;
+          group.append(chainList(drawnChain, {
             strategy, registry, billing, when, flags, multipliers, live, cap: capMark,
             // The Explain panel is where the cost comparison is audited, so every
             // eligible elo shows the prices it was compared on — not only the ones
             // that happen to be inside a window.
             showPrice: true,
           }));
-          const rails = independentRails(chain);
+          const rails = independentRails(drawnChain);
           group.append(el('div', `tier-fact rails${rails < 2 ? ' thin' : ''}`,
                           `${rails} provedor${rails === 1 ? '' : 'es'} independente${rails === 1 ? '' : 's'} em ${chain.length} tentativa${chain.length === 1 ? '' : 's'} elegíve${chain.length === 1 ? 'l' : 'is'}`));
           // A chain that filtering collapsed onto ONE upstream has no fallback at
@@ -5498,7 +5687,7 @@
           // so this is invisible in router.yaml — it is a property of THIS task.
           if (rails < 2) {
             group.append(el('div', 'tier-note',
-              `Sem reserva para esta tarefa: toda tentativa elegível cai em ${upstreamGroup(chain[0] && chain[0].provider) || 'um provedor só'}. `
+              `Sem reserva para esta tarefa: toda tentativa elegível cai em ${upstreamGroup(drawnChain[0] && drawnChain[0].provider) || 'um provedor só'}. `
               + 'Uma queda ali e a tarefa não tem para onde ir — a fila declarada é mais larga, mas as exigências desta tarefa descartaram o resto.'));
           }
         } else {
@@ -7952,6 +8141,9 @@
         // §4.7: the JSON editor's static buttons get their labels from the map
         // once, at boot — the markup itself carries no write vocabulary.
         stampWriteLabels();
+        // Card t_fbdc3e38: the Hora do teste field's 24 options and its one-time
+        // clock prefill; state.testHour stays null until the operator touches it.
+        initProbeHour();
         const tabs = [...document.querySelectorAll('.tab')];
         const select = (tab) => selectTab(tab.dataset.tab);
         tabs.forEach((tab, i) => {
@@ -8078,6 +8270,13 @@
         PRESETS, presetPatch, activePreset, tierPresetOf, renderPresets, previewPreset, applyPreset,
         requestRevert, disarmRevert,
         planWhen, timeCapOf, cappedEntries, renderClock, nowUtc,
+        // Card t_fbdc3e38: the Hora do teste field. applyTestHour is the ONE
+        // path both controls use (pick an hour / Agora), displayOrder is the
+        // pure order the displayed queue takes at a chosen hour (transcribed
+        // from capabilities.order_chain) — exported so the override/reset pair,
+        // the 03:00-vs-14:00 swap and the sequential/random invariance are
+        // pinned by tests, not eyeballed.
+        applyTestHour, displayOrder,
         // Card t_eed59abb: the per-attempt ceiling mark. legibleCap refuses the
         // bare-number form the lint rejects (§5.4), and capOverWords says which
         // attempts are above the group's ceiling at the hour in use and when
