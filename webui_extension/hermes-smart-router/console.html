@@ -1852,6 +1852,22 @@
         if (s < 86400) return `há ${Math.round(s / 3600)}h`;
         return `há ${Math.round(s / 86400)}d`;
       };
+      // The bare "how long since" — the provenance lines compose it into
+      // "serviço no ar há X" and the window banner into "Nenhuma decisão há
+      // X". It takes a Date/ISO/millisecond timestamp (the status fields)
+      // where `ago` takes epoch seconds. The banner used to round fresh.days
+      // up instead and called six hours "1 dia" — that inflation is what this
+      // card (t_28faee83) fixes, and the reason the banner now reads the same
+      // formatter the provenance line reads.
+      const fmtAge = (ts) => {
+        if (!ts) return '—';
+        const nowSec = Math.floor(nowUtc().getTime() / 1000);
+        const s = Math.max(0, nowSec - Math.floor(new Date(ts).getTime() / 1000));
+        if (s < 60) return `${s}s`;
+        if (s < 3600) return `${Math.round(s / 60)}m`;
+        if (s < 86400) return `${Math.round(s / 3600)}h`;
+        return `${Math.round(s / 86400)}d`;
+      };
       // The clock of a TIMESTAMP, in UTC — the unit every window is declared in.
       // `ago` answers "how long since"; this answers "at what hour", which is the
       // fact that decides what a decision COST. Both ride the same row-value
@@ -3203,16 +3219,6 @@
         const procStart = prov.process_started_at;
         const codeLoaded = prov.code_mtime;
         const configChanged = prov.config_mtime;
-        const nowSec = Math.floor(nowUtc().getTime() / 1000);
-
-        const fmtAge = (ts) => {
-          if (!ts) return '—';
-          const s = Math.max(0, nowSec - Math.floor(new Date(ts).getTime() / 1000));
-          if (s < 60) return `${s}s`;
-          if (s < 3600) return `${Math.round(s / 60)}m`;
-          if (s < 86400) return `${Math.round(s / 3600)}h`;
-          return `${Math.round(s / 86400)}d`;
-        };
 
         const stale = !!(procStart && codeLoaded && new Date(codeLoaded) > new Date(procStart));
         reach.className = `reach${stale ? ' is-stale' : ''}`
@@ -4917,21 +4923,26 @@
       // The clock is the injected one, so a test pins the day instead of
       // passing at 05:00 and failing at 06:00 (the rule that governs every
       // time-dependent function in this file).
+      // The return also carries `newest` — the epoch SECONDS of the newest
+      // decision, the same number the reason was derived from — so the phrase
+      // that translates the reason names the age with the same formatter the
+      // provenance line uses, instead of rounding the day count a second time
+      // (the banner's Math.max(1, Math.round(days)) called 6 hours "1 dia").
       const STALE_WINDOW_DAYS = 7;
       function logFreshness() {
         const list = Array.isArray(state.routes) ? state.routes : [];
         const ts = list.map((r) => Number(r && r.ts))
           .filter((t) => Number.isFinite(t) && t > 0);
-        if (!ts.length) return { stale: true, reason: 'empty', days: null };
+        if (!ts.length) return { stale: true, reason: 'empty', days: null, newest: null };
         const newest = Math.max(...ts);
         const days = (nowUtc().getTime() / 1000 - newest) / 86400;
         const configMtime = state.status && state.status.config_mtime;
         const configT = configMtime ? new Date(configMtime).getTime() / 1000 : NaN;
         if (Number.isFinite(configT) && configT > newest) {
-          return { stale: true, reason: 'config', days };
+          return { stale: true, reason: 'config', days, newest };
         }
-        if (days > STALE_WINDOW_DAYS) return { stale: true, reason: 'age', days };
-        return { stale: false, reason: null, days };
+        if (days > STALE_WINDOW_DAYS) return { stale: true, reason: 'age', days, newest };
+        return { stale: false, reason: null, days, newest };
       }
 
       // A count is only true of the window it was counted over. Naming that window
@@ -5071,10 +5082,22 @@
               windowBanner.append(
                 el('strong', '', 'Nenhuma decisão registrada ainda.'),
                 el('span', '', 'Não há janela a contar — as contagens por regra ficam sem dados até a primeira decisão.'));
-            } else {
-              const days = Math.max(1, Math.round(fresh.days || 0));
+            } else if (fresh.reason === 'config') {
+              // One authority per fact: logFreshness decided WHY the window
+              // cannot describe the current policy; this branch only
+              // translates it. It used to tell the AGE story for every stale
+              // window — and round hours up: Math.round(0.25) = 0, then
+              // Math.max(1, …) = 1, so a decision six hours old read as
+              // "Nenhuma decisão há 1 dia" (the incident this card fixes:
+              // router.yaml edited at ~14:5x, last decision 16:19 UTC).
+              // `newest` is epoch SECONDS, fmtAge reads Date/ms — the * 1000
+              // is the same unit boundary the utcClock helper draws.
               windowBanner.append(
-                el('strong', '', `Nenhuma decisão há ${days} dia${days > 1 ? 's' : ''}.`),
+                el('strong', '', `A política mudou depois da última decisão (há ${fmtAge(fresh.newest * 1000)}).`),
+                el('span', '', 'Contar as decisões antigas contra as regras novas seria mentira — as contagens ficam sem dados até a próxima decisão.'));
+            } else {
+              windowBanner.append(
+                el('strong', '', `Nenhuma decisão há ${fmtAge(fresh.newest * 1000)}.`),
                 el('span', '', `Estas contagens descrevem ${span}, não o presente.`));
             }
           } else {

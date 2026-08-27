@@ -2394,7 +2394,8 @@ test('logFreshness says when the window cannot describe the current policy', () 
   // Fresh: the newest decision is AFTER the config mtime and inside the day backstop.
   api.state.routes = [{ ts: nowS - 2 * hourS }, { ts: nowS - 3 * hourS }];
   api.state.status = { config_mtime: new Date(T - 5 * hourS * 1000).toISOString() };
-  assert.deepEqual(plain(api.logFreshness()), { stale: false, reason: null, days: 2 / 24 });
+  assert.deepEqual(plain(api.logFreshness()),
+    { stale: false, reason: null, days: 2 / 24, newest: nowS - 2 * hourS });
 
   // The router.yaml on disk is NEWER than the newest decision: every rule in the
   // sheet is newer than the window, so a zero hit proves nothing about it.
@@ -2404,6 +2405,8 @@ test('logFreshness says when the window cannot describe the current policy', () 
   assert.equal(api.logFreshness().reason, 'config');
   assert.ok(Math.abs(api.logFreshness().days - 2 / 24) < 1e-9,
     'the config case still measures the age for the banner');
+  assert.equal(api.logFreshness().newest, nowS - 2 * hourS,
+    'newest rides along so the banner names the age with fmtAge, not a second rounding');
 
   // An older sidecar reports no config_mtime: the wall-clock backstop.
   api.state.status = {};
@@ -2411,11 +2414,13 @@ test('logFreshness says when the window cannot describe the current policy', () 
   assert.equal(api.logFreshness().stale, true);
   assert.equal(api.logFreshness().reason, 'age');
   assert.ok(api.logFreshness().days > 16, 'the age is measured in days');
+  assert.equal(api.logFreshness().newest, nowS - 17 * dayS);
 
   // Nothing recorded at all.
   api.state.routes = [];
   assert.equal(api.logFreshness().stale, true);
   assert.equal(api.logFreshness().reason, 'empty');
+  assert.equal(api.logFreshness().newest, null, 'no decision, no reference instant');
 });
 
 test('a window older than the policy demotes every count and says why', () => {
@@ -2445,10 +2450,12 @@ test('a window older than the policy demotes every count and says why', () => {
   api.renderSheet();
 
   const banner = flat(dom.get('windowStale'));
-  assert.match(banner, /Nenhuma decisão há 17 dias/,
-    'the banner names how long since the last decision');
-  assert.match(banner, /Estas contagens descrevem de 01\/08 22:12 a 02\/08 01:51 UTC, não o presente/,
-    'and names the real window, not the present');
+  assert.match(banner, /A política mudou depois da última decisão \(há 17d\)/,
+    'a policy that moved after the log is a POLICY story, not an age story');
+  assert.match(banner, /Contar as decisões antigas contra as regras novas seria mentira/,
+    'and it says why the counts are refused: they would measure old decisions against new rules');
+  assert.doesNotMatch(banner, /Nenhuma decisão há/,
+    'the age phrasing belongs to the age reason, never to a config reason');
   assert.equal(dom.get('windowStale').hidden, false);
 
   // The counter REFUSES: no row carries a count or an amber "never fired" —
@@ -2568,9 +2575,38 @@ test('an old sidecar without config_mtime still falls back to the age backstop',
   };
   api.renderSheet();
   const banner = flat(dom.get('windowStale'));
-  assert.match(banner, /Nenhuma decisão há 17 dias/);
+  assert.match(banner, /Nenhuma decisão há 17d/,
+    'the age reason names the age with fmtAge, the same formatter the provenance line uses');
   assert.match(banner, /Estas contagens descrevem de 01\/08 22:12 a 02\/08 01:51 UTC, não o presente/);
   assert.doesNotMatch(flat(dom.get('sheet')), /never fired/);
+});
+
+test('a six-hour-old window under a newer policy reads as horas, never as "1 dia"', () => {
+  // The reported incident: router.yaml edited at ~14:5x, last decision at
+  // 16:19 UTC. The old banner ignored fresh.reason, told the AGE story and
+  // rounded: Math.round(0.25) = 0, Math.max(1, …) = 1 → "Nenhuma decisão há
+  // 1 dia" — a 4× inflation that made a same-day change read as a day of
+  // silence. Both halves must be pinned: the reason is CONFIG (policy words,
+  // not age words) and the age is 6h (fmtAge), never a rounded day.
+  const { api, dom } = loadConsole();
+  const T = Date.UTC(2026, 7, 27, 16, 19, 0);   // the last decision's hour, 16:19 UTC
+  api.state.clock = new Date(T);
+  api.state.loading = false;
+  const hourS = 3600;
+  api.state.routes = [{ id: 'a', ts: T / 1000 - 6 * hourS }];
+  api.state.status = { config_mtime: new Date(T - 90 * 60 * 1000).toISOString() };  // edited after the decision
+  api.state.policy = {
+    rules: [{ id: 'r', when: {}, then: { model: 'T4' } }],
+    default: {}, classifier: { model: 'm' }, fail_safe: { model: 'm' }, tiers: { T4: {} },
+  };
+  api.renderSheet();
+
+  assert.equal(dom.get('windowStale').hidden, false);
+  const banner = flat(dom.get('windowStale'));
+  assert.match(banner, /A política mudou depois da última decisão \(há 6h\)/,
+    'the age inside the policy story is hours, via fmtAge');
+  assert.doesNotMatch(banner, /1 dia|1d\b/, 'hours must not round up to a day');
+  assert.doesNotMatch(banner, /Nenhuma decisão há/);
 });
 
 test('billing is named in the operator\'s words, and a missing mode is a finding', () => {
