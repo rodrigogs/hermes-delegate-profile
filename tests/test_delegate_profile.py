@@ -1,7 +1,7 @@
 """Automated tests for the delegate_profile plugin.
 
 Run:
-    cd /home/rodrigo/hermes-delegate-profile
+    cd /home/rodrigo/Workspace/hermes-smart-router
     /usr/local/lib/hermes-agent/venv/bin/python -m pytest tests/ -v
 
 These tests exercise the plugin's pure logic (validation, timeout ladder,

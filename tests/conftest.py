@@ -540,7 +540,7 @@ def _isolate_route_trace(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("HERMES_ROUTE_TRACE_FILE", str(tmp_path / "routes.jsonl"))
     # Isolate watchdog config from the operator's live config.yaml.
-    # The plugin resolves watchdog params via cfg_get(plugins.entries.delegate-profile.watchdog);
+    # The plugin resolves watchdog params via cfg_get(plugins.entries.hermes-smart-router.watchdog);
     # tests expect module defaults (or env overrides), not the operator's live values.
     # Stub hermes_cli.config.cfg_get (imported lazily inside _watchdog_cfg) to return {}.
     try:

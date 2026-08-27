@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta:__legacy__"
 
 [project]
-name = "hermes-delegate-profile"
+name = "hermes-smart-router"
 version = "0.3.0"
 description = "Hermes Agent plugin: subprocess-isolated cross-profile delegation with capability-based routing"
 readme = "README.md"

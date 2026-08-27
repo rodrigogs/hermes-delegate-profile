@@ -70,7 +70,7 @@ vars, then to tuned defaults:
   HERMES_DELEGATE_PROFILE_QUEUE_WAIT     seconds to wait for a slot; 0 = up to the hard ceiling (default 30)
 
 Installation:
-    hermes plugins install rodrigogs/hermes-delegate-profile
+    hermes plugins install rodrigogs/hermes-smart-router
     hermes plugins enable delegate-profile
 """
 

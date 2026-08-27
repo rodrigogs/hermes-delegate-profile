@@ -20,7 +20,7 @@ TIMER_NAME = "hermes-stack-update.timer"
 
 SERVICE_TEMPLATE = """[Unit]
 Description=Transactional Hermes Agent and Hermes One updater
-Documentation=https://github.com/rodrigogs/hermes-delegate-profile
+Documentation=https://github.com/rodrigogs/hermes-smart-router
 After=network-online.target
 Wants=network-online.target
 
