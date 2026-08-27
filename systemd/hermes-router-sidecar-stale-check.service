@@ -1,6 +1,6 @@
 [Unit]
 Description=Check the Smart Router sidecar for stale code
-Documentation=https://github.com/rodrigogs/hermes-delegate-profile
+Documentation=https://github.com/rodrigogs/hermes-smart-router
 After=network.target
 
 [Service]

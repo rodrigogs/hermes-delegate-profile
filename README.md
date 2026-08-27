@@ -1,11 +1,11 @@
-# delegate-profile
+# hermes-smart-router
 
-[![CI](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml/badge.svg)](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/branch%20coverage-100%25-brightgreen)](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-428%20passed-brightgreen)](https://github.com/rodrigogs/hermes-delegate-profile/actions/workflows/ci.yml)
+[![CI](https://github.com/rodrigogs/hermes-smart-router/actions/workflows/ci.yml/badge.svg)](https://github.com/rodrigogs/hermes-smart-router/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/branch%20coverage-100%25-brightgreen)](https://github.com/rodrigogs/hermes-smart-router/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-428%20passed-brightgreen)](https://github.com/rodrigogs/hermes-smart-router/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-0.3.0-informational)](https://github.com/rodrigogs/hermes-delegate-profile)
-[![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/rodrigogs/hermes-delegate-profile/blob/main/LICENSE)
+[![Version](https://img.shields.io/badge/version-0.3.0-informational)](https://github.com/rodrigogs/hermes-smart-router)
+[![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/rodrigogs/hermes-smart-router/blob/main/LICENSE)
 
 A [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that adds a
 `delegate_profile` tool for spawning subagents under a **different** Hermes
@@ -63,14 +63,14 @@ delegate_profile(goal="Summarize these papers",           profile="researcher", 
 From the plugin registry:
 
 ```bash
-hermes plugins install rodrigogs/hermes-delegate-profile
+hermes plugins install rodrigogs/hermes-smart-router
 hermes plugins enable delegate-profile
 ```
 
 Or manually by cloning into your plugins directory:
 
 ```bash
-git clone https://github.com/rodrigogs/hermes-delegate-profile.git \
+git clone https://github.com/rodrigogs/hermes-smart-router.git \
   ~/.hermes/plugins/hermes-smart-router
 hermes plugins enable delegate-profile
 ```
@@ -280,7 +280,7 @@ variables:
 ## Development
 
 ```bash
-git clone https://github.com/rodrigogs/hermes-delegate-profile.git
+git clone https://github.com/rodrigogs/hermes-smart-router.git
 cd hermes-delegate-profile
 pip install -e ".[dev]"
 ```

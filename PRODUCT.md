@@ -14,7 +14,7 @@ Esse usuário escolhe a fronteira de processo por motivos concretos: conter cras
 
 ## Product Purpose
 
-`delegate-profile` adiciona ao Hermes Agent uma ferramenta de delegação cross-profile com uma fronteira real de processo. Seu propósito é executar uma tarefa em outro profile sem compartilhar o processo do agente pai, preservando o ambiente, a sessão, as skills, a memória, o modelo e o toolset próprios do filho.
+`hermes-smart-router` adiciona ao Hermes Agent uma ferramenta de delegação cross-profile com uma fronteira real de processo. Seu propósito é executar uma tarefa em outro profile sem compartilhar o processo do agente pai, preservando o ambiente, a sessão, as skills, a memória, o modelo e o toolset próprios do filho.
 
 O produto tem sucesso quando:
 

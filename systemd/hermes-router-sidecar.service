@@ -1,6 +1,6 @@
 [Unit]
 Description=Hermes One Smart Router sidecar (loopback token-v1)
-Documentation=https://github.com/rodrigogs/hermes-delegate-profile
+Documentation=https://github.com/rodrigogs/hermes-smart-router
 After=network.target
 
 [Service]

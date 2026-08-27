@@ -213,7 +213,7 @@ compaction:
   provider: zai
   model: glm-4.5-flash
   fallback_mode: tier:T1
-# Watchdog params live in config.yaml: plugins.entries.delegate-profile.watchdog
+# Watchdog params live in config.yaml: plugins.entries.hermes-smart-router.watchdog
 # Table 1 — ordered, FIRST MATCH WINS. Order is severity-descending after the
 # one narrow row, so a task that trips two rules lands on the stronger tier.
 # rules.lint rejects a config where an earlier row's `when` always subsumes a

@@ -1,6 +1,6 @@
 [Unit]
 Description=Restart the Smart Router sidecar when its modules change (poll)
-Documentation=https://github.com/rodrigogs/hermes-delegate-profile
+Documentation=https://github.com/rodrigogs/hermes-smart-router
 
 [Timer]
 # A poller, deliberately: the .path-unit watch does not arm its inotify fd on
