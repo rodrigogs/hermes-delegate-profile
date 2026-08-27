@@ -135,6 +135,20 @@
       --t-body: var(--host-font-size-md, 14px);
       --t-value: 16px;
       --t-head: 18px;
+      --t-title: 21px;
+
+      /* The CONTRACT scale (comp-modelos.html / LEIA-ME): the Modelos blocks
+         read at 11 / 13.5 / 17 / 21. Four sizes and only four — the first comp
+         had SIX inside 3px and sustained hierarchy only with weight and colour,
+         which is the defect the design hook flagged. A size between these is a
+         design decision, not an adjustment. These sit BESIDE the host ladder
+         above: the chrome keeps the host's steps (it sits inside host chrome),
+         while the three contract blocks speak at the contract's own voice.
+         The steps have no host token to read (--host-font-size-* is
+         11/12/14), so they are literals with the contract as their reason. */
+      --t-micro: 11px;
+      --t-meta: 13.5px;
+      --t-name: 17px;
 
       --radius-sm: var(--host-radius-sm, 4px);
       --radius: var(--host-radius-md, 8px);
@@ -1097,6 +1111,81 @@
     .verdict-sized { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-top: 6px; }
     .verdict-route { color: var(--muted); font: var(--t-small) var(--mono); overflow-wrap: anywhere; }
     .verdict-sized-said { color: var(--muted); font-size: var(--t-small); }
+
+    /* ── Modelos: the three contract blocks (card t_7c5d6f91) ───────────────
+       The contract is comp-modelos.html + the LEIA-ME axis correction: the
+       24-cell band is PER MODEL, visually grouped by provider. Grid CSS only —
+       the invariant list forbids the svg element, and a 24-cell strip is a
+       grid, not a chart. The type voice is the contract's own scale
+       (--t-micro/--t-meta/--t-name), declared in :root beside the host ladder. */
+    .price-section { margin-top: 18px; }
+    .price-box { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 15px; }
+    .price-group { padding: 9px 0; border-bottom: 1px solid var(--line); }
+    .price-group:first-child { padding-top: 0; }
+    .price-group:last-child { padding-bottom: 0; border-bottom: none; }
+    .price-group-name {
+      font-size: var(--t-meta); font-weight: 600; color: var(--text);
+      margin-bottom: 7px; display: flex; align-items: baseline; gap: 8px;
+    }
+    .price-group-name small { color: var(--muted); font-weight: 400; font-size: var(--t-micro); }
+    .price-row { display: grid; grid-template-columns: 118px minmax(0, 1fr); gap: 12px; align-items: center; padding: 3px 0; }
+    .price-model { font: var(--t-meta) var(--mono); color: var(--text); overflow-wrap: anywhere; }
+    .price-model small { display: block; color: var(--muted); font: var(--t-micro) var(--sans); }
+    .price-band { display: grid; grid-template-columns: repeat(24, 1fr); gap: 2px; height: 22px; }
+    /* Base fill is the surface's own raised plane: the band's three states are
+       DATA (what an hour costs), not signals, so they read as ink-on-panel
+       washes built from the state tokens rather than a fourth palette. Peak is
+       the one hour-family the operator is told to avoid, so it mixes --bad;
+       cheap mixes --ok; the now ring is --accent, the one cursor the contract
+       draws. All three go through color-mix with the fail-safe @supports guard
+       below, matching how the state washes are derived. */
+    .h-cell { background: var(--surface-raised); border-radius: 2px; }
+    .h-cell.peak { background: color-mix(in srgb, var(--bad) 26%, var(--surface)); }
+    .h-cell.cheap { background: color-mix(in srgb, var(--ok) 24%, var(--surface)); }
+    .h-cell.now { outline: 1.5px solid var(--accent); outline-offset: 1px; z-index: 2; }
+    .price-ticks { display: grid; grid-template-columns: 118px repeat(24, 1fr); gap: 2px; margin-top: 4px; }
+    .price-ticks span { font: var(--t-micro) var(--mono); color: var(--muted); text-align: center; }
+    .price-ticks span:nth-child(odd) { visibility: hidden; }
+    .price-ticks span:first-child { visibility: visible; text-align: left; }
+    .price-note {
+      margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--line);
+      display: flex; gap: 16px; flex-wrap: wrap; align-items: baseline;
+      font-size: var(--t-micro); color: var(--muted);
+    }
+    .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: baseline; }
+    .sw-base { background: var(--surface-raised); border: 1px solid var(--line); }
+    .sw-peak { background: color-mix(in srgb, var(--bad) 26%, var(--surface)); }
+    .sw-cheap { background: color-mix(in srgb, var(--ok) 24%, var(--surface)); }
+
+    /* The peak-policy selector: a real <select> disabled for now, so the one
+       gesture that will eventually write is visible where it will live. The
+       reason rides on title (where the pointer lands) AND in a muted line
+       beside it (what a keyboard reader hits) — the non-negotiable rule of
+       this card: a control that cannot write says so, it never just sits
+       inert. */
+    .peak-policy-row { display: flex; flex-wrap: wrap; gap: 9px; align-items: baseline; padding: 8px 15px; border-top: 1px solid var(--line); font-size: var(--t-meta); color: var(--muted); }
+    .peak-policy-row select { font: inherit; }
+    .peak-policy-why { font-size: var(--t-micro); color: var(--muted); }
+
+    /* Compaction: a facts block like the presets one — a two-column pick list
+       (label/value), the consequence line under a hairline. */
+    .compaction-box { margin-top: 18px; border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 15px; }
+    .compaction-lead { font-size: var(--t-meta); margin: 0 0 12px; }
+    .compaction-lead b { color: var(--text); }
+    .compaction-pick { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 9px 12px; align-items: baseline; }
+    .compaction-k {
+      color: var(--muted); font-size: var(--t-micro); letter-spacing: .08em;
+      text-transform: uppercase; text-align: right;
+    }
+    .compaction-v { font-size: var(--t-meta); }
+    .compaction-v .ctl { font: inherit; color: var(--text); }
+    .compaction-conseq {
+      margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--line);
+      font: var(--t-micro)/1.65 var(--mono); color: var(--muted);
+    }
+    .compaction-conseq b { color: var(--text); font-weight: 600; }
+    .compaction-err { color: var(--warn-text); }
+
 </style>
 </head>
 <body>
@@ -1209,6 +1298,20 @@
              models are there, and in what order does each group try them", and CA4 is
              verified by opening Modelos. On the Tarefas tab the same blocks were a
              second subject under the rule list. -->
+        <!-- ── Preço por hora (card t_7c5d6f91, comp-modelos.html) ───────────
+             One 24-cell band PER MODEL (spec t_c90c5336 corrected the comp's
+             per-provider axis), grouped visually by provider. READ-ONLY in this
+             delivery: the click-to-declare gesture belongs to the controls card
+             (t_5d8491bf) — a strip that offered clicks that do not write would
+             be exactly the dead control this screen refuses to carry. The
+             current hour comes from nowUtc() — the ONE clock reader — so the
+             mark moves with state.clock in tests and with the minute repaint
+             in production. -->
+        <div class="price-section">
+          <div class="group-head"><h2>Preço por hora</h2><span class="screen-note" id="priceNote">UTC</span></div>
+          <div class="price-box" id="priceStrip"></div>
+        </div>
+
         <div class="group">
           <div class="group-head"><h2>Grupos de modelos</h2><span class="screen-note" id="ladderNote"></span></div>
           <div id="ladder"></div>
@@ -1221,6 +1324,16 @@
         <div id="failSafeBox"></div>
 
         <div id="models"></div>
+
+        <!-- ── Compactação (card t_7c5d6f91) ─────────────────────────────────
+             Reads the state /compaction already serves (GET /compaction):
+             threshold in tokens, summarizer window, aggressiveness, every
+             model_thresholds entry, the RESOLVED choice (model + fallback
+             queue) and the refusals. The write path (choosing model/queue)
+             exists in the motor (d130e5a) but is delivered by the controls
+             card (t_5d8491bf) — so the two choices render as DISABLED
+             controls that say why, never as live-looking dead controls. -->
+        <div class="compaction-box" id="compactionBox"></div>
 
         <div class="group" id="bansGroup" hidden>
           <div class="group-head"><h2>Fora de rotação</h2></div>
@@ -1424,6 +1537,10 @@
         // at all — so the console shows what it can verify and says so where it
         // cannot.
         capabilities: null, chainPlan: null,
+        // GET /compaction's payload, when the sidecar serves it. The block is
+        // a READ: threshold, window, aggressiveness, per-model thresholds and
+        // the resolved choice. The write lives in the controls card.
+        compaction: null,
         plan: null, draft: null, selected: null,
         // §3.4(a): the destination the sheet row's "Escolha um destino que
         // exista" chose, waiting for the rule's editor to open and write it
@@ -4049,6 +4166,19 @@
         return { n, total };
       }
 
+      // The observed share of a GROUP (card t_7c5d6f91): how many of the
+      // recorded decisions resolved to this tier. Pure over the log and the
+      // policy, no clock — the same shape triedShare returns so the two share
+      // vocabularies (per elo, per group) stay one family.
+      function tierShare(routes, policy, tierName) {
+        const list = Array.isArray(routes) ? routes : [];
+        let n = 0;
+        list.forEach((r) => {
+          if (decisionGroup(r, policy) === tierName) n += 1;
+        });
+        return { n, total: list.length };
+      }
+
       function eloRow(hop, opts) {
         const o = opts || {};
         const elo = hop && typeof hop === 'object' ? hop : {};
@@ -5190,6 +5320,38 @@
           }));
 
           warnings.forEach((warn) => block.append(el('div', 'tier-note', warn)));
+          // ── The observed share of DECISIONS that went through this group
+          // (card t_7c5d6f91): tierShare counts the group's own slice of the
+          // log via decisionGroup — the same evidence ruleHits counts rules
+          // with. No decisions means no line: a fraction of an empty log is
+          // not a fact about the group (DESIGN.md rule 2).
+          const share = tierShare(state.routes, state.policy, name);
+          if (share.total > 0) {
+            block.append(el('div', 'tier-fact', `${share.n} de ${share.total} decisões passaram por este grupo`));
+          }
+          // ── The peak-policy selector (card t_7c5d6f91): the three contract
+          // states render where the write will live, DISABLED, saying why —
+          // the write is the controls card's (t_5d8491bf). The CURRENT state
+          // derives from the tier's own time_policy, the same field the
+          // motor reads: avoid_peak means "evitar o pico", and fallback_
+          // strategy cheapest_now means "usar o mais barato".
+          const policyRow = el('div', 'peak-policy-row');
+          policyRow.append(el('span', '', 'quando o provedor da 1ª está em pico: '));
+          const policySel = el('select', 'peak-policy');
+          policySel.disabled = true;
+          policySel.title = 'ainda não grava — a escrita vem no card filho (controles da aba Modelos)';
+          const tPolicy = t.time_policy && typeof t.time_policy === 'object' ? t.time_policy : null;
+          const isAvoid = !!(tPolicy && Array.isArray(tPolicy.avoid_peak) && tPolicy.avoid_peak.length);
+          const isCheapest = String(t.fallback_strategy || '') === 'cheapest_now';
+          const currentPolicy = isAvoid ? 'evitar o pico' : isCheapest ? 'usar o mais barato' : 'manter a ordem';
+          ['manter a ordem', 'evitar o pico', 'usar o mais barato'].forEach((label) => {
+            const opt = el('option', '', label);
+            if (label === currentPolicy) opt.selected = true;
+            policySel.append(opt);
+          });
+          policyRow.append(policySel);
+          policyRow.append(el('span', 'peak-policy-why', 'a escolha ainda não grava — vem no card filho (controles da aba Modelos)'));
+          block.append(policyRow);
           // §3.4(b): an attempt whose model the catalogue never described. The
           // warning names the id AND the two remedies that exist: swap it for
           // a catalogue model (opens this group's chain editor with THAT
@@ -5242,6 +5404,206 @@
             ? `${unverified} tentativa${unverified === 1 ? '' : 's'} com capacidades não verificadas — sem registro no catálogo, o filtro não pode conferir.`
             : 'Este serviço do roteador não tem catálogo de modelos. As filas acima estão certas; o que falta é a informação de capacidade e preço de cada opção. Não é erro de configuração.')
           : 'Todas as tentativas que um grupo pode fazer, e como ele escolhe a próxima.';
+      }
+
+      // ── Preço por hora (card t_7c5d6f91) ──────────────────────────────────
+      // One 24-cell band per MODEL, grouped visually by provider. The axis is
+      // the spec's correction (t_c90c5336): price_windows is a per-MODEL input,
+      // and two models of one provider may declare different windows — an
+      // aggregated provider band would hide exactly that divergence. The data
+      // is state.capabilities, the SAME merged registry the chain views read,
+      // so the strip prices what the running path prices.
+      //
+      // READ-ONLY in this delivery. The click gesture is the controls card's
+      // (t_5d8491bf); rendering clickable cells that write nothing is the dead
+      // control this screen refuses to carry, so the cells are <i> elements
+      // with an aria-hidden hour, not buttons pretending to be ones.
+      function renderPriceStrip() {
+        const box = $('priceStrip');
+        if (!box) return;
+        clear(box);
+        const note = $('priceNote');
+        const registry = state.capabilities;
+        if (!registry || typeof registry !== 'object') {
+          if (note) note.textContent = 'UTC';
+          box.append(el('p', 'nothing', 'Sem catálogo de modelos — não há janela de preço para desenhar. A fila abaixo continua certa; o que falta é o preço por hora de cada opção.'));
+          return;
+        }
+        const at = nowUtc();
+        const when = whenOf(at);
+        const nowHour = Math.floor(Number(when.hour));
+        // Group the registry's models by provider, PRESERVING the registry's
+        // own key order inside each group and the first-seen order of groups —
+        // the strip never re-sorts by price or name, because the reader's
+        // question is "which models does each provider run", not a ranking.
+        const groups = [];
+        const byProvider = {};
+        Object.keys(registry).forEach((model) => {
+          const entry = registry[model];
+          if (!entry || typeof entry !== 'object') return;
+          const provider = String(entry.provider || '').trim();
+          if (!provider) return;
+          if (!Object.prototype.hasOwnProperty.call(byProvider, provider)) {
+            byProvider[provider] = [];
+            groups.push(provider);
+          }
+          byProvider[provider].push(model);
+        });
+        if (!groups.length) {
+          if (note) note.textContent = 'UTC';
+          box.append(el('p', 'nothing', 'O catálogo não publica provedor para nenhum modelo — a faixa de preço não pode ser agrupada.'));
+          return;
+        }
+        groups.forEach((provider) => {
+          const group = el('div', 'price-group');
+          const head = el('div', 'price-group-name');
+          head.append(el('span', '', provider));
+          head.append(el('small', '', `${byProvider[provider].length} modelo${byProvider[provider].length === 1 ? '' : 's'}`));
+          group.append(head);
+          byProvider[provider].forEach((model) => {
+            const entry = registry[model];
+            const windows = eloWindows(entry);
+            const row = el('div', 'price-row');
+            const label = el('div', 'price-model');
+            label.append(el('span', '', model));
+            // The declared window note, in the operator's words: hours as a
+            // half-open span and the multiplier the router applies inside it.
+            if (windows.length) {
+              const words = windows.map((w) => {
+                const span = `${String(w.hours[0]).padStart(2, '0')}–${String(w.hours[1]).padStart(2, '0')}`;
+                const gate = w.weekdays && w.weekdays.size
+                  ? (w.weekdays.size === 7 ? '' : ' seg–sex' )
+                  : '';
+                return `${times(w.multiplier)} ${span}${gate}`;
+              }).join(' · ');
+              label.append(el('small', '', words));
+            } else {
+              label.append(el('small', '', 'preço não varia com a hora'));
+            }
+            row.append(label);
+            const band = el('div', 'price-band');
+            for (let hour = 0; hour < 24; hour += 1) {
+              const cell = el('i', 'h-cell');
+              // The multiplier at THIS hour, for the weekday the clock names —
+              // the same first-match-wins reading priceMultiplier applies.
+              const multiplier = priceMultiplier(windows, { hour, weekday: when.weekday });
+              if (multiplier > 1) cell.classList.add('peak');
+              else if (multiplier < 1) cell.classList.add('cheap');
+              if (hour === nowHour) cell.classList.add('now');
+              cell.title = `${model} ${String(hour).padStart(2, '0')}:00 · ${times(multiplier)}`;
+              band.append(cell);
+            }
+            row.append(band);
+            group.append(row);
+          });
+          box.append(group);
+        });
+        // The ticks row: one label column + 24 hour cells, odds hidden so the
+        // numbers breathe at panel width. The label column carries the UTC note
+        // so the row explains its own axis.
+        const ticks = el('div', 'price-ticks');
+        ticks.append(el('span', '', 'UTC'));
+        for (let hour = 0; hour < 24; hour += 1) {
+          ticks.append(el('span', '', hour % 2 === 0 ? String(hour) : ''));
+        }
+        box.append(ticks);
+        const legend = el('div', 'price-note');
+        const sw1 = el('span', ''); sw1.append(el('i', 'sw sw-base'), el('span', '', 'preço base'));
+        const sw2 = el('span', ''); sw2.append(el('i', 'sw sw-peak'), el('span', '', 'pico, custa mais'));
+        const sw3 = el('span', ''); sw3.append(el('i', 'sw sw-cheap'), el('span', '', 'janela barata'));
+        legend.append(sw1, sw2, sw3);
+        legend.append(el('span', '', `agora ${String(nowHour).padStart(2, '0')}:00 UTC, marcado — leitura; declarar janela vem no card filho`));
+        box.append(legend);
+        if (note) note.textContent = `UTC · agora ${String(nowHour).padStart(2, '0')}h, marcado`;
+      }
+
+      // ── Compactação (card t_7c5d6f91) ─────────────────────────────────────
+      // Renders the state GET /compaction serves: threshold in tokens, the
+      // summarizer window it is a fraction of, the aggressiveness dial, every
+      // per-model threshold, the RESOLVED choice (model + fallback queue) and
+      // the refusals (which ride as text, not as a 400). The model/queue
+      // CHOICES are disabled controls that name the follow-up card: the write
+      // is the controls card's (t_5d8491bf), and a control that cannot write
+      // says so instead of faking liveness.
+      function renderCompaction() {
+        const box = $('compactionBox');
+        if (!box) return;
+        clear(box);
+        const group = el('div', 'group-head');
+        group.append(el('h2', '', 'Compactação'), el('span', 'screen-note', 'quem resume a conversa quando ela fica grande'));
+        box.append(group);
+        const data = state.compaction;
+        if (!data || typeof data !== 'object') {
+          box.append(el('p', 'nothing', 'Sem leitura de /compaction — o bloco não desenha números que não recebeu.'));
+          return;
+        }
+        const nf = (value) => Number(value).toLocaleString('pt-BR');
+        const pct = (value) => `${(Number(value) * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`;
+        const lead = el('p', 'compaction-lead');
+        const thresholdTokens = Number(data.threshold_tokens);
+        const windowTokens = Number(data.summarizer_window);
+        if (Number.isFinite(thresholdTokens) && Number.isFinite(windowTokens) && windowTokens > 0) {
+          lead.append(el('span', '', 'Compacta quando a conversa passa de '));
+          lead.append(el('b', '', `${nf(thresholdTokens)} tokens`));
+          lead.append(el('span', '', ` — ${pct(data.threshold_fraction)} da janela de ${nf(windowTokens)}.`));
+        } else {
+          lead.append(el('span', 'compaction-err', 'A leitura veio sem limiar nem janela — nada é dito sobre quando compacta.'));
+        }
+        if (data.warning === true) lead.append(el('span', 'compaction-err', ' O limiar iguala ou passa a janela do resumidor.'));
+        box.append(lead);
+
+        const pick = el('div', 'compaction-pick');
+        const choice = data.compaction && typeof data.compaction === 'object' ? data.compaction : null;
+        const WHY = 'ainda não grava — a escrita vem no card filho (controles da aba Modelos)';
+        // The model choice: a disabled control carrying the current value, so
+        // the reader sees WHERE the choice will live when the write lands.
+        pick.append(el('span', 'compaction-k', 'modelo'));
+        const modelCtl = el('select', 'ctl');
+        modelCtl.disabled = true;
+        modelCtl.title = WHY;
+        const modelOpt = el('option', '', choice && choice.model ? `${choice.model}` : 'nenhum modelo escolhido');
+        modelOpt.selected = true;
+        modelCtl.append(modelOpt);
+        const modelLine = el('div', 'compaction-v');
+        modelLine.append(modelCtl);
+        if (choice && choice.provider) modelLine.append(el('span', '', ` · ${choice.provider}`));
+        pick.append(modelLine);
+
+        pick.append(el('span', 'compaction-k', 'se falhar'));
+        const fbOpt = el('option', '', choice && Array.isArray(choice.fallback_chain) && choice.fallback_chain.length
+          ? choice.fallback_chain.map((h) => h && h.model).filter(Boolean).join(' → ')
+          : 'sem fila de reserva declarada');
+        const queueCtl = el('select', 'ctl');
+        queueCtl.disabled = true;
+        queueCtl.title = WHY;
+        fbOpt.selected = true;
+        queueCtl.append(fbOpt);
+        const queueLine = el('div', 'compaction-v');
+        queueLine.append(queueCtl);
+        pick.append(queueLine);
+        box.append(pick);
+
+        const conseq = el('p', 'compaction-conseq');
+        conseq.append(el('span', '', 'Compactar cedo custa mais chamadas; tarde arrisca estourar a janela. Agressividade '));
+        conseq.append(el('b', '', String(Number(data.aggressiveness))));
+        conseq.append(el('span', '', ' de 100 · por modelo: '));
+        const thresholds = data.model_thresholds && typeof data.model_thresholds === 'object'
+          ? data.model_thresholds : {};
+        const keys = Object.keys(thresholds);
+        if (!keys.length) {
+          conseq.append(el('span', '', 'nenhum limiar por modelo informado'));
+        } else {
+          keys.forEach((model, i) => {
+            if (i) conseq.append(el('span', '', ' · '));
+            conseq.append(el('span', '', `${model} `));
+            conseq.append(el('b', '', pct(thresholds[model])));
+          });
+        }
+        box.append(conseq);
+        const errors = Array.isArray(data.compaction_errors) ? data.compaction_errors : [];
+        errors.forEach((errText) => {
+          box.append(el('p', 'compaction-err', String(errText)));
+        });
       }
 
       // ── Último recurso (§2.6, §5.4) ─────────────────────────────────
@@ -8201,6 +8563,8 @@
         renderWarnings();
         renderRail();
         renderHealth();
+        renderPriceStrip();
+        renderCompaction();
         renderPresets();
         renderRoutes();
         renderSheet();
@@ -8233,13 +8597,17 @@
       async function fetchAll() {
         state.unreachable = false;
         state.readFailures = {};
-        const [health, status, policy, blocklist, liveness, routes, capabilities] = await Promise.all([
+        const [health, status, policy, blocklist, liveness, routes, capabilities, compaction] = await Promise.all([
           call('/health'), call('/status'), call('/policy'), call('/blocklist'),
           call('/liveness'), call('/routes?limit=200'),
           // Optional: the capability registry is what turns a model id into a
           // context window. A sidecar without it is not an error — the chain view
           // reports those elos as unverified, which is the truth either way.
           call('/capabilities'),
+          // Optional for the same reason: the compaction block states what it
+          // read, and an older sidecar without the route degrades to the
+          // stated absence rather than breaking the panel.
+          call('/compaction'),
         ]);
         state.health = health.error ? null : (health.data || null);
         state.status = status.error ? null : (status.data || null);
@@ -8247,6 +8615,7 @@
         state.blocklist = blocklist.error ? null : (blocklist.data || null);
         state.liveness = liveness.error ? null : (liveness.data || null);
         state.capabilities = capabilityRegistry(capabilities);
+        state.compaction = compaction.error ? null : (compaction.data || null);
         state.routes = routes.error ? [] : ((routes.data && Array.isArray(routes.data.routes)) ? routes.data.routes : []);
         // The envelope reports how many decisions EXIST; we were discarding it and
         // then presenting the page we happened to receive as the whole record.
@@ -8370,6 +8739,11 @@
         showDefaultPanel, verDefaultButton,
         drawPath, pickRoute, stepNode, stepOutcome, causeColor, causeWord, worstOf, modelState,
         phraseCondition, phraseWhen, renderSheet, renderLadder, ruleHits, probe,
+        // The three Modelos blocks (card t_7c5d6f91): the per-model price
+        // strip, the compaction facts block, and the group share helper the
+        // ladder renders. Exported so the band counts, the now-mark's clock
+        // authority and the disabled-state reasons are pinned by tests.
+        renderPriceStrip, renderCompaction, tierShare,
         // The log window: named by its endpoints (never by the oldest's age) and
         // judged against the policy that is on screen — the two facts that
         // decide whether a zero hit is a finding or a missing window.
