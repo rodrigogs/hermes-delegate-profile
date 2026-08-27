@@ -54,7 +54,7 @@ function fakeDom() {
       getAttribute(n) { return node.attrs[n]; },
       querySelector(sel) { return get(`${id}${sel}`); },
       querySelectorAll() { return []; },
-      getBoundingClientRect() { return { width: 900, height: 300, left: 0, right: 900 }; },
+      getBoundingClientRect() { return { width: 900, height: 300, top: 0, left: 0, right: 900 }; },
       clientWidth: 900,
       scrollIntoView(opts) { node._scrolledTo = opts || null; },
     };
@@ -7285,6 +7285,9 @@ test('the §4.7 write literals are exact, and each lives in exactly one place: t
     `'${api.WRITE.stopEditing}'`, `'${api.WRITE.routing}'`, `'${api.WRITE.routingOn}'`,
     `'${api.WRITE.routingOff}'`, `'${api.WRITE.routingVerdict}'`, `'${api.WRITE.banned}'`,
     `'${api.WRITE.cooldownLeft}'`, `'${api.WRITE.textEdit}'`, `'${api.WRITE.loading}'`,
+    // The reorder's two words (card: reordenar pelo punho) — once each, in
+    // the map, like every other gesture word.
+    `'${api.WRITE.moveRule}'`, `'${api.WRITE.movingRule}'`,
   ];
   once.forEach((lit) => {
     const n = code.split(lit).length - 1;
@@ -9918,4 +9921,381 @@ test('the last-resort chain on Modelos shows its observed share too', () => {
   const box = dom.get('failSafeBox');
   assert.match(flat(box), /tentada em 1 das 1 decisões \(no último minuto\)/,
     'the same chainList the groups use, so the same share vocabulary');
+});
+
+// ── the reorder write (card: reordenar regras arrastando pelo punho) ──────
+//
+// Order is the engine's semantics, so every assertion here is about the
+// WRITE, not the wiggle: which list reaches /apply, what the confirmation
+// says, what warns before the write, and that the no-drag paths (keyboard,
+// arrows) are the same write rather than a lesser parallel.
+
+// The policy the reorder tests read: four rules where moving r4 above r2
+// creates a shadow (r1 already covers what r4 asks) and moving r2/r3 in
+// isolation does not. `when: {}` is not enough for shadowPairs (an empty
+// when is skipped), so each rule carries one clause.
+function reorderPolicy() {
+  return {
+    rules: [
+      { id: 'r1', when: { size_lines: { gt: 10 } }, then: { model: 'T1' } },
+      { id: 'r2', when: { size_lines: { gt: 100 } }, then: { model: 'T2' } },
+      { id: 'r3', when: { needs_vision: { eq: true } }, then: { model: 'T3' } },
+      { id: 'r4', when: { size_lines: { gt: 20 } }, then: { model: 'T4' } },
+    ],
+    default: { action: 'classify' },
+    tiers: {
+      T1: { model: 'a', provider: 'zai' },
+      T2: { model: 'b', provider: 'zai' },
+      T3: { model: 'c', provider: 'zai' },
+      T4: { model: 'd', provider: 'zai' },
+    },
+    fail_safe: { model: 'glm-4.7', provider: 'zai' },
+  };
+}
+
+test('reorderedRules moves one rule without touching the source list', () => {
+  const { api } = loadConsole();
+  const rules = reorderPolicy().rules;
+  // Down: the rule lands at the target index, everything between shifts up.
+  const down = api.reorderedRules(rules, 0, 2);
+  assert.deepEqual(down.map((r) => r.id), ['r2', 'r3', 'r1', 'r4']);
+  // Up: the rule lands at the target index, everything between shifts down.
+  const up = api.reorderedRules(rules, 3, 1);
+  assert.deepEqual(up.map((r) => r.id), ['r1', 'r4', 'r2', 'r3']);
+  // The SOURCE is untouched — the write is built from a copy, never a
+  // mutation of state.policy (a mutation there reads as an external edit to
+  // the staleness guard and refuses every later save).
+  assert.deepEqual(rules.map((r) => r.id), ['r1', 'r2', 'r3', 'r4']);
+  // A move that is no movement, or leaves the array, is refused — a splice
+  // outside the list would silently truncate it. `to === rules.length` is
+  // INSIDE: it is the bottom half of the last row, "move to the end".
+  assert.equal(api.reorderedRules(rules, 2, 2), null);
+  assert.equal(api.reorderedRules(rules, -1, 0), null);
+  assert.equal(api.reorderedRules(rules, 0, 5), null);
+  assert.deepEqual(api.reorderedRules(rules, 0, 4).map((r) => r.id),
+    ['r2', 'r3', 'r4', 'r1'], 'to === length lands after the last row');
+  assert.equal(api.reorderedRules(null, 0, 1), null);
+  // Every rule object is carried WHOLE: a reorder that rebuilt rules from
+  // their rendered fields would drop everything the sheet does not show.
+  assert.deepEqual(down[2], rules[0]);
+});
+
+test('the consequence sentence names the flip, in the file\'s own ids', () => {
+  const { api } = loadConsole();
+  const rules = reorderPolicy().rules;
+  // Moving up: the moved rule now decides BEFORE the rule it lands in front
+  // of — "antes de" is the precedence fact that changed.
+  assert.equal(api.reorderConsequenceWords(rules, 3, 1),
+    '“r4” passa a decidir antes de “r2”.');
+  // Moving down: it now decides AFTER the rule it lands behind.
+  assert.equal(api.reorderConsequenceWords(rules, 0, 2),
+    '“r1” passa a decidir depois de “r3”.');
+  // A rule with no id is named by its ordinal — the same fallback the
+  // shadow vocabulary uses, so the two texts agree on who is who.
+  const anon = rules.map((r, i) => ({ ...r, id: undefined }));
+  assert.equal(api.reorderConsequenceWords(anon, 3, 1),
+    '“regra 4” passa a decidir antes de “regra 2”.');
+  // And the sentence never says the jargon the card forbids.
+  const words = api.reorderConsequenceWords(rules, 3, 1);
+  assert.ok(!/ordem alterada/i.test(words), 'never "ordem alterada"');
+});
+
+test('newShadowFindings reports only shadows the move itself creates', () => {
+  const { api } = loadConsole();
+  const rules = reorderPolicy().rules;
+  // Baseline: r2 and r4 are already dead (r1 covers both) — that is the
+  // sheet's known amber state before any move.
+  const before = api.shadowPairs(rules);
+  assert.equal(new Set(before.map((f) => f.later_id)).size, 2, 'fixture: r2 and r4 start shadowed');
+  // A move that creates no new shadow reports none.
+  const harmless = api.reorderedRules(rules, 1, 2);
+  assert.equal(api.newShadowFindings(before, api.shadowPairs(harmless)).length, 0);
+  // Moving r3 (live, needs_vision) BELOW r4 does not create a shadow —
+  // different keys never subset.
+  const crossFamily = api.reorderedRules(rules, 2, 3);
+  assert.equal(api.newShadowFindings(before, api.shadowPairs(crossFamily)).length, 0);
+  // Swapping r1's clause onto r3's place WOULD create one; the honest
+  // construction is a synthetic list where a wide rule moves ABOVE a live
+  // narrow one: r3 (needs_vision) with r1 (size_lines) in front covers
+  // nothing new... so build it directly: a `size_lines gt 15` rule moved
+  // above `size_lines gt 25` makes the latter newly dead.
+  const livePair = [
+    { id: 'narrow', when: { size_lines: { gt: 25 } }, then: { model: 'T1' } },
+    { id: 'wide', when: { size_lines: { gt: 15 } }, then: { model: 'T2' } },
+  ];
+  assert.equal(api.shadowPairs(livePair).length, 0, 'fixture: narrow first, nothing dead');
+  const wideFirst = api.reorderedRules(livePair, 1, 0);
+  const created = api.newShadowFindings([], api.shadowPairs(wideFirst));
+  assert.equal(created.length, 1);
+  assert.equal(created[0].later_id, 'narrow', 'the formerly-live rule is the newly-dead one');
+});
+
+test('moveRule warns BEFORE writing when the new order creates a shadow', async () => {
+  const posted = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      posted.push({ url, body: opts && opts.body });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(reorderPolicy())) });
+      }
+      // /plan echoes the DRAFT it was posted, merged over the file — what
+      // the real sidecar does (service.py: /plan deep-merges then returns
+      // the merged policy as the plan's own).
+      if (url.endsWith('/plan')) {
+        const body = JSON.parse(opts.body);
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: body.policy, diff: '+x', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+    },
+  });
+  api.state.policy = reorderPolicy();
+  api.state.mode = 'editing';
+  const note = dom.get('reorderMsg');
+  // Baseline shadows in the fixture: r1 (gt 10) already covers r2 (gt 100)
+  // and r4 (gt 20) — the sheet's known amber state. Moving r4 to index 1
+  // puts it in front of r2: r2's clause is inside r4's, so the pair
+  // (r4 covers r2) is NEW — a rule the operator knew nothing about until
+  // this move. The first attempt must refuse and name it; the repeat is
+  // the confirmation.
+  const first = await api.moveRule(3, 1);
+  assert.equal(first, false, 'the first attempt refuses to write');
+  assert.equal(posted.length, 0, 'nothing reaches the network before the warning is read');
+  assert.equal(note.hidden, false);
+  assert.match(note.textContent, /fica sem efeito/, 'the warning says the consequence');
+  assert.match(note.textContent, /a regra 3 nunca decide: a regra 2 já casa tudo que ela pede/,
+    'and names the pair the shadow vocabulary always uses: ordinals, in the NEW order');
+  // The SAME move repeated is the confirmation; now it writes.
+  const second = await api.moveRule(3, 1);
+  assert.equal(second, true);
+  const apply = posted.find((p) => /\/apply$/.test(p.url));
+  assert.ok(apply, 'the confirmed move reaches /apply');
+  const sent = JSON.parse(apply.body).policy.rules.map((r) => r.id);
+  assert.deepEqual(sent, ['r1', 'r4', 'r2', 'r3'], 'the COMPLETE list, in the new order');
+});
+
+test('moveRule writes the full reordered list through the plan spine', async () => {
+  const posted = [];
+  const policy = reorderPolicy();
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      posted.push({ url, body: opts && opts.body });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      // /plan echoes the posted draft (the sidecar merges it over the file
+      // and returns the merged policy); /apply records its body for the
+      // assertions below.
+      if (url.endsWith('/plan')) {
+        const body = JSON.parse(opts.body);
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: body.policy, diff: '+x', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.mode = 'editing';
+  const note = dom.get('reorderMsg');
+  // A harmless move (r2 below r3): no new shadow, straight to the write.
+  const ok = await api.moveRule(1, 2);
+  assert.equal(ok, true);
+  const paths = posted.map((p) => p.url.replace(/^.*sidecar/, ''));
+  assert.equal(paths[1], '/plan', 'the staleness read, then the plan — the spine every write rides');
+  assert.equal(paths[2], '/apply');
+  // §5.2 for lists: the PATCH (what moveRule handed doApply, i.e. what /plan
+  // was posted) carries ONLY rules — the whole list, because the server
+  // replaces lists wholesale (service.py:422-434).
+  const planBody = JSON.parse(posted.find((p) => /\/plan$/.test(p.url)).body);
+  assert.deepEqual(Object.keys(planBody.policy).sort(), ['rules']);
+  assert.deepEqual(planBody.policy.rules.map((r) => r.id), ['r1', 'r3', 'r2', 'r4']);
+  // Every rule WHOLE: a reorder that sent rendered fields would strip what
+  // the sheet does not display.
+  assert.deepEqual(planBody.policy.rules[0], policy.rules[0]);
+  assert.match(note.textContent, /“r2” passa a decidir depois de “r3”/,
+    'the confirmation names the flip, not "ordem alterada"');
+});
+
+test('a 409 on the reorder write is said, not swallowed', async () => {
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(reorderPolicy())) });
+      }
+      if (url.endsWith('/plan')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: reorderPolicy(), diff: '+x', base_hash: 'stale' })) });
+      }
+      return Promise.resolve({ ok: false, status: 409, text: () => Promise.resolve('{}') });
+    },
+  });
+  api.state.policy = reorderPolicy();
+  api.state.mode = 'editing';
+  const note = dom.get('reorderMsg');
+  const ok = await api.moveRule(1, 2);
+  assert.equal(ok, false);
+  assert.equal(note.hidden, false);
+  assert.match(note.textContent, /mudou por fora/, 'the §4.7 conflict sentence, on the reorder surface too');
+  assert.equal(api.state.plan, null, 'the stale plan does not survive to be applied again');
+});
+
+test('the sheet renders a grip on editable rule rows only, with the keyboard and touch paths', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = reorderPolicy();
+  api.state.mode = 'editing';
+  api.renderSheet();
+  const sheet = dom.get('sheet');
+  const rows = sheet.children;
+  assert.equal(rows.length, 6, '4 rules + default + fail-safe');
+  // Real rule rows: grip present, draggable, with both arrow buttons.
+  for (let i = 0; i < 4; i += 1) {
+    const grip = findAll(rows[i], 'step-grip')[0];
+    assert.ok(grip, `rule row ${i} has a grip`);
+    assert.equal(grip.attrs.draggable, 'true', 'the grip is the drag source');
+    assert.equal(grip.tagName, 'button', 'the grip is a button: focusable, named, keyboard-operable');
+    const arrows = findAll(grip, 'grip-arrow');
+    assert.equal(arrows.length, 2, 'up and down arrows — the no-drag path');
+    assert.match(arrows[0].textContent, /↑/);
+    assert.match(arrows[1].textContent, /↓/);
+  }
+  // Synthetic rows (default, fail-safe) are not in `rules`: no grip, no
+  // drag — there is no index to move and no list to write.
+  assert.equal(findAll(rows[4], 'step-grip').length, 0);
+  assert.equal(findAll(rows[5], 'step-grip').length, 0);
+  // Reading mode: the sheet shows the policy as it runs; a drag target
+  // there would promise a write the mode refuses.
+  api.state.mode = 'reading';
+  api.renderSheet();
+  assert.equal(findAll(dom.get('sheet'), 'step-grip').length, 0);
+});
+
+test('the keyboard path is the same write: ArrowUp on the grip moves the rule', async () => {
+  const posted = [];
+  const policy = reorderPolicy();
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      posted.push({ url, body: opts && opts.body });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      // /plan echoes the posted draft — the real sidecar merges the draft
+      // over the file and returns the merged policy, so the apply that
+      // follows carries the reordered list, not the file's old order.
+      if (url.endsWith('/plan')) {
+        const body = JSON.parse(opts.body);
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: body.policy, diff: '+x', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.mode = 'editing';
+  api.renderSheet();
+  const rows = dom.get('sheet').children;
+  const grip = findAll(rows[2], 'step-grip')[0]; // r3
+  const keys = grip._listeners.keydown;
+  assert.ok(typeof keys === 'function', 'the grip listens for keys');
+  const event = { key: 'ArrowUp', preventDefault() { this.prevented = true; } };
+  keys(event);
+  assert.equal(event.prevented, true, 'the arrow never scrolls the page while it moves a rule');
+  await new Promise((resolve) => setImmediate(resolve));
+  const apply = posted.find((p) => /\/apply$/.test(p.url));
+  assert.ok(apply, 'the keyboard step wrote');
+  const sent = JSON.parse(apply.body).policy.rules.map((r) => r.id);
+  assert.deepEqual(sent, ['r1', 'r3', 'r2', 'r4'], 'r3 moved one row up — the same list a drag would send');
+});
+
+test('the touch path is the same write: the ↑ button on a coarse-pointer sheet', async () => {
+  const posted = [];
+  const policy = reorderPolicy();
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      posted.push({ url, body: opts && opts.body });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      // /plan echoes the posted draft — the real sidecar merges the draft
+      // over the file and returns the merged policy, so the apply that
+      // follows carries the reordered list, not the file's old order.
+      if (url.endsWith('/plan')) {
+        const body = JSON.parse(opts.body);
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: body.policy, diff: '+x', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.mode = 'editing';
+  api.renderSheet();
+  const rows = dom.get('sheet').children;
+  const grip = findAll(rows[3], 'step-grip')[0]; // r4
+  const arrows = findAll(grip, 'grip-arrow');
+  arrows[0]._listeners.click({ stopPropagation() {} }); // ↑
+  await new Promise((resolve) => setImmediate(resolve));
+  const apply = posted.find((p) => /\/apply$/.test(p.url));
+  assert.ok(apply, 'the arrow button wrote');
+  const sent = JSON.parse(apply.body).policy.rules.map((r) => r.id);
+  assert.deepEqual(sent, ['r1', 'r2', 'r4', 'r3'], 'r4 moved one row up via the button');
+});
+
+test('the drop lands before the target row above the midline and after it below', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = reorderPolicy();
+  api.state.mode = 'editing';
+  api.renderSheet();
+  const rows = dom.get('sheet').children;
+  // The stub node's box: width 900, height 300, top 0 (fakeDom) — midline 150.
+  assert.equal(api.dropTargetIndex(2, rows[2], { clientY: 100 }), 2,
+    'above the midline: the dragged rule lands BEFORE this row');
+  assert.equal(api.dropTargetIndex(2, rows[2], { clientY: 200 }), 3,
+    'below the midline: it lands AFTER');
+  assert.equal(api.dropTargetIndex(2, rows[2], { clientY: 150 }), 2,
+    'exactly ON the midline is above — the boundary belongs to the safer half');
+  // No position (a stub or a synthetic drop): the row itself, never null —
+  // a null would silently swallow the operator's drop.
+  assert.equal(api.dropTargetIndex(2, rows[2], {}), 2);
+  assert.equal(api.dropTargetIndex('x', rows[2], {}), null, 'a non-index is refused');
+});
+
+test('a drag between two editable rows writes the move', async () => {
+  const posted = [];
+  const policy = reorderPolicy();
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      posted.push({ url, body: opts && opts.body });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      // /plan echoes the posted draft — the real sidecar merges the draft
+      // over the file and returns the merged policy, so the apply that
+      // follows carries the reordered list, not the file's old order.
+      if (url.endsWith('/plan')) {
+        const body = JSON.parse(opts.body);
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: body.policy, diff: '+x', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+    },
+  });
+  api.state.policy = policy;
+  api.state.mode = 'editing';
+  api.renderSheet();
+  const rows = dom.get('sheet').children;
+  const source = findAll(rows[0], 'step-grip')[0]; // r1
+  const dt = { effectAllowed: null, dropEffect: null, setData() {}, setDragImage() {} };
+  source._listeners.dragstart({ dataTransfer: dt });
+  assert.equal(api.state.dragRule, 0, 'dragstart records the source row');
+  // Over row 3 (r4), in its bottom half: land after it.
+  rows[3]._listeners.dragover({ preventDefault() {}, dataTransfer: dt, clientY: 200 });
+  assert.ok(rows[3].classList.contains('drop-below'), 'the insertion point is marked where the pointer is');
+  rows[3]._listeners.drop({ preventDefault() {}, dataTransfer: dt, clientY: 200 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(api.state.dragRule, null, 'drop clears the drag state');
+  const apply = posted.find((p) => /\/apply$/.test(p.url));
+  assert.ok(apply, 'the drop wrote');
+  const sent = JSON.parse(apply.body).policy.rules.map((r) => r.id);
+  assert.deepEqual(sent, ['r2', 'r3', 'r4', 'r1'], 'r1 landed after r4');
 });

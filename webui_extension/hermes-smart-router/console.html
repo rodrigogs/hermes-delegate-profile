@@ -592,6 +592,50 @@
     .step-hits.zero { color: var(--warn-text); }
     .step-hits.empty { color: var(--muted); }
 
+    /* ── The reorder handle (card: reordenar regras arrastando pelo punho) ──
+       Order IS the semantics (first match wins), so moving a row is a
+       first-class write — the handle is the affordance for it. It exists only
+       in editing mode: reading mode shows the policy as it runs, and a drag
+       target there would promise a write the mode refuses to deliver.
+       Grid addition, not a new layout: the wide sheet grows one leading
+       track (44px, the touch target) before the ordinal; the narrow sheet
+       below stacks the handle on the row's own line.
+       The 44px track is the WCAG 2.5.5 / iOS minimum for a thumb: a 20px
+       glyph inside it, centred, is what makes the grip draggable by a finger
+       rather than only by a mouse. The alternative — keyboard only — is what
+       the arrows below are for; drag is the convenience, not the gate. */
+    .step.editable { grid-template-columns: 44px 22px minmax(0, 1fr) fit-content(46%); }
+    .step-grip {
+      display: flex; align-items: center; justify-content: center;
+      width: 44px; height: 44px; margin: -12px 0 -12px -10px;
+      color: var(--muted); font: 500 20px var(--mono); line-height: 1;
+      cursor: grab; user-select: none; -webkit-user-select: none;
+      touch-action: none; /* pointer events own this element: no scroll fight */
+      background: transparent; border: 0; padding: 0;
+    }
+    .step-grip:hover { color: var(--text); }
+    .step-grip:focus-visible { box-shadow: var(--focus); border-radius: var(--radius-sm); }
+    .step.dragging { opacity: .45; }
+    .step.drop-above { box-shadow: inset 0 2px 0 0 var(--accent); }
+    .step.drop-below { box-shadow: inset 0 -2px 0 0 var(--accent); }
+    .step-grip .grip-arrow {
+      display: none; border: 1px solid var(--line); background: transparent;
+      color: var(--muted); width: 22px; height: 22px; border-radius: var(--radius-sm);
+      font: 500 12px var(--mono); line-height: 1; cursor: pointer; padding: 0;
+      align-items: center; justify-content: center;
+    }
+    .step-grip .grip-arrow:hover { color: var(--text); border-color: var(--line-strong); }
+    .step-grip .grip-arrow:focus-visible { box-shadow: var(--focus); }
+    /* Coarse pointers never see the ⠿ glyph as the only affordance: the two
+       arrows are real buttons beside it, each 22×22 inside the 44px track.
+       Fine pointers get the clean grip; the arrows are still keyboard-
+       reachable (the grip is a button, Tab reaches it, arrows move). */
+    @media (hover: none) and (pointer: coarse) {
+      .step-grip .grip-arrow { display: inline-flex; }
+      .step-grip .grip-glyph { display: none; }
+      .step-grip { width: auto; gap: 4px; }
+    }
+
     /* ── a rule's conditions, one chip per clause ──────────────────────
        A `when` block now mixes three FAMILIES of predicate: the task's shape
        (what it looks like), the context it needs (how big it is), and the
@@ -944,8 +988,17 @@
       /* The sheet and the ladder stack instead of competing. A 46% cap is ~150px
          here — not enough for a Bedrock id, so it would ellipsis away the very
          thing the line exists to say. */
+      /* Narrow keeps the handle's 44px track ONLY on editable rows — the
+         reading-mode sheet has no grip and must not carry an empty 44px
+         gutter. The touch target does not shrink because the screen did:
+         the whole point of the arrows-and-grip cluster is a thumb-sized hit
+         area at 390px. */
       .step { grid-template-columns: 22px minmax(0, 1fr); row-gap: 6px; }
+      .step.editable { grid-template-columns: 44px 22px minmax(0, 1fr); }
+      .step.editable .step-grip { margin-left: -10px; width: 44px; }
+      /* Column 3 when editable (the handle took column 1); 2 when not. */
       .step-to { grid-column: 2; max-width: none; grid-template-columns: minmax(0, 1fr) auto; }
+      .step.editable .step-to { grid-column: 3; }
       .step-dest { justify-content: flex-start; }
       .step-target { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
       /* The tier head's facts stack rather than truncate: "2 of 3 independent
@@ -1236,6 +1289,13 @@
         <div class="lede">
           <p class="lede-answer is-quiet" id="pipelineNote">Leia de cima para baixo — a primeira regra que casar decide.</p>
         </div>
+        <!-- The reorder confirmation's home (card: reordenar pelo punho). The
+             note above is renderSheet's — it is rewritten on every render with
+             the count of rules, so a write message that landed there would be
+             erased by the re-render the write itself triggers. This node is
+             ours alone: aria-live, hidden until a reorder speaks, cleared when
+             the operator moves on. -->
+        <p class="lede-answer is-quiet" id="reorderMsg" aria-live="polite" hidden></p>
 
         <!-- §1.2: the LIST first, the probe after it. The list is what the tab is for
              — the ordered types of task, first match decides — and the probe is a tool
@@ -1463,6 +1523,11 @@
         // reaches every price/order/cap function as the `when` parameter — no
         // function here reads a clock of its own (§7).
         testHour: null,
+        // The rule being dragged, or null. A render between dragstart and
+        // drop (an async read landing) rebuilds the rows; the drop handler
+        // reads THIS, so a mid-drag re-render can at worst land the move on
+        // the row the pointer last crossed — never a silent no-op.
+        dragRule: null,
       };
 
       const $ = (id) => document.getElementById(id);
@@ -3196,6 +3261,76 @@
         return `a regra ${f.later_index + 1} nunca decide: a regra ${f.earlier_index + 1} já casa tudo que ela pede (${f.key} ${op} ${clauseValue(f.v_later)} é subconjunto de ${op} ${clauseValue(f.v_earlier)}); mova-a acima da ${f.earlier_index + 1}`;
       }
 
+      // ── reorder: the drag handle's write path (card: reordenar pelo punho) ──
+      //
+      // Order IS the engine's semantics (first match decides, rules.py), so
+      // moving a row is a WRITE, not a local rearrangement. Every move goes
+      // through the same spine the rest of the screen writes with: the FULL
+      // rules list in the new order reaches /apply via doApply, which plans
+      // first (the plan's own staleness guard compares the file against
+      // state.policy) and answers 409 with the §4.7 conflict sentence when the
+      // file moved underneath. The server replaces lists wholesale
+      // (service.py:422-434), which is exactly what a reorder needs — and why
+      // the list sent must be complete: a partial list would delete the rest.
+      //
+      // The draft is NEVER state.policy: renderInspector's move button already
+      // established that mutating the snapshot in place would make the plan()
+      // guard read the operator's own edit as an external change and refuse
+      // every subsequent save. The reordered copy is built fresh per move.
+
+      // Move one rule within a copied list; null when the arguments describe
+      // no movement. `to` is an INSERTION index — the vocabulary splice
+      // itself speaks — so `to === rules.length` is legal: it is "after the
+      // last row", which is where a drop on the bottom half of the final
+      // row lands. Anything past that, or a negative index, is refused: a
+      // splice outside the list would silently truncate it.
+      function reorderedRules(rules, from, to) {
+        if (!Array.isArray(rules)) return null;
+        if (!Number.isInteger(from) || !Number.isInteger(to)) return null;
+        if (from < 0 || from >= rules.length || to < 0 || to > rules.length) return null;
+        if (from === to) return null;
+        const next = rules.slice();
+        const [rule] = next.splice(from, 1);
+        next.splice(to, 0, rule);
+        return next;
+      }
+
+      // The consequence sentence. Not "ordem alterada": the operator is
+      // reordering BECAUSE of precedence, so the confirmation names the two
+      // rules whose relative precedence flipped — "decide antes/depois de" is
+      // the fact that changed on the wire. The ids are the file's own (or the
+      // ordinal when the rule has no id — the same fallback shadowPairs
+      // uses), because the sheet's rows are identified by both and either is
+      // what the operator read when they grabbed the row.
+      function reorderConsequenceWords(rules, from, to) {
+        const nameOf = (i) => {
+          const r = rules[i];
+          return (r && r.id != null) ? String(r.id) : `regra ${i + 1}`;
+        };
+        const moved = nameOf(from);
+        // The landing neighbour names the flip: moving down, the moved rule
+        // now decides AFTER the rule it lands behind; moving up, BEFORE the
+        // rule it lands in front of. For a multi-row jump the landing
+        // neighbour is still the honest name — "antes de X" is true of every
+        // row the move crossed.
+        return to > from
+          ? `“${moved}” passa a decidir depois de “${nameOf(to)}”.`
+          : `“${moved}” passa a decidir antes de “${nameOf(to)}”.`;
+      }
+
+      // A NEW shadow the move creates — not one that already existed. The
+      // sheet's amber findings before the move are the operator's known
+      // state; the card requires the warning when the reorder ITSELF covers a
+      // rule that was live until now. Findings are keyed by the pair's ids
+      // (later@earlier): indices shift with the move, ids do not. A rule
+      // dragged to where it becomes dead IS one of these — the warning names
+      // it like any other, because dead-by-own-move is still dead.
+      function newShadowFindings(before, after) {
+        const keyOf = (f) => `${f.later_id}@${f.earlier_id}`;
+        const beforeKeys = new Set(before.map(keyOf));
+        return after.filter((f) => !beforeKeys.has(keyOf(f)));
+      }
+
       // ── A destination that names a group the table does not have ─────
       // §3.4(a). The lint refuses the file for it (rules.py: "references unknown
       // tier"), and that message reaches the console as raw server text — which
@@ -3280,6 +3415,11 @@
         // cannot orphan the other; IN_FLIGHT below pairs them.
         removing: 'Removendo o bloqueio…',
         saving: 'Salvando…',
+        // The reorder's two words, riding the same map so the in-flight line
+        // names the gesture (doApply lowercases this into its refusals:
+        // "não é possível mover a regra…").
+        moveRule: 'Mover a regra',
+        movingRule: 'Movendo a regra…',
         revert: 'Voltar à versão anterior',
         revertConfirm: 'Confirmar: voltar à versão anterior',
         checking: 'Verificando…',
@@ -3345,7 +3485,7 @@
       // map's own value, computed, so renaming the label cannot orphan the
       // pair. A gesture without a gerund flies as WRITE.saving, which stays the
       // in-flight of save (§4.7).
-      const IN_FLIGHT = { [WRITE.remove]: WRITE.removing };
+      const IN_FLIGHT = { [WRITE.remove]: WRITE.removing, [WRITE.moveRule]: WRITE.movingRule };
       function fill(template, vars) {
         return String(template).replace(/\{(\w+)\}/g, (m, k) =>
           (vars && Object.prototype.hasOwnProperty.call(vars, k)) ? String(vars[k]) : m);
@@ -4418,6 +4558,49 @@
         return minutes === 1 ? 'no último minuto' : `nos últimos ${minutes}min`;
       }
 
+      // ── drop-target geometry (card: reordenar pelo punho) ────────────
+      // Which half of which row the pointer is over decides the insertion
+      // index: top half → the dragged rule lands BEFORE this row; bottom
+      // half → after. The y test is the row's own midline, measured against
+      // the row's box — never the sheet's, because the sheet scrolls and the
+      // row does not know where it is inside it. clientY is the event's own
+      // coordinate space (the viewport), the same one getBoundingClientRect
+      // reports, so the comparison needs no scroll math.
+      // The rule's INDEX travels as an argument, not through dataset.ruleId:
+      // that attribute carries the FILE's id (what findRuleRow reads), and
+      // overloading one attribute with two meanings is how a drop lands on
+      // the wrong row the day an id parses as a number.
+      // The stub-DOM guard: a node without boxes answers no midline, and a
+      // drag with no position lands ON the hovered row (index unchanged) —
+      // the row the operator's pointer crossed last.
+      function dropTargetIndex(index, item, event) {
+        if (!Number.isInteger(index)) return null;
+        const box = (typeof item.getBoundingClientRect === 'function')
+          ? item.getBoundingClientRect() : null;
+        const y = (event && Number.isFinite(event.clientY)) ? event.clientY : null;
+        if (!box || y === null) return index;
+        const belowMidline = y > (box.top + box.height / 2);
+        return belowMidline ? index + 1 : index;
+      }
+      function markDrop(item, event) {
+        const box = (typeof item.getBoundingClientRect === 'function')
+          ? item.getBoundingClientRect() : null;
+        const y = (event && Number.isFinite(event.clientY)) ? event.clientY : null;
+        const below = (box && y !== null) ? y > (box.top + box.height / 2) : false;
+        item.classList.toggle('drop-above', !below);
+        item.classList.toggle('drop-below', below);
+      }
+      function clearDropMarks() {
+        const sheet = $('sheet');
+        if (!sheet || typeof sheet.querySelectorAll !== 'function') return;
+        sheet.querySelectorAll('.step.drop-above, .step.drop-below').forEach((n) => {
+          n.classList.remove('drop-above');
+          n.classList.remove('drop-below');
+        });
+        // The stub DOM answers no querySelectorAll; the marks are also
+        // cleared per-row by the next render, so a missed one cannot persist.
+      }
+
       function renderSheet() {
         const box = $('sheet');
         clear(box);
@@ -4497,6 +4680,90 @@
             item.dataset.ruleId = opts.synthetic ? `__${opts.id}` : String(opts.id);
           }
           if (opts.title) item.title = opts.title;
+          // The reorder handle (card: reordenar pelo punho). A real, editable
+          // rule row only — the synthetic rows (bans, default, fail-safe) are
+          // not in `rules`, so there is no index to move and no list to write.
+          // The grip is a BUTTON: focusable, labelled, and ArrowUp/ArrowDown
+          // move the row when it holds focus — the keyboard path is the same
+          // write as the drag, not a lesser parallel. The two arrow buttons
+          // beside the glyph are the touch path (CSS shows them on coarse
+          // pointers); each is 22×22 inside the row's 44px handle track.
+          if (opts.editable && !opts.synthetic && Number.isInteger(opts.ruleIndex)) {
+            const grip = el('button', 'step-grip');
+            grip.type = 'button';
+            grip.setAttribute('aria-label', `Mover a regra ${opts.ord} (${opts.titleText || opts.id})`);
+            grip.title = 'Arraste, ou use as setas do teclado, para mudar a ordem';
+            const glyph = el('span', 'grip-glyph', '⠿');
+            grip.append(glyph);
+            const step = (delta) => {
+              const to = opts.ruleIndex + delta;
+              const list = (state.policy && Array.isArray(state.policy.rules)) ? state.policy.rules : [];
+              if (to < 0 || to >= list.length) return;
+              void moveRule(opts.ruleIndex, to);
+            };
+            grip.addEventListener('keydown', (event) => {
+              if (event.key === 'ArrowUp') { event.preventDefault(); step(-1); }
+              else if (event.key === 'ArrowDown') { event.preventDefault(); step(1); }
+            });
+            const up = el('button', 'grip-arrow', '↑');
+            up.type = 'button';
+            up.setAttribute('aria-label', `Mover a regra ${opts.ord} para cima`);
+            up.title = 'Mover esta regra para cima';
+            up.addEventListener('click', (event) => {
+              if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+              step(-1);
+            });
+            const down = el('button', 'grip-arrow', '↓');
+            down.type = 'button';
+            down.setAttribute('aria-label', `Mover a regra ${opts.ord} para baixo`);
+            down.title = 'Mover esta regra para baixo';
+            down.addEventListener('click', (event) => {
+              if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+              step(1);
+            });
+            grip.append(up, down);
+            // HTML5 DnD, no library (the card's constraint): the grip is the
+            // drag source, the ROW is what visually moves, and the drop
+            // target is any editable row's top or bottom half. setDragImage
+            // keeps the whole row as the ghost — dragging the 44px grip but
+            // seeing only the grip move would read as moving nothing.
+            grip.setAttribute('draggable', 'true');
+            grip.addEventListener('dragstart', (event) => {
+              if (!event || typeof event.dataTransfer.setData !== 'function') return;
+              state.dragRule = opts.ruleIndex;
+              try {
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', String(opts.ruleIndex));
+                if (typeof event.dataTransfer.setDragImage === 'function' && typeof item.getBoundingClientRect === 'function') {
+                  event.dataTransfer.setDragImage(item, 10, 12);
+                }
+              } catch (_) { /* the stub test DOM has no real DnD payload */ }
+              item.classList.add('dragging');
+            });
+            grip.addEventListener('dragend', () => {
+              state.dragRule = null;
+              clearDropMarks();
+            });
+            item.append(grip);
+            item.addEventListener('dragover', (event) => {
+              if (state.dragRule === null || state.dragRule === undefined) return;
+              if (typeof event.preventDefault === 'function') event.preventDefault();
+              if (typeof event.dataTransfer === 'object' && event.dataTransfer) {
+                try { event.dataTransfer.dropEffect = 'move'; } catch (_) { /* stub */ }
+              }
+              markDrop(item, event);
+            });
+            item.addEventListener('drop', (event) => {
+              if (state.dragRule === null || state.dragRule === undefined) return;
+              if (typeof event.preventDefault === 'function') event.preventDefault();
+              const from = state.dragRule;
+              state.dragRule = null;
+              clearDropMarks();
+              const to = dropTargetIndex(opts.ruleIndex, item, event);
+              if (to === null) return;
+              void moveRule(from, to);
+            });
+          }
           item.append(el('span', 'step-ord', opts.ord || ''));
           const what = el('div', 'step-what');
           const idLine = el('div', 'step-id', opts.titleText || opts.id);
@@ -4654,6 +4921,7 @@
           ord += 1;
           box.append(row({
             ord: `${ord}`,
+            ruleIndex: i,
             id: r.id != null ? String(r.id) : `regra ${i + 1}`,
             titleText: ruleTitle(r.when),
             chips: predicateChips(r.when),
@@ -7597,8 +7865,8 @@
       let applying = false;
 
       async function doApply(path, msg, draft, diffNode, saveBtn, action) {
-        if (!writable(msg, action || WRITE.save)) return;
-        if (applying) { setMsg(msg, WRITE.inFlight, 'bad'); return; }
+        if (!writable(msg, action || WRITE.save)) return false;
+        if (applying) { setMsg(msg, WRITE.inFlight, 'bad'); return false; }
         applying = true;
         // The in-flight word follows the action that pressed the button — the
         // same route as the refusal, so the gesture is named twice and neither
@@ -7608,7 +7876,7 @@
         try {
         if (path !== '/apply/revert') {
           const policy = draft !== undefined ? draft : (state.draft || (state.plan && state.plan.policy));
-          if (policy === undefined || policy === null) { setMsg(msg, WRITE.noDraft, 'bad'); return; }
+          if (policy === undefined || policy === null) { setMsg(msg, WRITE.noDraft, 'bad'); return false; }
           setMsg(msg, WRITE.checking);
           // The diff is passed through, not discarded. Folding Validate into Apply
           // removed the step that used to render it, and with it the guarantee that
@@ -7618,7 +7886,7 @@
           // another tab since page load is deleted by the next Salvar. The diff
           // contains that deletion; it was being computed and thrown away.
           const planned = await plan(policy, msg, diffNode);
-          if (!planned) return;
+          if (!planned) return false;
           // A plan with no diff changes nothing on disk — but the server snapshots
           // the current file to .bak before every write (service.py:415), so
           // applying a no-op destroys the only thing Voltar à versão anterior can
@@ -7628,7 +7896,7 @@
           // write.
           if (state.plan && state.plan.diff === '') {
             setMsg(msg, WRITE.noop, 'ok');
-            return;
+            return false;
           }
           // The button that pressed says what the write is doing, from the
           // moment the plan is approved until the write is over. It travels in
@@ -7638,9 +7906,9 @@
         }
         const body = path === '/apply/revert' ? {} : { plan: state.plan, policy: state.plan.policy };
         const res = await call(path, { method: 'POST', body });
-        if (res.missing) { setMsg(msg, WRITE.missingAction, 'bad'); return; }
-        if (res.status === 409) { setMsg(msg, WRITE.conflict, 'bad'); state.plan = null; await load(); return; }
-        if (res.error) { setMsg(msg, fill(WRITE.httpError, { st: res.status || 'rede' }), 'bad'); return; }
+        if (res.missing) { setMsg(msg, WRITE.missingAction, 'bad'); return false; }
+        if (res.status === 409) { setMsg(msg, WRITE.conflict, 'bad'); state.plan = null; await load(); return false; }
+        if (res.error) { setMsg(msg, fill(WRITE.httpError, { st: res.status || 'rede' }), 'bad'); return false; }
         // §2.7: the saved line, and the eight seconds it spends in the button's
         // place. The timer's clock is read by no other function — the text is
         // assertable the moment the write lands, and the restore is the timer's
@@ -7653,6 +7921,7 @@
           saveBtn.hidden = true;
           setTimeout(() => { saveBtn.hidden = false; }, 8000);
         }
+        return true;
         } finally {
           applying = false;
           if (saveBtn && saveBtn.textContent === inFlight) saveBtn.textContent = action || WRITE.save;
@@ -7686,6 +7955,77 @@
         }
         disarmRevert();
         return doApply('/apply/revert', msg).then(() => true);
+      }
+
+      // ── the reorder write (card: reordenar arrastando pelo punho) ────
+      //
+      // One move, one write: the drag (or the arrow, or the keyboard step) is
+      // the operator's ENTIRE intention, so it goes straight through doApply —
+      // which plans first, shows the diff, and answers 409 with the §4.7
+      // conflict sentence if the file moved underneath. No armed state on the
+      // happy path: the plan IS the preview (CA5), and the diff names the
+      // moved line.
+      //
+      // The one thing the plan cannot preview is a shadow the move CREATES:
+      // /plan diffs text, and "rule 3 became dead" is a fact about semantics,
+      // not bytes. So the shadow check runs HERE, before any write, and the
+      // move that would create one is a two-click action — same pattern as
+      // requestRevert, for the same reason: the warning must be READ before
+      // the write it gates, not discovered in the diff's aftermath.
+      const reorderArmed = { from: -1, to: -1 };
+      function disarmReorder() {
+        reorderArmed.from = -1; reorderArmed.to = -1;
+        // The note is HIDDEN only when it carries nothing: a refused write
+        // (409, lint, http) lands its message here and then reloads, and the
+        // reload disarms — hiding the node would erase the refusal the
+        // operator has not read yet. Content owns the visibility, not the
+        // disarm.
+        const note = $('reorderMsg');
+        if (note && !note.textContent) note.hidden = true;
+      }
+      function reorderShadowWarning(findings, rules) {
+        // One line per newly-dead rule, naming the shadower the same way the
+        // row's own amber warning does — the two texts must agree on WHO
+        // covers WHOM, or the operator cannot reconcile them.
+        const dead = [];
+        findings.forEach((f) => {
+          dead.push(shadowReasonWords(f).replace(/; mova-a acima da \d+$/, ''));
+        });
+        const n = new Set(findings.map((f) => f.later_id)).size;
+        return `Atenção: com esta ordem, ${n === 1 ? 'uma regra fica sem efeito' : `${n} regras ficam sem efeito`} — ${dead.join('; ')}. Repita o movimento para gravar assim mesmo.`;
+      }
+      async function moveRule(from, to) {
+        const note = $('reorderMsg');
+        const policy = state.policy && typeof state.policy === 'object' ? state.policy : null;
+        const rules = policy && Array.isArray(policy.rules) ? policy.rules : null;
+        const next = reorderedRules(rules, from, to);
+        if (!note || !policy || !next) {
+          if (note) setMsg(note, 'Esse movimento é impossível na lista atual.', 'bad');
+          return false;
+        }
+        // The SAME indices that named the rows on screen name the move in the
+        // write: `from`/`to` are sheet indices, and reorderedRules is the one
+        // splice this screen owns.
+        const fresh = newShadowFindings(shadowPairs(rules), shadowPairs(next));
+        if (fresh.length
+            && !(reorderArmed.from === from && reorderArmed.to === to)) {
+          reorderArmed.from = from; reorderArmed.to = to;
+          note.hidden = false;
+          setMsg(note, reorderShadowWarning(fresh, next), 'bad');
+          return false;
+        }
+        disarmReorder();
+        note.hidden = false;
+        setMsg(note, WRITE.movingRule, '');
+        const wrote = await doApply('/apply', note, { rules: next }, null, null, WRITE.moveRule);
+        // doApply owns the saved line (§2.7) and every refusal; a successful
+        // move APPENDS the consequence to the scope sentence, so the operator
+        // reads what changed AND what it applies to. A refused move keeps
+        // doApply's own message — the refusal is the news.
+        if (wrote) {
+          setMsg(note, `${reorderConsequenceWords(rules, from, to)} ${WRITE.saved}`, 'ok');
+        }
+        return wrote;
       }
 
       // ── Routes + replay ─────────────────────────────────────────────
@@ -8197,6 +8537,10 @@
         // about the file the screen was showing, and after a refresh that is a different
         // file. Found reviewing this slice — the arming only came down on a mode change.
         disarmRevert();
+        // Same for an armed reorder: the sheet that re-renders answers a new
+        // read, and a stale "repeat the move to confirm" would confirm a
+        // move against indices the new list may not have.
+        disarmReorder();
         const button = $('refresh');
         button.disabled = true;
         button.textContent = WRITE.refreshing;
@@ -8343,6 +8687,15 @@
         // and the one-line cause+remedy the sheet renders. Exported so the
         // twelve-case table and the exact phrase are pinned, not eyeballed.
         shadowPairs, shadowPairFor, shadowReasonWords,
+        // The reorder write (card: reordenar pelo punho): the pure move, the
+        // consequence sentence, the new-shadow delta, and the drop geometry —
+        // exported so the splice direction (up vs down), the antes/depois
+        // wording, the before-vs-after shadow diff and the top/bottom-half
+        // midline are pinned by tests, not eyeballed. moveRule is the whole
+        // gesture: warn-on-new-shadow BEFORE the write, then the full-list
+        // apply through the same spine the rest of the screen writes with.
+        reorderedRules, reorderConsequenceWords, newShadowFindings, moveRule,
+        dropTargetIndex, markDrop, clearDropMarks, disarmReorder,
         showDefaultPanel, verDefaultButton,
         drawPath, pickRoute, stepNode, stepOutcome, causeColor, causeWord, worstOf, modelState,
         phraseCondition, phraseWhen, renderSheet, renderLadder, ruleHits, probe,
