@@ -489,6 +489,39 @@
       content: ""; position: absolute; left: 8px; top: 8px; bottom: 26px; width: 1px;
       background: var(--line-strong);
     }
+    /* The column heads of the decision sheet (comp-tarefas): the same six
+       tracks the rows share, so "Uso 8d" explains the bare number in column
+       6 and the operator compares down columns that are named. Hidden until
+       the first render — the sheet's absence answer must not carry heads
+       that name columns no rows stand under. */
+    .sheet-cols {
+      display: grid; grid-template-columns: 20px 26px minmax(0, 1fr) 128px 196px 62px;
+      gap: 0 10px; margin-top: 22px; margin-left: 30px; padding: 0 10px 7px 0;
+      border-bottom: 1px solid var(--line);
+      font: 600 var(--t-micro) var(--sans); letter-spacing: .09em; text-transform: uppercase;
+      color: var(--muted);
+    }
+    .sheet-cols .r { text-align: right; }
+    /* The catch-all block (comp-tarefas "se nada acima casou"): default and
+       fail-safe leave the numbered list — the ordinals there ARE the
+       semantics of first-match, and these two rows are what happens when
+       nothing matched, so they stand apart under their own label, separated
+       by the double hairline the comp draws. */
+    .sheet-tail { margin-top: 18px; padding-top: 14px; border-top: 2px solid var(--line); }
+    /* padding-top is 14px, not the comp's 13px: the type-scale guard bans any
+       13px literal in this stylesheet (test_console_logic.js "no guest-scale
+       one-offs survive"), and 1px is not worth loosening the guard for. */
+    .sheet-tail-label {
+      color: var(--muted); font: 600 var(--t-micro) var(--sans);
+      letter-spacing: .08em; text-transform: uppercase; margin: 0 0 8px 30px;
+    }
+    /* The tail list carries the sheet's own 30px gutter (the spine), so the
+       catch-all rows sit in the SAME columns as the numbered list above them —
+       a reader comparing "Uso 8d" across the two blocks must read down one
+       column. The double hairline above spans the container, like the comp. */
+    .sheet-tail-list { margin: 0; padding: 0 0 0 30px; list-style: none; }
+    .sheet-tail-list .step::before { display: none; }
+    .sheet-tail-list .step { border-radius: 0; }
     .stage {
       position: relative; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
       margin: 30px 0 6px; color: var(--muted);
@@ -513,10 +546,17 @@
        goes, and how often it really fired. */
     .step {
       position: relative; display: grid;
-      /* minmax(0, max-content), not `auto`: an auto track sizes to its content's
-         intrinsic width and took it from the 1fr beside it. */
-      grid-template-columns: 22px minmax(0, 1fr) fit-content(46%);
-      align-items: baseline; gap: 16px; padding: 12px 10px 12px 0;
+      /* The six tracks of comp-tarefas, in the comp's own widths: grip 20 ·
+         ordinal 26 · Quando minmax(0,1fr) · Vai para 128 · Primeira
+         tentativa 196 · Uso 8d 62. The destination and the count leave the
+         floating pair they shared (fit-content(46%)) and become columns, so
+         the eye compares down a column — the same measured defect that made
+         the rule column minmax(0,1fr) instead of `auto` applies here. The
+         grid is the same in editing mode: the grip occupies track 1, and
+         the touch target keeps its 44px by overflowing the 20px track
+         (see .step-grip below), never by widening the column. */
+      grid-template-columns: 20px 26px minmax(0, 1fr) 128px 196px 62px;
+      gap: 0 10px; align-items: baseline; padding: 12px 10px 12px 0;
       border-bottom: 1px solid var(--line); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
     }
     .step:last-child { border-bottom: 0; }
@@ -524,6 +564,18 @@
       content: ""; position: absolute; left: -22px; top: 19px;
       width: 9px; height: 1px; background: var(--line);
     }
+    /* The five content cells PIN their tracks (comp-tarefas: punho 20 ·
+       número 26 · Quando 1fr · Vai para 128 · Primeira tentativa 196 · Uso
+       8d 62). Pinning, not auto-placement: reading mode has no grip, so
+       auto-placement would start the ordinal in the grip track and every
+       cell would read one column off its head — measured on the live sheet
+       with the head row as the ruler (step-to landed under "Primeira
+       tentativa", step-hits under "Vai para"). */
+    .step-ord { grid-column: 2; }
+    .step-what { grid-column: 3; }
+    .step-to { grid-column: 4; }
+    .step-first { grid-column: 5; }
+    .step-hits { grid-column: 6; }
     .step.editable { cursor: pointer; }
     .step.editable:hover { background: var(--surface-hover); }
     /* The line the probed task matched: this is an ANSWER TO YOUR QUESTION, not
@@ -538,14 +590,17 @@
     .step-off { color: var(--muted); font-weight: 400; }
     .step-ord { color: var(--muted); font: 500 var(--t-label) var(--mono); text-align: right; }
     .step-what { min-width: 0; }
-    .step-id { font: 500 var(--t-body) var(--mono); }
+    /* The row's NAME is the scan target (the contract scale's --t-name), and
+       the id is gone from the line: it lives in the row's title attribute,
+       where a handle belongs — hover, not prose. */
+    .step-name { font: 600 var(--t-name) var(--sans); letter-spacing: -.012em; line-height: 1.25; }
     /* Uma linha que nunca pode casar é AVISO, não erro: o arquivo está válido, a
        linha é que está morta. Cor de aviso na linha inteira e no marcador da
        espinha, para o olho achar a linha sem ler a frase. */
     .step.shadowed { color: var(--warn-text); }
     .step.shadowed .step-when { color: var(--warn-text); }
     .step.shadowed::before { background: var(--warn); box-shadow: 0 0 0 2px var(--warn-bg); }
-    .step-when { color: var(--muted); font-size: var(--t-body); margin-top: 3px; }
+    .step-when { color: var(--muted); font: var(--t-meta) var(--sans); margin-top: 3px; }
     /* Destination and hits are columns, not a floating pair: a reader compares
        down a column, so both must land on the same x on every line. Two ways this
        has failed, both measured on the live sheet:
@@ -560,19 +615,12 @@
        container: fit-content(46%) is exactly the intent — take the content's own
        width, but never more than 46% of the row — so the rule always keeps the
        majority, and the rule is what the operator reads down the sheet. */
-    /* The hits track is 80px, not the old 74px: 74 fitted "never fired" at the
-       retired 10.5px step, and at the host's 12px the string wrapped to two lines.
-       A wrapped warning reads as damage rather than as a finding. The stale sheet
-       replaces that label with the longer "sem dados nesta janela": measured at
-       12px mono on DejaVu Sans Mono (the Linux fallback for --host-font-mono)
-       it is 158.8px, so the sheet-wide `.stale` state widens the track to 160px
-       — the destination column is the one the operator reads when the counts
-       are missing, and it ellipsizes rather than wraps. */
-    .step-to {
-      display: grid; grid-template-columns: minmax(0, 1fr) 80px;
-      align-items: baseline; gap: 14px;
-    }
-    .sheet.stale .step-to { grid-template-columns: minmax(0, 1fr) 160px; }
+    /* The count is the sixth column now (comp-tarefas "Uso 8d"), 62px by the
+       comp's own grid — so the finding it is a verdict about cannot live in
+       the cell: the NUMBER sits here, and the words ("nunca disparou", "sem
+       histórico…") moved to the cell's title and to the row's open block,
+       where the column is not there to crowd them out. */
+    .step-to { min-width: 0; }
 
     .step-dest { display: flex; align-items: baseline; gap: 8px; justify-content: flex-end; min-width: 0; }
     .step-arrow { color: var(--muted); font: var(--t-body) var(--mono); }
@@ -600,7 +648,7 @@
     .step-chain .hops { margin-top: 0; }
     .step-chain-note { color: var(--muted); font-size: var(--t-small); margin-bottom: 2px; }
     .step-hits {
-      grid-column: 2; color: var(--muted); font: var(--t-small) var(--mono);
+      color: var(--muted); font: 600 var(--t-meta) var(--mono);
       text-align: right; white-space: nowrap;
     }
     /* A rule that has never fired in the recorded window is a real finding, and
@@ -610,24 +658,52 @@
        in the muted step instead — a disclosure about the DATA, not about the
        rule, and grey precisely so it can never be read as an amber verdict. */
     .step-hits.zero { color: var(--warn-text); }
-    .step-hits.empty { color: var(--muted); }
+    .step-hits.empty { color: var(--muted); font-weight: 400; }
+
+    /* The first attempt (comp-tarefas "Primeira tentativa", 196px): the head
+       of the queue the destination points at, or the words for a destination
+       with no queue. The model is the b (the scan target), the billing and
+       rail are the small text beside it. */
+    .step-first { min-width: 0; color: var(--muted); font: var(--t-meta) var(--sans); }
+    .step-first b { color: var(--text); font: 600 var(--t-meta) var(--mono); }
+    .step-first .first-note { display: block; color: var(--muted); font-size: var(--t-micro); margin-top: 2px; }
+
+    /* The row opened by a click (comp-tarefas "Clique na linha para abrir a
+       fila inteira"): the whole queue, the role the rule fixed (informative
+       in this path — the card creator picks it at dispatch) and the rule's
+       id with the count column 6 summarised. It spans the row like the tier
+       chain does, so the operator reads the anatomy without leaving the
+       list. */
+    .step-open {
+      grid-column: 1 / -1; margin: 2px 0 8px; padding: 11px 14px 12px;
+      border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--surface);
+    }
+    .step-open-row { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 5px 12px; align-items: baseline; }
+    .step-open-k {
+      color: var(--muted); font: 600 var(--t-micro) var(--sans);
+      letter-spacing: .08em; text-transform: uppercase; text-align: right;
+    }
+    .step-open-val { color: var(--text); font: var(--t-meta) var(--sans); min-width: 0; }
+    .step-open-note { color: var(--muted); font-size: var(--t-micro); }
+    .step-open-id { font: var(--t-micro) var(--mono); color: var(--muted); }
+    .step-open .hops { margin-top: 0; }
 
     /* ── The reorder handle (card: reordenar regras arrastando pelo punho) ──
        Order IS the semantics (first match wins), so moving a row is a
        first-class write — the handle is the affordance for it. It exists only
        in editing mode: reading mode shows the policy as it runs, and a drag
        target there would promise a write the mode refuses to deliver.
-       Grid addition, not a new layout: the wide sheet grows one leading
-       track (44px, the touch target) before the ordinal; the narrow sheet
-       below stacks the handle on the row's own line.
-       The 44px track is the WCAG 2.5.5 / iOS minimum for a thumb: a 20px
-       glyph inside it, centred, is what makes the grip draggable by a finger
-       rather than only by a mouse. The alternative — keyboard only — is what
-       the arrows below are for; drag is the convenience, not the gate. */
-    .step.editable { grid-template-columns: 44px 22px minmax(0, 1fr) fit-content(46%); }
+       The six-column grid is the same in both modes (comp-tarefas gives the
+       grip track 20px); the touch target does not shrink because the track
+       did — the 44px button simply overflows the 20px track (margin-left
+       -12px centres the ⠿ glyph on the track, and the overflow to the right
+       is transparent, so the ordinal beside it still reads). The alternative
+       — keyboard only — is what the arrows below are for; drag is the
+       convenience, not the gate. */
     .step-grip {
       display: flex; align-items: center; justify-content: center;
-      width: 44px; height: 44px; margin: -12px 0 -12px -10px;
+      width: 44px; height: 44px; margin: -12px 0 -12px -12px;
       color: var(--muted); font: 500 20px var(--mono); line-height: 1;
       cursor: grab; user-select: none; -webkit-user-select: none;
       touch-action: none; /* pointer events own this element: no scroll fight */
@@ -647,13 +723,17 @@
     .step-grip .grip-arrow:hover { color: var(--text); border-color: var(--line-strong); }
     .step-grip .grip-arrow:focus-visible { box-shadow: var(--focus); }
     /* Coarse pointers never see the ⠿ glyph as the only affordance: the two
-       arrows are real buttons beside it, each 22×22 inside the 44px track.
-       Fine pointers get the clean grip; the arrows are still keyboard-
-       reachable (the grip is a button, Tab reaches it, arrows move). */
+       arrows are real buttons beside it, each 22×22. Fine pointers get the
+       clean grip; the arrows are still keyboard-reachable (the grip is a
+       button, Tab reaches it, arrows move). On a thumb screen the cluster
+       gets its own lane back (44px): the 20px track of the comp is a
+       mouse-world track, and cramming two 22px buttons into it would cover
+       the ordinal beside them. */
     @media (hover: none) and (pointer: coarse) {
       .step-grip .grip-arrow { display: inline-flex; }
       .step-grip .grip-glyph { display: none; }
       .step-grip { width: auto; gap: 4px; }
+      .step.editable { grid-template-columns: 44px 26px minmax(0, 1fr) 128px 196px 62px; }
     }
 
     /* ── a rule's conditions, one chip per clause ──────────────────────
@@ -1005,20 +1085,30 @@
       .facts { gap: 12px 20px; }
       .fact { min-width: calc(50% - 20px); }
 
-      /* The sheet and the ladder stack instead of competing. A 46% cap is ~150px
-         here — not enough for a Bedrock id, so it would ellipsis away the very
-         thing the line exists to say. */
-      /* Narrow keeps the handle's 44px track ONLY on editable rows — the
+      /* The sheet and the ladder stack instead of competing. At 390px the six
+         comp tracks cannot fit side by side, so the row stacks: ordinal and
+         condition on the first line, then destination, first attempt and
+         count each on their own line under them — the column heads are
+         hidden, because the heads name columns no rows stand under. */
+      /* Narrow keeps the handle's 44px lane ONLY on editable rows — the
          reading-mode sheet has no grip and must not carry an empty 44px
          gutter. The touch target does not shrink because the screen did:
          the whole point of the arrows-and-grip cluster is a thumb-sized hit
          area at 390px. */
-      .step { grid-template-columns: 22px minmax(0, 1fr); row-gap: 6px; }
-      .step.editable { grid-template-columns: 44px 22px minmax(0, 1fr); }
-      .step.editable .step-grip { margin-left: -10px; width: 44px; }
-      /* Column 3 when editable (the handle took column 1); 2 when not. */
-      .step-to { grid-column: 2; max-width: none; grid-template-columns: minmax(0, 1fr) auto; }
-      .step.editable .step-to { grid-column: 3; }
+      .step { grid-template-columns: 26px minmax(0, 1fr); row-gap: 5px; }
+      .step-ord { grid-column: 1; grid-row: 1; }
+      .step-what { grid-column: 2; grid-row: 1; }
+      .step .step-to { grid-column: 2; grid-row: 2; }
+      .step .step-first { grid-column: 2; grid-row: 3; }
+      .step .step-hits { grid-column: 2; grid-row: 4; justify-self: start; text-align: left; }
+      .step.editable { grid-template-columns: 44px 26px minmax(0, 1fr); }
+      .step.editable .step-grip { grid-column: 1; grid-row: 1; margin-left: -12px; width: 44px; }
+      .step.editable .step-ord { grid-column: 2; grid-row: 1; }
+      .step.editable .step-what { grid-column: 3; grid-row: 1; }
+      .step.editable .step-to { grid-column: 3; grid-row: 2; }
+      .step.editable .step-first { grid-column: 3; grid-row: 3; }
+      .step.editable .step-hits { grid-column: 3; grid-row: 4; justify-self: start; text-align: left; }
+      .sheet-cols { display: none; }
       .step-dest { justify-content: flex-start; }
       .step-target { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
       /* The tier head's facts stack rather than truncate: "2 of 3 independent
@@ -1452,7 +1542,27 @@
              for checking one case against it. With the probe first the screen opened
              with an empty box above the answer, which reads as "type something to see
              anything". -->
+        <!-- The column heads (comp-tarefas): the six tracks of the rows below,
+             so the bare number in the last column is read as what it is — use
+             over the counted window. Hidden until a policy renders. -->
+        <div class="sheet-cols" id="sheetCols" hidden>
+          <span aria-hidden="true"></span>
+          <span aria-hidden="true"></span>
+          <span>Quando</span>
+          <span>Vai para</span>
+          <span>Primeira tentativa</span>
+          <span class="r">Uso 8d</span>
+        </div>
         <ol class="sheet" id="sheet"></ol>
+
+        <!-- The catch-all block (comp-tarefas: "se nada acima casou"): default
+             and fail-safe leave the numbered list above — the ordinals there
+             are the semantics of first-match, and these two rows are what
+             happens when nothing matched. -->
+        <div class="sheet-tail" id="sheetTail" hidden>
+          <div class="sheet-tail-label">se nada acima casou</div>
+          <ol class="sheet-tail-list" id="sheetTailList"></ol>
+        </div>
 
         <form class="probe" id="probeForm">
           <input id="probeTask" class="probe-input" autocomplete="off"
@@ -2124,7 +2234,11 @@
         if (model == null) return { text: '⚠ Sem destino. O lint recusa este arquivo; nada pode ser salvo até corrigir.', kind: 'empty' };
         if (tierNames.indexOf(model) >= 0) {
           const m = TIER_MEANING[model];
-          return { text: `Grupo ${model} · ${m ? m.label : 'sem descrição'}`, kind: 'tier' };
+          // "T3 · Moderado", not "Grupo T3 · Moderado": the Vai para column is
+          // 128px (comp-tarefas) and the word the row answers is the group's
+          // name, not the container word — the Modelos tab's own heads still
+          // say "Grupo T3" where the word is the label.
+          return { text: `${model} · ${m ? m.label : 'sem descrição'}`, kind: 'tier' };
         }
         if (/^T\d+$/.test(model)) return { text: `⚠ Grupo ${model} — não existe`, kind: 'missing' };
         const provider = t.provider == null ? '?' : String(t.provider);
@@ -3354,12 +3468,17 @@
       // The sheet row for a rule id. Iterates children rather than querying, so
       // the row is found by the identity the sheet itself stamped (dataset.ruleId),
       // never by parsing a selector out of an id an operator may have typed.
+      // The default and fail-safe live in the tail list (§5), so a probe winner
+      // or lint target there is found the same way as one in the numbered list.
       function findRuleRow(ruleId) {
-        const box = $('sheet');
         const wanted = String(ruleId);
-        const children = box.children || [];
-        for (const child of children) {
-          if (child.dataset && child.dataset.ruleId === wanted) return child;
+        const boxes = [$('sheet'), $('sheetTailList')];
+        for (const box of boxes) {
+          if (!box) continue;
+          const children = box.children || [];
+          for (const child of children) {
+            if (child.dataset && child.dataset.ruleId === wanted) return child;
+          }
         }
         return null;
       }
@@ -4881,15 +5000,24 @@
       function renderSheet() {
         const box = $('sheet');
         clear(box);
+        // The catch-all block (default and fail-safe) and the column heads
+        // live outside the numbered list; both are toggled by the policy.
+        const tailBox = $('sheetTail');
+        const tailList = $('sheetTailList');
+        if (tailList) clear(tailList);
+        const cols = $('sheetCols');
         const policy = state.policy;
         if (!policy) {
           box.append(el('p', 'nothing', absence('Este serviço do roteador não tem lista de regras.', '/policy')));
+          if (tailBox) tailBox.hidden = true;
+          if (cols) cols.hidden = true;
           const pipelineNote = $('pipelineNote');
           if (pipelineNote && state.readFailures['/policy']) {
             pipelineNote.textContent = readFailureWords(state.readFailures['/policy']);
           }
           return;
         }
+        if (cols) cols.hidden = false;
         const { byRule, byCause, total } = ruleHits();
         const rules = Array.isArray(policy.rules) ? policy.rules : [];
         // The sheet's shadow story is the pure detector's: the reason each
@@ -4941,8 +5069,9 @@
         }
 
         // The §1.3 list: manual bans (only when they exist), then every rule in
-        // file order, then the two synthetic rows. Order IS the semantics —
-        // first match wins — so the ordinals are the reading.
+        // file order. Order IS the semantics — first match wins — so the
+        // ordinals are the reading. The catch-all rows (default, fail-safe)
+        // render below in their own block (§5), not here.
         const row = (opts) => {
           const item = el('li', `step${opts.editable ? ' editable' : ''}${opts.off ? ' off' : ''}`);
           if (opts.id && !opts.synthetic
@@ -4955,8 +5084,16 @@
           // policy id cannot start with (see findRuleRow).
           if (opts.id) {
             item.dataset.ruleId = opts.synthetic ? `__${opts.id}` : String(opts.id);
+            // The id leaves the line's TEXT for the row's title attribute
+            // (comp-tarefas: "o id no title do <li>", em TODA linha de regra).
+            // The operator reads the name and the conditions; the id is the
+            // handle for the YAML, and a handle belongs in the title — hover,
+            // not prose. Synthetic rows (bans, default, fail-safe) keep their
+            // own name as the title; a real rule always carries its id.
+            item.title = opts.synthetic
+              ? (opts.title || opts.titleText || String(opts.id))
+              : String(opts.id);
           }
-          if (opts.title) item.title = opts.title;
           // The reorder handle (card: reordenar pelo punho). A real, editable
           // rule row only — the synthetic rows (bans, default, fail-safe) are
           // not in `rules`, so there is no index to move and no list to write.
@@ -5043,14 +5180,18 @@
           }
           item.append(el('span', 'step-ord', opts.ord || ''));
           const what = el('div', 'step-what');
-          const idLine = el('div', 'step-id', opts.titleText || opts.id);
-          if (opts.off) idLine.append(el('span', 'step-off', ' (desligada)'));
-          if (opts.id && !opts.synthetic && opts.id !== opts.titleText) {
-            idLine.append(el('span', 'step-off', ` — ${opts.id}`));
+          const name = el('div', 'step-name', opts.titleText || opts.id);
+          if (opts.off) name.append(el('span', 'step-off', ' (desligada)'));
+          what.append(name);
+          if (opts.chips && opts.chips.length) {
+            // Conditions are TEXT on the line now (comp-tarefas): the sheet
+            // stopped using the chip list, so one clause is never announced as
+            // a separate bullet from its neighbours — the " · " joins the
+            // sentences of ONE rule, and the row reads as a sentence.
+            what.append(el('div', 'step-when', opts.chips.map((chip) => chip.text).join(' · ')));
+          } else if (opts.when) {
+            what.append(el('div', 'step-when', opts.when));
           }
-          what.append(idLine);
-          if (opts.chips && opts.chips.length) what.append(chipList(opts.chips));
-          else if (opts.when) what.append(el('div', 'step-when', opts.when));
           // Per-rule footnotes (§4.4): injected clock fields and unknown
           // condition names say their consequence on the row itself.
           (opts.notes || []).forEach((note) => what.append(el('div', 'step-when', note)));
@@ -5058,10 +5199,12 @@
           const to = el('div', 'step-to');
           const dest = el('div', 'step-dest');
           let expansion = null;
+          // Hoisted out of the target branch: the first-attempt cell and the
+          // open block read the same queue the destination chip reveals.
+          const tier = opts.tierDest && tierIndex[opts.tierDest] ? tierIndex[opts.tierDest] : null;
+          const hops = tier ? tierChain(tier) : [];
           if (opts.target) {
             dest.append(el('span', 'step-arrow', '→'));
-            const tier = opts.tierDest && tierIndex[opts.tierDest] ? tierIndex[opts.tierDest] : null;
-            const hops = tier ? tierChain(tier) : [];
             if (tier && hops.length) {
               const chip = el('button', 'step-target step-tier', opts.target);
               chip.type = 'button';
@@ -5098,6 +5241,28 @@
             }
           }
           to.append(dest);
+          // The first attempt (comp-tarefas "Primeira tentativa", 196px): the
+          // head of the queue the destination points at. A tier shows its
+          // first elo with how it is billed and on whose rail; the classifier
+          // says the decision is the call; a fixed model names itself.
+          const first = el('div', 'step-first');
+          if (tier && hops.length) {
+            const head = hops[0];
+            const caps = hopCaps(head, state.capabilities).caps;
+            const bill = billingBadge(head.billing_mode !== undefined ? head.billing_mode
+              : (caps.billing_mode !== undefined ? caps.billing_mode : chainBilling[String(head.model)]));
+            first.append(el('b', '', String(head.model || '—')));
+            const rail = String(caps.provider || head.provider || '');
+            first.append(el('span', '', ` ${bill.word}${rail ? ` · ${rail}` : ''}`));
+          } else if (opts.destKind === 'classify') {
+            first.append(el('b', '', 'decide na hora'));
+            first.append(el('span', 'first-note', 'custa 1 chamada extra'));
+          } else if (opts.destKind === 'fixed') {
+            first.append(el('b', '', String(opts.targetModel || '—')));
+            if (opts.targetRail) first.append(el('span', '', ` · ${opts.targetRail}`));
+          } else {
+            first.append(el('b', '', '—'));
+          }
           // §3.4(a): a destination naming a group the table does not have is
           // the one row that carries its own remedy — the SAME §2.2 select,
           // prefixed by what the operator is choosing. Choosing writes the
@@ -5121,26 +5286,83 @@
             fixWrap.append(fixSelect);
             to.append(fixWrap);
           }
+          // The count lives in its own column now (comp-tarefas "Uso 8d",
+          // 62px): the NUMBER, with the finding it is a verdict about in the
+          // title and in the row's open block — a zero is a FINDING only when
+          // the rule could have fired in the counted window, and a stale sheet
+          // demotes every count to a muted disclosure about the DATA.
+          let hitWords = '';
+          let h = null;
           if (opts.hits !== undefined) {
-            // A zero is a FINDING only when the rule could have fired in the
-            // counted window. On a stale sheet every count becomes a muted
-            // disclosure about the DATA rather than an amber verdict on the rule.
             const cls = opts.stale ? ' empty' : (opts.hits === 0 ? ' zero' : '');
-            // A count with no period is a number about nothing: "disparou 2×" reads as
-            // a claim about now, and the reader has no way to know whether the log
-            // covers an hour or a month (spec §3.3). The stale case says what is
-            // actually wrong — the record does not cover the period — instead of
-            // "sem dados nesta janela", which named a window the row never showed.
             const period = hitsWindow();
             const since = period ? ` ${period}` : '';
-            const words = opts.stale
+            hitWords = opts.stale
               ? 'sem histórico: o registro de decisões não cobre este período'
               : (opts.hits === 0 ? `nunca disparou${since}` : `disparou ${opts.hits}×${since}`);
-            const h = el('span', `step-hits${cls}`, words);
-            to.append(h);
+            h = el('span', `step-hits${cls}`, opts.stale ? 'sem dados' : String(opts.hits));
+            h.title = hitWords;
           }
+          // The row's DOM order is the comp's order (punho · número · Quando ·
+          // Vai para · Primeira tentativa · Uso 8d), so the reading order of a
+          // screen reader is the same sentence the eye reads across the line.
+          // The CSS pins each cell to its track (see .step-ord / .step-to /
+          // .step-first / .step-hits above), so a reader down a column sees
+          // the same thing on every line.
           item.append(to);
+          item.append(first);
+          if (h) item.append(h);
           if (expansion) item.append(expansion);
+          // The row opened by a click (comp-tarefas: "Clique na linha para
+          // abrir a fila inteira"): the whole queue, the role the rule fixed
+          // and the rule's id. Reading mode owns the click; in editing mode
+          // the click already opens the rule's editor, and the grip and the
+          // tier chip stop their own propagation on top of this.
+          if (!opts.editable && !opts.synthetic && opts.id) {
+            const openBox = el('div', 'step-open');
+            openBox.hidden = true;
+            let open = false;
+            item.addEventListener('click', (event) => {
+              if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+              open = !open;
+              if (open) {
+                clear(openBox);
+                // fila — the whole queue, or the sentence for a destination
+                // with no queue (a refusal has nothing to try).
+                const fila = el('div', 'step-open-row');
+                fila.append(el('span', 'step-open-k', 'fila'));
+                if (tier && hops.length) {
+                  const strategy = strategyWords(tier.fallback_strategy,
+                    { pinPrimary: declaredPin(tier.pin_primary), when: chainWhen });
+                  const body = el('div', 'step-open-chain');
+                  body.append(chainList(hops, {
+                    strategy, registry: state.capabilities, billing: chainBilling,
+                    when: chainWhen, live: chainLive, showPrice: strategy.timeRelative,
+                  }));
+                  fila.append(body);
+                } else {
+                  fila.append(el('div', 'step-open-val', opts.queueWords || opts.target || '—'));
+                }
+                openBox.append(fila);
+                // papel — the rule's declared role; informative in this path,
+                // because the card creator picks the role at dispatch.
+                const papel = el('div', 'step-open-row');
+                papel.append(el('span', 'step-open-k', 'papel'));
+                const pval = el('div', 'step-open-val');
+                pval.append(el('span', '', opts.role || '—'));
+                pval.append(el('span', 'step-open-note', ' — informativo neste caminho: quem cria o card escolhe o papel'));
+                papel.append(pval);
+                openBox.append(papel);
+                // regra — the id, and the count column 6 summarised.
+                const regra = el('div', 'step-open-row');
+                regra.append(el('span', 'step-open-k', 'regra'));
+                regra.append(el('div', 'step-open-id', `${opts.id}${hitWords ? ` · ${hitWords}` : ''}`));
+                openBox.append(regra);
+              }
+              openBox.hidden = !open;
+            });
+            item.append(openBox);
+          }
           // The shadowed-rule fix path (§3.3): the finding names the earlier
           // row that swallows this one, and the ONE move that resolves the
           // class without touching `when` — jump and open its editor. The
@@ -5210,6 +5432,16 @@
             target: dest.text,
             tierDest: dest.kind === 'tier' ? tierDestOf(then.model) : null,
             targetColor: dest.kind === 'refuse' || dest.kind === 'missing' ? 'var(--bad-text)' : '',
+            destKind: dest.kind,
+            // The role the rule fixed on the `then` half (adapter.py keeps it
+            // as `profile`) — shown in the row's open block, informative in
+            // this path: the card creator picks the role at dispatch.
+            role: then.profile != null ? String(then.profile) : '',
+            targetModel: dest.kind === 'fixed' ? then.model : '',
+            targetRail: dest.kind === 'fixed' ? then.provider : '',
+            queueWords: dest.kind === 'classify'
+              ? 'a decisão é do classificador, na hora — custa 1 chamada extra'
+              : (dest.kind === 'refuse' ? 'a tarefa é recusada — não entra em fila' : dest.text),
             // §3.4(a): the missing-group row carries the one control that
             // resolves the class — only in editing mode, where the fix has a
             // save path to land in (the read view's banner jump opens the
@@ -5227,13 +5459,22 @@
         const def = policy.default || {};
         ord += 1;
         const defDest = destWords(def, tierIndex);
-        box.append(row({
-          ord: `${ord}`, id: 'default', synthetic: true,
+        // The catch-all rows (default, fail-safe) leave the numbered list
+        // (comp-tarefas "se nada acima casou"): the ordinals above ARE the
+        // semantics of first-match, and these two rows are what happens when
+        // nothing matched — so they carry the comp's "—" and live under the
+        // tail's own label. The count is the closed-set cause the engine
+        // records for the fall-through (decision_log VALID_CAUSES).
+        (tailList || box).append(row({
+          ord: '—', id: 'default', synthetic: true,
           titleText: 'Quando nenhuma regra casa',
           target: defDest.text,
           tierDest: defDest.kind === 'tier' ? tierDestOf(def.model) : null,
           targetColor: defDest.kind === 'refuse' || defDest.kind === 'missing' ? 'var(--bad-text)' : '',
+          destKind: defDest.kind,
           notes: ['Esta é a única rota que gasta uma chamada de modelo a mais.'],
+          hits: byCause.default_fallthrough || 0,
+          stale,
           editable,
           onPick: editable ? () => pickBind({ id: 'default', name: 'default', bind: 'default' }) : null,
         }));
@@ -5241,8 +5482,8 @@
         ord += 1;
         const fsDest = destWords(fs, tierIndex);
         const fsHits = byCause.fail_safe_strong || 0;
-        box.append(row({
-          ord: `${ord}`, id: 'fail_safe', synthetic: true,
+        (tailList || box).append(row({
+          ord: '—', id: 'fail_safe', synthetic: true,
           titleText: 'Quando tudo falha',
           when: fs.model ? null : 'Não há último recurso configurado. Se todas as filas falharem, a tarefa falha.',
           notes: fs.model
@@ -5250,11 +5491,15 @@
           target: fs.model ? fsDest.text : null,
           tierDest: null,
           targetColor: '',
+          destKind: fs.model ? 'fixed' : '',
+          targetModel: fs.model,
+          targetRail: fs.provider,
           hits: fsHits,
           stale,
           editable,
           onPick: editable ? () => pickBind({ id: 'fail_safe', name: 'fail_safe', bind: 'fail_safe' }) : null,
         }));
+        if (tailBox) tailBox.hidden = false;
 
         // The phrase-answer above the list (§1.2): how many task types, and
         // whether any of them is without effect. One rule counted once — two

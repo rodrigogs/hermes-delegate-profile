@@ -1749,7 +1749,8 @@ test('the decision sheet spends colour only where it is news', () => {
     assert.match(colour, /--bad-text/, 'and a refusal is the danger token');
   }
   // The classifier's destinations exist and are legible — they are just not paint.
-  const words = JSON.stringify(dom.get('sheet'));
+  // The default row moved to the catch-all tail (§5), so both lists are read.
+  const words = JSON.stringify(dom.get('sheet')) + JSON.stringify(dom.get('sheetTailList'));
   assert.match(words, /classificador/, 'the classifier is still named');
   assert.match(words, /gasta uma chamada de modelo a mais/,
     'and inference is still flagged, once');
@@ -1971,7 +1972,7 @@ test('a predicate says which family it belongs to, because the three mean differ
   assert.equal(shape.text, 'o verbo do pedido é difícil');
 });
 
-test('a rule row draws one chip per clause, so two conditions never merge into one', () => {
+test('a rule row writes one condition line with every clause, so two conditions never merge into one', () => {
   const { api, dom } = loadConsole();
   api.state.loading = false;
   api.state.policy = {
@@ -1984,17 +1985,20 @@ test('a rule row draws one chip per clause, so two conditions never merge into o
   };
   api.renderSheet();
 
-  const chips = findAll(dom.get('sheet'), 'chip');
-  assert.equal(chips.length, 3, 'one chip per clause — a dropped clause misstates why the rule fires');
-  const families = chips.map((chip) => chip.className);
-  assert.ok(families.some((c) => c.includes('context')), 'the context condition is marked as one');
-  assert.ok(families.some((c) => c.includes('capability')), 'and so is the capability condition');
-  assert.ok(families.some((c) => /chip shape/.test(c)), 'and the task-shape one stays what it was');
-  // Each clause is its own list item, which is what keeps "has code" and "over
-  // 400,000 tokens" from being announced as one string.
-  const values = findAll(dom.get('sheet'), 'chip-val').map((n) => n.textContent);
-  assert.deepEqual(values, ['tem código',
-    'o contexto estimado passa de 400.000 tokens', 'o pedido envolve imagem']);
+  // The sheet no longer draws conditions as <li> chips (comp-tarefas: the
+  // conditions are TEXT on the line, joined by " · ") — the chip list still
+  // exists for the other blocks that use it, but not here.
+  assert.equal(findAll(dom.get('sheet'), 'chip').length, 0,
+    'the sheet renders no chip list items');
+  const cond = findAll(dom.get('sheet'), 'step-when');
+  const condText = cond.map((n) => n.textContent).join(' | ');
+  assert.ok(condText.includes('tem código · o contexto estimado passa de 400.000 tokens · o pedido envolve imagem'),
+    `the clauses read as one sentence, got "${condText}"`);
+  // Each clause is still its own sentence in the string — a dropped clause
+  // misstates why the rule fires, and the join keeps the three apart.
+  assert.ok(condText.includes('tem código'), 'the shape clause survives');
+  assert.ok(condText.includes('o contexto estimado passa de 400.000 tokens'), 'and so does the context clause');
+  assert.ok(condText.includes('o pedido envolve imagem'), 'and the capability clause');
 });
 
 test('a rule with no clauses keeps its sentence instead of an empty chip', () => {
@@ -2005,6 +2009,159 @@ test('a rule with no clauses keeps its sentence instead of an empty chip', () =>
   assert.equal(findAll(dom.get('sheet'), 'chip').length, 0, 'nothing is rendered for nothing');
   assert.match(flat(dom.get('sheet')), /vale para toda tarefa/,
     'and "every task" is still said, as prose');
+});
+
+// ── the comp-tarefas sheet: the five pieces the adversarial review named ──
+// The review card t_bf751f1b blocked t_5afc3438 because the six-column grid,
+// the id-in-title, the text conditions, the click-open block and the separate
+// catch-all were claimed but never committed. Each of the five has its own
+// test below, so the next "done" is checkable by the gate, not by trust.
+
+test('the sheet grid is the comp\'s six columns, and the column heads name them', () => {
+  const { style } = consoleStyle();
+  // comp-tarefas: punho 20 · número 26 · Quando minmax(0,1fr) · Vai para 128 ·
+  // Primeira tentativa 196 · Uso 8d 62 — on the row and on the head row.
+  assert.match(style, /\.step \{[\s\S]*?grid-template-columns: 20px 26px minmax\(0, 1fr\) 128px 196px 62px/,
+    'the six-track grid is the comp\'s own widths');
+  assert.equal(style.split('grid-template-columns: 20px 26px minmax(0, 1fr) 128px 196px 62px').length - 1, 2,
+    'the row and the head row share the same six tracks');
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = chipPolicy();
+  api.renderSheet();
+  assert.equal(dom.get('sheetCols').hidden, false, 'the head row shows with a policy');
+  // The stub DOM does not parse markup: the heads are asserted on the file,
+  // the show/hide on the rendered state.
+  const html = fs.readFileSync(sourcePath, 'utf8');
+  for (const head of ['Quando', 'Vai para', 'Primeira tentativa', 'Uso 8d']) {
+    assert.match(html, new RegExp(`>${head}<`), `the head "${head}" is in the markup`);
+  }
+  assert.match(html, /id="sheetCols"/, 'the head row carries the id renderSheet toggles');
+  // The Primeira tentativa column names the head of the queue, with how it is
+  // billed and on whose rail.
+  const first = flat(findAll(dom.get('sheet'), 'step-first')[0]).replace(/\s+/g, ' ').trim();
+  assert.match(first, /gpt-5\.6-terra/, 'the first attempt is the chain head');
+  assert.match(first, /subscription/, 'billed as the chain declares');
+  assert.match(first, /openai-codex/, 'on its own rail');
+  api.state.policy = null;
+  api.renderSheet();
+  assert.equal(dom.get('sheetCols').hidden, true, 'no policy, no heads');
+});
+
+test('each cell is pinned to its track, and the row DOM order is the comp\'s reading order', () => {
+  const { style } = consoleStyle();
+  // The pins: without them, READING mode (no grip) auto-places the ordinal in
+  // the 20px grip track and every column reads one cell off its head —
+  // measured on the live sheet with the head row as the ruler (step-to
+  // landed under "Primeira tentativa", step-hits under "Vai para").
+  for (const [cls, col] of [['step-ord', 2], ['step-what', 3], ['step-to', 4],
+    ['step-first', 5], ['step-hits', 6]]) {
+    assert.match(style, new RegExp(`\\.${cls} \\{ grid-column: ${col}; \\}`),
+      `the ${cls} cell is pinned to column ${col}`);
+  }
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = chipPolicy();
+  api.state.mode = 'editing';
+  api.renderSheet();
+  // The DOM order is the comp's row (punho · número · Quando · Vai para ·
+  // Primeira tentativa · Uso 8d), so a screen reader reads the same sentence
+  // the eye reads across the line.
+  const editableRow = dom.get('sheet').children[0];
+  assert.deepEqual(editableRow.children.map((c) => c.className.split(' ')[0]).slice(0, 6),
+    ['step-grip', 'step-ord', 'step-what', 'step-to', 'step-first', 'step-hits'],
+    'editable row children follow the comp order, grip first');
+  api.state.mode = 'reading';
+  api.renderSheet();
+  const readingRow = dom.get('sheet').children[0];
+  assert.deepEqual(readingRow.children.map((c) => c.className.split(' ')[0]).slice(0, 5),
+    ['step-ord', 'step-what', 'step-to', 'step-first', 'step-hits'],
+    'reading row children follow the comp order without the grip');
+});
+
+test('every rule row carries its id in the title attribute, never in the line', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = sheetPolicy();
+  api.renderSheet();
+  const rows = dom.get('sheet').children;
+  assert.ok(rows.length >= 5, 'the fixture rules are all on the sheet');
+  rows.forEach((row) => {
+    const id = row.dataset.ruleId;
+    assert.ok(id && !String(id).startsWith('__'), `a real rule row, got ${id}`);
+    assert.equal(row.title, id, 'the id lives in the title attribute');
+    // The old rendering is gone: no element of the step-id class, and the
+    // name cell carries no " — <id>" suffix. The KEYWORD of a condition may
+    // legitimately contain the id word ("audit" in 'o texto contém "audit"'),
+    // so the check is the element, not the whole row's text.
+    assert.equal(findAll(row, 'step-id').length, 0, `no step-id element on row ${id}`);
+    const nameCell = findAll(row, 'step-name')[0];
+    assert.ok(nameCell, `the row ${id} has a name cell`);
+    const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.doesNotMatch(nameCell.textContent, new RegExp(` — ${escaped}$`),
+      `the name cell has no id suffix ("${nameCell.textContent}")`);
+  });
+  // The class that used to hold the id in the text is gone from the file. (The
+  // open block still writes the id as text — that IS the comp's item 4, "regra:
+  // <id>"; this check is about the ROW's own line.)
+  const html = fs.readFileSync(sourcePath, 'utf8');
+  assert.doesNotMatch(html, /step-id/, 'no step-id class survives anywhere');
+});
+
+test('clicking a rule row opens the whole queue, the role and the id (comp-tarefas linha 4)', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = chipPolicy();
+  api.renderSheet();
+  const row = dom.get('sheet').children[0]; // 'deep' -> T3
+  const open = row.children.find((c) => c.className === 'step-open');
+  assert.ok(open, 'the open block exists on the row');
+  assert.equal(open.hidden, true, 'closed by default');
+  row._listeners.click();
+  assert.equal(open.hidden, false, 'a click opens it');
+  const text = flat(open);
+  assert.match(text, /fila/, 'the block names the queue');
+  assert.match(text, /gpt-5\.6-terra/, 'the chain head is there');
+  assert.match(text, /deepseek-v4-pro/, 'and the reserves, in order');
+  assert.match(text, /glm-5\.3/, 'down to the last hop');
+  assert.match(text, /papel/, 'the block names the role');
+  assert.match(text, /informativo neste caminho: quem cria o card escolhe o papel/,
+    'the role is marked informative in this path');
+  assert.match(text, /regra/, 'and the block names the rule');
+  assert.match(text, /deep/, 'with the rule id in it');
+  row._listeners.click();
+  assert.equal(open.hidden, true, 'a second click closes it');
+});
+
+test('a rule with a declared profile shows it as the papel in the open block', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = sheetPolicy(); // audit: then.profile = 'reviewer'
+  api.renderSheet();
+  const row = dom.get('sheet').children.find((c) => c.dataset.ruleId === 'audit');
+  row._listeners.click();
+  const open = row.children.find((c) => c.className === 'step-open');
+  assert.match(flat(open), /reviewer/, 'the rule\'s own profile is the papel');
+  assert.match(flat(open), /audit/, 'and the id names the rule');
+});
+
+test('default and fail-safe leave the numbered list for the tail under "se nada acima casou"', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = sheetPolicy();
+  api.renderSheet();
+  const tail = dom.get('sheetTailList');
+  assert.equal(tail.children.length, 2, 'default + fail-safe in the tail');
+  assert.deepEqual(tail.children.map((r) => r.dataset.ruleId), ['__default', '__fail_safe']);
+  const ords = tail.children.map((r) => r.children.find((c) => c.className === 'step-ord').textContent);
+  assert.deepEqual(ords, ['—', '—'], 'the tail rows carry the comp\'s dash, not an ordinal');
+  assert.equal(dom.get('sheetTail').hidden, false, 'the tail block is visible');
+  // The label is static markup (the stub DOM does not parse it), so it is
+  // asserted on the file.
+  const html = fs.readFileSync(sourcePath, 'utf8');
+  assert.match(html, /se nada acima casou/, 'the comp\'s own label is in the file');
+  // The numbered list holds only the real rules (+ the ban, when one exists).
+  assert.equal(dom.get('sheet').children.length, 5, 'no synthetic row in the numbered list');
 });
 
 // ── a tier destination is a chip, not a mute span ────────────────────────
@@ -2042,7 +2199,7 @@ test('a tier destination is a chip that reveals the chain it points at', () => {
   assert.equal(chips.length, 1, 'the tier destination is the chip; the deny row is not');
   const chip = chips[0];
   // The chip carries the group's meaning, not the bare key (spec 4.3).
-  assert.equal(chip.textContent, 'Grupo T3 · Moderado');
+  assert.equal(chip.textContent, 'T3 · Moderado');
   assert.equal(chip.getAttribute('aria-expanded'), 'false');
   // Hover carries the compact form, primary first — the elos of the chain.
   assert.equal(chip.title, 'gpt-5.6-terra · deepseek-v4-pro · glm-5.3');
@@ -2087,7 +2244,7 @@ test('the tier chip expands a rule whose shared hops are the finding', () => {
   };
   api.renderSheet();
   const chip = findAll(dom.get('sheet'), 'step-tier')[0];
-  assert.equal(chip.textContent, 'Grupo T4 · Difícil');
+  assert.equal(chip.textContent, 'T4 · Difícil');
   chip._listeners.click();
   const text = flat(findAll(dom.get('sheet'), 'step-chain')[0]);
   assert.match(text, /gpt-5\.5/, 'T4\'s own primary');
@@ -2233,13 +2390,19 @@ test('a window older than the policy demotes every count and says why', () => {
   assert.equal(dom.get('windowStale').hidden, false);
 
   // The counter REFUSES: no row carries a count or an amber "never fired" —
-  // even though this corpus would have painted both rules amber before.
-  const hits = findAll(dom.get('sheet'), 'step-hits');
-  // 2 rules + classifier: no blocklist row, because this policy declares no
-  // manual ban (spec 1.3).
-  assert.ok(hits.length >= 3, '2 rules + classifier carry hits');
-  assert.ok(hits.every((n) => n.textContent === 'sem histórico: o registro de decisões não cobre este período'),
-    `every count demoted, got ${JSON.stringify(hits.map((n) => n.textContent))}`);
+  // even though this corpus would have painted both rules amber before. The
+  // 62px Uso column shows "sem dados"; the finding it is a verdict about
+  // lives in the cell's title. Default and fail-safe sit in the catch-all
+  // tail (§5), so both lists are read.
+  const hits = findAll(dom.get('sheet'), 'step-hits')
+    .concat(findAll(dom.get('sheetTailList'), 'step-hits'));
+  // 2 rules + default + fail-safe: no blocklist row, because this policy
+  // declares no manual ban (spec 1.3).
+  assert.ok(hits.length >= 4, '2 rules + default + fail-safe carry hits');
+  assert.ok(hits.every((n) => n.textContent === 'sem dados'),
+    `every count demoted to a placeholder, got ${JSON.stringify(hits.map((n) => n.textContent))}`);
+  assert.ok(hits.every((n) => n.title === 'sem histórico: o registro de decisões não cobre este período'),
+    `and the reason is in the title, got ${JSON.stringify(hits.map((n) => n.title))}`);
   assert.ok(hits.every((n) => /empty/.test(n.className)), 'all demoted rows carry the muted class');
   assert.ok(hits.every((n) => !/zero/.test(n.className)), 'no amber zero survives on a stale sheet');
   assert.doesNotMatch(flat(dom.get('sheet')), /never fired/);
@@ -2279,22 +2442,25 @@ test('a covering window keeps the amber "never fired" finding', () => {
 
   assert.equal(dom.get('windowStale').hidden, true,
     'a window covering the current policy shows no disclosure');
-  const text = flat(dom.get('sheet'));
-  assert.match(text, /2×/, 'a rule that fired keeps its count');
-  assert.match(text, /nunca disparou/,
-    'a rule that existed and never fired keeps the finding');
-  assert.doesNotMatch(text, /sem histórico/);
-  assert.doesNotMatch(text, /% of the decisions/);
-  // §3.3: the count carries its PERIOD. Two hours of decisions is "nas últimas 2h" —
-  // a number with no period reads as a claim about now.
-  assert.match(text, /disparou 2× na última hora/, 'the count says what it counted over');
-  assert.match(text, /nunca disparou na última hora/, 'and so does the zero');
-  // Both zero-hit rows (never-caught, fail-safe) are amber: the window covers the
-  // policy, so every zero is a genuine finding. There is no blocklist row — this
-  // policy declares no manual ban (spec 1.3).
-  const zeros = findAll(dom.get('sheet'), 'step-hits').filter((n) => /zero/.test(n.className));
-  assert.equal(zeros.length, 2, 'every zero-hit row stays an amber finding');
-  assert.equal(findAll(dom.get('sheet'), 'step-hits').filter((n) => /empty/.test(n.className)).length, 0);
+  // The Uso column shows the NUMBER; the finding words live in the cell's
+  // title (62px cannot hold "nunca disparou na última hora").
+  const hits = findAll(dom.get('sheet'), 'step-hits')
+    .concat(findAll(dom.get('sheetTailList'), 'step-hits'));
+  const titles = hits.map((n) => n.title);
+  assert.ok(hits.some((n) => n.textContent === '2'), 'a rule that fired keeps its count');
+  assert.ok(titles.includes('disparou 2× na última hora'),
+    `the count says what it counted over, got ${JSON.stringify(titles)}`);
+  assert.ok(titles.includes('nunca disparou na última hora'),
+    'a rule that existed and never fired keeps the finding, with its period');
+  assert.ok(titles.every((t) => !/sem histórico/.test(t)), 'no demotion on a covering window');
+  assert.doesNotMatch(flat(dom.get('sheet')), /% of the decisions/);
+  // The three zero-hit rows (never-caught, default, fail-safe) are amber: the
+  // window covers the policy, so every zero is a genuine finding. There is no
+  // blocklist row — this policy declares no manual ban (spec 1.3). Default and
+  // fail-safe live in the catch-all tail (§5).
+  const zeros = hits.filter((n) => /zero/.test(n.className));
+  assert.equal(zeros.length, 3, 'every zero-hit row stays an amber finding');
+  assert.equal(hits.filter((n) => /empty/.test(n.className)).length, 0);
   assert.ok(!dom.get('sheet').classList.contains('stale'));
   // No disclosure banner here (the window covers the policy) and no global legend
   // either — see the note in the stale-window test above. What this window earns is
@@ -2314,9 +2480,12 @@ test('an empty log demotes every count and says nothing is recorded yet', () => 
 
   assert.equal(dom.get('windowStale').hidden, false);
   assert.match(flat(dom.get('windowStale')), /Nenhuma decisão registrada ainda/);
-  const words = findAll(dom.get('sheet'), 'step-hits').map((n) => n.textContent);
-  assert.ok(words.length >= 2, 'every rule-bearing row renders a hits cell');
-  assert.ok(words.every((w) => w === 'sem histórico: o registro de decisões não cobre este período'));
+  const hits = findAll(dom.get('sheet'), 'step-hits')
+    .concat(findAll(dom.get('sheetTailList'), 'step-hits'));
+  assert.ok(hits.length >= 3, 'every rule-bearing row renders a hits cell');
+  assert.ok(hits.every((n) => n.textContent === 'sem dados'),
+    `placeholder only, got ${JSON.stringify(hits.map((n) => n.textContent))}`);
+  assert.ok(hits.every((n) => n.title === 'sem histórico: o registro de decisões não cobre este período'));
   assert.doesNotMatch(flat(dom.get('sheet')), /never fired/);
   // No window exists, so no window is claimed.
   assert.doesNotMatch(flat(dom.get('sheet')), /counts over/);
@@ -6312,17 +6481,18 @@ test('a default pointing at a missing group gets ITS OWN phrase and a jump to th
 
   // The jump goes to the DEFAULT — not to rule 0 (the mutation: a default jump
   // that lands on a rule). The row is the synthetic "__default" one, marked and
-  // scrolled, and the inspector opens on the default.
+  // scrolled, and the inspector opens on the default. The default lives in the
+  // catch-all tail (§5), so it is searched there.
   toDefault[0]._listeners.click();
   assert.equal(api.state.selected, 'default', 'the inspector opened on the default, not on a rule');
-  const row = dom.get('sheet').children.find((c) => c.dataset.ruleId === '__default');
-  assert.ok(row, 'the synthetic default row is on the sheet');
+  const row = dom.get('sheetTailList').children.find((c) => c.dataset.ruleId === '__default');
+  assert.ok(row, 'the synthetic default row is in the catch-all tail');
   assert.deepEqual(plain(row._scrolledTo), { block: 'center' }, 'and it was scrolled into view');
   assert.match(flat(dom.get('inspector')), /default/, 'the inspector names the default');
 
-  // The sheet row itself carries the §4.3 fifth prefix, like a rule's would.
+  // The tail row itself carries the §4.3 fifth prefix, like a rule's would.
   api.renderSheet();
-  assert.match(flat(dom.get('sheet')), /⚠ Grupo T9 — não existe/);
+  assert.match(flat(dom.get('sheetTailList')), /⚠ Grupo T9 — não existe/);
 });
 
 test('a rule AND the default pointing at missing groups get two phrases, each with its own jump', () => {
@@ -6745,7 +6915,7 @@ test('doApply plans immediately before every write, whichever surface called it 
 // with one of the five prefixes of §4.3: a row whose destination is blank is a row
 // that tells the operator nothing about where the work goes.
 const DEST_PREFIXES = [
-  /^→\s*Grupo \S+ · /,
+  /^→\s*T\d+ · /,
   /^→\s*Perguntar ao classificador/,
   /^→\s*Recusar a tarefa/,
   /^→\s*.+ @ .+ — modelo fixo, sem reserva/,
@@ -6768,18 +6938,23 @@ function sheetPolicy(extra) {
   }, extra || {});
 }
 
-test('the sheet counts rules + the two synthetic rows, plus the ban row only when there is a ban', () => {
+test('the sheet counts rules (+ ban) in the numbered list and the two catch-all rows in the tail', () => {
   const { api, dom } = loadConsole();
   api.state.loading = false;
   api.state.policy = sheetPolicy();
   api.renderSheet();
   const rows = () => (dom.get('sheet').children || []).length;
+  const tailRows = () => (dom.get('sheetTailList').children || []).length;
   const rules = api.state.policy.rules.length;
-  assert.equal(rows(), rules + 2, 'no manual ban, so no ban row: render nothing for nothing');
+  // The catch-all rows (default, fail-safe) leave the numbered list for the
+  // tail block (§5, comp-tarefas "se nada acima casou").
+  assert.equal(rows(), rules, 'no manual ban, so no ban row: render nothing for nothing');
+  assert.equal(tailRows(), 2, 'default and fail-safe live under the tail label');
 
   api.state.policy = sheetPolicy({ blocklist: { manual_ban: [{ model: 'deepseek-v4-pro', provider: 'deepseek' }] } });
   api.renderSheet();
-  assert.equal(rows(), rules + 3, 'a ban is the first thing that decides, so it is the first row');
+  assert.equal(rows(), rules + 1, 'a ban is the first thing that decides, so it is the first row');
+  assert.equal(tailRows(), 2, 'the tail keeps its two rows when a ban exists');
 });
 
 test('every row on the sheet has a destination, and it is one of the five (CA2)', () => {
@@ -6790,8 +6965,12 @@ test('every row on the sheet has a destination, and it is one of the five (CA2)'
   api.state.policy = sheetPolicy({ blocklist: { manual_ban: [{ model: 'deepseek-v4-pro', provider: 'deepseek' }] } });
   api.renderSheet();
 
-  const dests = findAll(dom.get('sheet'), 'step-dest').map((node) => flat(node).replace(/\s+/g, ' ').trim());
-  assert.ok(dests.length >= 6, `every row draws a destination, got ${dests.length}`);
+  // The tail rows (default, fail-safe) carry destinations too, so both lists
+  // are read — §5 moved the rows, not the vocabulary.
+  const dests = findAll(dom.get('sheet'), 'step-dest')
+    .concat(findAll(dom.get('sheetTailList'), 'step-dest'))
+    .map((node) => flat(node).replace(/\s+/g, ' ').trim());
+  assert.ok(dests.length >= 8, `every row draws a destination, got ${dests.length}`);
   dests.forEach((text) => {
     assert.notEqual(text, '', 'a row with no destination says nothing about where the work goes');
     assert.ok(DEST_PREFIXES.some((prefix) => prefix.test(text)),
@@ -10164,7 +10343,9 @@ test('the sheet renders a grip on editable rule rows only, with the keyboard and
   api.renderSheet();
   const sheet = dom.get('sheet');
   const rows = sheet.children;
-  assert.equal(rows.length, 6, '4 rules + default + fail-safe');
+  // The catch-all rows (default, fail-safe) moved to the tail block (§5).
+  assert.equal(rows.length, 4, '4 rules in the numbered list');
+  assert.equal(dom.get('sheetTailList').children.length, 2, 'default + fail-safe in the tail');
   // Real rule rows: grip present, draggable, with both arrow buttons.
   for (let i = 0; i < 4; i += 1) {
     const grip = findAll(rows[i], 'step-grip')[0];
@@ -10178,13 +10359,15 @@ test('the sheet renders a grip on editable rule rows only, with the keyboard and
   }
   // Synthetic rows (default, fail-safe) are not in `rules`: no grip, no
   // drag — there is no index to move and no list to write.
-  assert.equal(findAll(rows[4], 'step-grip').length, 0);
-  assert.equal(findAll(rows[5], 'step-grip').length, 0);
+  const tailRows = dom.get('sheetTailList').children;
+  assert.equal(findAll(tailRows[0], 'step-grip').length, 0);
+  assert.equal(findAll(tailRows[1], 'step-grip').length, 0);
   // Reading mode: the sheet shows the policy as it runs; a drag target
   // there would promise a write the mode refuses.
   api.state.mode = 'reading';
   api.renderSheet();
   assert.equal(findAll(dom.get('sheet'), 'step-grip').length, 0);
+  assert.equal(findAll(dom.get('sheetTailList'), 'step-grip').length, 0);
 });
 
 test('the keyboard path is the same write: ArrowUp on the grip moves the rule', async () => {
