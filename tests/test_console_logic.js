@@ -402,7 +402,7 @@ test('the health badge counts bans and breaker cooldowns, in amber', () => {
 
 test('the rail survives being rendered before any data arrives', () => {
   const { api, dom } = loadConsole();
-  // setMode() renders the rail at init, before the first poll. An unguarded read
+  // The rail is rendered at boot, before the first poll. An unguarded read
   // here kills the whole IIFE and the operator gets a blank page.
   assert.doesNotThrow(() => api.renderRail());
   assert.equal(dom.get('countPipeline').hidden, true, 'no policy yet → no count shown');
@@ -471,47 +471,105 @@ test('a fresh sidecar shows no stale banner; checking and dead keep their words'
 // A client-side gate is the one an attacker skips and the operator cannot, so it
 // was costing a click on every write path and buying nothing.
 //
-// What the mode really is: the read-only DEFAULT that stops a stray tap on the
-// Pipeline from editing the live routing policy. That is what is pinned here.
-test('the console opens read-only, so a stray tap cannot change routing', () => {
-  const { api, dom } = loadConsole({ csrfToken: 'tok' });
-  // Not merely the initial value of a variable — the editor must actually be
-  // read-only after the console has finished setting itself up.
-  api.setMode('reading');
-  assert.equal(dom.get('policyEditor').readOnly, true);
-  assert.equal(dom.get('editMode').attrs['aria-pressed'], 'false');
+// The mode itself is gone (card t_f81c24ee): no Editar button, no
+// reading/editing state. What the read-only default was FOR — a stray tap must
+// not change routing — is now the row click: it opens the QUEUE, never an
+// editor. Only a click on a VALUE — a condition, the destination cell or a
+// queue capsule — opens that value's edit. These tests pin both halves.
+test('the console ships no edit mode: the contract greps are zero', () => {
+  const src = fs.readFileSync(sourcePath, 'utf8');
+  assert.doesNotMatch(src, /state\.mode === 'editing'/,
+    'the mode comparison the card greps for is gone');
+  assert.doesNotMatch(src, /editLabel/,
+    'the mode button label the card greps for is gone');
+  assert.doesNotMatch(src, /setMode|editMode/,
+    'no mode machinery survives anywhere');
+  const { api } = loadConsole();
+  assert.equal(api.setMode, undefined, 'the console no longer exports a mode setter');
+  assert.equal('mode' in api.state, false, 'state has no mode key');
 });
 
-test('the edit control says what it will do, not what state it is in', () => {
-  const { api, dom } = loadConsole({ csrfToken: 'tok' });
-  const button = dom.get('editMode');
-
-  api.setMode('reading');
-  assert.equal(dom.get('editLabel').textContent, 'Editar',
-    'reading mode offers the next action');
-  assert.match(button.title, /Editar a política de roteamento/,
-    'and the title says what gets edited');
-
-  api.setMode('editing');
-  assert.equal(dom.get('editLabel').textContent, 'Concluir');
-  assert.equal(button.title, 'Parar de editar', 'the armed title says what ends the mode');
-  assert.equal(button.attrs['aria-pressed'], 'true', 'a mode toggle reports pressed');
-  assert.equal(dom.get('policyEditor').readOnly, false, 'editing arms the editor');
+test('a stray tap on a row opens the queue, never the editor', () => {
+  // The row click is the read gesture (comp-tarefas: "Clique na linha para
+  // abrir a fila inteira"). A stray tap must not open an editor and must not
+  // arm anything — the open queue is the whole of what a row click does.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = chipPolicy();
+  api.renderSheet();
+  const row = dom.get('sheet').children[0];
+  const open = row.children.find((c) => c.className === 'step-open');
+  assert.ok(open, 'the row carries the open block');
+  assert.equal(open.hidden, true, 'closed by default');
+  assert.equal(api.state.selected, null, 'nothing is selected before the click');
+  row._listeners.click();
+  assert.equal(open.hidden, false, 'a row click opens the queue');
+  assert.equal(api.state.selected, null, 'and it does not open the rule editor');
+  assert.match(flat(open), /fila/, 'the queue is what opened');
 });
 
-test('closing the editor is not a write permission', () => {
-  // The mode must not gate writes. An apply that is otherwise valid has to be
-  // possible without the operator first arming a UI toggle, because the toggle
-  // never protected anything.
+test('clicking a condition opens that rule\'s editor — no mode to arm', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = sheetPolicy();
+  api.renderSheet();
+  const row = dom.get('sheet').children.find((c) => c.dataset.ruleId === 'audit');
+  const when = findAll(row, 'step-when')[0];
+  assert.ok(when, 'the rule carries its condition line');
+  assert.ok(when.classList.contains('is-edit'), 'the clickable line wears the editable affordance');
+  assert.equal(api.state.selected, null, 'nothing selected before the click');
+  when._listeners.click();
+  assert.equal(api.state.selected, 'rule:audit', 'the click opens the rule\'s editor');
+  const box = dom.get('inspector');
+  assert.match(flat(box), /Condições/, 'the editor leads with the conditions block');
+  assert.ok(byLabel(box, 'keywords (contains)'),
+    'the very clause the operator clicked is a field here');
+});
+
+test('clicking the destination cell opens the rule\'s editor, group first', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = chipPolicy();
+  api.renderSheet();
+  const row = dom.get('sheet').children[0]; // 'deep' -> T3
+  const dest = findAll(row, 'step-dest')[0];
+  assert.ok(dest, 'the destination cell exists');
+  assert.ok(dest.classList.contains('is-edit'), 'the cell wears the editable affordance');
+  dest._listeners.click();
+  assert.equal(api.state.selected, 'rule:deep', 'the cell click opens the rule\'s editor');
+  assert.ok(byLabel(dom.get('inspector'), 'Destino'),
+    'the destination control is the edit the click leads to');
+});
+
+test('clicking a capsule in the open queue opens the group\'s chain editor', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = chipPolicy();
+  api.state.capabilities = capModels();
+  api.renderSheet();
+  const row = dom.get('sheet').children[0]; // 'deep' -> T3
+  row._listeners.click(); // open the queue (the row click is the read gesture)
+  const chain = findAll(row, 'step-open-chain')[0];
+  assert.ok(chain, 'the open queue carries the chain line');
+  assert.ok(chain.classList.contains('is-edit'), 'the capsules wear the editable affordance');
+  chain._listeners.click();
+  assert.equal(api.state.selected, 'tier:T3', 'the capsule click opens the group\'s queue editor');
+  assert.ok(byLabel(dom.get('inspector'), 'Modelo'),
+    'the chain editor is the surface where that hop is swapped');
+});
+
+test('a write needs no mode: writable() does not check any arming', () => {
+  // An apply that is otherwise valid has to be possible without the operator
+  // first arming a UI toggle, because the toggle never protected anything —
+  // the server's token, CSRF, base_hash and lint are the only gates.
   const { api } = loadConsole({ csrfToken: 'tok' });
-  api.setMode('reading');
   const msg = { textContent: '', className: '' };
   assert.equal(api.writable(msg, 'Apply'), true,
-    'the read-only mode is a default, not a lock');
+    'no mode to arm and no refusal for not arming it');
   assert.equal(msg.textContent, '', 'and it produces no refusal message');
 });
 
-test('editing does not report the router as degraded', () => {
+test('an open editor does not report the router as degraded', () => {
   // The Pipeline dot used to go amber whenever the editor was open, so the console
   // claimed a machine problem because someone had clicked a button — and amber is
   // the colour that means "this needs your attention".
@@ -525,7 +583,7 @@ test('editing does not report the router as degraded', () => {
   // silently pass no matter what the console did.
   const pipelineState = () => dom.get('statePipeline').className;
 
-  api.setMode('editing');
+  api.renderInspector({ id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 });
   api.renderRail();
   assert.doesNotMatch(pipelineState(), /is-degraded/,
     `an open editor is not a degradation, got "${pipelineState()}"`);
@@ -537,12 +595,11 @@ test('editing does not report the router as degraded', () => {
   assert.match(pipelineState(), /is-degraded/, 'an invalid policy must still show amber');
 });
 
-test('without a session write token, editing is refused with the reason', () => {
+test('without a session write token, saving is refused with the reason', () => {
   // Measured against the live proxy: unsafe methods without X-Hermes-CSRF-Token
   // come back 403 "Session expired". The token exists only on pages the WebUI
   // renders, so a standalone console must say where editing does work.
   const { api } = loadConsole({ csrfToken: '' });
-  api.setMode('unlocked');
   const msg = { textContent: '', className: '' };
   assert.equal(api.writable(msg, 'Apply'), false);
   assert.match(msg.textContent, /standalone|Hermes One/i);
@@ -1550,19 +1607,20 @@ test('a double-clicked apply does not race itself', async () => {
   assert.equal(writes.length, 1, 'the second click must not produce a second write');
 });
 
-test('the JSON twisty cannot write while the console is read-only', () => {
+test('the JSON twisty write controls are always armed — there is no mode to disarm them', () => {
   // Expanding "Edit the whole policy as JSON" to READ it used to put a live green
   // Apply and a live Revert one tap away — and Revert takes no plan, shows no diff,
-  // and restores whatever the .bak holds.
+  // and restores whatever the .bak holds. The guard that replaced the mode's
+  // disarming is §3.4(a): while the file lints bad there is NO Salvar in the DOM
+  // (absent, not disabled), and the destructive one is two clicks away (CA5).
+  const src = fs.readFileSync(sourcePath, 'utf8');
+  assert.doesNotMatch(src, /jsonApply[^>]*disabled/,
+    'no disabled attribute on Apply in the markup — the mode that set it is gone');
+  assert.doesNotMatch(src, /jsonRevert[^>]*disabled/,
+    'nor on Revert — the two-click rule is the only gate');
   const { api, dom } = loadConsole({ csrfToken: 'tok' });
-
-  api.setMode('reading');
-  assert.equal(dom.get('jsonApply').disabled, true, 'Apply follows the read-only default');
-  assert.equal(dom.get('jsonRevert').disabled, true, 'and so does the destructive one');
-
-  api.setMode('editing');
-  assert.equal(dom.get('jsonApply').disabled, false);
-  assert.equal(dom.get('jsonRevert').disabled, false);
+  assert.ok(!dom.get('jsonApply').disabled, 'and no code path leaves Apply inert');
+  assert.ok(!dom.get('jsonRevert').disabled, 'the destructive one is two clicks away, not greyed out');
 });
 
 // ── it belongs to the shell ───────────────────────────────────────────────
@@ -2050,10 +2108,12 @@ test('the sheet grid is the comp\'s six columns, and the column heads name them'
 
 test('each cell is pinned to its track, and the row DOM order is the comp\'s reading order', () => {
   const { style } = consoleStyle();
-  // The pins: without them, READING mode (no grip) auto-places the ordinal in
-  // the 20px grip track and every column reads one cell off its head —
-  // measured on the live sheet with the head row as the ruler (step-to
-  // landed under "Primeira tentativa", step-hits under "Vai para").
+  // The pins: the sheet is ONE row shape now — the grip is on every rule
+  // row, because reorder is an always-on gesture, not an editing-mode one —
+  // so a cell whose pin was dropped auto-places into the 20px grip track and
+  // every column reads one cell off its head (measured on the live sheet
+  // with the head row as the ruler: step-to landed under "Primeira
+  // tentativa", step-hits under "Vai para").
   for (const [cls, col] of [['step-ord', 2], ['step-what', 3], ['step-to', 4],
     ['step-first', 5], ['step-hits', 6]]) {
     assert.match(style, new RegExp(`\\.${cls} \\{ grid-column: ${col}; \\}`),
@@ -2062,21 +2122,14 @@ test('each cell is pinned to its track, and the row DOM order is the comp\'s rea
   const { api, dom } = loadConsole();
   api.state.loading = false;
   api.state.policy = chipPolicy();
-  api.state.mode = 'editing';
   api.renderSheet();
   // The DOM order is the comp's row (punho · número · Quando · Vai para ·
   // Primeira tentativa · Uso 8d), so a screen reader reads the same sentence
   // the eye reads across the line.
-  const editableRow = dom.get('sheet').children[0];
-  assert.deepEqual(editableRow.children.map((c) => c.className.split(' ')[0]).slice(0, 6),
+  const row = dom.get('sheet').children[0];
+  assert.deepEqual(row.children.map((c) => c.className.split(' ')[0]).slice(0, 6),
     ['step-grip', 'step-ord', 'step-what', 'step-to', 'step-first', 'step-hits'],
-    'editable row children follow the comp order, grip first');
-  api.state.mode = 'reading';
-  api.renderSheet();
-  const readingRow = dom.get('sheet').children[0];
-  assert.deepEqual(readingRow.children.map((c) => c.className.split(' ')[0]).slice(0, 5),
-    ['step-ord', 'step-what', 'step-to', 'step-first', 'step-hits'],
-    'reading row children follow the comp order without the grip');
+    'every rule row follows the comp order, grip first — no mode decides the shape');
 });
 
 test('every rule row carries its id in the title attribute, never in the line', () => {
@@ -2261,17 +2314,17 @@ test('the tier chip expands a rule whose shared hops are the finding', () => {
   assert.match(text, /glm-5\.3/, 'and the hop it shares with T3 — the two hops T4 is not independent on');
 });
 
-test('the tier chip does not trigger the row\'s edit click', () => {
-  // In editing mode the row opens the inspector on click; the chip is inside
-  // the row, so its click must not navigate — an operator expanding a chain is
-  // not selecting the rule for editing.
+test('the tier chip does not trigger the row\'s queue toggle', () => {
+  // The row click opens the QUEUE (comp-tarefas: "Clique na linha para abrir
+  // a fila inteira"); the chip is inside the row, so its click must not
+  // toggle the queue — an operator expanding a chain is not asking for the
+  // queue or for an editor.
   const { api, dom } = loadConsole();
   api.state.loading = false;
   api.state.policy = chipPolicy();
-  api.setMode('editing');
   api.renderSheet();
   const chip = findAll(dom.get('sheet'), 'step-tier')[0];
-  assert.ok(chip, 'the chip exists in editing mode too');
+  assert.ok(chip, 'the chip exists on the row');
   chip._listeners.click();
   assert.equal(api.state.selected, null,
     'expanding the chain did not open the inspector');
@@ -3394,7 +3447,6 @@ test('the shadowed rule grows a move button naming its shadower, and the click s
   const { api, dom } = loadConsole({ csrfToken: 'tok' });
   api.state.policy = rulePolicy();
   api.state.status = shadowStatus({ later_index: 1, later_id: 'dead', earlier_index: 0, earlier_id: 'broad' });
-  api.setMode('editing');
   api.renderInspector({ id: 'rule:dead', name: 'dead', bind: 'rule', ruleIndex: 1 });
   const move = findAll(dom.get('inspector'), 'btn')
     .find((b) => /Mover para antes de/.test(b.textContent || ''));
@@ -3418,7 +3470,6 @@ test('the move button targets the EARLIEST shadower when several shadow the same
     earlier_index: 0, earlier_id: 'broad',
     message: "rule 'r3' is shadowed by earlier rule 'broad'",
   });
-  api.setMode('editing');
   api.renderInspector({ id: 'rule:r3', name: 'r3', bind: 'rule', ruleIndex: 2 });
   const move = findAll(dom.get('inspector'), 'btn')
     .find((b) => /Mover para antes de/.test(b.textContent || ''));
@@ -3433,7 +3484,6 @@ test('the disable button turns the rule off in the draft and back on', () => {
   const { api, dom } = loadConsole({ csrfToken: 'tok' });
   api.state.policy = rulePolicy();
   api.state.status = { validation_errors: [], error_targets: [] };
-  api.setMode('editing');
   api.renderInspector({ id: 'rule:dead', name: 'dead', bind: 'rule', ruleIndex: 1 });
   const toggle = findAll(dom.get('inspector'), 'btn')
     .find((b) => /Desativar esta regra/.test(b.textContent || ''));
@@ -3452,7 +3502,6 @@ test('a rule the lint does not name gets no move button — disable is still the
   const { api, dom } = loadConsole({ csrfToken: 'tok' });
   api.state.policy = rulePolicy();
   api.state.status = shadowStatus({ later_index: 1, later_id: 'dead', earlier_index: 0, earlier_id: 'broad' });
-  api.setMode('editing');
   api.renderInspector({ id: 'rule:r3', name: 'r3', bind: 'rule', ruleIndex: 2 });
   const labels = findAll(dom.get('inspector'), 'btn').map((b) => b.textContent || '');
   assert.ok(!labels.some((t) => /Mover/.test(t)),
@@ -3460,14 +3509,13 @@ test('a rule the lint does not name gets no move button — disable is still the
   assert.ok(labels.some((t) => /Desativar/.test(t)), 'disable is always available for a rule');
 });
 
-test('the blocklist row is not clickable in editing mode — no pointer for a row with no editor', () => {
+test('a synthetic row is never clickable — no pointer, no handler on a row with no editor', () => {
   const { api, dom } = loadConsole();
   api.state.policy = rulePolicy();
   // The synthetic row is conditional on a manual ban existing (spec 1.3), so the
   // subject of this test has to be declared for the test to have a subject at all.
   api.state.policy.blocklist = { manual_ban: ['glm-4.7'] };
   api.state.status = { validation_errors: [], error_targets: [] };
-  api.setMode('editing');
   api.renderSheet();
   const row = dom.get('sheet').children.find((c) => c.dataset.ruleId === '__blocklist');
   assert.ok(row, 'the informational row still renders');
@@ -6030,7 +6078,6 @@ test('a model field is a <select> grouped by provider, with the count always vis
     'mimo-v2.5': { provider: 'xiaomi', context_window: 1048576 },
     'sem-rail': {},
   };
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const box = dom.get('inspector');
 
@@ -6070,7 +6117,6 @@ test('the count applies the group min_context floor and renders zero as a diagno
     'glm-4.7': { provider: 'zai', context_window: 200000 },
     'gpt-5.6-luna': { provider: 'openai-codex', context_window: 1000000 },
   };
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T3', name: 'T3', bind: 'tier', tier: 'T3' });
   let modelWrap = byLabel(dom.get('inspector'), 'Modelo');
   let note = modelWrap.children.find((c) => String(c.className).includes('field-note'));
@@ -6095,7 +6141,6 @@ test('a model field without a catalogue falls back to free text with the §3.4(c
   api.state.policy = tierPolicy();
   api.state.loading = false;
   api.state.capabilities = null;
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const box = dom.get('inspector');
   // §3.4(c): the fallback field is labelled for what it is — an id being
@@ -6125,7 +6170,6 @@ test('choosing from the select syncs the provider rail from the catalogue entry'
     'glm-4.7': { provider: 'zai', context_window: 200000 },
     'gpt-5.6-luna': { provider: 'openai-codex', context_window: 1000000 },
   };
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const modelWrap = byLabel(dom.get('inspector'), 'Modelo');
   const select = modelWrap.children.find((c) => c.tagName === 'select');
@@ -6149,7 +6193,6 @@ test('the escape hatch writes an off-catalogue id and says what the console stop
   api.state.capabilities = {
     'glm-4.7': { provider: 'zai', context_window: 200000 },
   };
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const modelWrap = byLabel(dom.get('inspector'), 'Modelo');
   const escapeBtn = modelWrap.children.find((c) => /Usar um id que não está na lista/.test(c.textContent || ''));
@@ -6177,7 +6220,6 @@ test('the show-all toggle widens the select and warns about runtime filtering', 
     'gpt-5.6-luna': { provider: 'openai-codex', context_window: 1000000 },
     'mimo-v2.5': { provider: 'xiaomi', context_window: 1048576 },
   };
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const modelWrap = byLabel(dom.get('inspector'), 'Modelo');
   const toggle = modelWrap.children.find((c) => /mostrar todos/.test(c.textContent || ''));
@@ -6382,7 +6424,6 @@ test('while the file carries an error there is NO Salvar in the DOM, and it come
   const { api, dom } = loadConsole();
   seedJsonActions(dom);
   missingGroupState(api);
-  api.setMode('editing');
   api.renderWarnings();
 
   const labels = () => (dom.get('jsonActions').children || []).map((k) => String(k.textContent || ''));
@@ -6824,13 +6865,16 @@ test('Voltar à versão anterior asks first, and says what is missing: the previ
   assert.deepEqual(writes(), ['/apply/revert'], 'the second click is the one that acts');
   assert.equal(dom.get('jsonRevert').textContent, 'Voltar à versão anterior', 'and it disarms');
 
-  // Leaving edit mode disarms too: an armed destructive button that outlives the
-  // question on screen is a button the next click executes silently.
+  // The two-click rule is per execution: a third click is a NEW question, never
+  // a silent execution of the one that already wrote. (The mode-era "leaving
+  // edit mode disarms" is gone with the mode; a refresh still drops the arming —
+  // the next test pins that.)
   await api.requestRevert();
-  api.setMode('reading');
-  assert.equal(dom.get('jsonRevert').textContent, 'Voltar à versão anterior');
+  assert.equal(dom.get('jsonRevert').textContent, 'Confirmar: voltar à versão anterior',
+    'a third click asks again');
   await api.requestRevert();
-  assert.deepEqual(writes(), ['/apply/revert'], 'still one write: the arming was dropped');
+  assert.deepEqual(writes(), ['/apply/revert', '/apply/revert'],
+    'the second confirm of the new question is the one that acts');
 });
 
 test('the preset box names the metric and the consequence of each option, and what is in force', () => {
@@ -7237,7 +7281,6 @@ test('the inspector Apply sends the touched fragment, never the whole policy (§
   });
   api.state.policy = tierPolicy();
   api.state.capabilities = { 'glm-5.3': { provider: 'zai', context_window: 200000 } };
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
 
   // The operator changes ONLY the provider; the model select is never touched.
@@ -7282,7 +7325,6 @@ test('a classifier edit never carries read-only keys back to the server (§5.2)'
     'glm-4.7': { provider: 'zai' },
     'gpt-5.6-luna': { provider: 'openai-codex' },
   };
-  api.setMode('editing');
   api.renderInspector({ id: 'classifier', name: 'classifier', bind: 'classifier' });
 
   const model = byLabel(dom.get('inspector'), 'Modelo').children.find((c) => c.tagName === 'select');
@@ -7317,7 +7359,6 @@ test('a rule edit sends the WHOLE rules list, because lists replace wholesale (�
     },
   });
   api.state.policy = rulePolicy();
-  api.setMode('editing');
   api.renderInspector({ id: 'rule:dead', name: 'dead', bind: 'rule', ruleIndex: 1 });
 
   const toggle = findAll(dom.get('inspector'), 'btn').find((b) => /Desativar/.test(b.textContent || ''));
@@ -7426,7 +7467,6 @@ test('a refused write rebuilds the inspector from the reloaded policy, dropping 
     },
   });
   api.state.policy = { tiers: { T2: { model: 'old', provider: 'zai' } } };
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
 
   const provider = byLabel(dom.get('inspector'), 'Provedor').children.find((c) => c.tagName === 'input');
@@ -7489,8 +7529,7 @@ test('the §4.7 write literals are exact, and each lives in exactly one place: t
     `'${api.WRITE.httpError}'`, `'${api.WRITE.invalid}'`,
     'Não é possível {action} com esta tela aberta fora do Hermes One: o navegador não manda a credencial da sessão. Abra o Hermes One e volte aqui pelo menu lateral.',
     // This card's additions — every new surface word lives in the map, once.
-    `'${api.WRITE.refresh}'`, `'${api.WRITE.refreshing}'`, `'${api.WRITE.done}'`,
-    `'${api.WRITE.stopEditing}'`, `'${api.WRITE.routing}'`, `'${api.WRITE.routingOn}'`,
+    `'${api.WRITE.refresh}'`, `'${api.WRITE.refreshing}'`, `'${api.WRITE.routing}'`, `'${api.WRITE.routingOn}'`,
     `'${api.WRITE.routingOff}'`, `'${api.WRITE.routingVerdict}'`, `'${api.WRITE.banned}'`,
     `'${api.WRITE.cooldownLeft}'`, `'${api.WRITE.textEdit}'`, `'${api.WRITE.loading}'`,
     // The reorder's two words (card: reordenar pelo punho) — once each, in
@@ -7642,7 +7681,6 @@ test('the destination control offers the five closed options of §2.2, in order'
   const { api, dom } = loadConsole({ csrfToken: 'tok' });
   api.state.policy = destPolicy();
   api.state.capabilities = { 'glm-5.3': { provider: 'zai' } };
-  api.setMode('editing');
   api.renderInspector({ id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 });
   const wrap = byLabel(dom.get('inspector'), 'Destino');
   const select = wrap.children.find((c) => c.tagName === 'select');
@@ -7675,7 +7713,6 @@ test('each destination option writes exactly the three §2.2 keys, the others nu
   const { api, dom } = loadConsole({ csrfToken: 'tok' });
   api.state.policy = destPolicy();
   api.state.capabilities = { 'gpt-5.6-luna': { provider: 'openai-codex', context_window: 1000000 } };
-  api.setMode('editing');
   api.renderInspector({ id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 });
   const wrap = byLabel(dom.get('inspector'), 'Destino');
   const select = wrap.children.find((c) => c.tagName === 'select');
@@ -7712,7 +7749,6 @@ test('each destination option writes exactly the three §2.2 keys, the others nu
 test('the default line uses the SAME destination control as a rule', () => {
   const { api, dom } = loadConsole({ csrfToken: 'tok' });
   api.state.policy = destPolicy();
-  api.setMode('editing');
   api.renderInspector({ id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 });
   const ruleWrap = byLabel(dom.get('inspector'), 'Destino');
   const ruleSelect = ruleWrap.children.find((c) => c.tagName === 'select');
@@ -7745,7 +7781,6 @@ test('a default destination edit writes the three keys through the same patch pa
     },
   });
   api.state.policy = destPolicy();
-  api.setMode('editing');
   api.renderInspector({ id: 'default', name: 'default', bind: 'default' });
   const wrap = byLabel(dom.get('inspector'), 'Destino');
   const select = wrap.children.find((c) => c.tagName === 'select');
@@ -7768,7 +7803,6 @@ test('profile is a <select> with the policy union plus Outro papel… (§2.2)', 
   policy.rules[1].then.profile = 'reviewer';
   policy.fail_safe.profile = 'coder';
   api.state.policy = policy;
-  api.setMode('editing');
   api.renderInspector({ id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 });
   const wrap = byLabel(dom.get('inspector'), 'Papel');
   assert.ok(wrap, 'the Papel field exists');
@@ -7798,7 +7832,6 @@ test('fixo-sem-reserva shows only on the fixed option, with the N of the group b
   const { api, dom } = loadConsole({ csrfToken: 'tok' });
   api.state.policy = destPolicy();
   api.state.capabilities = { 'glm-5.3': { provider: 'zai' } };
-  api.setMode('editing');
   api.renderInspector({ id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 });
   const wrap = byLabel(dom.get('inspector'), 'Destino');
   const select = wrap.children.find((c) => c.tagName === 'select');
@@ -7835,7 +7868,6 @@ test('a rule already on a fixed model shows the warning at mount, with the picke
   const { api, dom } = loadConsole({ csrfToken: 'tok' });
   api.state.policy = destPolicy();
   api.state.capabilities = { 'glm-5.3': { provider: 'zai', context_window: 200000 } };
-  api.setMode('editing');
   api.renderInspector({ id: 'rule:r2', name: 'r2', bind: 'rule', ruleIndex: 1 });
   const wrap = byLabel(dom.get('inspector'), 'Destino');
   const select = wrap.children.find((c) => c.tagName === 'select');
@@ -7884,7 +7916,6 @@ test('the tier editor draws the queue as rows: primary first, then each reserve 
   api.state.policy = tierPolicy();
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const box = dom.get('inspector');
   const rows = findAll(box, 'chain-row');
@@ -7914,7 +7945,6 @@ test('Adicionar tentativa creates the fallback list with a blank reserve; the pr
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
   const box = dom.get('inspector');
   assert.equal(findAll(box, 'chain-row').length, 1, 'no fallback declared → one row');
@@ -7953,7 +7983,6 @@ test('removing the last reserve writes fallback: [] — a declaration, not absen
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
   const box = dom.get('inspector');
   const rows = findAll(box, 'chain-row');
@@ -7978,7 +8007,6 @@ test('↑ on the first row and ↓ on the last row move nothing and say so', () 
   const { api, dom } = loadConsole({ csrfToken: 'tok' });
   api.state.policy = tierPolicy();
   api.state.loading = false;
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const box = dom.get('inspector');
   const rows = findAll(box, 'chain-row');
@@ -8017,7 +8045,6 @@ test('moving the first reserve up promotes it: order on screen is the order save
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
   const box = dom.get('inspector');
   const rows = findAll(box, 'chain-row');
@@ -8052,7 +8079,6 @@ test('Remover on the primary promotes the first reserve instead of emptying the 
   api.state.policy = tierPolicy();
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
   const box = dom.get('inspector');
   const rows = findAll(box, 'chain-row');
@@ -8081,7 +8107,6 @@ test('the first attempt lives on the tier, never inside fallback', async () => {
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const box = dom.get('inspector');
   const rows = findAll(box, 'chain-row');
@@ -8112,7 +8137,6 @@ test('a billing mode the console has not learned renders as written, and the sel
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
   const box = dom.get('inspector');
   const rows = findAll(box, 'chain-row');
@@ -8145,7 +8169,6 @@ test("choosing a model in a reserve row fills THAT entry's provider, not the pri
   api.state.policy = tierPolicy();
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const box = dom.get('inspector');
   const rows = findAll(box, 'chain-row');
@@ -8175,7 +8198,6 @@ test('editing a reserve\'s billing writes the WHOLE fallback list — lists repl
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const box = dom.get('inspector');
   const rows = findAll(box, 'chain-row');
@@ -8392,34 +8414,44 @@ test('the pin+random row needs pin_primary true and a draw', () => {
   assert.doesNotMatch(flat(dom.get('ladder')), /só as reservas são sorteadas/);
 });
 
-test('reading mode names the gesture that unlocks editing (§4.7)', () => {
+test('an EDITABLE surface opens its editor directly — no unlock note survives (§4.7)', () => {
   const { api, dom } = loadConsole();
   api.state.loading = false;
   api.state.policy = tierPolicy();
-  api.setMode('reading');
+  api.state.capabilities = capModels();
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
-  assert.match(flat(dom.get('inspector')),
-    /Só leitura\. Aperte "Editar" no topo para poder mudar algo\./);
+  assert.doesNotMatch(flat(dom.get('inspector')),
+    /Só leitura/, 'the mode-era unlock phrase is gone');
+  assert.ok(byLabel(dom.get('inspector'), 'Modelo'),
+    'the editor is what a click opens — click-to-edit, no gesture to unlock');
 });
 
-test('editing mode never claims the surface is read-only', () => {
+test('a runtime node says why nothing is configurable, and never says "Só leitura"', () => {
   const { api, dom } = loadConsole();
   api.state.loading = false;
   api.state.policy = tierPolicy();
-  api.setMode('editing');
-  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
-  assert.doesNotMatch(flat(dom.get('inspector')), /Só leitura/);
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'replay', runtime: true });
+  assert.match(flat(dom.get('inspector')), /Estado de execução/,
+    'the one surface that cannot be edited says why');
+  assert.doesNotMatch(flat(dom.get('inspector')), /Só leitura/,
+    'and it never borrows the mode-era unlock phrase');
 });
 
 test('a §2.8 warning never disables or hides the write controls', () => {
   const { api, dom } = loadConsole();
   api.state.loading = false;
   api.state.policy = { rules: [], default: {}, tiers: { T1: { model: 'glm-4.7', provider: 'zai' } } };
-  api.setMode('editing');
   api.renderLadder();
   assert.match(flat(dom.get('ladder')), /só uma opção/, 'the warning is on screen');
-  assert.equal(dom.get('jsonApply').disabled, false,
-    'Salvar stays enabled — avisar nunca é bloquear, the only gate is the server lint');
+  // The one thing that can make Salvar leave the DOM is a lint error (§3.4(a));
+  // a §2.8 warning is advice, so the button stays in its container. The stub
+  // has no markup parser, so the actions row is seeded the way the markup
+  // declares it (see the bansMsg pattern above).
+  const actions = dom.get('jsonActions');
+  actions.append(dom.get('jsonPreview'), dom.get('jsonRevert'), dom.get('jsonApply'));
+  api.renderWarnings();
+  assert.ok(actions.children.includes(dom.get('jsonApply')),
+    'Salvar stays in its container — avisar nunca é bloquear, the only gate is the server lint');
 });
 
 test('tierWarnings returns exactly the rows a group deserves — nothing for nothing', () => {
@@ -8451,10 +8483,9 @@ test('tierWarnings returns exactly the rows a group deserves — nothing for not
 // lands in the DRAFT and opens the rule's editor — the write path is the
 // normal Salvar, never a silent save from the row.
 
-test('the missing-group row shows the §3.4(a) inline destination select, only in editing mode', () => {
+test('the missing-group row always shows the §3.4(a) inline destination select — no mode to arm', () => {
   const { api, dom } = loadConsole();
   missingGroupState(api);
-  api.setMode('editing');
   api.renderSheet();
 
   const fixes = findAll(dom.get('sheet'), 'step-dest-fix');
@@ -8468,19 +8499,16 @@ test('the missing-group row shows the §3.4(a) inline destination select, only i
     ['T1', 'T2', 'T3', 'T4', 'T9', '', '__classify', '__deny', '__fixed'],
     'the closed option set of §2.2, the missing group kept visible');
 
-  // Read mode: the row is marked but the fix needs a save path, so the
-  // control is not born there — the banner's [ Ir para a regra ] jump opens
-  // the editor, and the Editar support text says editing is allowed.
-  api.setMode('reading');
+  // There is no mode that hides a remedy: a re-render still carries the fix,
+  // because the row that needs it never stops needing it.
   api.renderSheet();
-  assert.equal(findAll(dom.get('sheet'), 'step-dest-fix').length, 0,
-    'no fix control in reading mode');
+  assert.equal(findAll(dom.get('sheet'), 'step-dest-fix').length, 1,
+    'a re-render keeps the fix — absence only ever meant a mode, and the mode is gone');
 });
 
 test('choosing a destination on the §3.4(a) row writes the DRAFT and opens the rule editor', () => {
   const { api, dom } = loadConsole();
   missingGroupState(api);
-  api.setMode('editing');
   api.renderSheet();
 
   const wrap = findAll(dom.get('sheet'), 'step-dest-fix')[0];
@@ -8506,24 +8534,34 @@ test('choosing a destination on the §3.4(a) row writes the DRAFT and opens the 
   assert.match(flat(dom.get('sheet')), /⚠ Grupo T9 — não existe/);
 });
 
-test('while the file lints bad the Editar button carries the §3.4(a) support text', () => {
-  // The DOM stub has no markup, so the literal is pinned against the file's
-  // own markup — the same way seedJsonActions mirrors #jsonActions.
+test('while the file lints bad there is no Salvar in the DOM at all (§3.4(a))', () => {
+  // The write path is always armed — the mode is gone — so the one thing that
+  // can make Salvar leave the DOM is a lint error: absent, not disabled
+  // (DESIGN.md:435-463). The mode-era editNote support text is gone with the
+  // mode; the absence itself is the message now.
   const src = fs.readFileSync(sourcePath, 'utf8');
-  assert.match(src,
-    /id="editNote"[^>]*>Você pode editar; só não é possível salvar até o erro acima ser corrigido\.<\/span>/,
-    'the support text is the spec literal, in the markup');
+  assert.doesNotMatch(src, /id="editNote"/, 'the mode-era support text is gone from the markup');
   const { api, dom } = loadConsole();
+  // The stub has no markup parser, so the actions row is seeded the way the
+  // markup declares it (see the bansMsg pattern above).
+  const actions = dom.get('jsonActions');
+  actions.append(dom.get('jsonPreview'), dom.get('jsonRevert'), dom.get('jsonApply'));
   missingGroupState(api);
   api.renderWarnings();
-  const note = dom.get('editNote');
-  assert.equal(note.hidden, false, 'the support text is present with the error');
-  assert.equal(note.textContent, '', 'the stub node is a mirror; the literal lives in the markup');
+  assert.ok(!dom.get('jsonActions').children.includes(dom.get('jsonApply')),
+    'while the file lints bad there is no Salvar in the DOM at all');
+  assert.ok(dom.get('jsonActions').children.includes(dom.get('jsonRevert')),
+    'Voltar à versão anterior stays — it is two clicks, and it restores a .bak, not the broken file');
 
-  // The note rides the error set, not the mode: it clears with the errors.
+  // The gate rides the error set, not a mode: a clean file puts Salvar back,
+  // in its own place — before "Ver o que muda", the order the flow reads.
   api.state.status = { validation_errors: [], error_targets: [], enabled: true };
   api.renderWarnings();
-  assert.equal(dom.get('editNote').hidden, true, 'a clean file hides the note');
+  assert.ok(actions.children.includes(dom.get('jsonApply')),
+    'a clean file brings Salvar back');
+  assert.ok(actions.children.indexOf(dom.get('jsonApply'))
+    < actions.children.indexOf(dom.get('jsonPreview')),
+    'and it lands before Ver o que muda — see what changes, then save');
 });
 
 // ── §3.4(b): an attempt outside the catalogue names its two remedies ──────
@@ -8559,7 +8597,6 @@ test('an off-catalogue attempt warns with the two named remedies, and Deixar wri
   api.state.loading = false;
   api.state.policy = unknownModelPolicy();
   api.state.capabilities = api.capabilityRegistry(catalogue('glm-4.7'));
-  api.setMode('editing');
   api.renderLadder();
 
   const said = flat(dom.get('ladder'));
@@ -8588,7 +8625,6 @@ test('Trocar por um modelo do catálogo opens the group editor with THAT attempt
   api.state.loading = false;
   api.state.policy = unknownModelPolicy();
   api.state.capabilities = api.capabilityRegistry(catalogue('glm-4.7'));
-  api.setMode('editing');
   api.renderLadder();
 
   const buttons = findAll(dom.get('ladder'), 'btn');
@@ -8631,7 +8667,6 @@ test('Baixar a exigência do grupo points at the panel floor field, preloaded, a
     'glm-4.7': { provider: 'zai', context_window: 200000 },
     'gpt-5.6-luna': { provider: 'openai-codex', context_window: 1000000 },
   };
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T3', name: 'T3', bind: 'tier', tier: 'T3' });
   const box = dom.get('inspector');
   const modelWrap = byLabel(box, 'Modelo');
@@ -8723,7 +8758,6 @@ test('every field the inspector builds binds label to control — for/id in the 
     'gpt-5.6-luna': { provider: 'openai-codex', context_window: 1000000 },
     'mimo-v2.5': { provider: 'xiaomi', context_window: 1048576 },
   };
-  api.setMode('editing');
   const binds = [
     { id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' },
     { id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 },
@@ -8742,7 +8776,6 @@ test('reopening the inspector mints fresh ids — two renders never share one', 
   api.state.loading = false;
   api.state.policy = tierPolicy();
   api.state.capabilities = { 'glm-4.7': { provider: 'zai', context_window: 200000 } };
-  api.setMode('editing');
   const node = { id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' };
   api.renderInspector(node);
   const first = collectFieldNodes(dom.get('inspector')).controls.map((c) => c.node.id);
@@ -8760,7 +8793,6 @@ test('the escape-hatch field carries its own label once revealed', () => {
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = { 'glm-4.7': { provider: 'zai', context_window: 200000 } };
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
   const modelWrap = byLabel(dom.get('inspector'), 'Modelo');
   const escapeBtn = modelWrap.children.find((b) => b.textContent === 'Usar um id que não está na lista');
@@ -8779,7 +8811,6 @@ test('the "Outro papel…" text field is named when revealed', () => {
   policy.rules = [{ id: 'r1', when: {}, then: { model: 'T2', profile: 'coder' } }];
   api.state.policy = policy;
   api.state.loading = false;
-  api.setMode('editing');
   api.renderInspector({ id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 });
   const wrap = byLabel(dom.get('inspector'), 'Papel');
   const select = wrap.children.find((c) => c.tagName === 'select');
@@ -8795,7 +8826,6 @@ test('the "Outro papel…" text field is named when revealed', () => {
 test('the §3.4(a) row-fix select is a bound field too', () => {
   const { api, dom } = loadConsole();
   missingGroupState(api);
-  api.setMode('editing');
   api.renderSheet();
   assertEveryFieldLinked(dom.get('sheet'), 'sheet destFix row');
 });
@@ -8823,7 +8853,6 @@ test('the cap field preloads the effective value and writes {max_multiplier: n},
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const box = dom.get('inspector');
 
@@ -8865,7 +8894,6 @@ test('clearing the cap field writes null — absence, never a ceiling of 0', asy
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const box = dom.get('inspector');
   const capInput = byLabel(box, 'Teto de preço (multiplicador máximo)').children.find((c) => c.tagName === 'input');
@@ -8915,7 +8943,6 @@ test('a loose time_cap: 1.5 keeps the §5.4 line and is rewritten in the map for
   assert.match(flat(dom.get('ladder')), /formato que o roteador não lê/,
     'the §5.4 text still names the loose form on the Ordem line');
 
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const box = dom.get('inspector');
   const capInput = byLabel(box, 'Teto de preço (multiplicador máximo)').children.find((c) => c.tagName === 'input');
@@ -8944,7 +8971,6 @@ test('the floor field preloads the effective min_context and the picker count fo
     'glm-4.7': { provider: 'zai', context_window: 200000 },
     'gpt-5.6-luna': { provider: 'openai-codex', context_window: 1000000 },
   };
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T3', name: 'T3', bind: 'tier', tier: 'T3' });
   const box = dom.get('inspector');
   const floorWrap = byLabel(box, 'Exigência de contexto (mínimo de tokens)');
@@ -8991,7 +9017,6 @@ test('clearing the floor sends requirements: null, so the group reads (padrão d
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T3', name: 'T3', bind: 'tier', tier: 'T3' });
   const box = dom.get('inspector');
   const floorInput = byLabel(box, 'Exigência de contexto (mínimo de tokens)').children.find((c) => c.tagName === 'input');
@@ -9032,7 +9057,6 @@ test('clearing the floor beside OTHER requirement keys drops only min_context', 
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T3', name: 'T3', bind: 'tier', tier: 'T3' });
   const box = dom.get('inspector');
   const floorInput = byLabel(box, 'Exigência de contexto (mínimo de tokens)').children.find((c) => c.tagName === 'input');
@@ -9059,7 +9083,6 @@ test('the preset label beside the fields follows the draft: Personalizado when t
   policy.tiers.T2.time_cap = { max_multiplier: 1.5 };
   api.state.policy = policy;
   api.state.loading = false;
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const box = dom.get('inspector');
   const noteOf = () => box.children.find((c) => String(c.className).includes('field-note')
@@ -9106,7 +9129,6 @@ test('editing floor and cap sends ONLY the two constraint keys in the plan body'
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const box = dom.get('inspector');
   const floorInput = byLabel(box, 'Exigência de contexto (mínimo de tokens)').children.find((c) => c.tagName === 'input');
@@ -9136,7 +9158,6 @@ test('editing the cap reveals the preset Economizar pointer — the one authorit
   const { api, dom } = loadConsole();
   api.state.policy = tierPolicy();
   api.state.loading = false;
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
   const box = dom.get('inspector');
   const capWrap = byLabel(box, 'Teto de preço (multiplicador máximo)');
@@ -9183,7 +9204,6 @@ test('↓ on the primary and ↑ on the first reserve: the declared override fol
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
   const box = dom.get('inspector');
   let rows = findAll(box, 'chain-row');
@@ -9216,7 +9236,6 @@ test('a promoted attempt with no billing mode leaves an explicit null on the tie
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
   const box = dom.get('inspector');
   const rows = findAll(box, 'chain-row');
@@ -9234,7 +9253,6 @@ test('↑/↓ between two reserves move the whole attempt: the declared override
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
   const box = dom.get('inspector');
   let rows = findAll(box, 'chain-row');
@@ -9262,7 +9280,6 @@ test('Remover on the primary promotes the first reserve WITH its declared overri
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
   const box = dom.get('inspector');
   const rows = findAll(box, 'chain-row');
@@ -9287,7 +9304,6 @@ test('the strategy keys stay on the tier through every move — they never trave
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
   const box = dom.get('inspector');
   const strategyKeys = ['fallback', 'fallback_strategy', 'pin_primary', 'time_cap', 'time_policy', 'requirements'];
@@ -9334,7 +9350,6 @@ test('the /plan body after a move carries the queue with each override on its ow
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
   const box = dom.get('inspector');
   const rows = findAll(box, 'chain-row');
@@ -9362,7 +9377,6 @@ test('a reserve-reserve swap says a missing billing mode out loud, on the attemp
   api.state.policy = policy;
   api.state.loading = false;
   api.state.capabilities = capModels();
-  api.setMode('editing');
   api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
   const box = dom.get('inspector');
   const rows = findAll(box, 'chain-row');
@@ -9377,11 +9391,12 @@ test('a reserve-reserve swap says a missing billing mode out loud, on the attemp
 // ── §2.6 / §3.3: Fora de rotação — desbanir pela tela e a fila que substitui ──
 // The block used to draw bans with no way to lift them, and never drew the
 // substitute queue. The removal is a write like any other (plan → diff → apply
-// with the whole list minus the item), gated on the same editing mode and the
-// same staleness read — with one difference: GET /policy does not project
-// blocklist, so the guard re-reads the /blocklist the screen already reads.
+// with the whole list minus the item), gated on the same staleness read — with
+// one difference: GET /policy does not project blocklist, so the guard re-reads
+// the /blocklist the screen already reads. The control itself is always born:
+// there is no mode to arm (card t_f81c24ee).
 
-test('only a manual ban offers removal, and only in editing mode', () => {
+test('a manual ban always offers removal; a breaker cooldown never does', () => {
   const { api, dom } = loadConsole();
   api.state.policy = {};
   api.state.blocklist = {
@@ -9390,20 +9405,17 @@ test('only a manual ban offers removal, and only in editing mode', () => {
     fallback_chain: [],
   };
   api.renderHealth();
-  assert.equal(findAll(dom.get('bans'), 'btn').length, 0,
-    'reading mode: no removal control exists in the DOM at all — not disabled, absent');
   assert.match(flat(dom.get('bans')), /banido/, 'a manual ban is named with the pt-BR state word');
   assert.match(flat(dom.get('bans')), /faltam 300s/, 'a breaker cooldown says the time owed in pt-BR, unit included');
-  api.setMode('editing');
+  // The lift is always one tap away — the mode that used to hide it protected
+  // nothing and cost a click on every removal (§3.3). The only gates are the
+  // server's: token, CSRF, base_hash, lint.
   const buttons = findAll(dom.get('bans'), 'btn');
-  assert.equal(buttons.length, 1, 'editing mode: the manual ban row grows the control');
+  assert.equal(buttons.length, 1, 'the manual ban row carries its control without arming anything');
   assert.equal(buttons[0].textContent, 'Remover o bloqueio');
   const breakerRow = dom.get('bans').children[1];
   assert.equal(findAll(breakerRow, 'btn').length, 0,
     'a breaker cooldown is not removable by hand: it expires on its own');
-  api.setMode('reading');
-  assert.equal(findAll(dom.get('bans'), 'btn').length, 0,
-    'leaving editing mode removes the control from the DOM');
 });
 
 test('removing a ban plans the whole list without it, and nothing else', async () => {
@@ -9439,10 +9451,12 @@ test('removing a ban plans the whole list without it, and nothing else', async (
   });
   api.state.policy = {};
   api.state.blocklist = server.blocklist;
+  // The bans block is drawn by renderHealth, which boot would call — but the
+  // test harness strips the boot (loadConsole), so the draw is explicit here.
+  api.renderHealth();
   // The markup ships the message line hidden; the fake DOM cannot read the
   // attribute, so the test arms the state the markup declares.
   dom.get('bansMsg').hidden = true;
-  api.setMode('editing');
   findAll(dom.get('bans'), 'btn')[0]._listeners.click();
   await tick();
 
@@ -9480,7 +9494,9 @@ test('removing a ban refuses when the blocklist moved since the screen read it',
     manual_bans: [{ model: 'glm-5.3' }],
     fallback_chain: [], breaker_enabled: true, breaker_cooldowns: [],
   };
-  api.setMode('editing');
+  // The bans block is drawn by renderHealth, which boot would call — but the
+  // test harness strips the boot (loadConsole), so the draw is explicit here.
+  api.renderHealth();
   findAll(dom.get('bans'), 'btn')[0]._listeners.click();
   await tick();
 
@@ -9500,7 +9516,7 @@ test('removing a ban without a session token says the gesture, not "salvar"', ()
   const { api, dom } = loadConsole({ csrfToken: '' });
   api.state.policy = {};
   api.state.blocklist = { manual_bans: [{ model: 'glm-5.3' }], breaker_cooldowns: [], fallback_chain: [] };
-  api.setMode('editing');
+  api.renderHealth();
   findAll(dom.get('bans'), 'btn')[0]._listeners.click();
   assert.match(dom.get('bansMsg').textContent, /Não é possível remover o bloqueio/,
     'the refusal names the button\'s own gesture');
@@ -9573,7 +9589,9 @@ test('the unban button says the gesture in flight and rests after the write (§3
   });
   api.state.policy = {};
   api.state.blocklist = server.blocklist;
-  api.setMode('editing');
+  // The bans block is drawn by renderHealth, which boot would call — but the
+  // test harness strips the boot (loadConsole), so the draw is explicit here.
+  api.renderHealth();
   const btn = findAll(dom.get('bans'), 'btn')[0];
   btn._listeners.click();
   await tick();
@@ -10258,7 +10276,6 @@ test('moveRule warns BEFORE writing when the new order creates a shadow', async 
     },
   });
   api.state.policy = reorderPolicy();
-  api.state.mode = 'editing';
   const note = dom.get('reorderMsg');
   // Baseline shadows in the fixture: r1 (gt 10) already covers r2 (gt 100)
   // and r4 (gt 20) — the sheet's known amber state. Moving r4 to index 1
@@ -10303,7 +10320,6 @@ test('moveRule writes the full reordered list through the plan spine', async () 
     },
   });
   api.state.policy = policy;
-  api.state.mode = 'editing';
   const note = dom.get('reorderMsg');
   // A harmless move (r2 below r3): no new shadow, straight to the write.
   const ok = await api.moveRule(1, 2);
@@ -10338,7 +10354,6 @@ test('a 409 on the reorder write is said, not swallowed', async () => {
     },
   });
   api.state.policy = reorderPolicy();
-  api.state.mode = 'editing';
   const note = dom.get('reorderMsg');
   const ok = await api.moveRule(1, 2);
   assert.equal(ok, false);
@@ -10347,18 +10362,19 @@ test('a 409 on the reorder write is said, not swallowed', async () => {
   assert.equal(api.state.plan, null, 'the stale plan does not survive to be applied again');
 });
 
-test('the sheet renders a grip on editable rule rows only, with the keyboard and touch paths', () => {
+test('every rule row carries the grip — always, and a synthetic row never does', () => {
   const { api, dom } = loadConsole();
   api.state.loading = false;
   api.state.policy = reorderPolicy();
-  api.state.mode = 'editing';
   api.renderSheet();
   const sheet = dom.get('sheet');
   const rows = sheet.children;
   // The catch-all rows (default, fail-safe) moved to the tail block (§5).
   assert.equal(rows.length, 4, '4 rules in the numbered list');
   assert.equal(dom.get('sheetTailList').children.length, 2, 'default + fail-safe in the tail');
-  // Real rule rows: grip present, draggable, with both arrow buttons.
+  // Real rule rows: grip present, draggable, with both arrow buttons. The
+  // grip is on every rule row now — reorder is an always-on gesture, there
+  // is no mode that hides it (card t_f81c24ee).
   for (let i = 0; i < 4; i += 1) {
     const grip = findAll(rows[i], 'step-grip')[0];
     assert.ok(grip, `rule row ${i} has a grip`);
@@ -10374,11 +10390,10 @@ test('the sheet renders a grip on editable rule rows only, with the keyboard and
   const tailRows = dom.get('sheetTailList').children;
   assert.equal(findAll(tailRows[0], 'step-grip').length, 0);
   assert.equal(findAll(tailRows[1], 'step-grip').length, 0);
-  // Reading mode: the sheet shows the policy as it runs; a drag target
-  // there would promise a write the mode refuses.
-  api.state.mode = 'reading';
+  // A re-render draws the same always-on shape.
   api.renderSheet();
-  assert.equal(findAll(dom.get('sheet'), 'step-grip').length, 0);
+  assert.equal(findAll(dom.get('sheet'), 'step-grip').length, 4,
+    "the grip does not come and go with a mode — it is the sheet's own shape");
   assert.equal(findAll(dom.get('sheetTailList'), 'step-grip').length, 0);
 });
 
@@ -10403,7 +10418,6 @@ test('the keyboard path is the same write: ArrowUp on the grip moves the rule', 
     },
   });
   api.state.policy = policy;
-  api.state.mode = 'editing';
   api.renderSheet();
   const rows = dom.get('sheet').children;
   const grip = findAll(rows[2], 'step-grip')[0]; // r3
@@ -10440,7 +10454,6 @@ test('the touch path is the same write: the ↑ button on a coarse-pointer sheet
     },
   });
   api.state.policy = policy;
-  api.state.mode = 'editing';
   api.renderSheet();
   const rows = dom.get('sheet').children;
   const grip = findAll(rows[3], 'step-grip')[0]; // r4
@@ -10456,7 +10469,6 @@ test('the touch path is the same write: the ↑ button on a coarse-pointer sheet
 test('the drop lands before the target row above the midline and after it below', () => {
   const { api, dom } = loadConsole();
   api.state.policy = reorderPolicy();
-  api.state.mode = 'editing';
   api.renderSheet();
   const rows = dom.get('sheet').children;
   // The stub node's box: width 900, height 300, top 0 (fakeDom) — midline 150.
@@ -10493,7 +10505,6 @@ test('a drag between two editable rows writes the move', async () => {
     },
   });
   api.state.policy = policy;
-  api.state.mode = 'editing';
   api.renderSheet();
   const rows = dom.get('sheet').children;
   const source = findAll(rows[0], 'step-grip')[0]; // r1

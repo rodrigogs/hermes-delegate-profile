@@ -17,8 +17,8 @@
       (--ok/--warn/--info/--bad) report CONDITION and nothing else, so a gold
       underline can never be read as health.
     STORY: Health first — the models it can reach. Pipeline to see and change how
-      tasks route, in an explicit edit mode. Routes to replay what really happened,
-      step by step.
+      tasks route, by clicking the value you want to change. Routes to replay what
+      really happened, step by step.
     FIRST VIEWPORT: A host-shaped header names the surface, a tab strip names the
       three destinations and carries their live state, and then the screen's own
       question is answered in its first line: how many models are routable, or
@@ -232,10 +232,6 @@
       color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .view-actions { display: inline-flex; align-items: center; gap: 8px; justify-self: end; }
-    /* §3.4(a): the support text under the Editar button while the file lints
-       bad. A note, not a button: it never looks pressable, because the action
-       it names is the mode button's, not its own. */
-    .edit-note { color: var(--muted); font: var(--t-label) var(--sans); max-width: 34ch; line-height: 1.35; }
 
     /* Liveness of the console's own reading, next to the controls that refresh
        it: a dot and the provenance ages, 11px, the host's metadata step. The
@@ -318,13 +314,6 @@
     .btn.go:hover { border-color: var(--accent-strong); background: var(--accent-strong); color: var(--accent-fg); }
     .btn.warn { color: var(--bad-text); border-color: var(--line-strong); }
     .btn.warn:hover { border-color: var(--bad); background: var(--bad-bg); }
-    /* Editing is a MODE of this console, so its control reads as pressed while
-       the mode is on, in the host's own "selected" idiom (accent wash + accent
-       text). Deliberately not amber: the four condition colours describe the
-       router, and an operator choosing to edit is not the router degrading. */
-    .mode[aria-pressed="true"] {
-      border-color: var(--accent-bg-strong); background: var(--accent-bg); color: var(--accent-text);
-    }
 
     /* ── the scrolling body ────────────────────────────────────────────
        The host's .main-view-body: it scrolls, the header does not. padding
@@ -552,8 +541,8 @@
          floating pair they shared (fit-content(46%)) and become columns, so
          the eye compares down a column — the same measured defect that made
          the rule column minmax(0,1fr) instead of `auto` applies here. The
-         grid is the same in editing mode: the grip occupies track 1, and
-         the touch target keeps its 44px by overflowing the 20px track
+         grip occupies track 1 on every rule row (there is no mode that hides
+         it), and the touch target keeps its 44px by overflowing the 20px track
          (see .step-grip below), never by widening the column. */
       grid-template-columns: 20px 26px minmax(0, 1fr) 128px 196px 62px;
       gap: 0 10px; align-items: baseline; padding: 12px 10px 12px 0;
@@ -566,11 +555,11 @@
     }
     /* The five content cells PIN their tracks (comp-tarefas: punho 20 ·
        número 26 · Quando 1fr · Vai para 128 · Primeira tentativa 196 · Uso
-       8d 62). Pinning, not auto-placement: reading mode has no grip, so
-       auto-placement would start the ordinal in the grip track and every
-       cell would read one column off its head — measured on the live sheet
-       with the head row as the ruler (step-to landed under "Primeira
-       tentativa", step-hits under "Vai para"). */
+       8d 62). Pinning, not auto-placement: without the pins, auto-placement
+       would start the ordinal in the grip track and every cell would read
+       one column off its head — measured on the live sheet with the head row
+       as the ruler (step-to landed under "Primeira tentativa", step-hits
+       under "Vai para"). */
     .step-ord { grid-column: 2; }
     .step-what { grid-column: 3; }
     .step-to { grid-column: 4; }
@@ -601,6 +590,23 @@
     .step.shadowed .step-when { color: var(--warn-text); }
     .step.shadowed::before { background: var(--warn); box-shadow: 0 0 0 2px var(--warn-bg); }
     .step-when { color: var(--muted); font: var(--t-meta) var(--sans); margin-top: 3px; }
+    /* The no-mode affordance (comp-tarefas: "clique numa condição, num grupo
+       ou numa cápsula da fila para mudar ali mesmo"): a value that opens an
+       editor wears the comp's dotted underline and the pointer, so nothing
+       that is clickable looks inert and nothing inert looks clickable. The
+       shadowed-line warn colour above wins over this — an amber dead row's
+       condition is still clickable, but the warning is the news. */
+    .step-when.is-edit,
+    .step-dest.is-edit,
+    .step-open-chain.is-edit {
+      cursor: pointer;
+      text-decoration: underline dotted;
+      text-underline-offset: 3px;
+      text-decoration-color: var(--line-strong);
+    }
+    .step-when.is-edit:hover,
+    .step-dest.is-edit:hover,
+    .step-open-chain.is-edit:hover { color: var(--text); }
     /* Destination and hits are columns, not a floating pair: a reader compares
        down a column, so both must land on the same x on every line. Two ways this
        has failed, both measured on the live sheet:
@@ -699,14 +705,17 @@
 
     /* ── The reorder handle (card: reordenar regras arrastando pelo punho) ──
        Order IS the semantics (first match wins), so moving a row is a
-       first-class write — the handle is the affordance for it. It exists only
-       in editing mode: reading mode shows the policy as it runs, and a drag
-       target there would promise a write the mode refuses to deliver.
-       The six-column grid is the same in both modes (comp-tarefas gives the
-       grip track 20px); the touch target does not shrink because the track
-       did — the 44px button simply overflows the 20px track (margin-left
-       -12px centres the ⠿ glyph on the track, and the overflow to the right
-       is transparent, so the ordinal beside it still reads). The alternative
+       first-class write — the handle is the affordance for it. It is on
+       every rule row: the sheet shows the policy as it runs, and the grip is
+       the affordance whose drag writes; there is no mode that hides a write
+       gesture (card t_f81c24ee). Synthetic rows (default, fail-safe,
+       blocklist) carry no grip — there is no index to move and no list to
+       write.
+       The six-column grid gives the grip track 20px; the touch target does
+       not shrink because the track did — the 44px button simply overflows
+       the 20px track (margin-left -12px centres the ⠿ glyph on the track,
+       and the overflow to the right is transparent, so the ordinal beside it
+       still reads). The alternative
        — keyboard only — is what the arrows below are for; drag is the
        convenience, not the gate. */
     .step-grip {
@@ -958,6 +967,11 @@
 
     .field { display: grid; gap: 6px; margin-bottom: 12px; }
     .field label { color: var(--muted); font: 600 var(--t-label) var(--sans); letter-spacing: .05em; text-transform: uppercase; }
+    /* The conditions block of the rule editor: a label above the clause
+       fields, hairline-separated from the destination controls below it, so
+       the two surfaces the rule carries read as two. */
+    .field-label { margin: 0 0 10px; font: 600 var(--t-label) var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+    .rule-when { border-bottom: 1px solid var(--line); padding-bottom: 4px; margin-bottom: 14px; }
     .field input, .field select {
       border: 1px solid var(--line); border-radius: var(--radius-input); padding: 8px 11px;
       background: var(--host-input-bg, var(--surface)); color: var(--text); font: var(--t-body) var(--mono);
@@ -1371,25 +1385,10 @@
            something else owns: it reports THIS CONSOLE'S last read, which nothing
            else on screen can say. -->
       <span class="reach" id="reach"><span class="dot"></span><span id="reachText">Ainda não li nada do roteador.</span></span>
-      <!-- Edit, not a padlock. The padlock claimed to be a protection and was
-           not: the sidecar has never heard of it (zero mentions in
-           one_sidecar.py), and every write is already gated server-side by the
-           per-extension token-v1 secret, the host's CSRF token, a loopback-only
-           bind, and an optimistic base_hash that answers 409 on drift. The
-           compaction action additionally requires confirm=="COMPACT" checked ON
-           THE SERVER (one_sidecar.py:392).
-           What it did that was worth keeping is the read-only DEFAULT: the
-           Pipeline shows the live routing policy, and a stray tap on a line
-           should not start editing it. That is a mode, so it is named as one. -->
-      <button class="btn mode" id="editMode" type="button" aria-pressed="false">
-        <span id="editLabel">Editar</span>
-      </button>
-      <!-- §3.4(a): while the file carries a lint error the Editar button stays
-           (editing is not writing) and THIS is the support text that says the
-           line between the two — you may edit, you may not save yet. Absent,
-           the mode button reads as the thing to press and the error as the
-           reason it does nothing. -->
-      <span class="edit-note" id="editNote" hidden>Você pode editar; só não é possível salvar até o erro acima ser corrigido.</span>
+      <!-- §3.4(a): while the file carries a lint error there is no Salvar in
+           the DOM — a control that cannot write is absent, not disabled — and
+           the save button comes back when the file is fixed. The write path
+           itself never changed: plan → apply, with the base_hash guard. -->
       <button class="btn" id="refresh" type="button"></button>
     </div>
   </header>
@@ -1655,7 +1654,7 @@
                  ride the map and boot stamps this line from it, like the
                  three buttons below. -->
             <p class="field-note" id="jsonNote"></p>
-            <textarea id="policyEditor" class="editor" spellcheck="false" readonly aria-label="Política como texto"></textarea>
+            <textarea id="policyEditor" class="editor" spellcheck="false" aria-label="Política como texto"></textarea>
             <!-- No Confirm button. It POSTed /apply/confirm, which on the server
                  is the SAME function as /apply — one_sidecar.py:346 and :353 both
                  return _commit_policy(body). Two buttons, one effect, and nothing
@@ -1728,7 +1727,6 @@
       const NARROW_BELOW = 1120;
 
       const state = {
-        mode: 'reading',   // 'reading' or 'editing'
         health: null, status: null, policy: null, blocklist: null,
         liveness: null, routes: [],
         // The birthmark of THIS document: the process_started_at of the first
@@ -1757,6 +1755,12 @@
         // the resolved choice. The write lives in the controls card.
         compaction: null,
         plan: null, draft: null, selected: null,
+        // The last value renderAll wrote into the whole-file editor
+        // (policyEditor). The editor is always armed; a textarea that still
+        // holds this value is untouched, so a refresh may re-fill it with the
+        // fresh policy — anything else is an operator draft and is never
+        // clobbered.
+        lastJsonFill: null,
         // §3.4(a): the destination the sheet row's "Escolha um destino que
         // exista" chose, waiting for the rule's editor to open and write it
         // into the draft. One-shot: consumed by renderInspector.
@@ -3421,8 +3425,8 @@
 
       // The ONE fix path for a shadowed rule: jump to the Pipeline sheet, mark
       // the dead row the way a probe marks its winner, open its inspector.
-      // pickBind works in reading mode too — the inspector shows the rule's
-      // current JSON — because navigation is not an edit.
+      // pickBind works from anywhere — the click opens the editor itself, and
+      // navigation is not an edit.
       function showLintTarget(target) {
         if (!target || typeof target !== 'object') return;
         const laterId = target.later_id == null ? '' : String(target.later_id);
@@ -3836,11 +3840,6 @@
         // which is exactly how it escaped §4.7. Boot stamps the resting one.
         refresh: 'Recarregar',
         refreshing: 'Recarregando…',
-        // §4.1: the mode button names what it does NEXT. The resting labels
-        // ('Editar', 'Editar a política de roteamento') predate the map; the
-        // two words that exist only while armed are new, so they live here.
-        done: 'Concluir',
-        stopEditing: 'Parar de editar',
         // §3.2: the routing fact — its label and its two words. The value is
         // what an operator reads in the Health column, so 'on'/'off' had to
         // go; 'Roteando…' is the probe verdict while the sidecar answers.
@@ -3898,9 +3897,10 @@
       // ── No Salvar while the file carries an error (§3.4(a), CA8) ─────
       // ABSENT, not disabled (DESIGN.md:435-463). A disabled control still reads as
       // "this is the thing to press", and pressing your way out of an error state is
-      // exactly the wrong lesson: nothing can be written until the file is fixed. The
-      // Editar control stays, with the support text saying you may edit and may not
-      // save yet.
+      // exactly the wrong lesson: nothing can be written until the file is fixed.
+      // The write path is always armed (card t_f81c24ee) — what the lint gate
+      // refuses is the WRITE, not the editing: Salvar is absent until the file is
+      // fixed, and nothing else on screen pretends otherwise.
       //
       // Detached rather than rebuilt: the button keeps ONE definition (the markup) and
       // one listener wired at boot, so a rebuild cannot lose the handler. The
@@ -3932,12 +3932,9 @@
       function renderWarnings() {
         const box = $('warnings');
         clear(box);
-        // §3.4(a): the Editar support text rides the same error set the banner
-        // reads, so the two can never disagree about whether the file is
-        // blocked. The note appears even in reading mode — the fact is the
-        // file's, not the mode's.
-        const editNote = $('editNote');
-        if (editNote) editNote.hidden = lintErrors().length === 0;
+        // §3.4(a): the file's error set is the ONE thing that decides whether a
+        // Salvar exists (syncSaveButtons above). The banner below names the
+        // errors; the two read the same lintErrors() so they cannot disagree.
         if (state.unreachable || Object.keys(state.readFailures).length > 0) {
           const line = el('div', 'warn-line bad');
           line.append(el('strong', '', 'Não consegui falar com o roteador.'),
@@ -4031,7 +4028,16 @@
         // already calls renderWarnings, so there is one place that decides whether a
         // Salvar exists at all.
         syncSaveButtons();
-        if (state.mode === 'editing' && !csrf()) {
+        // Without a session token a save can never land, and the operator
+        // only needs to be told that while an edit surface is actually open —
+        // a permanent banner on the standalone page would read as a broken
+        // console. The inspector editor is open exactly when selectedNode
+        // points at an EDITABLE bind, so the banner rides that state, not a
+        // mode: click-to-edit is the click, and this line says the save the
+        // click leads to cannot land here.
+        const openEditor = state.selectedNode && state.selectedNode.bind
+          && EDITABLE.has(state.selectedNode.bind);
+        if (openEditor && !csrf()) {
           const line = el('div', 'warn-line');
           line.append(el('strong', '', 'A edição não pode ser aplicada aqui.'),
                       el('span', '', fill(WRITE.noCredential, { action: 'salvar' })));
@@ -4415,9 +4421,9 @@
       // ── §2.6 / §3.3: Fora de rotação ─────────────────────────────────
       // Who is out of rotation (manual bans + breaker cooldowns) and — the
       // half the review found missing — the queue that SUBSTITUTES a banned
-      // model. Drawn whole in one pass so a mode change (setMode) can re-draw
-      // it: the removal control exists only in editing mode, and "exists" means
-      // built, not hidden (absent, not disabled, §4).
+      // model. The manual-ban row always carries its lift control — "exists"
+      // means built, not hidden (absent, not disabled, §4) — and a breaker
+      // cooldown never does: it expires on its own.
       function renderBans() {
         const bl = state.blocklist || {};
         const bans = Array.isArray(bl.manual_bans) ? bl.manual_bans : [];
@@ -4445,12 +4451,13 @@
           if (b.reason) name.append(el('div', 'row-note', b.reason));
           const right = el('div');
           right.append(el('span', 'state', WRITE.banned));
-          if (state.mode === 'editing') {
-            const btn = el('button', 'btn', WRITE.remove);
-            btn.type = 'button';
-            btn.addEventListener('click', () => removeBan(b, $('bansMsg'), btn));
-            right.append(btn);
-          }
+          // The lift is always one tap away: the only gate on a write is the
+          // server's (token, CSRF, base_hash, lint) — a mode that hid the
+          // control protected nothing and cost a click on every removal.
+          const btn = el('button', 'btn', WRITE.remove);
+          btn.type = 'button';
+          btn.addEventListener('click', () => removeBan(b, $('bansMsg'), btn));
+          right.append(btn);
           row.append(name, right);
           banBox.append(row);
         });
@@ -5032,7 +5039,6 @@
         // dead row names is the clause that proves it, so the rows, the
         // count and the fix must all read the same findings (DESIGN.md §2.2).
         const findings = shadowPairs(rules);
-        const editable = state.mode === 'editing';
         // A destination that names a TIER is the sheet's one vocabulary gap: it
         // reads as a model id while meaning "try this chain". The tier table and
         // the chain-rendering context are computed once per render — declared
@@ -5191,14 +5197,32 @@
           const name = el('div', 'step-name', opts.titleText || opts.id);
           if (opts.off) name.append(el('span', 'step-off', ' (desligada)'));
           what.append(name);
+          // The one affordance of the no-mode sheet: a value that opens an
+          // editor looks editable (dotted line, pointer) and a click opens it
+          // — nothing on a row asks the operator to arm a mode first. The row
+          // click itself still opens the queue (comp-tarefas "Clique na linha
+          // para abrir a fila inteira"); these cells stop their own
+          // propagation on top of that.
+          const editAffordance = (node, title, action) => {
+            node.classList.add('is-edit');
+            node.title = title;
+            node.addEventListener('click', (event) => {
+              if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+              action();
+            });
+          };
           if (opts.chips && opts.chips.length) {
             // Conditions are TEXT on the line now (comp-tarefas): the sheet
             // stopped using the chip list, so one clause is never announced as
             // a separate bullet from its neighbours — the " · " joins the
             // sentences of ONE rule, and the row reads as a sentence.
-            what.append(el('div', 'step-when', opts.chips.map((chip) => chip.text).join(' · ')));
+            const whenLine = el('div', 'step-when', opts.chips.map((chip) => chip.text).join(' · '));
+            if (opts.onPick) editAffordance(whenLine, opts.editTitle || 'Abrir a edição desta linha', opts.onPick);
+            what.append(whenLine);
           } else if (opts.when) {
-            what.append(el('div', 'step-when', opts.when));
+            const whenLine = el('div', 'step-when', opts.when);
+            if (opts.onPick) editAffordance(whenLine, opts.editTitle || 'Abrir a edição desta linha', opts.onPick);
+            what.append(whenLine);
           }
           // Per-rule footnotes (§4.4): injected clock fields and unknown
           // condition names say their consequence on the row itself.
@@ -5253,6 +5277,12 @@
             }
           }
           to.append(dest);
+          // The destination cell is the sheet's "clicar num grupo" target: a
+          // click anywhere in "Vai para" opens the rule's editor with the
+          // destination control first. The tier chip inside stops its own
+          // propagation, so expanding the chain it reveals is still its own
+          // gesture, not an edit.
+          if (opts.onPick) editAffordance(dest, opts.editTitle || 'Abrir a edição desta linha', opts.onPick);
           // The first attempt (comp-tarefas "Primeira tentativa", 196px): the
           // head of the queue the destination points at. A tier shows its
           // first elo with how it is billed and on whose rail; the classifier
@@ -5295,6 +5325,12 @@
               state.rowDestFix = { ruleIndex: opts.destFix.ruleIndex, value: fixSelect.value };
               pickBind({ id: `rule:${opts.destFix.id}`, name: String(opts.destFix.id), bind: 'rule', ruleIndex: opts.destFix.ruleIndex });
             });
+            // Opening the select must not trip the row click (the queue
+            // toggle): the row's own gesture is the line, this control is a
+            // value in it.
+            fixWrap.addEventListener('click', (event) => {
+              if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+            });
             fixWrap.append(fixSelect);
             to.append(fixWrap);
           }
@@ -5327,10 +5363,11 @@
           if (expansion) item.append(expansion);
           // The row opened by a click (comp-tarefas: "Clique na linha para
           // abrir a fila inteira"): the whole queue, the role the rule fixed
-          // and the rule's id. Reading mode owns the click; in editing mode
-          // the click already opens the rule's editor, and the grip and the
-          // tier chip stop their own propagation on top of this.
-          if (!opts.editable && !opts.synthetic && opts.id) {
+          // and the rule's id. The row click owns the queue; the condition,
+          // the destination cell and the queue's own capsules stop their
+          // propagation on top of this and open the editor of the value they
+          // name.
+          if (!opts.synthetic && opts.id) {
             const openBox = el('div', 'step-open');
             openBox.hidden = true;
             let open = false;
@@ -5351,6 +5388,16 @@
                     strategy, registry: state.capabilities, billing: chainBilling,
                     when: chainWhen, live: chainLive, showPrice: strategy.timeRelative,
                   }));
+                  // The comp's capsule: "clique numa cápsula da fila para
+                  // trocar". The hop pills are drawn by the shared chain
+                  // renderer, so the click target is the chain line as a
+                  // whole — the gesture opens the group's queue editor, where
+                  // that hop is one ↑/↓/Remover away.
+                  if (opts.tierDest) {
+                    editAffordance(body,
+                      'Clique numa cápsula para trocar essa opção da fila',
+                      () => pickBind({ id: `tier:${opts.tierDest}`, name: String(opts.tierDest), bind: 'tier', tier: opts.tierDest }));
+                  }
                   fila.append(body);
                 } else {
                   fila.append(el('div', 'step-open-val', opts.queueWords || opts.target || '—'));
@@ -5406,7 +5453,6 @@
             warn.append(own, shadower);
             item.append(warn);
           }
-          if (opts.onPick) item.addEventListener('click', opts.onPick);
           return item;
         };
 
@@ -5455,17 +5501,18 @@
               ? 'a decisão é do classificador, na hora — custa 1 chamada extra'
               : (dest.kind === 'refuse' ? 'a tarefa é recusada — não entra em fila' : dest.text),
             // §3.4(a): the missing-group row carries the one control that
-            // resolves the class — only in editing mode, where the fix has a
-            // save path to land in (the read view's banner jump opens the
-            // editor; the row's own select is that jump with the choice made).
-            destFix: dest.kind === 'missing' && editable
+            // resolves the class — always, because there is no mode to arm:
+            // the row's own select is the banner jump with the choice made,
+            // and the write still lands through the editor's Salvar.
+            destFix: dest.kind === 'missing'
               ? { ruleIndex: i, id: r.id != null ? String(r.id) : `regra ${i + 1}`, then } : null,
             hits: byRule[r.id] || 0,
             stale,
-            editable,
+            editable: true,
             off: r.enabled === false,
             shadow: shadowPairFor(i, findings),
-            onPick: editable ? () => pickBind({ id: `rule:${r.id}`, name: String(r.id), bind: 'rule', ruleIndex: i }) : null,
+            editTitle: 'Mudar as condições desta regra',
+            onPick: () => pickBind({ id: `rule:${r.id}`, name: String(r.id), bind: 'rule', ruleIndex: i }),
           }));
         });
         const def = policy.default || {};
@@ -5487,8 +5534,9 @@
           notes: ['Esta é a única rota que gasta uma chamada de modelo a mais.'],
           hits: byCause.default_fallthrough || 0,
           stale,
-          editable,
-          onPick: editable ? () => pickBind({ id: 'default', name: 'default', bind: 'default' }) : null,
+          editable: true,
+          editTitle: 'Mudar o destino padrão',
+          onPick: () => pickBind({ id: 'default', name: 'default', bind: 'default' }),
         }));
         const fs = policy.fail_safe || {};
         ord += 1;
@@ -5508,8 +5556,9 @@
           targetRail: fs.provider,
           hits: fsHits,
           stale,
-          editable,
-          onPick: editable ? () => pickBind({ id: 'fail_safe', name: 'fail_safe', bind: 'fail_safe' }) : null,
+          editable: true,
+          editTitle: 'Mudar o último recurso',
+          onPick: () => pickBind({ id: 'fail_safe', name: 'fail_safe', bind: 'fail_safe' }),
         }));
         if (tailBox) tailBox.hidden = false;
 
@@ -8664,9 +8713,12 @@
         // shows every rule and the ladder every tier, and the screen note already
         // says how to edit. DESIGN.md §2.1.
         if (!node) return;
-        const editing = state.mode === 'editing' && node.bind && EDITABLE.has(node.bind);
+        // Click-to-edit: every surface that can be configured opens its editor
+        // directly — there is no mode to arm. A node that has nothing to
+        // configure (runtime state from a replay) keeps the read-only view.
+        const canEdit = node.bind && EDITABLE.has(node.bind);
         box.append(el('h2', 'inspector-head', node.name));
-        if (!editing) {
+        if (!canEdit) {
           const policy = state.policy || {};
           let fragment = null;
           if (node.bind === 'rule') fragment = (policy.rules || [])[node.ruleIndex];
@@ -8674,13 +8726,6 @@
           else if (node.bind) fragment = policy[node.bind];
           if (node.runtime) box.append(el('p', 'nothing', 'Estado de execução — refeito a cada chamada, não há o que configurar.'));
           else box.append(Object.assign(el('pre', 'code', pretty(fragment || {})), {}));
-          // §4.7: in reading mode the editable surface names the one gesture
-          // that unlocks it — a phrase where the controls would be, not a new
-          // block. A node that can never be edited (runtime state) would read
-          // the instruction as a promise, so only EDITABLE binds get it.
-          if (state.mode !== 'editing' && node.bind && EDITABLE.has(node.bind)) {
-            box.append(el('p', 'nothing', 'Só leitura. Aperte "Editar" no topo para poder mudar algo.'));
-          }
           return;
         }
 
@@ -8752,6 +8797,72 @@
         } else if (node.bind === 'rule') {
           const r = d.rules[node.ruleIndex] = d.rules[node.ruleIndex] || {};
           r.then = r.then || {};
+          // The conditions the row's "Quando" line shows, editable clause by
+          // clause. The operator clicked a condition on the sheet and landed
+          // HERE — so the values that line names are the first thing this
+          // editor carries, or the click would have opened an edit of
+          // something else. The FIELD and the OPERATOR stay (changing the
+          // shape of a predicate is a whole-file text edit); the VALUE is
+          // what a click on "até 40 linhas" means to change. Types follow
+          // the value: boolean → sim/não, number → number input, list →
+          // comma-separated, anything else → text.
+          const whenBox = el('div', 'rule-when');
+          whenBox.append(el('h3', 'field-label', 'Condições'));
+          const clauses = Object.keys(r.when || {});
+          if (!clauses.length) {
+            whenBox.append(el('p', 'nothing', 'Sem condições — esta regra casa com qualquer tarefa.'));
+          } else {
+            clauses.forEach((field) => {
+              const clause = r.when[field];
+              if (!clause || typeof clause !== 'object') return;
+              Object.keys(clause).forEach((op) => {
+                const wrap = el('div', 'field');
+                const id = fieldId();
+                const lbl = el('label', '', `${field.replace(/_/g, ' ')} (${op})`);
+                lbl.htmlFor = id;
+                let input;
+                const value = clause[op];
+                const isBool = typeof value === 'boolean';
+                const isNum = typeof value === 'number';
+                if (isBool) {
+                  input = document.createElement('select');
+                  [['true', 'sim'], ['false', 'não']].forEach(([v, w]) => {
+                    const opt = document.createElement('option');
+                    opt.value = v; opt.textContent = w;
+                    input.appendChild(opt);
+                  });
+                  input.value = String(value);
+                } else if (isNum) {
+                  input = document.createElement('input');
+                  input.type = 'number';
+                  input.value = String(value);
+                } else if (Array.isArray(value)) {
+                  input = document.createElement('input');
+                  input.value = value.join(', ');
+                } else {
+                  input = document.createElement('input');
+                  input.value = String(value);
+                }
+                input.id = id;
+                const commit = (raw) => {
+                  const next = isBool ? raw === 'true'
+                    : isNum ? (raw === '' ? value : Number(raw))
+                    : Array.isArray(value) ? raw.split(',').map((s) => s.trim()).filter(Boolean)
+                    : raw;
+                  if (String(next) === String(value)) return;
+                  clause[op] = next;
+                  touched.add(field);
+                };
+                input.addEventListener('input', () => commit(input.value));
+                if (isBool) input.addEventListener('change', () => commit(input.value));
+                if (isNum) input.addEventListener('change', () => { input.value = String(clause[op]); });
+                wrap.append(lbl);
+                wrap.append(input);
+                whenBox.append(wrap);
+              });
+            });
+          }
+          box.append(whenBox);
           // §2.2: the destination is the one control — five closed options,
           // and the Papel field is the profile union, never free text.
           destField(box, r.then, touched, (d.tiers || {}));
@@ -9151,9 +9262,9 @@
           // the current file to .bak before every write (service.py:415), so
           // applying a no-op destroys the only thing Voltar à versão anterior can
           // restore. The JSON twisty makes this one click away: renderAll() refills
-          // that textarea with the live policy whenever the console is not in
-          // editing mode, so in the default state its Salvar is a guaranteed no-op
-          // write.
+          // that textarea with the live policy whenever the operator has not taken
+          // the editor over (it still holds the last value this render wrote), so
+          // an untouched Salvar is a guaranteed no-op write.
           if (state.plan && state.plan.diff === '') {
             setMsg(msg, WRITE.noop, 'ok');
             return false;
@@ -9709,44 +9820,6 @@
         box.append(io);
       }
 
-      // ── edit mode ───────────────────────────────────────────────────
-      function setMode(mode) {
-        state.mode = mode;
-        const open = mode === 'editing';
-        const button = $('editMode');
-        button.setAttribute('aria-pressed', String(open));
-        // The label names what the button DOES next, so the operator never has to
-        // work out whether a state word is a description or an instruction.
-        button.title = open ? WRITE.stopEditing : 'Editar a política de roteamento';
-        $('editLabel').textContent = open ? WRITE.done : 'Editar';
-        $('policyEditor').readOnly = !open;
-        // The JSON twisty's write buttons follow the read-only default too. They are
-        // static markup, so unlike the inspector's — which renderInspector simply
-        // does not build in reading mode — they have to be disabled explicitly.
-        // Without this, expanding "Edit the whole policy as JSON" to READ it put a
-        // live green Apply and a live Revert one tap away, and renderAll() keeps
-        // that textarea pre-filled with the live policy whenever the console is not
-        // editing, so jsonDraft() always parses and the "Nothing to apply" guard
-        // could never fire on that path. Revert is the destructive one: it takes no
-        // plan, shows no diff, and restores whatever the .bak holds.
-        // Through saveButton(): while the file carries an error the node is DETACHED
-        // (§3.4(a)), and getElementById does not find a detached node.
-        const save = saveButton();
-        if (save) save.disabled = !open;
-        $('jsonRevert').disabled = !open;
-        $('pipelineNote').textContent = open
-          ? 'Modo edição ligado. Nada é gravado até você apertar “Salvar”, e a tela mostra o que muda antes.'
-          : 'Leia de cima para baixo — a primeira regra que casar decide.';
-        disarmRevert();
-        renderWarnings();
-        renderRail();
-        renderInspector(null);
-        if (state.policy) renderSheet();
-        // The bans block's removal control is mode-shaped: it exists in the
-        // DOM only in editing mode, so the block is re-drawn on every toggle.
-        renderBans();
-      }
-
       // ── layout ──────────────────────────────────────────────────────
       function isNarrow() {
         const embedded = window.self !== window.top;
@@ -9795,8 +9868,16 @@
         renderChainPlan(state.chainPlan);
         if (!state.selected) renderInspector(null);
         if (state.replay) renderStep();
-        if (state.mode !== 'editing' || !$('policyEditor').value) {
-          $('policyEditor').value = state.policy ? pretty(fullPolicy()) : '';
+        // The whole-file editor is always armed now — there is no mode that
+        // makes it read-only — so the textarea is pre-filled exactly when the
+        // operator has not taken it over: empty (first load) or still holding
+        // the last value this render wrote (a refresh after an untouched
+        // read). Once the operator types anything, the editor is theirs and
+        // renderAll must not clobber the draft.
+        const editor = $('policyEditor');
+        if (editor.value === '' || editor.value === state.lastJsonFill) {
+          editor.value = state.policy ? pretty(fullPolicy()) : '';
+          state.lastJsonFill = editor.value;
         }
       }
 
@@ -9908,7 +9989,6 @@
             next.focus();
           });
         });
-        $('editMode').addEventListener('click', () => setMode(state.mode === 'editing' ? 'reading' : 'editing'));
         $('refresh').addEventListener('click', load);
         // One parse, used by both buttons. Malformed JSON is reported before any
         // request goes out, because "your text is not JSON" is not something the
@@ -9954,11 +10034,10 @@
       // The clock needs no sidecar: its windows are declared, so it is true before
       // the first read answers and stays true if none ever does.
       renderClock();
-      setMode('reading');
       load();
 
       globalThis.__router = {
-        state, setMode, renderRail, renderHealth, renderRoutes, renderStep, renderInspector,
+        state, renderRail, renderHealth, renderRoutes, renderStep, renderInspector,
         renderWarnings,
         // The two provenance banners: the stale one reports the router's own
         // code age, the restart one reports THIS document's age. Exported so
