@@ -631,7 +631,11 @@
        'a regra manda pra T4' actually sends. Expanded wears the accent: that is
        a selection ("you asked about this chain"), not a condition. */
     .step-target.step-tier {
-      padding: 1px 9px; border: 1px solid var(--line); border-radius: var(--radius-pill);
+      /* 6px sides, not 9: the 128px Vai para track with the chip's full label
+         ("T3 · Moderado", 14px mono) measures 124px at 6px — the 9px pill
+         measured 130 and ellipsized the meaning word. Measured on the live
+         sheet at 851px, DejaVu Sans Mono. */
+      padding: 1px 6px; border: 1px solid var(--line); border-radius: var(--radius-pill);
       background: transparent; color: var(--text); cursor: pointer;
       max-width: 100%; white-space: nowrap;
     }
@@ -658,7 +662,11 @@
        in the muted step instead — a disclosure about the DATA, not about the
        rule, and grey precisely so it can never be read as an amber verdict. */
     .step-hits.zero { color: var(--warn-text); }
-    .step-hits.empty { color: var(--muted); font-weight: 400; }
+    /* "sem dados" is 73px at 13.5px mono and the Uso track is 62px — the
+       placeholder drops to the head's scale (--t-micro, 11px: 60px) so it
+       stays inside its own column; a real count stays at 13.5 and reads as
+       the number, not as noise. Measured on the live sheet at 851px. */
+    .step-hits.empty { color: var(--muted); font-weight: 400; font-size: var(--t-micro); }
 
     /* The first attempt (comp-tarefas "Primeira tentativa", 196px): the head
        of the queue the destination points at, or the words for a destination
@@ -5204,8 +5212,11 @@
           const tier = opts.tierDest && tierIndex[opts.tierDest] ? tierIndex[opts.tierDest] : null;
           const hops = tier ? tierChain(tier) : [];
           if (opts.target) {
-            dest.append(el('span', 'step-arrow', '→'));
             if (tier && hops.length) {
+              // The comp's tier cell is the bare "T1 · Trivial" — NO arrow
+              // (the "Vai para" head already says where it goes, and the 128px
+              // column cannot hold the arrow + gap + the chip's full label:
+              // measured 130px needed with the arrow at 14px mono).
               const chip = el('button', 'step-target step-tier', opts.target);
               chip.type = 'button';
               chip.setAttribute('aria-expanded', 'false');
@@ -5235,6 +5246,7 @@
               });
               dest.append(chip);
             } else {
+              dest.append(el('span', 'step-arrow', '→'));
               const t = el('span', 'step-target', opts.target);
               if (opts.targetColor) t.style.color = opts.targetColor;
               dest.append(t);

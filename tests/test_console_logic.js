@@ -2201,6 +2201,15 @@ test('a tier destination is a chip that reveals the chain it points at', () => {
   // The chip carries the group's meaning, not the bare key (spec 4.3).
   assert.equal(chip.textContent, 'T3 · Moderado');
   assert.equal(chip.getAttribute('aria-expanded'), 'false');
+  // The comp's tier cell is the bare "T1 · Trivial" — no arrow: the "Vai
+  // para" head already says where it goes, and the 128px column cannot hold
+  // the arrow, the gap and the full label (measured 130px needed). The deny
+  // row below keeps its arrow, so the sheet has exactly one.
+  const tierDest = findAll(dom.get('sheet'), 'step-dest')[0];
+  assert.equal(findAll(tierDest, 'step-arrow').length, 0, 'a tier destination carries no arrow');
+  assert.match(flat(tierDest), /^T3 · Moderado/, 'the chip reads bare, like the comp');
+  assert.equal(findAll(dom.get('sheet'), 'step-arrow').length, 1,
+    'only the deny row keeps the arrow');
   // Hover carries the compact form, primary first — the elos of the chain.
   assert.equal(chip.title, 'gpt-5.6-terra · deepseek-v4-pro · glm-5.3');
   // Render nothing for nothing: the chain is not built until it is asked for —
@@ -6915,7 +6924,10 @@ test('doApply plans immediately before every write, whichever surface called it 
 // with one of the five prefixes of §4.3: a row whose destination is blank is a row
 // that tells the operator nothing about where the work goes.
 const DEST_PREFIXES = [
-  /^→\s*T\d+ · /,
+  // The tier chip is the bare "T1 · Trivial" of the comp — no arrow (the
+  // "Vai para" head says where it goes, and the 128px column cannot hold
+  // arrow + gap + full label, measured). The other kinds keep their arrow.
+  /^T\d+ · /,
   /^→\s*Perguntar ao classificador/,
   /^→\s*Recusar a tarefa/,
   /^→\s*.+ @ .+ — modelo fixo, sem reserva/,
