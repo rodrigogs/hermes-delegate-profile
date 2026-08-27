@@ -3404,6 +3404,23 @@ test('the detector proves a pair only by one of the three shapes — 15 pinned c
   });
 });
 
+test('with the rules in hand the warning names the covering rule, not just its number', () => {
+  const { api } = loadConsole();
+  const rules = [
+    { id: 'huge-context-read', when: { est_input_tokens: { gte: 128000 } } },
+    { id: 'dead', when: { est_input_tokens: { gte: 200000 } } },
+  ];
+  const pairs = api.shadowPairs(rules);
+  // Índice E frase: o número localiza a linha, a frase a identifica. Um operador que
+  // só recebe "a regra 1" tem de contar linhas para saber quem o atropelou.
+  assert.equal(api.shadowReasonWords(pairs[0], rules),
+    'a regra 2 nunca decide: a regra 1, Leitura de contexto enorme, já cobre todo caso desta (est_input_tokens >= 200.000 é subconjunto de >= 128.000); mova-a acima da 1');
+  // Sem as regras em mão, a sentença é a de sempre — o enriquecimento é aditivo e
+  // nunca inventa um nome que o chamador não forneceu.
+  assert.equal(api.shadowReasonWords(pairs[0]),
+    'a regra 2 nunca decide: a regra 1 já casa tudo que ela pede (est_input_tokens >= 200.000 é subconjunto de >= 128.000); mova-a acima da 1');
+});
+
 test('the warning is one sentence naming the pair, the clause and the remedy', () => {
   const { api } = loadConsole();
   const pairs = api.shadowPairs([
@@ -3455,7 +3472,7 @@ test('the sheet warns with the exact reason and two jumps only when the detector
   assert.ok(dead, 'the dead row exists');
   const warn = dead.children.find((c) => c.className === 'step-when');
   assert.ok(warn, 'the reason rides the row itself');
-  assert.match(flat(warn), /a regra 2 nunca decide: a regra 1 já casa tudo que ela pede \(est_input_tokens >= 200\.000 é subconjunto de >= 128\.000\); mova-a acima da 1/);
+  assert.match(flat(warn), /a regra 2 nunca decide: a regra 1, Leitura de contexto enorme, já cobre todo caso desta \(est_input_tokens >= 200\.000 é subconjunto de >= 128\.000\); mova-a acima da 1/);
   const buttons = findAll(warn, 'btn');
   assert.equal(buttons.length, 2, 'the shadower AND the dead rule are both one click away');
   assert.deepEqual(buttons.map((b) => b.textContent), ['Ir para a regra 2', 'Ir para a regra 1']);
@@ -3480,7 +3497,7 @@ test('when two rules shadow the same row, the warning names the EARLIEST and cou
   api.renderSheet();
   const dead = dom.get('sheet').children.find((c) => c.dataset.ruleId === 'c');
   const warn = dead.children.find((c) => c.className === 'step-when');
-  assert.match(flat(warn), /a regra 3 nunca decide: a regra 1 já casa tudo/);
+  assert.match(flat(warn), /a regra 3 nunca decide: a regra 1, Leitura de contexto enorme, já cobre todo caso desta/);
   assert.deepEqual(findAll(warn, 'btn').map((b) => b.textContent),
     ['Ir para a regra 3', 'Ir para a regra 1'],
     'moving before the earliest shadower resolves every finding at once');

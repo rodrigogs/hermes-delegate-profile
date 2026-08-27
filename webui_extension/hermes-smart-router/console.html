@@ -525,6 +525,12 @@
     .step-ord { color: var(--muted); font: 500 var(--t-label) var(--mono); text-align: right; }
     .step-what { min-width: 0; }
     .step-id { font: 500 var(--t-body) var(--mono); }
+    /* Uma linha que nunca pode casar é AVISO, não erro: o arquivo está válido, a
+       linha é que está morta. Cor de aviso na linha inteira e no marcador da
+       espinha, para o olho achar a linha sem ler a frase. */
+    .step.shadowed { color: var(--warn-text); }
+    .step.shadowed .step-when { color: var(--warn-text); }
+    .step.shadowed::before { background: var(--warn); box-shadow: 0 0 0 2px var(--warn-bg); }
     .step-when { color: var(--muted); font-size: var(--t-body); margin-top: 3px; }
     /* Destination and hits are columns, not a floating pair: a reader compares
        down a column, so both must land on the same x on every line. Two ways this
@@ -3191,9 +3197,24 @@
         if (typeof raw === 'number') return fmtPt(raw);
         return say(raw);
       }
-      function shadowReasonWords(f) {
+      function shadowReasonWords(f, rules) {
         const op = OP_SYMBOL[f.op] || f.op;
-        return `a regra ${f.later_index + 1} nunca decide: a regra ${f.earlier_index + 1} já casa tudo que ela pede (${f.key} ${op} ${clauseValue(f.v_later)} é subconjunto de ${op} ${clauseValue(f.v_earlier)}); mova-a acima da ${f.earlier_index + 1}`;
+        // O índice LOCALIZA a linha; a frase gerada do `when` a IDENTIFICA. As duas
+        // juntas, porque "a regra 1" manda o operador contar linhas e "Pedido de
+        // auditoria" não diz onde ela está. Sem `rules` em mão a frase não existe, e
+        // aí a sentença é exatamente a de antes — o enriquecimento é aditivo, nunca
+        // uma promessa que o chamador não pode cumprir.
+        // O guard é sobre TER a regra em mão, não sobre a frase ser bonita: ruleTitle()
+        // nunca devolve vazio (para um `when` que ele não reconhece devolve "Toda
+        // tarefa"), então testar a frase fazia o fallback nunca acontecer e a sentença
+        // sem `rules` dizia "a regra 1, Toda tarefa, já cobre", que é pior que a
+        // sentença simples.
+        const alvo = rules && rules[f.earlier_index];
+        const cobre = alvo && alvo.when ? ruleTitle(alvo.when) : '';
+        const quem = cobre
+          ? `a regra ${f.earlier_index + 1}, ${cobre}, já cobre todo caso desta`
+          : `a regra ${f.earlier_index + 1} já casa tudo que ela pede`;
+        return `a regra ${f.later_index + 1} nunca decide: ${quem} (${f.key} ${op} ${clauseValue(f.v_later)} é subconjunto de ${op} ${clauseValue(f.v_earlier)}); mova-a acima da ${f.earlier_index + 1}`;
       }
 
       // ── A destination that names a group the table does not have ─────
@@ -4605,8 +4626,11 @@
           // screen uses: the dead rule's own editor (where the move button
           // lives) and the shadower's.
           if (opts.shadow) {
+            // A classe existe para o CSS de aviso ter em quem pegar: sem ela as três
+            // regras de `.step.shadowed` são folclore.
+            item.classList.add('shadowed');
             const warn = el('div', 'step-when');
-            warn.append(el('span', '', shadowReasonWords(opts.shadow)));
+            warn.append(el('span', '', shadowReasonWords(opts.shadow, rules)));
             const own = el('button', 'btn', `Ir para a regra ${opts.shadow.later_index + 1}`);
             own.type = 'button';
             own.addEventListener('click', (event) => {
