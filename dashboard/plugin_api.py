@@ -1,6 +1,6 @@
 """Smart Router dashboard plugin — backend API routes.
 
-Mounted at /api/plugins/delegate-profile/ by the dashboard plugin
+Mounted at /api/plugins/hermes-smart-router/ by the dashboard plugin
 system. Imports the pure-core router from the delegate-profile plugin.
 
 Contract: every route here is a READ path — including the two POSTs, where the

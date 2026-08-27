@@ -1477,7 +1477,7 @@ def hermetic_state(tmp_path, monkeypatch):
     returned path is also the assertion: a read path must never create it.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    return tmp_path / "hermes" / "delegate-profile" / "state" / "breaker-state.json"
+    return tmp_path / "hermes" / "hermes-smart-router" / "state" / "breaker-state.json"
 
 
 def _reads():

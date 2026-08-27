@@ -407,7 +407,7 @@ class TestBlocklistWithBreaker:
     def test_state_dir_peels_profile_scoped_home(self, monkeypatch, tmp_path):
         """Writer (profiles/<name>) and sidecar (bare root) must share ONE state file."""
         root = tmp_path
-        canonical = root / "delegate-profile" / "state"
+        canonical = root / "hermes-smart-router" / "state"
         # The delegate_profile plugin process runs with a profile-scoped HERMES_HOME...
         monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "trama-engineer"))
         assert _state_dir() == canonical

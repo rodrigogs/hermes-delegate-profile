@@ -28,7 +28,7 @@ any row.
 
 | Fact | Value | How it was established |
 |---|---|---|
-| Plugin directory | `/home/rodrigo/.hermes/plugins/delegate-profile` | not a symlink; a real git checkout |
+| Plugin directory | `/home/rodrigo/.hermes/plugins/hermes-smart-router` | not a symlink; a real git checkout |
 | Branch / HEAD | `main` at `baae9e1`, working tree clean | `git status --porcelain` empty |
 | Tracking | in sync with `origin/main`, 0 ahead / 0 behind | `git rev-list --left-right --count HEAD...@{u}` |
 | Interpreter | `/home/rodrigo/Workspace/hermes-agent/venv/bin/python`, 3.11.15 | `systemctl --user show hermes-gateway -p ExecStart` |
@@ -65,7 +65,7 @@ worktree at `/tmp/hdp-branch`, which left the runtime untouched.
 
     # off-box: merge feat/conditional-time-routing into main on the remote
     # then, on the box:
-    cd ~/.hermes/plugins/delegate-profile
+    cd ~/.hermes/plugins/hermes-smart-router
     git pull --ff-only
 
 Leaves the runtime tracking `origin/main` exactly as it does today, so the next person to look at it
@@ -77,7 +77,7 @@ the box.
     # transfer once (a 412K bundle of just these three commits):
     #   local:  git bundle create /tmp/branch.bundle baae9e1..feat/conditional-time-routing
     #   scp it to the box, then:
-    cd ~/.hermes/plugins/delegate-profile
+    cd ~/.hermes/plugins/hermes-smart-router
     git fetch /tmp/branch.bundle feat/conditional-time-routing:feat/conditional-time-routing
     git checkout feat/conditional-time-routing
 
@@ -114,10 +114,10 @@ Independent of the code deploy, and safe to defer. The new policy is a working f
 at `/tmp/hdp2/router.yaml`; the tracked template `router.example.yaml` carries the same shape for fresh
 installs.
 
-    cp ~/.hermes/plugins/delegate-profile/router.yaml \
+    cp ~/.hermes/plugins/hermes-smart-router/router.yaml \
        ~/.hermes/backups/pre-conditional-routing-20260818T0000Z/router.yaml.pre-swap
     # copy the new policy into place, then verify BEFORE any traffic depends on it:
-    cd ~/.hermes/plugins/delegate-profile
+    cd ~/.hermes/plugins/hermes-smart-router
     /home/rodrigo/Workspace/hermes-agent/venv/bin/python -m router.cli --config router.yaml lint
 
 Rollback is a `cp` back from the snapshot; the change is live per request either way.
@@ -158,7 +158,7 @@ Both behaviours are covered by tests, so the claim above is checkable without th
     python3.11 -m pytest tests/test_collapse_profile_routing.py -q
 
     V=/home/rodrigo/Workspace/hermes-agent/venv/bin/python
-    cd ~/.hermes/plugins/delegate-profile
+    cd ~/.hermes/plugins/hermes-smart-router
     $V scripts/collapse_profile_routing.py --hermes-home ~/.hermes --stamp 20260818T0000Z   # dry-run
     # read the per-file report, then:
     $V scripts/collapse_profile_routing.py --hermes-home ~/.hermes --stamp 20260818T0000Z --apply
@@ -181,7 +181,7 @@ to the root. `trama-engineer` proves it — it omits `reasoning_effort` and inhe
 
 ## 5. Rolling the whole thing back
 
-    cd ~/.hermes/plugins/delegate-profile
+    cd ~/.hermes/plugins/hermes-smart-router
     git checkout main                     # or: git reset --hard baae9e1 after a pull
     cp ~/.hermes/backups/pre-conditional-routing-20260818T0000Z/routing-config/router.yaml.live \
        router.yaml
@@ -200,7 +200,7 @@ fully implemented and completely inert in production, because `explain()` displa
 while the executor attempted the declared one. Check the running path, not the reporting surface:
 
     V=/home/rodrigo/Workspace/hermes-agent/venv/bin/python
-    cd ~/.hermes/plugins/delegate-profile
+    cd ~/.hermes/plugins/hermes-smart-router
 
     # 1. The planner is actually wired in. This is the guard that phase's defect earned.
     $V -m pytest tests/router/test_adapter.py -k the_installed_planner_is_wired -q

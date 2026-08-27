@@ -1362,7 +1362,7 @@ def _open_breakers_config(pairs, tmp_path, monkeypatch, *, now=None):
     the whole veto depends on being the same string.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    state_dir = tmp_path / "delegate-profile" / "state"
+    state_dir = tmp_path / "hermes-smart-router" / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     stamp = (now or time.time())
     (state_dir / "breaker-state.json").write_text(json.dumps({

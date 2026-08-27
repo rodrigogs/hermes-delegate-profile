@@ -685,7 +685,7 @@ def test_watchdog_cfg_reads_config_yaml(monkeypatch):
         return {
             "plugins": {
                 "entries": {
-                    "delegate-profile": {
+                    "hermes-smart-router": {
                         "watchdog": {"hard_seconds": 42, "ttfb_seconds": 9},
                     }
                 }
@@ -924,7 +924,7 @@ def test_router_config_seeds_from_example_when_absent(tmp_path, monkeypatch):
     checkout forever, and conflict on each pull. The example is tracked; the
     live file is gitignored and created on first load.
     """
-    plugin_dir = tmp_path / "delegate-profile"
+    plugin_dir = tmp_path / "hermes-smart-router"
     plugin_dir.mkdir()
     (plugin_dir / "router.example.yaml").write_text(
         "enabled: true\ntiers:\n  T1: {model: m, provider: p}\n", encoding="utf-8"

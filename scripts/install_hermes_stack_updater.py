@@ -143,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source", type=Path, default=Path(__file__).with_name("update_hermes_stack.py"))
     parser.add_argument("--profile", default=os.environ.get("HERMES_PROFILE", "rodrigo"))
     parser.add_argument("--core", type=Path, default=Path(os.environ.get("HERMES_AGENT_DIR", "/usr/local/lib/hermes-agent")))
-    parser.add_argument("--plugin", type=Path, default=Path(os.environ.get("HERMES_PLUGIN_DIR", home / ".hermes/plugins/delegate-profile")))
+    parser.add_argument("--plugin", type=Path, default=Path(os.environ.get("HERMES_PLUGIN_DIR", home / ".hermes/plugins/hermes-smart-router")))
     parser.add_argument("--one", type=Path, default=Path(os.environ.get("HERMES_ONE_DIR", home / "hermes-webui")))
     parser.add_argument("--extensions", type=Path, default=Path(os.environ.get("HERMES_ONE_EXTENSIONS_DIR", home / "hermes-one-extensions")))
     parser.add_argument("--systemd-dir", type=Path, default=Path(os.environ.get("HERMES_SYSTEMD_USER_DIR", home / ".config/systemd/user")))

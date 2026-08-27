@@ -38,7 +38,7 @@ def _state_dir() -> Path:
     home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
     if home.parent.name == "profiles":
         home = home.parent.parent
-    return home / "delegate-profile" / "state"
+    return home / "hermes-smart-router" / "state"
 
 
 def _state_path() -> Path:

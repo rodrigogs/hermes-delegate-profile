@@ -240,7 +240,7 @@ def test_installer_cli_builds_defaults_and_invokes_install(monkeypatch, tmp_path
     args = parser.parse_args([])
     assert args.extension_root.name == "hermes-one-extensions"
     assert args.systemd_dir.name == "user"
-    assert args.plugin_dir.name == "delegate-profile"
+    assert args.plugin_dir.name == "hermes-smart-router"
 
     captured = {}
     monkeypatch.setattr(
@@ -467,7 +467,7 @@ def test_install_profile_paths_only_refuse_in_operator_unit_dir(monkeypatch, tmp
         ("/tmp/x/.hermes/profiles", False),  # 'profiles' must sit UNDER .hermes, not be it
         ("/home/u/.hermes", False),
         ("/home/u/hermes/profiles/coder", False),  # missing the dot: not the marker
-        ("/home/u/.hermes/plugins/delegate-profile", False),
+        ("/home/u/.hermes/plugins/hermes-smart-router", False),
         ("/tmp/pytest-123/.hermes/profiles/trama-engineer", True),  # tmp_path has the same shape
     ],
 )

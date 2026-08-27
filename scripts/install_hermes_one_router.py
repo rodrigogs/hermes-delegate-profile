@@ -323,7 +323,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--extension-root", type=Path, default=Path.home() / "hermes-one-extensions")
     parser.add_argument("--systemd-dir", type=Path, default=Path.home() / ".config/systemd/user")
-    parser.add_argument("--plugin-dir", type=Path, default=Path.home() / ".hermes/plugins/delegate-profile")
+    parser.add_argument("--plugin-dir", type=Path, default=Path.home() / ".hermes/plugins/hermes-smart-router")
     parser.add_argument("--hermes-home", type=Path, default=None)
     parser.add_argument("--webui-state-dir", type=Path, default=None)
     parser.add_argument(

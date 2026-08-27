@@ -68,7 +68,7 @@ def routes_path() -> Path:
     sidecar is pinned to one profile — so a profile-scoped path would diverge.
     We therefore anchor the trace at a PROFILE-INDEPENDENT location:
       1. ``HERMES_ROUTE_TRACE_FILE`` if set (explicit override for both units);
-      2. else ``<hermes-root>/delegate-profile/state/routes.jsonl`` where
+      2. else ``<hermes-root>/hermes-smart-router/state/routes.jsonl`` where
          hermes-root is HERMES_HOME with any trailing ``profiles/<name>`` peeled
          off, so every profile and the sidecar converge on one file.
     """
@@ -80,7 +80,7 @@ def routes_path() -> Path:
     # bare root resolve to the same canonical trace file.
     if home.parent.name == "profiles":
         home = home.parent.parent
-    return home / "delegate-profile" / "state" / "routes.jsonl"
+    return home / "hermes-smart-router" / "state" / "routes.jsonl"
 
 
 # ---------------------------------------------------------------------------

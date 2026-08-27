@@ -71,7 +71,7 @@ Or manually by cloning into your plugins directory:
 
 ```bash
 git clone https://github.com/rodrigogs/hermes-delegate-profile.git \
-  ~/.hermes/plugins/delegate-profile
+  ~/.hermes/plugins/hermes-smart-router
 hermes plugins enable delegate-profile
 ```
 
@@ -239,7 +239,7 @@ Install the assets and generated user service:
 python3 scripts/install_hermes_one_router.py \
   --extension-root ~/hermes-one-extensions \
   --systemd-dir ~/.config/systemd/user \
-  --plugin-dir ~/.hermes/plugins/delegate-profile \
+  --plugin-dir ~/.hermes/plugins/hermes-smart-router \
   --hermes-home "$HERMES_HOME" \
   --webui-state-dir "$HERMES_WEBUI_STATE_DIR"
 

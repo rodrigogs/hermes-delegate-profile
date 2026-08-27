@@ -1,5 +1,5 @@
 {
-  "name": "delegate-profile",
+  "name": "hermes-smart-router",
   "label": "Router",
   "description": "Hybrid capability routing — deterministic rules + LLM classifier with blocklist and auto-breaker",
   "icon": "Route",

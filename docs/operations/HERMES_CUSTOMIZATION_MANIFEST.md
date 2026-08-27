@@ -37,7 +37,7 @@ flowchart LR
 | Área | Artefato | Versionado | Aplicado | Ativo | Fonte de verdade |
 |---|---|---:|---:|---:|---|
 | Core Hermes | Holographic Memory / recall híbrido | sim | sim | sim | `/usr/local/lib/hermes-agent` |
-| Plugin Hermes | `delegate-profile` v0.3.0 | parcialmente | sim | sim | `~/.hermes/plugins/delegate-profile` |
+| Plugin Hermes | `delegate-profile` v0.3.0 | parcialmente | sim | sim | `~/.hermes/plugins/hermes-smart-router` |
 | Routing | Smart Router + sidecar | parcialmente | sim | sim | plugin + `router.yaml` |
 | Hermes One | labels de custom providers | sim | sim | sim | `/home/rodrigo/hermes-webui` |
 | Hermes One | rota e página `/insights` | não | sim | sim | WebUI working tree |
@@ -130,7 +130,7 @@ Isso é distinto de `delegate_task(profile=...)`, que é in-process.
 
 | Campo | Valor |
 |---|---|
-| Instalação efetiva | `/home/rodrigo/.hermes/plugins/delegate-profile` |
+| Instalação efetiva | `/home/rodrigo/.hermes/plugins/hermes-smart-router` |
 | Plugin | `delegate-profile` v`0.3.0` |
 | Tool | `delegate_profile` |
 | Hook | `post_tool_call` (advisório para uso de profile na tool in-process) |
@@ -161,7 +161,7 @@ delegação recebe `profile=auto` ou não recebe profile explícito.
 | Bind | `127.0.0.1:8791` |
 | Health | `GET /health` |
 | Isolamento | loopback-only; `token-v1` no proxy de extensões |
-| Config | `~/.hermes/plugins/delegate-profile/router.yaml` |
+| Config | `~/.hermes/plugins/hermes-smart-router/router.yaml` |
 | Source da unit | `systemd/hermes-router-sidecar.service` |
 
 Verificação:
@@ -189,7 +189,7 @@ O instalador é idempotente e copia — nunca faz symlink — os assets para o
 bundle aceito pelo WebUI:
 
 ```bash
-cd /home/rodrigo/.hermes/plugins/delegate-profile
+cd /home/rodrigo/.hermes/plugins/hermes-smart-router
 python3 scripts/install_hermes_one_router.py \
   --extension-root ~/hermes-one-extensions \
   --systemd-dir ~/.config/systemd/user
@@ -201,7 +201,7 @@ Essa aprovação é o controle que autoriza o proxy `token-v1` para o sidecar.
 ### Validação conhecida
 
 ```bash
-cd /home/rodrigo/.hermes/plugins/delegate-profile
+cd /home/rodrigo/.hermes/plugins/hermes-smart-router
 python3 -m pytest -q --disable-warnings --maxfail=1
 ```
 
@@ -440,7 +440,7 @@ git branch --show-current
 git rev-list --left-right --count upstream/main...HEAD
 
 # Plugin e Router
-cd /home/rodrigo/.hermes/plugins/delegate-profile
+cd /home/rodrigo/.hermes/plugins/hermes-smart-router
 git status --short
 python3 -m pytest -q --disable-warnings --maxfail=1
 systemctl --user is-active hermes-router-sidecar.service
@@ -500,7 +500,7 @@ Contrato de uma execução `apply`:
 Comandos úteis:
 
 ```bash
-cd /home/rodrigo/.hermes/plugins/delegate-profile
+cd /home/rodrigo/.hermes/plugins/hermes-smart-router
 
 # Só observa: busca refs e mostra commits/dirty state.
 python3 scripts/update_hermes_stack.py plan
@@ -532,7 +532,7 @@ vez de deixar um serviço rodando com árvore parcialmente atualizada.
 | Domínio | Repositório/raiz | Não editar sem motivo |
 |---|---|---|
 | Core Hermes | `/usr/local/lib/hermes-agent` | não misturar com assets One. |
-| Plugin/Router | `~/.hermes/plugins/delegate-profile` | não fazer update antes de commit/push. |
+| Plugin/Router | `~/.hermes/plugins/hermes-smart-router` | não fazer update antes de commit/push. |
 | One | `/home/rodrigo/hermes-webui` | não apagar `webui_extension/` sem inventário. |
 | Bundle One | `~/hermes-one-extensions` | não remover extensões não relacionadas. |
 | Estado do perfil | `~/.hermes/profiles/rodrigo` | nunca versionar segredos/config inteira. |

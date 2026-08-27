@@ -11,7 +11,7 @@ snapshot on *any* failed stage.
 Components
 ----------
 * core:   /usr/local/lib/hermes-agent <- upstream/main
-* plugin: ~/.hermes/plugins/delegate-profile <- origin/main
+* plugin: ~/.hermes/plugins/hermes-smart-router <- origin/main
 * one:    ~/hermes-webui <- origin/master
 
 A snapshot contains Git bundles, binary tracked diffs, untracked files, the
@@ -133,7 +133,7 @@ def default_paths(home: Path | None = None, profile: str = "rodrigo") -> Runtime
         home=home,
         profile=profile,
         core=Path(os.environ.get("HERMES_AGENT_DIR", "/usr/local/lib/hermes-agent")),
-        plugin=Path(os.environ.get("HERMES_PLUGIN_DIR", home / ".hermes/plugins/delegate-profile")),
+        plugin=Path(os.environ.get("HERMES_PLUGIN_DIR", home / ".hermes/plugins/hermes-smart-router")),
         one=Path(os.environ.get("HERMES_ONE_DIR", home / "hermes-webui")),
         extensions=Path(os.environ.get("HERMES_ONE_EXTENSIONS_DIR", home / "hermes-one-extensions")),
         systemd_user=Path(os.environ.get("HERMES_SYSTEMD_USER_DIR", home / ".config/systemd/user")),

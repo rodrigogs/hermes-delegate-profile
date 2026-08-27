@@ -65,7 +65,7 @@ def _ctx(*, trusted: bool):
     def complete(**kwargs):
         if not trusted:
             raise _TrustError(
-                "plugin 'delegate-profile' may not override provider "
+                "plugin 'hermes-smart-router' may not override provider "
                 "(set plugins.entries.delegate-profile.llm.allow_provider_override)"
             )
         return SimpleNamespace(text='{"tier": "T3", "confidence": "high"}')

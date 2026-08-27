@@ -155,7 +155,7 @@ def _watchdog_cfg() -> Dict[str, Any]:
         from hermes_cli.config import cfg_get, load_config_readonly
 
         all_config = load_config_readonly()
-        return cfg_get(all_config, "plugins", "entries", "delegate-profile", "watchdog", default={}) or {}
+        return cfg_get(all_config, "plugins", "entries", "hermes-smart-router", "watchdog", default={}) or {}
     except Exception:
         return {}
 

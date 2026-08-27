@@ -21,7 +21,7 @@ def test_routes_path_is_profile_independent(monkeypatch, tmp_path):
     """Writer (profile-scoped HERMES_HOME) and reader (another profile) MUST
     resolve the SAME trace file, else replay silently shows nothing."""
     root = tmp_path
-    canonical = root / "delegate-profile" / "state" / "routes.jsonl"
+    canonical = root / "hermes-smart-router" / "state" / "routes.jsonl"
     monkeypatch.delenv("HERMES_ROUTE_TRACE_FILE", raising=False)
     # Writer runs under profiles/coder ...
     monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "coder"))

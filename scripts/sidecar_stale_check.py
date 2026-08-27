@@ -25,7 +25,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-PLUGIN_DIR = Path("/home/rodrigo/.hermes/plugins/delegate-profile")
+PLUGIN_DIR = Path("/home/rodrigo/.hermes/plugins/hermes-smart-router")
 ROUTER_DIR = PLUGIN_DIR / "router"
 # The unit sets HERMES_HOME to the real home (not a profile-scoped one); the
 # same fallback the smoke script uses.
