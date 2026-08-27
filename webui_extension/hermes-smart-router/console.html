@@ -1239,6 +1239,26 @@
     .compaction-conseq b { color: var(--text); font-weight: 600; }
     .compaction-err { color: var(--warn-text); }
 
+    /* The Modelos confirm rows (card t_5d8491bf): one per block, hidden until
+       a click arms it. The consequence sentence is the preview; the button
+       label names the gesture; the diff and the message live under them. */
+    .proposal-row { display: flex; flex-wrap: wrap; gap: 9px; align-items: baseline; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+    .proposal-row .msg { flex-basis: 100%; margin: 0; }
+    .proposal-row pre.code { flex-basis: 100%; margin: 0; max-height: 120px; overflow: auto; }
+    .proposal-conseq { font-size: var(--t-meta); color: var(--text); }
+    /* The "voltar ao catálogo" gesture: a quiet inline link under the model
+       name, not a button that looks like a write control. */
+    .linkish { background: none; border: none; padding: 0; margin-top: 2px; font: var(--t-micro) var(--sans); color: var(--accent); cursor: pointer; text-decoration: underline; }
+    /* The own-chain picker of the compaction block. */
+    .compaction-chain { margin-top: 9px; }
+    .compaction-chain-note { font: var(--t-micro) var(--sans); color: var(--muted); margin-bottom: 6px; }
+    .compaction-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .compaction-chips .chip {
+      font: var(--t-micro) var(--mono); color: var(--muted); background: var(--surface-raised);
+      border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; cursor: pointer;
+    }
+    .compaction-chips .chip.marcado { color: var(--text); border-color: var(--accent); background: var(--soft); }
+
 </style>
 </head>
 <body>
@@ -1387,14 +1407,16 @@
 
         <div id="models"></div>
 
-        <!-- ── Compactação (card t_7c5d6f91) ─────────────────────────────────
+        <!-- ── Compactação (card t_7c5d6f91 + t_5d8491bf) ────────────────
              Reads the state /compaction already serves (GET /compaction):
              threshold in tokens, summarizer window, aggressiveness, every
              model_thresholds entry, the RESOLVED choice (model + fallback
-             queue) and the refusals. The write path (choosing model/queue)
-             exists in the motor (d130e5a) but is delivered by the controls
-             card (t_5d8491bf) — so the two choices render as DISABLED
-             controls that say why, never as live-looking dead controls. -->
+             queue) and the refusals. The model and the fallback queue are
+             WRITABLE here (card t_5d8491bf): each change arms the block's one
+             proposal and only its Gravar button writes, through the same
+             /plan + /apply spine. The raw block (state.policy.compaction) is
+             the writable source of truth for fallback_mode; the resolved aux
+             is the display fallback when /policy carries no block yet. -->
         <div class="compaction-box" id="compactionBox"></div>
 
         <div class="group" id="bansGroup" hidden>
@@ -3647,6 +3669,15 @@
         // "não é possível mover a regra…").
         moveRule: 'Mover a regra',
         movingRule: 'Movendo a regra…',
+        // The three Modelos gestures (card t_5d8491bf): each Gravar button
+        // names the block it writes, so a refusal reads "não é possível
+        // gravar a janela…" against the button that was pressed.
+        windowSave: 'Gravar a janela',
+        windowSaving: 'Gravando a janela…',
+        policySave: 'Gravar a política do grupo',
+        policySaving: 'Gravando a política do grupo…',
+        compactionSave: 'Gravar a compactação',
+        compactionSaving: 'Gravando a compactação…',
         revert: 'Voltar à versão anterior',
         revertConfirm: 'Confirmar: voltar à versão anterior',
         checking: 'Verificando…',
@@ -3712,7 +3743,13 @@
       // map's own value, computed, so renaming the label cannot orphan the
       // pair. A gesture without a gerund flies as WRITE.saving, which stays the
       // in-flight of save (§4.7).
-      const IN_FLIGHT = { [WRITE.remove]: WRITE.removing, [WRITE.moveRule]: WRITE.movingRule };
+      const IN_FLIGHT = {
+        [WRITE.remove]: WRITE.removing,
+        [WRITE.moveRule]: WRITE.movingRule,
+        [WRITE.windowSave]: WRITE.windowSaving,
+        [WRITE.policySave]: WRITE.policySaving,
+        [WRITE.compactionSave]: WRITE.compactionSaving,
+      };
       function fill(template, vars) {
         return String(template).replace(/\{(\w+)\}/g, (m, k) =>
           (vars && Object.prototype.hasOwnProperty.call(vars, k)) ? String(vars[k]) : m);
@@ -5686,28 +5723,41 @@
           if (share.total > 0) {
             block.append(el('div', 'tier-fact', `${share.n} de ${share.total} decisões passaram por este grupo`));
           }
-          // ── The peak-policy selector (card t_7c5d6f91): the three contract
-          // states render where the write will live, DISABLED, saying why —
-          // the write is the controls card's (t_5d8491bf). The CURRENT state
-          // derives from the tier's own time_policy, the same field the
-          // motor reads: avoid_peak means "evitar o pico", and fallback_
-          // strategy cheapest_now means "usar o mais barato".
+          // ── The peak-policy selector (card t_5d8491bf): the three contract
+          // states, LIVE. The CURRENT state derives from the tier's own
+          // time_policy, the same field the motor reads: avoid_peak means
+          // "evitar o pico", and fallback_strategy cheapest_now means "usar o
+          // mais barato". Picking one arms the group's proposal; only its
+          // Gravar button writes. "evitar o pico" is refused (option disabled)
+          // when no chain elo of this group varies with the hour — there is no
+          // peak to avoid, and writing an empty list would be a no-op that
+          // looks like a policy.
           const policyRow = el('div', 'peak-policy-row');
           policyRow.append(el('span', '', 'quando o provedor da 1ª está em pico: '));
           const policySel = el('select', 'peak-policy');
-          policySel.disabled = true;
-          policySel.title = 'ainda não grava — a escrita vem no card filho (controles da aba Modelos)';
-          const tPolicy = t.time_policy && typeof t.time_policy === 'object' ? t.time_policy : null;
-          const isAvoid = !!(tPolicy && Array.isArray(tPolicy.avoid_peak) && tPolicy.avoid_peak.length);
-          const isCheapest = String(t.fallback_strategy || '') === 'cheapest_now';
-          const currentPolicy = isAvoid ? 'evitar o pico' : isCheapest ? 'usar o mais barato' : 'manter a ordem';
+          const currentPolicy = currentPeakPolicy(t);
+          const avoidable = tierAvoidProviders(state, name);
           ['manter a ordem', 'evitar o pico', 'usar o mais barato'].forEach((label) => {
             const opt = el('option', '', label);
             if (label === currentPolicy) opt.selected = true;
+            if (label === 'evitar o pico' && !avoidable.length) {
+              opt.disabled = true;
+              opt.title = 'nenhuma tentativa deste grupo varia com a hora — não há pico para evitar';
+            }
             policySel.append(opt);
           });
+          const policyArea = proposalArea(WRITE.policySave, () => confirmPolicyProposal(policyArea));
+          policySel.addEventListener('change', () => {
+            const choice = policySel.value;
+            if (!choice || choice === currentPolicy) return;
+            armProposal(policyArea, peakPolicyPatch(name, state, choice),
+              peakPolicyConsequence(state, name, choice));
+          });
           policyRow.append(policySel);
-          policyRow.append(el('span', 'peak-policy-why', 'a escolha ainda não grava — vem no card filho (controles da aba Modelos)'));
+          if (!avoidable.length) {
+            policyRow.append(el('span', 'peak-policy-why', 'nenhuma tentativa deste grupo varia com a hora — não há pico para evitar'));
+          }
+          policyRow.append(policyArea.row);
           block.append(policyRow);
           // §3.4(b): an attempt whose model the catalogue never described. The
           // warning names the id AND the two remedies that exist: swap it for
@@ -5771,14 +5821,39 @@
       // is state.capabilities, the SAME merged registry the chain views read,
       // so the strip prices what the running path prices.
       //
-      // READ-ONLY in this delivery. The click gesture is the controls card's
-      // (t_5d8491bf); rendering clickable cells that write nothing is the dead
-      // control this screen refuses to carry, so the cells are <i> elements
-      // with an aria-hidden hour, not buttons pretending to be ones.
+      // The click gesture (card t_5d8491bf): a click on an hour arms the
+      // block's ONE proposal — consequence sentence + Gravar button — and only
+      // that button writes, through the /plan + /apply spine (CA5). A model
+      // whose windows are declared on a group's own elo is owned by that
+      // group's editor, so its hours stay inert with the reason on the row
+      // (spec: "bloqueados com o motivo").
+      let priceProposal = null;
+      function proposePriceToggle(model, windows, hour, weekday) {
+        if (!priceProposal) return;
+        armProposal(priceProposal, priceTogglePatch(model, windows, hour, weekday),
+          priceToggleConsequence(windows, hour, weekday));
+      }
+      function proposePriceRestore(model) {
+        if (!priceProposal) return;
+        armProposal(priceProposal, priceRestorePatch(model),
+          `${model} volta a seguir as janelas do catálogo — a declaração feita por você sai do arquivo`);
+      }
+      function confirmPriceProposal() {
+        if (!priceProposal || !priceProposal.pending) return Promise.resolve(false);
+        const area = priceProposal;
+        return doApply('/apply', area.msg, area.pending.patch, area.diff, area.btn, WRITE.windowSave);
+      }
+      function confirmPolicyProposal(area) {
+        if (!area || !area.pending) return Promise.resolve(false);
+        return doApply('/apply', area.msg, area.pending.patch, area.diff, area.btn, WRITE.policySave);
+      }
       function renderPriceStrip() {
         const box = $('priceStrip');
         if (!box) return;
         clear(box);
+        // The block's confirm row is rebuilt on every render (hidden until a
+        // click arms it), so a reload never leaves a stale proposal live.
+        priceProposal = proposalArea(WRITE.windowSave, confirmPriceProposal);
         const note = $('priceNote');
         const registry = state.capabilities;
         if (!registry || typeof registry !== 'object') {
@@ -5823,31 +5898,56 @@
             const row = el('div', 'price-row');
             const label = el('div', 'price-model');
             label.append(el('span', '', model));
-            // The declared window note, in the operator's words: hours as a
-            // half-open span and the multiplier the router applies inside it.
+            // The facts line: the window note, the ORIGIN (a registry window
+            // and a hand-declared one must not look the same — the motor
+            // serves the origin, the screen says it) and, when the registry
+            // publishes it, the date a HUMAN confirmed the windows. The
+            // automatic read time lives in the detector's state file, which
+            // this screen never reads, so "há N h" is never invented here.
+            const facts = [];
             if (windows.length) {
               const words = windows.map((w) => {
                 const span = `${String(w.hours[0]).padStart(2, '0')}–${String(w.hours[1]).padStart(2, '0')}`;
-                const gate = w.weekdays && w.weekdays.size
-                  ? (w.weekdays.size === 7 ? '' : ' seg–sex' )
+                const gate = w.weekdays && w.weekdays.length
+                  ? (w.weekdays.length === 7 ? '' : ` ${weekdayWords(w.weekdays)}`)
                   : '';
                 return `${times(w.multiplier)} ${span}${gate}`;
               }).join(' · ');
-              label.append(el('small', '', words));
+              facts.push(words);
             } else {
-              label.append(el('small', '', 'preço não varia com a hora'));
+              facts.push('preço não varia com a hora');
+            }
+            const originWord = priceOriginWords(entry.price_windows_origin);
+            if (originWord && (windows.length || entry.price_windows_origin === 'overlay')) {
+              facts.push(originWord);
+            }
+            const verifiedWord = priceVerifiedWords(entry.price_windows_verified);
+            if (verifiedWord) facts.push(verifiedWord);
+            label.append(el('small', '', facts.join(' · ')));
+            if (entry.price_windows_origin === 'overlay') {
+              const back = el('button', 'linkish', 'voltar ao catálogo');
+              back.type = 'button';
+              back.addEventListener('click', () => proposePriceRestore(model));
+              label.append(back);
             }
             row.append(label);
             const band = el('div', 'price-band');
+            const editable = entry.price_windows_origin !== 'declared';
             for (let hour = 0; hour < 24; hour += 1) {
-              const cell = el('i', 'h-cell');
+              // A cell is a BUTTON only when the click can write — a declared
+              // model's hours render inert, with the reason on the row.
+              const cell = editable ? el('button', 'h-cell') : el('i', 'h-cell');
+              if (editable) cell.type = 'button';
               // The multiplier at THIS hour, for the weekday the clock names —
               // the same first-match-wins reading priceMultiplier applies.
               const multiplier = priceMultiplier(windows, { hour, weekday: when.weekday });
               if (multiplier > 1) cell.classList.add('peak');
               else if (multiplier < 1) cell.classList.add('cheap');
               if (hour === nowHour) cell.classList.add('now');
-              cell.title = `${model} ${String(hour).padStart(2, '0')}:00 · ${times(multiplier)}`;
+              cell.title = editable
+                ? `${model} ${String(hour).padStart(2, '0')}:00 · ${times(multiplier)} — clique para declarar ou remover janela`
+                : `${model} ${String(hour).padStart(2, '0')}:00 · ${times(multiplier)} — declarada na tentativa do grupo; mude lá`;
+              if (editable) cell.addEventListener('click', () => proposePriceToggle(model, windows, hour, when.weekday));
               band.append(cell);
             }
             row.append(band);
@@ -5869,8 +5969,9 @@
         const sw2 = el('span', ''); sw2.append(el('i', 'sw sw-peak'), el('span', '', 'pico, custa mais'));
         const sw3 = el('span', ''); sw3.append(el('i', 'sw sw-cheap'), el('span', '', 'janela barata'));
         legend.append(sw1, sw2, sw3);
-        legend.append(el('span', '', `agora ${String(nowHour).padStart(2, '0')}:00 UTC, marcado — leitura; declarar janela vem no card filho`));
+        legend.append(el('span', '', `agora ${String(nowHour).padStart(2, '0')}:00 UTC, marcado — clique numa hora para declarar (0,8×) ou remover janela deste modelo`));
         box.append(legend);
+        box.append(priceProposal.row);
         if (note) note.textContent = `UTC · agora ${String(nowHour).padStart(2, '0')}h, marcado`;
       }
 
@@ -5879,9 +5980,52 @@
       // summarizer window it is a fraction of, the aggressiveness dial, every
       // per-model threshold, the RESOLVED choice (model + fallback queue) and
       // the refusals (which ride as text, not as a 400). The model/queue
-      // CHOICES are disabled controls that name the follow-up card: the write
-      // is the controls card's (t_5d8491bf), and a control that cannot write
-      // says so instead of faking liveness.
+      // CHOICES write (card t_5d8491bf): each change arms the block's ONE
+      // proposal — consequence + Gravar — and only that button writes, through
+      // the /plan + /apply spine. The RAW block (state.policy.compaction,
+      // served verbatim by /policy) is the writable source of truth for
+      // fallback_mode; the RESOLVED aux (state.compaction.compaction) is the
+      // display fallback when /policy carries no block yet.
+      let compactionProposal = null;
+      let compactionChain = [];
+      function confirmCompactionProposal() {
+        if (!compactionProposal || !compactionProposal.pending || !compactionProposal.pending.patch) {
+          return Promise.resolve(false);
+        }
+        const area = compactionProposal;
+        return doApply('/apply', area.msg, area.pending.patch, area.diff, area.btn, WRITE.compactionSave);
+      }
+      // The chain builder's chips: models the operator already routes with
+      // (every tier's chain) plus the current compaction model and chain — a
+      // bounded set, not a wall of registry ids. When the policy names no
+      // model at all, the whole catalogue is offered so the gesture is never
+      // empty.
+      function compactionChainCandidates(state) {
+        const seen = [];
+        const push = (m) => { if (typeof m === 'string' && m && seen.indexOf(m) < 0) seen.push(m); };
+        const tiers = state && state.policy && state.policy.tiers;
+        if (tiers && typeof tiers === 'object') {
+          Object.keys(tiers).forEach((tn) => tierChain(tiers[tn]).forEach((h) => push(h.model)));
+        }
+        const raw = state && state.policy && state.policy.compaction;
+        if (raw && typeof raw === 'object') {
+          if (raw.model) push(raw.model);
+          if (Array.isArray(raw.fallback_chain)) raw.fallback_chain.forEach((h) => push(h && h.model));
+        }
+        if (!seen.length && state && state.capabilities && typeof state.capabilities === 'object') {
+          Object.keys(state.capabilities).forEach(push);
+        }
+        return seen;
+      }
+      function currentStandaloneChain(rawBlock, choice) {
+        const source = rawBlock && rawBlock.fallback_mode === 'standalone'
+          ? rawBlock
+          : (rawBlock ? null : choice);
+        const chain = source && Array.isArray(source.fallback_chain) ? source.fallback_chain : [];
+        return chain
+          .map((h) => (h && typeof h === 'object' ? { model: h.model, provider: h.provider } : null))
+          .filter((h) => h && typeof h.model === 'string' && h.model);
+      }
       function renderCompaction() {
         const box = $('compactionBox');
         if (!box) return;
@@ -5909,36 +6053,189 @@
         if (data.warning === true) lead.append(el('span', 'compaction-err', ' O limiar iguala ou passa a janela do resumidor.'));
         box.append(lead);
 
+        const rawBlock = state.policy && state.policy.compaction && typeof state.policy.compaction === 'object'
+          ? state.policy.compaction : null;
+        const choice = rawBlock
+          || (data.compaction && typeof data.compaction === 'object' ? data.compaction : null);
+        const catalogue = state.capabilities && typeof state.capabilities === 'object' ? state.capabilities : null;
+        const tiers = state.policy && state.policy.tiers && typeof state.policy.tiers === 'object'
+          ? state.policy.tiers : {};
+        const tierNames = Object.keys(tiers);
+        const currentModel = (choice && choice.model) || '';
+        const currentProvider = (choice && choice.provider) || '';
+
+        // The block's ONE confirm row, rebuilt on every render like the price
+        // strip's — a reload never leaves a stale proposal live.
+        compactionProposal = proposalArea(WRITE.compactionSave, confirmCompactionProposal);
+
         const pick = el('div', 'compaction-pick');
-        const choice = data.compaction && typeof data.compaction === 'object' ? data.compaction : null;
-        const WHY = 'ainda não grava — a escrita vem no card filho (controles da aba Modelos)';
-        // The model choice: a disabled control carrying the current value, so
-        // the reader sees WHERE the choice will live when the write lands.
+
+        // The model choice: every catalogue model, labelled with its provider,
+        // so the choice names WHO bills it. The current model is prepended when
+        // the registry never heard of it — the block then shows what it holds
+        // and the motor's refusal (compaction_errors / plan lint) says why it
+        // cannot be used.
         pick.append(el('span', 'compaction-k', 'modelo'));
         const modelCtl = el('select', 'ctl');
-        modelCtl.disabled = true;
-        modelCtl.title = WHY;
-        const modelOpt = el('option', '', choice && choice.model ? `${choice.model}` : 'nenhum modelo escolhido');
-        modelOpt.selected = true;
-        modelCtl.append(modelOpt);
+        if (catalogue) {
+          const modelKeys = Object.keys(catalogue);
+          if (currentModel && !Object.prototype.hasOwnProperty.call(catalogue, currentModel)) {
+            modelKeys.unshift(currentModel);
+          }
+          // No declared block: the first catalogue model is NOT the current
+          // choice — an honest absence gets its own option, and picking it
+          // does nothing.
+          if (!currentModel) {
+            const noneOpt = el('option', '', 'nenhum modelo escolhido');
+            noneOpt.value = '';
+            noneOpt.selected = true;
+            modelCtl.append(noneOpt);
+          }
+          modelKeys.forEach((m) => {
+            const opt = el('option', '', `${m} · ${catalogue[m] ? catalogue[m].provider : currentProvider}`);
+            opt.value = m;
+            if (m === currentModel) opt.selected = true;
+            modelCtl.append(opt);
+          });
+        } else {
+          const modelOpt = el('option', '',
+            currentModel ? `${currentModel}${currentProvider ? ` · ${currentProvider}` : ''}` : 'nenhum modelo escolhido');
+          modelOpt.selected = true;
+          modelCtl.append(modelOpt);
+          modelCtl.disabled = true;
+          modelCtl.title = 'sem catálogo de modelos — não há lista para escolher';
+        }
+        modelCtl.addEventListener('change', () => {
+          const value = modelCtl.value;
+          if (!value) return; // the "nenhum modelo escolhido" placeholder
+          const entry = catalogue && catalogue[value];
+          const provider = entry && entry.provider ? String(entry.provider) : currentProvider;
+          armProposal(compactionProposal, compactionModelPatch(value, provider),
+            compactionConsequence('model', value, provider, null, null));
+        });
         const modelLine = el('div', 'compaction-v');
         modelLine.append(modelCtl);
-        if (choice && choice.provider) modelLine.append(el('span', '', ` · ${choice.provider}`));
         pick.append(modelLine);
 
+        // The fallback queue: none, a reference to an existing group's queue
+        // (fallback_mode tier:<NAME>, the case the card calls out) or an own
+        // chain built by the chip picker below (fallback_mode standalone).
         pick.append(el('span', 'compaction-k', 'se falhar'));
-        const fbOpt = el('option', '', choice && Array.isArray(choice.fallback_chain) && choice.fallback_chain.length
-          ? choice.fallback_chain.map((h) => h && h.model).filter(Boolean).join(' → ')
-          : 'sem fila de reserva declarada');
         const queueCtl = el('select', 'ctl');
-        queueCtl.disabled = true;
-        queueCtl.title = WHY;
-        fbOpt.selected = true;
-        queueCtl.append(fbOpt);
+        let queueCurrent = 'none';
+        if (rawBlock) {
+          if (typeof rawBlock.fallback_mode === 'string' && rawBlock.fallback_mode.indexOf('tier:') === 0) {
+            queueCurrent = rawBlock.fallback_mode;
+          } else if (rawBlock.fallback_mode === 'standalone'
+              || (Array.isArray(rawBlock.fallback_chain) && rawBlock.fallback_chain.length)) {
+            queueCurrent = 'standalone';
+          }
+        } else if (choice && Array.isArray(choice.fallback_chain) && choice.fallback_chain.length) {
+          queueCurrent = 'standalone';
+        }
+        const noneOpt = el('option', '', 'sem fila de reserva');
+        noneOpt.value = 'none';
+        if (queueCurrent === 'none') noneOpt.selected = true;
+        queueCtl.append(noneOpt);
+        tierNames.forEach((tn) => {
+          const opt = el('option', '', `usar a fila do ${tn}`);
+          opt.value = `tier:${tn}`;
+          if (queueCurrent === `tier:${tn}`) opt.selected = true;
+          queueCtl.append(opt);
+        });
+        const ownOpt = el('option', '', 'fila própria (escolha os modelos)');
+        ownOpt.value = 'standalone';
+        if (queueCurrent === 'standalone') ownOpt.selected = true;
+        queueCtl.append(ownOpt);
+        queueCtl.addEventListener('change', () => {
+          const value = queueCtl.value;
+          if (value === 'standalone') {
+            compactionChain = currentStandaloneChain(rawBlock, choice);
+            chainBox.hidden = false;
+            renderChainPicker();
+            armQueueProposal('standalone', null, compactionChain);
+          } else if (value === 'none') {
+            compactionChain = [];
+            chainBox.hidden = true;
+            armQueueProposal('none', null, []);
+          } else {
+            compactionChain = [];
+            chainBox.hidden = true;
+            armQueueProposal('tier', value.slice(5), []);
+          }
+        });
         const queueLine = el('div', 'compaction-v');
         queueLine.append(queueCtl);
+        if (queueCurrent === 'standalone') {
+          const words = currentStandaloneChain(rawBlock, choice).map((h) => h.model).join(' → ');
+          queueLine.append(el('span', '', ` · ${words}`));
+        }
         pick.append(queueLine);
+
+        // The own-chain picker: chips of the models the operator already
+        // routes with, click to toggle membership in click order (the first
+        // picked is tried first). Shown only while the queue is own/standalone.
+        const chainBox = el('div', 'compaction-chain');
+        chainBox.hidden = true;
+        const chainNote = el('div', 'compaction-chain-note');
+        const chainChips = el('div', 'compaction-chips');
+        chainBox.append(chainNote, chainChips);
+        const renderChainPicker = () => {
+          clear(chainChips);
+          const candidates = compactionChainCandidates(state);
+          const chain = compactionChain || [];
+          candidates.forEach((m) => {
+            const chip = el('button', 'chip', m);
+            chip.type = 'button';
+            if (chain.some((h) => h.model === m)) chip.classList.add('marcado');
+            chip.addEventListener('click', () => {
+              const at = chain.findIndex((h) => h.model === m);
+              if (at >= 0) chain.splice(at, 1);
+              else {
+                const entry = catalogue && catalogue[m];
+                chain.push({ model: m, provider: entry && entry.provider ? String(entry.provider) : '' });
+              }
+              renderChainPicker();
+              armQueueProposal('standalone', null, chain);
+            });
+            chainChips.append(chip);
+          });
+          chainNote.textContent = 'escolha os modelos da reserva, na ordem — o primeiro é tentado primeiro';
+        };
+        function armQueueProposal(kind, tierName, chain) {
+          // The raw block the motor lints REQUIRES provider+model (service.py
+          // _validate_compaction): a queue-only block would be refused by name
+          // (compaction.provider/model must be non-empty). With no model
+          // declared — and none in the resolved aux either — the write stays
+          // closed and the sentence says what is missing, never a patch that
+          // cannot land.
+          if (typeof currentModel !== 'string' || !currentModel) {
+            const chainWords = (chain || []).map((h) => h.model).join(' → ');
+            armProposal(compactionProposal, null,
+              chainWords
+                ? `escolha primeiro o modelo de compactação — a reserva já escolhida é ${chainWords}`
+                : 'escolha primeiro o modelo de compactação para poder gravar a fila');
+            compactionProposal.btn.disabled = true;
+            return;
+          }
+          if (kind === 'standalone' && !(chain && chain.length)) {
+            armProposal(compactionProposal, null, 'escolha ao menos um modelo da fila própria para poder gravar');
+            compactionProposal.btn.disabled = true;
+            return;
+          }
+          const words = (chain || []).map((h) => h.model).join(' → ');
+          armProposal(compactionProposal,
+            compactionQueuePatch(kind, tierName, chain, currentModel, currentProvider),
+            compactionConsequence(kind, null, null, tierName, words));
+        }
+        if (queueCurrent === 'standalone') {
+          compactionChain = currentStandaloneChain(rawBlock, choice);
+          chainBox.hidden = false;
+          renderChainPicker();
+        }
+        pick.append(chainBox);
         box.append(pick);
+        box.append(compactionProposal.row);
 
         const conseq = el('p', 'compaction-conseq');
         conseq.append(el('span', '', 'Compactar cedo custa mais chamadas; tarde arrisca estourar a janela. Agressividade '));
@@ -5961,6 +6258,236 @@
         errors.forEach((errText) => {
           box.append(el('p', 'compaction-err', String(errText)));
         });
+      }
+
+      // ── the Modelos write helpers (card t_5d8491bf) ──────────────────
+      // Three surfaces, one spine: a click on an hour, on the group's
+      // peak-policy selector, or on a compaction control builds a PATCH, shows
+      // the consequence in the operator's words, and only a Gravar button
+      // sends it through the /plan + /apply spine every other write rides
+      // (doApply, with its staleness guard and its 409 answer). No edit mode:
+      // the click IS the intention, the sentence IS the preview (CA5), and
+      // "janela adicionada" is never the words — the consequence names the
+      // price the hour changes to.
+      //
+      // The pure half below takes the NORMALIZED window list entryWindows
+      // produces and the injected clock, and returns the next list, the
+      // sentence or the patch. The overlay table REPLACES the registry windows
+      // for the model wholesale (rules.with_global_price_windows), so the
+      // first edit freezes the effective set into the overlay; "voltar ao
+      // catálogo" is the gesture that unfreezes it, writing null — the merge's
+      // delete-key spelling (service.py _deep_merge_value).
+      const DAY_NAMES_PLURAL = ['segundas', 'terças', 'quartas', 'quintas', 'sextas', 'sábados', 'domingos'];
+      const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
+      function dayKey(weekdays) {
+        if (weekdays === null || weekdays === undefined) return null;
+        const list = weekdays.slice().sort((a, b) => a - b);
+        return list.length === 7 ? null : list.join(',');
+      }
+      function sameDaySet(a, b) { return dayKey(a) === dayKey(b); }
+      // The raw overlay spelling the router lints: hours_utc, multiplier, and
+      // weekdays only when it is not the whole week (absent means every day).
+      function toRawWindow(w) {
+        const raw = { hours_utc: [w.hours[0], w.hours[1]], multiplier: w.multiplier };
+        if (w.weekdays !== null && w.weekdays !== undefined && w.weekdays.length < 7) {
+          raw.weekdays = w.weekdays.slice().sort((a, b) => a - b);
+        }
+        return raw;
+      }
+      function mergeAdjacentWindows(windows) {
+        const list = (Array.isArray(windows) ? windows : [])
+          .filter(Boolean)
+          .map((w) => ({
+            hours: [w.hours[0], w.hours[1]],
+            multiplier: w.multiplier,
+            weekdays: w.weekdays === undefined ? null : w.weekdays,
+          }))
+          .sort((a, b) => a.hours[0] - b.hours[0] || a.hours[1] - b.hours[1]);
+        const out = [];
+        list.forEach((w) => {
+          const last = out[out.length - 1];
+          if (last && last.hours[1] === w.hours[0]
+              && last.multiplier === w.multiplier
+              && sameDaySet(last.weekdays, w.weekdays)) {
+            last.hours = [last.hours[0], w.hours[1]];
+          } else {
+            out.push(w);
+          }
+        });
+        return out;
+      }
+      // The weekdays where `hour` is BASE — the complement of every window that
+      // covers it. A declared window can only cover days that are base at that
+      // hour, which is what keeps the overlay overlap-free (the lint refuses
+      // overlaps): declaring on a day a weekday-gated peak already covers would
+      // overlap it.
+      function baseDaysAt(windows, hour) {
+        const days = [];
+        for (let d = 0; d < 7; d += 1) {
+          if (priceMultiplier(windows, { hour, weekday: d }) === 1.0) days.push(d);
+        }
+        return days;
+      }
+      // The one click: a base hour declares a 0.8x cheap window covering it
+      // (the operator's goal is "use this model when it is cheaper"), and an
+      // hour inside a window splits the window around it (back to base). The
+      // multiplier of a declared window is FIXED at 0.8x because there is no
+      // edit mode: the click cannot ask "which multiplier", and the task's own
+      // consequence example is a discount.
+      function togglePriceHour(windows, hour, weekday) {
+        const effective = (Array.isArray(windows) ? windows : []).filter(Boolean);
+        if (priceMultiplier(effective, { hour, weekday }) === 1.0) {
+          const days = baseDaysAt(effective, hour);
+          const declared = {
+            hours: [hour, hour + 1],
+            multiplier: 0.8,
+            weekdays: days.length === 7 ? null : days,
+          };
+          return mergeAdjacentWindows([...effective, declared]);
+        }
+        const next = [];
+        effective.forEach((w) => {
+          if (hour >= w.hours[0] && hour < w.hours[1]) {
+            if (w.hours[0] < hour) next.push({ ...w, hours: [w.hours[0], hour] });
+            if (hour + 1 < w.hours[1]) next.push({ ...w, hours: [hour + 1, w.hours[1]] });
+          } else {
+            next.push(w);
+          }
+        });
+        return mergeAdjacentWindows(next);
+      }
+      function weekdayWords(days) {
+        const list = days === null || days === undefined ? ALL_DAYS : days.slice().sort((a, b) => a - b);
+        if (list.length === 7) return 'todos os dias';
+        if (list.length === 5 && list[0] === 0 && list[4] === 4) return 'de segunda a sexta';
+        if (list.length === 2 && list[0] === 5 && list[1] === 6) return 'nos fins de semana';
+        const names = list.map((d) => DAY_NAMES_PLURAL[d]);
+        if (names.length === 1) return `aos ${names[0]}`;
+        return `às ${names.slice(0, -1).join(', ')} e ${names[names.length - 1]}`;
+      }
+      function priceToggleConsequence(windows, hour, weekday) {
+        const span = `${String(hour).padStart(2, '0')}h às ${String(hour + 1).padStart(2, '0')}h`;
+        if (priceMultiplier(windows, { hour, weekday }) === 1.0) {
+          const days = baseDaysAt(windows, hour);
+          const gate = days.length === 7 ? '' : ` ${weekdayWords(days)}`;
+          return `das ${span} este modelo passa a custar 0,8× do preço base${gate}`;
+        }
+        return `das ${span} este modelo volta ao preço base`;
+      }
+      function priceOriginWords(origin) {
+        if (origin === 'overlay') return 'janela declarada por você';
+        if (origin === 'declared') return 'janela declarada numa tentativa do grupo';
+        if (origin === 'registry') return 'janela do catálogo';
+        return null;
+      }
+      function priceVerifiedWords(iso) {
+        // Only the human-confirmed date the registry serves may appear here:
+        // the automatic read time lives in the detector's state file, which
+        // this screen never reads, so "há N h" is never invented.
+        if (typeof iso !== 'string') return null;
+        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+        if (!m) return null;
+        return `conferido por uma pessoa em ${m[3]}/${m[2]}/${m[1]}`;
+      }
+      function priceTogglePatch(model, windows, hour, weekday) {
+        return { price_windows: { [model]: togglePriceHour(windows, hour, weekday).map(toRawWindow) } };
+      }
+      function priceRestorePatch(model) {
+        return { price_windows: { [model]: null } };
+      }
+      // ── the per-group peak policy ────────────────────────────────────
+      // The three contract states (spec t_c90c5336, acceptance 7) each write
+      // their own exact combination; time_cap is never touched by any of them,
+      // and a removal of time_policy is spelled null (the merge's delete key).
+      function tierAvoidProviders(state, tierName) {
+        const tier = state && state.policy && state.policy.tiers && state.policy.tiers[tierName];
+        const chain = tierChain(tier);
+        const out = [];
+        chain.forEach((hop) => {
+          const entry = state.capabilities && state.capabilities[hop.model];
+          if (entryWindows(entry).length && out.indexOf(hop.provider) < 0) out.push(hop.provider);
+        });
+        return out;
+      }
+      function currentPeakPolicy(tier) {
+        const tPolicy = tier && tier.time_policy && typeof tier.time_policy === 'object' ? tier.time_policy : null;
+        const isAvoid = !!(tPolicy && Array.isArray(tPolicy.avoid_peak) && tPolicy.avoid_peak.length);
+        const isCheapest = String((tier && tier.fallback_strategy) || '') === 'cheapest_now';
+        return isAvoid ? 'evitar o pico' : isCheapest ? 'usar o mais barato' : 'manter a ordem';
+      }
+      function peakPolicyPatch(tierName, state, choice) {
+        const patch = {
+          tiers: { [tierName]: { fallback_strategy: choice === 'usar o mais barato' ? 'cheapest_now' : 'sequential' } },
+        };
+        if (choice === 'evitar o pico') {
+          patch.tiers[tierName].time_policy = { avoid_peak: tierAvoidProviders(state, tierName) };
+        } else {
+          patch.tiers[tierName].time_policy = null;
+        }
+        return patch;
+      }
+      function peakPolicyConsequence(state, tierName, choice) {
+        if (choice === 'evitar o pico') {
+          const providers = tierAvoidProviders(state, tierName);
+          return `as tentativas em pico (${providers.join(', ')}) passam para o fim da fila — as outras são tentadas antes`;
+        }
+        if (choice === 'usar o mais barato') {
+          return 'a fila passa a ser reordenada pelo preço do momento — a mais barata primeiro';
+        }
+        return 'o grupo volta a tentar as filas na ordem declarada, mesmo quando a 1ª está em pico';
+      }
+      // ── the compaction write ─────────────────────────────────────────
+      function compactionModelPatch(model, provider) {
+        return { compaction: { provider, model } };
+      }
+      function compactionQueuePatch(kind, tierName, chain, model, provider) {
+        // The motor's lint REQUIRES provider+model on the raw block even for a
+        // queue-only change (service.py _validate_compaction), so the queue
+        // patch always carries the current model — the queue is a property of
+        // the block, not a standalone knob.
+        const base = {};
+        if (typeof model === 'string' && model) base.model = model;
+        if (typeof provider === 'string' && provider) base.provider = provider;
+        if (kind === 'tier') {
+          return { compaction: { ...base, fallback_mode: `tier:${tierName}`, fallback_chain: null } };
+        }
+        if (kind === 'standalone') {
+          return { compaction: { ...base, fallback_mode: 'standalone', fallback_chain: chain } };
+        }
+        return { compaction: { ...base, fallback_mode: null, fallback_chain: null } };
+      }
+      function compactionConsequence(kind, model, provider, tierName, chainWords) {
+        if (kind === 'model') return `a compactação passa a usar ${model} (${provider})`;
+        if (kind === 'tier') return `se o modelo de compactação falhar, a reserva passa a ser a fila do grupo ${tierName}`;
+        if (kind === 'standalone') return `se o modelo de compactação falhar, a reserva passa a ser: ${chainWords}`;
+        return 'a compactação passa a não ter fila de reserva — se o modelo falhar, segue a fila do agente principal';
+      }
+      // The shared confirm row: the consequence sentence, the Gravar button
+      // (whose label names the gesture), the message line and the diff. One
+      // proposal per block: a new choice REPLACES the pending one, and the
+      // write sends exactly what the sentence describes.
+      function proposalArea(action, onConfirm) {
+        const row = el('div', 'proposal-row');
+        row.hidden = true;
+        const conseq = el('span', 'proposal-conseq');
+        const btn = el('button', 'btn', WRITE[action]);
+        btn.type = 'button';
+        const msg = el('p', 'msg');
+        const diff = el('pre', 'code');
+        diff.hidden = true;
+        row.append(conseq, btn, msg, diff);
+        btn.addEventListener('click', onConfirm);
+        return { row, conseq, btn, msg, diff, pending: null };
+      }
+      function armProposal(area, patch, consequence) {
+        area.conseq.textContent = consequence;
+        area.diff.hidden = true;
+        area.diff.textContent = '';
+        area.msg.textContent = '';
+        area.msg.className = 'msg';
+        area.btn.disabled = false;
+        area.pending = { patch, consequence };
+        area.row.hidden = false;
       }
 
       // ── Último recurso (§2.6, §5.4) ─────────────────────────────────
@@ -8348,9 +8875,10 @@
         // copy can drift. A write that does not name a gesture falls back to
         // WRITE.saving, which stays the in-flight of save (§4.7).
         const inFlight = (action && IN_FLIGHT[action]) || WRITE.saving;
+        let policy = null;
         try {
         if (path !== '/apply/revert') {
-          const policy = draft !== undefined ? draft : (state.draft || (state.plan && state.plan.policy));
+          policy = draft !== undefined ? draft : (state.draft || (state.plan && state.plan.policy));
           if (policy === undefined || policy === null) { setMsg(msg, WRITE.noDraft, 'bad'); return false; }
           setMsg(msg, WRITE.checking);
           // The diff is passed through, not discarded. Folding Validate into Apply
@@ -8379,7 +8907,13 @@
           // pressed it, and a detached node cannot be found by id.
           if (saveBtn) saveBtn.textContent = inFlight;
         }
-        const body = path === '/apply/revert' ? {} : { plan: state.plan, policy: state.plan.policy };
+        // The /apply body carries the DRAFT as `policy`, not the plan's merged
+        // result. The server treats `policy` as the CHANGE and re-merges it
+        // over the file (service.py apply), so a null-removal — the merge's
+        // delete-key spelling — must travel as the change itself: the merged
+        // policy has already absorbed the null, and re-merging it would leave
+        // the key on disk (the no-op trap apply() documents).
+        const body = path === '/apply/revert' ? {} : { plan: state.plan, policy };
         const res = await call(path, { method: 'POST', body });
         if (res.missing) { setMsg(msg, WRITE.missingAction, 'bad'); return false; }
         if (res.status === 409) { setMsg(msg, WRITE.conflict, 'bad'); state.plan = null; await load(); return false; }
@@ -9201,6 +9735,21 @@
         // ladder renders. Exported so the band counts, the now-mark's clock
         // authority and the disabled-state reasons are pinned by tests.
         renderPriceStrip, renderCompaction, tierShare,
+        // The Modelos write surface (card t_5d8491bf): the pure half — the
+        // hour toggle (base → 0.8×, inside → split out), the day words, the
+        // origin/provenance readers, the patches (restore spelled null) and
+        // the consequence sentences — plus the pending-proposal gestures each
+        // block wires. Exported so the click semantics and the pt-BR words an
+        // operator acts on are pinned by tests, not eyeballed.
+        togglePriceHour, mergeAdjacentWindows, weekdayWords, baseDaysAt,
+        priceToggleConsequence, priceOriginWords, priceVerifiedWords,
+        priceTogglePatch, priceRestorePatch,
+        tierAvoidProviders, currentPeakPolicy, peakPolicyPatch, peakPolicyConsequence,
+        compactionModelPatch, compactionQueuePatch, compactionConsequence,
+        compactionChainCandidates, currentStandaloneChain,
+        proposalArea, armProposal,
+        proposePriceToggle, proposePriceRestore, confirmPriceProposal,
+        confirmPolicyProposal, confirmCompactionProposal,
         // The log window: named by its endpoints (never by the oldest's age) and
         // judged against the policy that is on screen — the two facts that
         // decide whether a zero hit is a finding or a missing window.

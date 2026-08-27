@@ -10502,24 +10502,107 @@ test('each group card shows its observed share of decisions, derived from decisi
   assert.match(text, /6 de 8/, 'six of the eight decisions went through T2');
 });
 
-test('the peak-policy selector renders DISABLED and names the follow-up card as the reason', () => {
-  const { api, dom } = loadConsole();
+test('the peak-policy selector is LIVE: a change arms the group proposal with the consequence', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
   api.state.loading = false;
   api.state.policy = {
     rules: [], default: {},
     tiers: { T1: { model: 'glm-4.7', provider: 'zai', fallback: [], fallback_strategy: 'sequential' } },
+  };
+  api.state.capabilities = {
+    'glm-4.7': { provider: 'zai', price_windows: [{ hours_utc: [6, 10], weekdays: [0, 1, 2, 3, 4], multiplier: 2.0 }] },
   };
   api.state.routes = [];
   api.renderLadder();
   const selects = findAll(dom.get('ladder'), 'peak-policy');
   assert.equal(selects.length, 1, 'one selector per group card');
   const sel = selects[0];
-  assert.equal(sel.disabled, true, 'the selector does not write yet');
-  assert.match(sel.title, /card filho|ainda não grava|não grava/,
-    'the reason rides on the control itself, where the pointer lands');
+  assert.ok(!sel.disabled, 'the selector writes — the read-only delivery is gone');
   const opts = (sel.children || []).filter((c) => c.tagName === 'option');
   assert.deepEqual(opts.map((o) => o.textContent), ['manter a ordem', 'evitar o pico', 'usar o mais barato'],
     'the three contract states, in contract order');
+  // "evitar o pico" is refused when nothing varies with the hour: the option
+  // is disabled and the reason is said beside the selector.
+  api.state.capabilities = {};
+  api.renderLadder();
+  const sel2 = findAll(dom.get('ladder'), 'peak-policy')[0];
+  const avoid = (sel2.children || []).find((o) => o.textContent === 'evitar o pico');
+  assert.equal(avoid.disabled, true, 'no peak to avoid → the state is not offered');
+  assert.match(flat(dom.get('ladder')), /não há pico para evitar/);
+});
+
+test('the peak-policy consequence names what changes, and Gravar writes the tier patch', async () => {
+  const posted = [];
+  const policy = {
+    rules: [], default: {},
+    tiers: { T1: { model: 'glm-4.7', provider: 'zai', fallback: [], fallback_strategy: 'sequential' } },
+  };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      posted.push({ url, body: opts && opts.body });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      if (url.endsWith('/plan')) {
+        const body = JSON.parse(opts.body);
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: body.policy, diff: '+x', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+    },
+  });
+  api.state.loading = false;
+  api.state.policy = policy;
+  api.state.capabilities = {
+    'glm-4.7': { provider: 'zai', price_windows: [{ hours_utc: [6, 10], weekdays: [0, 1, 2, 3, 4], multiplier: 2.0 }] },
+  };
+  api.state.routes = [];
+  api.renderLadder();
+  const sel = findAll(dom.get('ladder'), 'peak-policy')[0];
+  sel.value = 'evitar o pico';
+  sel._listeners.change();
+  const proposal = findAll(dom.get('ladder'), 'proposal-row')[0];
+  assert.equal(proposal.hidden, false);
+  assert.match(flat(proposal), /as tentativas em pico \(zai\) passam para o fim da fila/,
+    'the consequence names the demotion, not "política alterada"');
+  await findAll(proposal, 'btn')[0]._listeners.click();
+  const planBody = JSON.parse(posted.find((p) => /\/plan$/.test(p.url)).body);
+  assert.deepEqual(planBody.policy, {
+    tiers: { T1: { fallback_strategy: 'sequential', time_policy: { avoid_peak: ['zai'] } } },
+  });
+  const apply = posted.find((p) => /\/apply$/.test(p.url));
+  assert.ok(apply, 'the confirmed change reaches /apply');
+  assert.deepEqual(JSON.parse(apply.body).policy, {
+    tiers: { T1: { fallback_strategy: 'sequential', time_policy: { avoid_peak: ['zai'] } } },
+  });
+});
+
+test('a 409 on the peak-policy write says the §4.7 conflict sentence', async () => {
+  const policy = { rules: [], default: {}, tiers: { T1: { model: 'glm-4.7', provider: 'zai', fallback: [] } } };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      if (url.endsWith('/plan')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy, diff: '+x', base_hash: 'stale' })) });
+      }
+      return Promise.resolve({ ok: false, status: 409, text: () => Promise.resolve('{}') });
+    },
+  });
+  api.state.loading = false;
+  api.state.policy = policy;
+  api.state.capabilities = {};
+  api.state.routes = [];
+  api.renderLadder();
+  const sel = findAll(dom.get('ladder'), 'peak-policy')[0];
+  sel.value = 'usar o mais barato';
+  sel._listeners.change();
+  const proposal = findAll(dom.get('ladder'), 'proposal-row')[0];
+  await findAll(proposal, 'btn')[0]._listeners.click();
+  assert.match(flat(proposal), /mudou por fora/, 'the §4.7 conflict sentence, on the group surface too');
+  assert.equal(api.state.plan, null, 'the stale plan does not survive to be applied again');
 });
 
 // ── the compaction block: state read off the real /compaction shape ───────
@@ -10591,17 +10674,196 @@ test('compaction refusals ride on screen, not as a 400 page', () => {
     'the refusal is displayed verbatim - it is the motor speaking, not the screen guessing');
 });
 
-test('the compaction controls are disabled and say why', () => {
-  const { api, dom } = loadConsole();
-  api.state.loading = false;
-  api.state.compaction = compactionPayload();
-  api.renderCompaction();
-  const disableds = findAll(dom.get('compactionBox'), 'ctl');
-  assert.ok(disableds.length >= 2, 'model choice and fallback queue are both controls');
-  disableds.forEach((c) => {
-    assert.equal(c.disabled, true);
-    assert.match(c.title, /card filho|ainda não grava|não grava/);
+test('the compaction model and queue controls write: a change arms the proposal, Gravar sends the patch', async () => {
+  const posted = [];
+  const policy = {
+    rules: [], default: {},
+    tiers: { T1: { model: 'glm-4.7', provider: 'zai', fallback: [] } },
+    compaction: null,
+  };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      posted.push({ url, body: opts && opts.body });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      if (url.endsWith('/plan')) {
+        const body = JSON.parse(opts.body);
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: body.policy, diff: '+x', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+    },
   });
+  api.state.loading = false;
+  api.state.policy = policy;
+  api.state.compaction = compactionPayload();
+  api.state.capabilities = stripRegistry();
+  api.renderCompaction();
+  const ctl = findAll(dom.get('compactionBox'), 'ctl');
+  const modelCtl = ctl[0];
+  assert.ok(!modelCtl.disabled, 'the model choice writes now');
+  modelCtl.value = 'glm-5.3';
+  modelCtl._listeners.change();
+  const proposal = findAll(dom.get('compactionBox'), 'proposal-row')[0];
+  assert.equal(proposal.hidden, false);
+  assert.match(flat(proposal), /a compactação passa a usar glm-5\.3 \(zai\)/,
+    'the consequence names model AND provider');
+  await findAll(proposal, 'btn')[0]._listeners.click();
+  const planBody = JSON.parse(posted.find((p) => /\/plan$/.test(p.url)).body);
+  assert.deepEqual(planBody.policy, { compaction: { provider: 'zai', model: 'glm-5.3' } });
+});
+
+test('the compaction queue control writes a GROUP reference, dropping the old own chain', async () => {
+  const posted = [];
+  const policy = {
+    rules: [], default: {},
+    tiers: { T1: { model: 'glm-4.7', provider: 'zai', fallback: [] } },
+    compaction: null,
+  };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      posted.push({ url, body: opts && opts.body });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      if (url.endsWith('/plan')) {
+        const body = JSON.parse(opts.body);
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: body.policy, diff: '+x', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+    },
+  });
+  api.state.loading = false;
+  api.state.policy = policy;
+  api.state.compaction = compactionPayload(); // resolved aux carries an own chain
+  api.state.capabilities = stripRegistry();
+  api.renderCompaction();
+  const ctl = findAll(dom.get('compactionBox'), 'ctl');
+  const queueCtl = ctl[1];
+  queueCtl.value = 'tier:T1';
+  queueCtl._listeners.change();
+  const proposal = findAll(dom.get('compactionBox'), 'proposal-row')[0];
+  assert.match(flat(proposal), /a reserva passa a ser a fila do grupo T1/);
+  await findAll(proposal, 'btn')[0]._listeners.click();
+  const planBody = JSON.parse(posted.find((p) => /\/plan$/.test(p.url)).body);
+  assert.deepEqual(planBody.policy, {
+    compaction: {
+      provider: 'zai', model: 'glm-4.5-flash', fallback_mode: 'tier:T1', fallback_chain: null,
+    },
+  },
+  'the group reference replaces the own chain — and carries the model the block is about (the motor refuses a block without provider/model)');
+});
+
+test('the own-chain picker with NO model keeps the write closed and says what is missing', async () => {
+  const posted = [];
+  const policy = {
+    rules: [], default: {},
+    tiers: {
+      T1: { model: 'glm-4.7', provider: 'zai', fallback: [] },
+      T2: { model: 'deepseek-v4-pro', provider: 'deepseek', fallback: [] },
+    },
+    compaction: null,
+  };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      posted.push({ url, body: opts && opts.body });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      if (url.endsWith('/plan')) {
+        const body = JSON.parse(opts.body);
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: body.policy, diff: '+x', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+    },
+  });
+  api.state.loading = false;
+  api.state.policy = policy;
+  // No declared block AND no resolved model: the motor's lint refuses a block
+  // without provider+model (service.py _validate_compaction), so a queue-only
+  // write can never land here — the sentence says what is missing instead.
+  api.state.compaction = Object.assign({}, compactionPayload(), { compaction: null, compaction_errors: [] });
+  api.state.capabilities = stripRegistry();
+  api.renderCompaction();
+  const ctl = findAll(dom.get('compactionBox'), 'ctl');
+  const queueCtl = ctl[1];
+  queueCtl.value = 'standalone';
+  queueCtl._listeners.change();
+  const proposal = findAll(dom.get('compactionBox'), 'proposal-row')[0];
+  assert.equal(proposal.hidden, false);
+  assert.match(flat(proposal), /escolha primeiro o modelo de compactação/,
+    'without a model the sentence names the missing model, not a queue jargon');
+  assert.equal(findAll(proposal, 'btn')[0].disabled, true, 'and the write stays closed');
+  // The chips come from the policy chains: glm-4.7 and deepseek-v4-pro.
+  let chips = findAll(dom.get('compactionBox'), 'chip');
+  assert.deepEqual(chips.map((c) => c.textContent), ['glm-4.7', 'deepseek-v4-pro']);
+  chips[0]._listeners.click();
+  chips = findAll(dom.get('compactionBox'), 'chip');
+  chips[1]._listeners.click();
+  assert.match(flat(proposal), /a reserva já escolhida é glm-4\.7 → deepseek-v4-pro/,
+    'the picks are remembered in the sentence, in click order');
+  assert.equal(findAll(proposal, 'btn')[0].disabled, true,
+    'still closed — the motor refuses a block without provider/model');
+  assert.equal(posted.some((p) => /\/plan$/.test(p.url)), false,
+    'no plan ever travels for a queue without a model — the write cannot land and is not pretended');
+});
+
+test('the own-chain picker WITH a model writes the block carrying model and provider', async () => {
+  const posted = [];
+  const policy = {
+    rules: [], default: {},
+    tiers: {
+      T1: { model: 'glm-4.7', provider: 'zai', fallback: [] },
+      T2: { model: 'deepseek-v4-pro', provider: 'deepseek', fallback: [] },
+    },
+    compaction: null,
+  };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      posted.push({ url, body: opts && opts.body });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      if (url.endsWith('/plan')) {
+        const body = JSON.parse(opts.body);
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: body.policy, diff: '+x', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+    },
+  });
+  api.state.loading = false;
+  api.state.policy = policy;
+  // The resolved aux carries the model (glm-4.5-flash @ zai): the queue write
+  // may land, and must carry the block's model/provider with it.
+  api.state.compaction = compactionPayload();
+  api.state.capabilities = stripRegistry();
+  api.renderCompaction();
+  const ctl = findAll(dom.get('compactionBox'), 'ctl');
+  const queueCtl = ctl[1];
+  queueCtl.value = 'standalone';
+  queueCtl._listeners.change();
+  const proposal = findAll(dom.get('compactionBox'), 'proposal-row')[0];
+  assert.equal(proposal.hidden, false);
+  // The chain pre-fills from the resolved aux's own chain (currentStandaloneChain).
+  assert.match(flat(proposal), /glm-4\.7 → gpt-5\.6-luna → mimo-v2\.5/,
+    'the consequence names the reserved chain in order');
+  assert.equal(findAll(proposal, 'btn')[0].disabled, false);
+  await findAll(proposal, 'btn')[0]._listeners.click();
+  const planBody = JSON.parse(posted.find((p) => /\/plan$/.test(p.url)).body);
+  assert.deepEqual(planBody.policy, {
+    compaction: {
+      provider: 'zai', model: 'glm-4.5-flash', fallback_mode: 'standalone',
+      fallback_chain: [
+        { model: 'glm-4.7', provider: 'zai' },
+        { model: 'gpt-5.6-luna', provider: 'openai-codex' },
+        { model: 'mimo-v2.5', provider: 'xiaomi' },
+      ],
+    },
+  }, 'the block travels with provider+model — the shape the motor lint accepts');
 });
 
 test('a missing /compaction read degrades to the stated absence', () => {
@@ -10735,4 +10997,330 @@ test('the refresh path marks the birthmark too, and re-renders the pair', () => 
   api.renderRail();
   assert.equal(dom.get('restartBanner').hidden, false);
   assert.match(flat(dom.get('restartBanner')), /reiniciou depois que esta tela abriu/);
+});
+
+// ── the Modelos controls (card t_5d8491bf): the write surface ─────────────
+// Three surfaces, one spine: a click arms the block's ONE proposal — the
+// consequence sentence + a Gravar button — and only that button writes through
+// the /plan + /apply spine (doApply), which plans first, shows the diff and
+// answers 409 with the §4.7 conflict sentence. No edit mode: the click IS the
+// intention and the sentence IS the preview (CA5).
+
+test('a click on a base hour arms the price proposal with the consequence; Gravar writes the model overlay', async () => {
+  const posted = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      posted.push({ url, body: opts && opts.body });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ rules: [], default: {}, tiers: {} })) });
+      }
+      if (url.endsWith('/plan')) {
+        const body = JSON.parse(opts.body);
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: body.policy, diff: '+x', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+    },
+  });
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  api.state.capabilities = stripRegistry();
+  api.state.clock = PEAK; // Monday 07:14 UTC
+  api.renderPriceStrip();
+  const bands = findAll(dom.get('priceStrip'), 'price-band');
+  // glm-4.7 (zai, [6,10) seg-sex): hour 12 is base on every day -> declares 0.8x.
+  const cells = findAll(bands[0], 'h-cell');
+  assert.equal(cells[0].tagName, 'button', 'an editable cell is a button — a click can write');
+  cells[12]._listeners.click();
+  const proposal = findAll(dom.get('priceStrip'), 'proposal-row')[0];
+  assert.equal(proposal.hidden, false, 'the click armed the confirm row');
+  assert.match(flat(proposal), /das 12h às 13h este modelo passa a custar 0,8×/,
+    'the consequence names the price, never "janela adicionada"');
+  await findAll(proposal, 'btn')[0]._listeners.click();
+  const planBody = JSON.parse(posted.find((p) => /\/plan$/.test(p.url)).body);
+  assert.deepEqual(Object.keys(planBody.policy), ['price_windows'], 'only the overlay table travels');
+  assert.deepEqual(Object.keys(planBody.policy.price_windows), ['glm-4.7'], 'only THIS model — never the provider\'s others');
+  assert.deepEqual(planBody.policy.price_windows['glm-4.7'], [
+    { hours_utc: [6, 10], weekdays: [0, 1, 2, 3, 4], multiplier: 2.0 },
+    { hours_utc: [12, 13], multiplier: 0.8 },
+  ]);
+  const apply = posted.find((p) => /\/apply$/.test(p.url));
+  assert.ok(apply, 'the confirmed click reaches /apply');
+});
+
+test('a click inside an inherited peak proposes the return to base', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  api.state.capabilities = stripRegistry();
+  api.state.clock = PEAK; // Monday 07:14 UTC: hour 7 is inside zai's seg-sex peak
+  api.renderPriceStrip();
+  const cells = findAll(findAll(dom.get('priceStrip'), 'price-band')[0], 'h-cell');
+  cells[7]._listeners.click();
+  const proposal = findAll(dom.get('priceStrip'), 'proposal-row')[0];
+  assert.match(flat(proposal), /das 07h às 08h este modelo volta ao preço base/,
+    'the removal names the return to base');
+});
+
+test('voltar ao catálogo proposes removing the overlay entry, written as a null', async () => {
+  const posted = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      posted.push({ url, body: opts && opts.body });
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ rules: [], default: {}, tiers: {} })) });
+      }
+      if (url.endsWith('/plan')) {
+        const body = JSON.parse(opts.body);
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: body.policy, diff: '+x', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+    },
+  });
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  const reg = stripRegistry();
+  reg['glm-4.7'].price_windows_origin = 'overlay';
+  api.state.capabilities = reg;
+  api.state.clock = PEAK;
+  api.renderPriceStrip();
+  const back = findAll(dom.get('priceStrip'), 'linkish')[0];
+  back._listeners.click();
+  const proposal = findAll(dom.get('priceStrip'), 'proposal-row')[0];
+  assert.match(flat(proposal), /volta a seguir as janelas do catálogo/);
+  await findAll(proposal, 'btn')[0]._listeners.click();
+  const planBody = JSON.parse(posted.find((p) => /\/plan$/.test(p.url)).body);
+  assert.deepEqual(planBody.policy, { price_windows: { 'glm-4.7': null } },
+    'the restore is the merge\'s delete-key spelling — the overlay entry leaves the file');
+});
+
+test('a 409 on the price write says the §4.7 conflict sentence', async () => {
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ rules: [], default: {}, tiers: {} })) });
+      }
+      if (url.endsWith('/plan')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy: { rules: [], default: {}, tiers: {} }, diff: '+x', base_hash: 'stale' })) });
+      }
+      return Promise.resolve({ ok: false, status: 409, text: () => Promise.resolve('{}') });
+    },
+  });
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  api.state.capabilities = stripRegistry();
+  api.state.clock = PEAK;
+  api.renderPriceStrip();
+  const cells = findAll(findAll(dom.get('priceStrip'), 'price-band')[0], 'h-cell');
+  cells[12]._listeners.click();
+  const proposal = findAll(dom.get('priceStrip'), 'proposal-row')[0];
+  await findAll(proposal, 'btn')[0]._listeners.click();
+  assert.match(flat(proposal), /mudou por fora/, 'the §4.7 conflict sentence, on the price surface too');
+  assert.equal(api.state.plan, null, 'the stale plan does not survive to be applied again');
+});
+
+test('the strip shows where each window came from and the human-confirmed date', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  const reg = stripRegistry();
+  reg['glm-4.7'].price_windows_origin = 'overlay';
+  reg['glm-5.3'].price_windows_origin = 'declared';
+  reg['glm-5.3'].price_windows_verified = '2026-08-26';
+  reg['deepseek-v4-pro'].price_windows_origin = 'registry';
+  api.state.capabilities = reg;
+  api.state.clock = PEAK;
+  api.renderPriceStrip();
+  const text = flat(dom.get('priceStrip'));
+  assert.match(text, /janela declarada por você/, 'the overlay says who declared it');
+  assert.match(text, /janela declarada numa tentativa do grupo/, 'a per-elo override is not presented as the operator\'s overlay');
+  assert.match(text, /conferido por uma pessoa em 26\/08\/2026/, 'the human-confirmed date is served and shown');
+  assert.match(text, /janela do catálogo/, 'and the registry windows say their origin too');
+  // A model whose windows are declared on a group's elo renders INERT cells:
+  // the owner is the group editor, and the strip never fakes a write.
+  const bands = findAll(dom.get('priceStrip'), 'price-band');
+  const declared = findAll(bands[1], 'h-cell');
+  assert.equal(declared[0].tagName, 'i', 'declared-window cells are not buttons');
+  assert.equal(declared[0]._listeners.click, undefined, 'and they carry no click');
+  // The overlay model gets the restore gesture; the declared one does not.
+  const back = findAll(dom.get('priceStrip'), 'linkish');
+  assert.equal(back.length, 1, 'only the overlay model offers "voltar ao catálogo"');
+});
+
+// ── the pure Modelos write helpers (card t_5d8491bf) ──────────────────────
+// The normalized window form the helpers take:
+// { hours: [start, end), multiplier, weekdays: null | number[] }.
+const M_SEGSEX = { hours: [6, 10], multiplier: 2.0, weekdays: [0, 1, 2, 3, 4] };
+
+test('togglePriceHour: a base hour declares a 0.8x cheap window for that model only', () => {
+  const { api } = loadConsole();
+  const next = api.togglePriceHour([], 16, 0);
+  assert.equal(next.length, 1);
+  assert.deepEqual(plain(next[0].hours), [16, 17]);
+  assert.equal(next[0].multiplier, 0.8);
+  assert.equal(next[0].weekdays, null, 'an all-days declaration carries no weekdays key');
+});
+
+test('togglePriceHour: a click inside an inherited window splits it out (remove)', () => {
+  const { api } = loadConsole();
+  const next = api.togglePriceHour([M_SEGSEX], 7, 0);
+  assert.equal(next.length, 2);
+  assert.deepEqual(plain(next[0].hours), [6, 7]);
+  assert.deepEqual(plain(next[1].hours), [8, 10]);
+  assert.deepEqual(plain(next[0].weekdays), [0, 1, 2, 3, 4], 'the split keeps the weekday gate');
+});
+
+test('togglePriceHour: the FIRST hour of a window removes too — the boundary is not missed', () => {
+  const { api } = loadConsole();
+  // Clicking hour 6 (the start of [6,10)) must drop it: [7,10) remains.
+  const next = api.togglePriceHour([M_SEGSEX], 6, 0);
+  assert.equal(next.length, 1);
+  assert.deepEqual(plain(next[0].hours), [7, 10]);
+  assert.deepEqual(plain(next[0].weekdays), [0, 1, 2, 3, 4]);
+});
+
+test('togglePriceHour: a weekend click inside a weekday-gated window declares instead of removing', () => {
+  const { api } = loadConsole();
+  // Saturday 07:00: the seg-sex window does not cover Saturday, so the click
+  // DECLARES a cheap window for exactly the days the hour is base (weekend) —
+  // the declared window can never overlap the gated one (the lint's refusal).
+  const next = api.togglePriceHour([M_SEGSEX], 7, 5);
+  assert.equal(next.length, 2);
+  assert.equal(next[1].multiplier, 0.8);
+  assert.deepEqual(plain(next[1].hours), [7, 8]);
+  assert.deepEqual(plain(next[1].weekdays), [5, 6]);
+});
+
+test('togglePriceHour: adjacent same-day windows merge; midnight is two entries', () => {
+  const { api } = loadConsole();
+  const a = api.togglePriceHour([], 5, 0);
+  const b = api.togglePriceHour(a, 6, 0);
+  assert.equal(b.length, 1, 'adjacent same-day windows merge');
+  assert.deepEqual(plain(b[0].hours), [5, 7]);
+  const c = api.togglePriceHour([], 23, 0);
+  const d = api.togglePriceHour(c, 0, 0);
+  assert.equal(d.length, 2, 'no merge across midnight — [23,24) and [0,1) are two entries');
+  assert.deepEqual(plain(d[0].hours), [0, 1]);
+  assert.deepEqual(plain(d[1].hours), [23, 24]);
+});
+
+test('weekdayWords names the day sets in pt-BR', () => {
+  const { api } = loadConsole();
+  assert.equal(api.weekdayWords(null), 'todos os dias');
+  assert.equal(api.weekdayWords([0, 1, 2, 3, 4]), 'de segunda a sexta');
+  assert.equal(api.weekdayWords([5, 6]), 'nos fins de semana');
+  assert.equal(api.weekdayWords([5]), 'aos sábados');
+  assert.equal(api.weekdayWords([0, 2, 4]), 'às segundas, quartas e sextas');
+});
+
+test('priceOriginWords and priceVerifiedWords never invent the field', () => {
+  const { api } = loadConsole();
+  assert.equal(api.priceOriginWords('registry'), 'janela do catálogo');
+  assert.equal(api.priceOriginWords('overlay'), 'janela declarada por você');
+  assert.equal(api.priceOriginWords('declared'), 'janela declarada numa tentativa do grupo');
+  assert.equal(api.priceOriginWords('bogus'), null);
+  assert.equal(api.priceVerifiedWords('2026-08-26'), 'conferido por uma pessoa em 26/08/2026');
+  assert.equal(api.priceVerifiedWords(null), null, 'the detector\'s read time is not on the wire — never invented');
+  assert.equal(api.priceVerifiedWords('not a date'), null);
+});
+
+test('priceTogglePatch freezes the effective set into the overlay; the restore is a null', () => {
+  const { api } = loadConsole();
+  const patch = api.priceTogglePatch('glm-5.3', [M_SEGSEX], 16, 0);
+  assert.deepEqual(plain(patch), {
+    price_windows: {
+      'glm-5.3': [
+        { hours_utc: [6, 10], weekdays: [0, 1, 2, 3, 4], multiplier: 2.0 },
+        { hours_utc: [16, 17], multiplier: 0.8 },
+      ],
+    },
+  });
+  assert.deepEqual(plain(api.priceRestorePatch('glm-5.3')), { price_windows: { 'glm-5.3': null } });
+});
+
+test('tierAvoidProviders lists only chain providers whose models vary with the hour', () => {
+  const { api } = loadConsole();
+  const state = {
+    policy: { tiers: { T1: { model: 'glm-4.7', provider: 'zai', fallback: [] } } },
+    capabilities: {
+      'glm-4.7': { provider: 'zai', price_windows: [{ hours_utc: [6, 10], weekdays: [0, 1, 2, 3, 4], multiplier: 2.0 }] },
+    },
+  };
+  assert.deepEqual(plain(api.tierAvoidProviders(state, 'T1')), ['zai']);
+  state.capabilities['glm-4.7'] = { provider: 'zai' }; // flat model -> nothing to avoid
+  assert.deepEqual(plain(api.tierAvoidProviders(state, 'T1')), []);
+});
+
+test('peakPolicyPatch writes the three contract states and removes time_policy with null', () => {
+  const { api } = loadConsole();
+  const state = {
+    policy: {
+      tiers: {
+        T1: { model: 'glm-4.7', provider: 'zai', fallback: [], fallback_strategy: 'sequential' },
+      },
+    },
+    capabilities: {
+      'glm-4.7': { provider: 'zai', price_windows: [{ hours_utc: [6, 10], weekdays: [0, 1, 2, 3, 4], multiplier: 2.0 }] },
+    },
+  };
+  assert.deepEqual(plain(api.peakPolicyPatch('T1', state, 'evitar o pico')), {
+    tiers: { T1: { fallback_strategy: 'sequential', time_policy: { avoid_peak: ['zai'] } } },
+  });
+  assert.deepEqual(plain(api.peakPolicyPatch('T1', state, 'usar o mais barato')), {
+    tiers: { T1: { fallback_strategy: 'cheapest_now', time_policy: null } },
+  });
+  assert.deepEqual(plain(api.peakPolicyPatch('T1', state, 'manter a ordem')), {
+    tiers: { T1: { fallback_strategy: 'sequential', time_policy: null } },
+  });
+});
+
+test('the compaction patches: model change, group reference, no queue, own chain', () => {
+  const { api } = loadConsole();
+  assert.deepEqual(plain(api.compactionModelPatch('glm-4.5-flash', 'zai')),
+    { compaction: { provider: 'zai', model: 'glm-4.5-flash' } });
+  // The motor's lint REQUIRES provider+model on the raw block even for a
+  // queue-only change (service.py _validate_compaction) — the queue patch
+  // carries the current model, it is not a standalone knob.
+  assert.deepEqual(plain(api.compactionQueuePatch('none', null, null, 'glm-4.5-flash', 'zai')), {
+    compaction: { provider: 'zai', model: 'glm-4.5-flash', fallback_mode: null, fallback_chain: null },
+  });
+  assert.deepEqual(plain(api.compactionQueuePatch('tier', 'T1', null, 'glm-4.5-flash', 'zai')), {
+    compaction: { provider: 'zai', model: 'glm-4.5-flash', fallback_mode: 'tier:T1', fallback_chain: null },
+  });
+  assert.deepEqual(plain(api.compactionQueuePatch('standalone', null,
+    [{ model: 'glm-4.7', provider: 'zai' }], 'glm-4.5-flash', 'zai')), {
+    compaction: {
+      provider: 'zai', model: 'glm-4.5-flash', fallback_mode: 'standalone',
+      fallback_chain: [{ model: 'glm-4.7', provider: 'zai' }],
+    },
+  });
+});
+
+test('doApply sends the DRAFT as the /apply changes, so a null removal actually removes', async () => {
+  let applyBody = null;
+  const { api } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+      }
+      if (url.endsWith('/plan')) {
+        const body = JSON.parse(opts.body);
+        // Real server: plan returns the MERGED policy (null already absorbed).
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({
+          valid: true, policy: { price_windows: {} }, diff: '-x', base_hash: 'h',
+        })) });
+      }
+      if (url.endsWith('/apply')) { applyBody = JSON.parse(opts.body); }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+    },
+  });
+  api.state.policy = {};
+  const msg = { textContent: '', className: '' };
+  await api.doApply('/apply', msg, { price_windows: { 'glm-5.3': null } });
+  assert.ok(applyBody, '/apply was reached');
+  assert.deepEqual(plain(applyBody.policy), { price_windows: { 'glm-5.3': null } },
+    'the removal travels as the CHANGE (null), not as the merged plan.policy — re-merging the merged result would leave the key on disk');
 });
