@@ -340,10 +340,19 @@ def _is_number(value: Any) -> bool:
 # invite the divergence the spec forbids (a window edited in one tier and not
 # another). Adding the key here widens the write surface by exactly one table,
 # gated by the same lint that refuses a malformed window anywhere else.
+#
+# ``compaction`` (spec t_6f911222) is the second deliberate addition: the
+# declarative choice of compaction model + fallback queue. It is top-level for
+# the same reason ``price_windows`` is — it is NOT a routing fact, it is a
+# config.yaml-bound (RESTART-class) fact the router owns, and it must be
+# editable through the same /plan + /apply hot path the console already uses.
+# Its lint and its resolution into ``auxiliary.compression.*`` are one authority
+# (:func:`resolve_compaction_auxiliary`), shared by the write-path lint and the
+# RESTART-class apply, so the two surfaces can never disagree.
 _HOT_KEYS = frozenset(
     {
         "rules", "default", "tiers", "classifier", "fail_safe", "blocklist",
-        "enabled", "price_windows",
+        "enabled", "price_windows", "compaction",
     }
 )
 
@@ -580,6 +589,227 @@ def _clock_features(when: datetime) -> Dict[str, Any]:
     return {"utc_hour": when.hour, "utc_weekday": when.weekday()}
 
 
+_COMPACTION_STANDALONE = "standalone"
+_COMPACTION_TIER_PREFIX = "tier:"
+
+
+def _compaction_registry_verdict(model: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    """Ask the capability registry whether ``model`` is known.
+
+    Returns ``(known, caps)``. ``known`` is False ONLY when the registry is
+    available and answers "never heard of it" — the case a compaction apply must
+    refuse. When the registry cannot be asked at all (``_caps is None``, or it
+    raises), the answer is ``(True, None)``: nothing is provably unknown, and the
+    refusal degrades rather than breaking the RESTART-class write on an install
+    whose sibling module is older. ``caps`` is the merged registry entry when
+    known, else None.
+    """
+    if _caps is None:
+        return True, None
+    try:
+        caps = _caps.capabilities_for(model)
+    except (AttributeError, TypeError, ValueError):
+        return True, None
+    if caps is None:
+        return False, None
+    return True, caps
+
+
+def _resolve_standalone_fallback(
+    block: Dict[str, Any],
+) -> Tuple[Optional[List[Dict[str, str]]], List[str]]:
+    """The block's own ``fallback_chain``, linted like a tier's fallback hops."""
+    chain = block.get("fallback_chain")
+    if chain is None:
+        return None, [
+            "compaction.fallback_chain is required when fallback_mode is 'standalone'"
+        ]
+    if not isinstance(chain, list) or not chain:
+        return None, ["compaction.fallback_chain must be a non-empty list"]
+    entries: List[Dict[str, str]] = []
+    errors: List[str] = []
+    for i, hop in enumerate(chain):
+        if not isinstance(hop, dict):
+            errors.append(f"compaction.fallback_chain[{i}] must be a mapping")
+            continue
+        provider = hop.get("provider")
+        model = hop.get("model")
+        if (
+            not isinstance(provider, str)
+            or not provider.strip()
+            or not isinstance(model, str)
+            or not model.strip()
+        ):
+            errors.append(
+                f"compaction.fallback_chain[{i}] must declare 'provider' and "
+                f"'model' as non-empty strings"
+            )
+            continue
+        entries.append({"provider": provider, "model": model})
+    if errors:
+        return None, errors
+    return entries, []
+
+
+def _resolve_tier_fallback(
+    tier_name: str, tiers: Any
+) -> Tuple[Optional[List[Dict[str, str]]], List[str]]:
+    """Resolve ``tier:<NAME>`` into that tier's queue (primary + fallback hops).
+
+    A REFERENCE, not a copy: the queue is read from ``tiers`` at apply time, so a
+    tier deleted after the block was written is refused BY NAME here instead of
+    silently compressing on a queue that no longer exists.
+    """
+    if not isinstance(tiers, dict) or tier_name not in tiers:
+        return None, [
+            f"compaction fallback references tier '{tier_name}', which does not exist"
+        ]
+    tier = tiers[tier_name]
+    if not isinstance(tier, dict):
+        return None, [
+            f"compaction fallback references tier '{tier_name}', which is not a mapping"
+        ]
+    chain: List[Dict[str, str]] = []
+    for entry in [tier] + _as_list(tier.get("fallback")):
+        if not isinstance(entry, dict):
+            continue
+        model = entry.get("model")
+        provider = entry.get("provider")
+        if (
+            isinstance(model, str)
+            and model.strip()
+            and isinstance(provider, str)
+            and provider.strip()
+        ):
+            chain.append({"provider": provider, "model": model})
+    if not chain:
+        return None, [
+            f"compaction fallback references tier '{tier_name}', whose queue is empty"
+        ]
+    return chain, []
+
+
+def resolve_compaction_auxiliary(
+    block: Any, tiers: Any
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Resolve a router.yaml ``compaction`` block into the ``auxiliary.compression``
+    mapping the RESTART-class apply writes into Hermes ``config.yaml``.
+
+    ONE AUTHORITY PER FACT. This is the only place that turns the declarative
+    choice into the config Hermes reads. Both the write-path lint
+    (:meth:`RouterService._validate_compaction`) and the RESTART-class apply
+    (:meth:`one_sidecar.SidecarApp._apply_compaction`) call it, so a tier deleted
+    AFTER the block was written is refused by name at apply time — never a silent
+    fall-through onto a queue that no longer exists.
+
+    ``fallback_mode`` is OPTIONAL. Absent means "no fallback queue" (Hermes then
+    falls back to the main agent's own chain). When present it is either
+    ``standalone`` (the block carries its own ``fallback_chain``) or
+    ``tier:<NAME>`` (a REFERENCE to that tier's queue, resolved here and copied
+    only into config.yaml — never into router.yaml — so editing the tier edits
+    the compaction fallback in the same breath).
+
+    The compaction model is held to a STRICTER bar than a routing elo: it is
+    REFUSED when the registry cannot describe it, where a routing elo merely
+    warns (see rules.lint_warnings). The asymmetry is deliberate — a wrong
+    routing elo degrades one request; a wrong compaction model fails exactly
+    when the conversation is already too large to carry, which is the worst
+    moment a misconfiguration can pick.
+
+    Returns ``(aux, errors)``. ``aux`` is the mapping to merge under
+    ``auxiliary.compression`` (``{}`` when the block is absent or refused) and
+    ``errors`` lists every refusal. A refusal always pairs with an empty ``aux``:
+    the caller must never write a half-resolved block.
+    """
+    if block is None:
+        return {}, []
+    if not isinstance(block, dict):
+        return {}, ["compaction must be a mapping"]
+
+    errors: List[str] = []
+
+    provider = block.get("provider")
+    if not isinstance(provider, str) or not provider.strip():
+        errors.append("compaction.provider must be a non-empty string")
+
+    model = block.get("model")
+    if not isinstance(model, str) or not model.strip():
+        errors.append("compaction.model must be a non-empty string")
+
+    base_url = block.get("base_url")
+    if base_url is not None and not isinstance(base_url, str):
+        errors.append("compaction.base_url must be a string")
+
+    required_window = block.get("required_provider_context_window")
+    if required_window is not None and (
+        isinstance(required_window, bool)
+        or not isinstance(required_window, int)
+        or required_window <= 0
+    ):
+        errors.append(
+            "compaction.required_provider_context_window must be a positive integer"
+        )
+
+    # fallback_mode is OPTIONAL: absent means "no fallback queue" (Hermes then
+    # falls back to the main agent's own chain), which is a legitimate choice
+    # and leaves auxiliary.compression.fallback_chain unset.
+    fallback_mode = block.get("fallback_mode")
+    fallback_chain: Optional[List[Dict[str, str]]] = None
+    if fallback_mode is not None:
+        if not isinstance(fallback_mode, str) or not fallback_mode.strip():
+            errors.append("compaction.fallback_mode must be 'standalone' or 'tier:<NAME>'")
+        elif fallback_mode == _COMPACTION_STANDALONE:
+            fallback_chain, chain_errors = _resolve_standalone_fallback(block)
+            errors.extend(chain_errors)
+        elif fallback_mode.startswith(_COMPACTION_TIER_PREFIX):
+            fallback_chain, chain_errors = _resolve_tier_fallback(
+                fallback_mode[len(_COMPACTION_TIER_PREFIX):], tiers
+            )
+            errors.extend(chain_errors)
+        else:
+            errors.append("compaction.fallback_mode must be 'standalone' or 'tier:<NAME>'")
+
+    # The compaction model must exist in the registry: a compaction on an unknown
+    # id fails at the one moment that matters most (the conversation already too
+    # large), unlike a routing elo which merely degrades one request.
+    caps = None
+    if isinstance(model, str) and model.strip():
+        known, caps = _compaction_registry_verdict(model)
+        if not known:
+            errors.append(
+                f"compaction.model '{model}' is not in the capability registry — "
+                "compacting on an unknown id would fail only when the conversation "
+                "is already too large to carry"
+            )
+
+    # Minimum-window floor: only when the operator declared one AND the registry
+    # answered with a context window. A registry that could not be asked (caps is
+    # None) cannot prove a model too small, so the floor is skipped rather than
+    # guessed.
+    if (
+        caps is not None
+        and isinstance(required_window, int)
+        and not isinstance(required_window, bool)
+        and required_window > 0
+    ):
+        window = caps.get("context_window")
+        if isinstance(window, int) and window > 0 and window < required_window:
+            errors.append(
+                f"compaction.model '{model}' context window is {window:,} tokens, "
+                f"below the required {required_window:,}"
+            )
+
+    if errors:
+        return {}, errors
+
+    aux: Dict[str, Any] = {"provider": provider, "model": model}
+    if isinstance(base_url, str) and base_url.strip():
+        aux["base_url"] = base_url
+    if fallback_chain is not None:
+        aux["fallback_chain"] = fallback_chain
+    return aux, []
+
+
 class RouterService:
     """A fail-safe view over one ``router.yaml`` path, with a guarded write path."""
 
@@ -731,7 +961,27 @@ class RouterService:
             # The model-keyed price-window overlay, served verbatim so the console
             # can render the current table and post edits back through plan/apply.
             "price_windows": config.get("price_windows", {}),
+            # The declarative compaction choice, served verbatim (like
+            # price_windows) so the console renders it and posts edits back
+            # through plan/apply. The RESOLVED auxiliary.compression view lives in
+            # :meth:`resolve_compaction`.
+            "compaction": config.get("compaction"),
         }
+
+    def resolve_compaction(self) -> Tuple[Dict[str, Any], List[str]]:
+        """Resolve the current policy's ``compaction`` block into the
+        ``auxiliary.compression`` mapping the RESTART-class apply writes into
+        Hermes ``config.yaml``.
+
+        Reads the LIVE policy (re-loaded per call), so a tier deleted after the
+        block was written is refused here by name. Returns ``(aux, errors)``;
+        ``aux`` is {} when the policy declares no ``compaction`` block or the
+        block is refused.
+        """
+        config, _errors = self._load()
+        return resolve_compaction_auxiliary(
+            config.get("compaction"), config.get("tiers")
+        )
 
     @staticmethod
     def _warnings(config: Dict[str, Any]) -> List[str]:
@@ -1795,6 +2045,25 @@ class RouterService:
             errors.append("fail_safe.fallback must be a list")
         return errors
 
+    @staticmethod
+    def _validate_compaction(config: Dict[str, Any]) -> List[str]:
+        """Lint for the top-level ``compaction`` block.
+
+        ``rules.lint`` never inspects ``compaction`` (it validates rules/tiers/
+        default only), so a malformed compaction choice — the RESTART-class model
+        and fallback the operator edits through the same hot path — would
+        otherwise land unchecked. The registry and tier-reference checks live in
+        :func:`resolve_compaction_auxiliary`, SHARED with the RESTART-class apply,
+        so the write gate and the apply can never disagree about what a valid
+        choice is (one authority per fact).
+        """
+        if "compaction" not in config:
+            return []
+        _, errors = resolve_compaction_auxiliary(
+            config.get("compaction"), config.get("tiers")
+        )
+        return errors
+
     def _merge_hot(self, changes: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Read current config and merge only the allowlisted top-level keys.
 
@@ -1839,7 +2108,11 @@ class RouterService:
 
     def _lint_merged(self, merged: Dict[str, Any]) -> List[str]:
         """Full pre-write validation: rule/tier lint plus the fail_safe guard."""
-        return list(rules_lint(merged)) + self._validate_fail_safe(merged)
+        return (
+            list(rules_lint(merged))
+            + self._validate_fail_safe(merged)
+            + self._validate_compaction(merged)
+        )
 
     def plan(self, changes: Dict[str, Any]) -> Dict[str, Any]:
         """Preview an edit: merge, lint, diff, and hash — WITHOUT writing.

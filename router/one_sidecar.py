@@ -405,6 +405,13 @@ class SidecarApp:
                 return _error(400, "aggr must be an integer between 0 and 100")
             threshold_fraction = p_eff(SUMMARIZER_WINDOW, aggressiveness)
             threshold_tokens = int(SUMMARIZER_WINDOW * threshold_fraction)
+            # The RESOLVED compaction choice (model + fallback queue), or None
+            # when the policy declares none or the block is refused. Read through
+            # the same authority the RESTART-class apply uses, so this screen can
+            # never show a queue the apply would refuse. The refusal itself rides
+            # in `compaction_errors`, not as a 400: /compaction is a read path the
+            # console opens alongside a broken config.
+            aux, aux_errors = self._service.resolve_compaction()
             return 200, {
                 "aggressiveness": aggressiveness,
                 "model_thresholds": compute_model_thresholds(
@@ -414,6 +421,8 @@ class SidecarApp:
                 "threshold_fraction": threshold_fraction,
                 "threshold_tokens": threshold_tokens,
                 "warning": threshold_tokens >= SUMMARIZER_WINDOW,
+                "compaction": aux if aux else None,
+                "compaction_errors": aux_errors,
             }
         if path == "/routes":
             # Read-only route-trace access for visual replay. ?id=X fetches one
@@ -581,6 +590,32 @@ class SidecarApp:
         candidate = apply_dynamic_thresholds(
             current, aggressiveness, self._summarizer_window, self._model_windows
         )
+        # Resolve the declarative compaction choice (model + fallback queue) from
+        # the LIVE router policy and merge it under auxiliary.compression. One
+        # authority (RouterService.resolve_compaction) does the resolution for both
+        # the write-path lint and this RESTART-class apply, so a tier deleted after
+        # the block was written is refused BY NAME here rather than compressing on
+        # a queue that no longer exists. The merge only sets provider/model/
+        # base_url/fallback_chain — everything else the operator keeps in
+        # auxiliary (api_key, timeout, extra_body, sibling auxiliary.<task>
+        # sections) survives untouched.
+        aux, aux_errors = self._service.resolve_compaction()
+        if aux_errors:
+            return _error(400, "; ".join(aux_errors))
+        if aux:
+            aux_section = candidate.get("auxiliary")
+            if aux_section is None:
+                aux_section = {}
+                candidate["auxiliary"] = aux_section
+            elif not isinstance(aux_section, dict):
+                return _error(400, "auxiliary in core config must be a mapping")
+            compression = aux_section.get("compression")
+            if compression is None:
+                compression = {}
+                aux_section["compression"] = compression
+            elif not isinstance(compression, dict):
+                return _error(400, "auxiliary.compression in core config must be a mapping")
+            compression.update(aux)
         # Write the candidate to a temp file for the launcher to validate + apply.
         fd, tmp_path = tempfile.mkstemp(suffix=".yaml", prefix="compaction-candidate-")
         try:

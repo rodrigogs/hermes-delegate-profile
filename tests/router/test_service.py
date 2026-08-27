@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from router.service import RouterService
+from router.service import RouterService, resolve_compaction_auxiliary
 
 
 @pytest.fixture
@@ -3481,3 +3481,263 @@ def test_explain_refuses_a_prompt_text_that_is_not_a_string(config_path):
     assert service.explain(_TRIVIAL_TASK, prompt_text="")["preview"]["sized_from"] == (
         "task"
     )
+
+
+# ---------------------------------------------------------------------------
+# Compaction block (spec t_6f911222): the declarative model + fallback choice.
+# ---------------------------------------------------------------------------
+
+_TIERS = {
+    "T1": {
+        "model": "glm-4.7",
+        "provider": "zai",
+        "fallback": [
+            {"model": "gpt-5.6-luna", "provider": "openai-codex"},
+            {"model": "mimo-v2.5", "provider": "xiaomi"},
+        ],
+    },
+}
+
+
+def _block(**overrides):
+    base = {"provider": "zai", "model": "glm-4.5-flash", "fallback_mode": "tier:T1"}
+    base.update(overrides)
+    return base
+
+
+def test_compaction_absent_is_noop():
+    aux, errors = resolve_compaction_auxiliary(None, _TIERS)
+    assert aux == {}
+    assert errors == []
+
+
+def test_compaction_tier_reference_resolves_the_full_queue():
+    aux, errors = resolve_compaction_auxiliary(_block(), _TIERS)
+    assert errors == []
+    assert aux == {
+        "provider": "zai",
+        "model": "glm-4.5-flash",
+        "fallback_chain": [
+            {"provider": "zai", "model": "glm-4.7"},
+            {"provider": "openai-codex", "model": "gpt-5.6-luna"},
+            {"provider": "xiaomi", "model": "mimo-v2.5"},
+        ],
+    }
+
+
+def test_compaction_standalone_resolves_the_declared_chain():
+    aux, errors = resolve_compaction_auxiliary(
+        _block(
+            fallback_mode="standalone",
+            fallback_chain=[
+                {"provider": "deepseek", "model": "deepseek-v4-pro"},
+            ],
+        ),
+        _TIERS,
+    )
+    assert errors == []
+    assert aux["fallback_chain"] == [
+        {"provider": "deepseek", "model": "deepseek-v4-pro"}
+    ]
+
+
+def test_compaction_base_url_is_carried_when_set():
+    aux, errors = resolve_compaction_auxiliary(
+        _block(base_url="https://example.test/v1"), _TIERS
+    )
+    assert errors == []
+    assert aux["base_url"] == "https://example.test/v1"
+
+
+def test_compaction_references_a_missing_group_by_name():
+    aux, errors = resolve_compaction_auxiliary(_block(fallback_mode="tier:T9"), _TIERS)
+    assert aux == {}
+    assert any("T9" in e for e in errors)
+    assert any("does not exist" in e for e in errors)
+
+
+def test_compaction_refuses_an_unknown_model_by_name():
+    aux, errors = resolve_compaction_auxiliary(
+        _block(model="no-such-model-anywhere"), _TIERS
+    )
+    assert aux == {}
+    assert any("no-such-model-anywhere" in e for e in errors)
+    assert any("not in the capability registry" in e for e in errors)
+
+
+def test_compaction_refuses_a_model_below_the_required_window():
+    # glm-4.5-flash advertises 131_072 in the registry; ask for far more.
+    aux, errors = resolve_compaction_auxiliary(
+        _block(required_provider_context_window=999_999), _TIERS
+    )
+    assert aux == {}
+    assert any("below the required" in e for e in errors)
+
+
+def test_compaction_accepts_a_model_that_clears_the_required_window():
+    aux, errors = resolve_compaction_auxiliary(
+        _block(required_provider_context_window=100_000), _TIERS
+    )
+    assert errors == []
+
+
+def test_compaction_requires_provider_and_model():
+    aux, errors = resolve_compaction_auxiliary({}, _TIERS)
+    assert aux == {}
+    assert any("compaction.provider" in e for e in errors)
+    assert any("compaction.model" in e for e in errors)
+
+
+def test_compaction_must_be_a_mapping():
+    aux, errors = resolve_compaction_auxiliary("not-a-mapping", _TIERS)
+    assert aux == {}
+    assert errors == ["compaction must be a mapping"]
+
+
+def test_compaction_refuses_an_unknown_fallback_mode():
+    aux, errors = resolve_compaction_auxiliary(_block(fallback_mode="bogus"), _TIERS)
+    assert aux == {}
+    assert any("fallback_mode must be" in e for e in errors)
+
+
+def test_compaction_refuses_a_non_string_or_blank_fallback_mode():
+    for bad in (17, "", "   "):
+        aux, errors = resolve_compaction_auxiliary(_block(fallback_mode=bad), _TIERS)
+        assert aux == {}, f"fallback_mode={bad!r} should be refused"
+        assert any("fallback_mode must be" in e for e in errors)
+
+
+def test_compaction_standalone_requires_a_non_empty_fallback_chain():
+    for chain in (None, [], [{"provider": "deepseek"}], ["loose"]):
+        aux, errors = resolve_compaction_auxiliary(
+            _block(fallback_mode="standalone", fallback_chain=chain), _TIERS
+        )
+        assert aux == {}, f"chain={chain!r} should be refused"
+        assert errors, f"chain={chain!r} should report an error"
+
+
+def test_compaction_refuses_a_non_string_base_url_and_a_bad_window():
+    aux, errors = resolve_compaction_auxiliary(
+        _block(base_url=42, required_provider_context_window=True), _TIERS
+    )
+    assert aux == {}
+    assert any("base_url" in e for e in errors)
+    assert any("required_provider_context_window" in e for e in errors)
+
+
+def test_compaction_tier_reference_to_a_non_mapping_tier_is_refused():
+    aux, errors = resolve_compaction_auxiliary(
+        _block(fallback_mode="tier:T2"), {"T2": "not-a-mapping"}
+    )
+    assert aux == {}
+    assert any("not a mapping" in e for e in errors)
+
+
+def test_compaction_tier_reference_to_an_empty_queue_is_refused():
+    aux, errors = resolve_compaction_auxiliary(
+        _block(fallback_mode="tier:T3"), {"T3": {"model": "", "provider": ""}}
+    )
+    assert aux == {}
+    assert any("queue is empty" in e for e in errors)
+
+
+def test_compaction_registry_check_degrades_when_registry_is_absent(monkeypatch):
+    import router.service as service_mod
+
+    monkeypatch.setattr(service_mod, "_caps", None)
+    aux, errors = resolve_compaction_auxiliary(
+        _block(model="no-such-model-anywhere"), _TIERS
+    )
+    # With no registry to ask, nothing is provably unknown: the refusal degrades
+    # rather than blocking the RESTART-class write on a broken sibling import.
+    assert errors == []
+    assert aux["model"] == "no-such-model-anywhere"
+
+
+def test_compaction_registry_check_degrades_when_registry_raises(monkeypatch):
+    import router.service as service_mod
+
+    class _RaisingCaps:
+        def capabilities_for(self, model):
+            raise ValueError("registry exploded")
+
+    monkeypatch.setattr(service_mod, "_caps", _RaisingCaps())
+    aux, errors = resolve_compaction_auxiliary(_block(model="glm-4.5-flash"), _TIERS)
+    assert errors == []
+    assert aux["model"] == "glm-4.5-flash"
+
+
+def test_compaction_without_fallback_mode_writes_no_chain():
+    aux, errors = resolve_compaction_auxiliary(
+        {"provider": "zai", "model": "glm-4.5-flash"}, _TIERS
+    )
+    assert errors == []
+    assert aux == {"provider": "zai", "model": "glm-4.5-flash"}
+    assert "fallback_chain" not in aux
+
+
+def test_compaction_tier_fallback_skips_non_mapping_hops():
+    tiers = {
+        "T1": {
+            "model": "glm-4.7",
+            "provider": "zai",
+            "fallback": [
+                "loose",
+                {"model": "mimo-v2.5", "provider": "xiaomi"},
+            ],
+        }
+    }
+    aux, errors = resolve_compaction_auxiliary(_block(), tiers)
+    assert errors == []
+    assert aux["fallback_chain"] == [
+        {"provider": "zai", "model": "glm-4.7"},
+        {"provider": "xiaomi", "model": "mimo-v2.5"},
+    ]
+
+
+def test_validate_compaction_is_noop_when_absent():
+    assert RouterService._validate_compaction({"default": {}}) == []
+
+
+def test_validate_compaction_reports_the_same_errors_as_the_resolver():
+    errors = RouterService._validate_compaction(
+        {"compaction": _block(model="ghost-model"), "tiers": _TIERS}
+    )
+    assert any("ghost-model" in e for e in errors)
+
+
+def test_plan_accepts_a_valid_compaction_block_and_apply_round_trips(config_path):
+    service = RouterService(config_path)
+    # T1 in the fixture is {"model": "tiny", "provider": "cheap"} — a real tier,
+    # so tier:T1 resolves; use a real registry model for the primary.
+    plan = service.plan(
+        {
+            "compaction": {
+                "provider": "zai",
+                "model": "glm-4.5-flash",
+                "fallback_mode": "tier:T1",
+            }
+        }
+    )
+    assert plan["valid"] is True, plan["errors"]
+    result = service.apply(plan["base_hash"], plan["policy"])
+    assert result["ok"] is True
+    assert result.get("no_op") is False
+    reloaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert reloaded["compaction"]["model"] == "glm-4.5-flash"
+
+
+def test_plan_refuses_an_unknown_compaction_model(config_path):
+    service = RouterService(config_path)
+    plan = service.plan(
+        {
+            "compaction": {
+                "provider": "zai",
+                "model": "definitely-not-registered",
+                "fallback_mode": "tier:T1",
+            }
+        }
+    )
+    assert plan["valid"] is False
+    assert any("definitely-not-registered" in e for e in plan["errors"])
+

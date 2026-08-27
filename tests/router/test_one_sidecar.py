@@ -441,6 +441,214 @@ def test_compaction_surfaces_restart_failure_as_502(tmp_path):
     assert body["ok"] is False
 
 
+def _compaction_policy_app(tmp_path, runner, compaction_block, core_yaml=None):
+    """A sidecar whose router.yaml carries a real T1 tier and a compaction block,
+    wired with a stubbed restart runner + a fake core config.yaml so the
+    RESTART-class path never actually restarts anything in a test."""
+    token_path = tmp_path / "token"
+    token_path.write_text(_TOKEN, encoding="utf-8")
+    core = tmp_path / "config.yaml"
+    core.write_text(
+        core_yaml if core_yaml is not None else yaml.safe_dump(
+            {"compression": {"enabled": True, "aggressiveness": 50}}, sort_keys=False
+        ),
+        encoding="utf-8",
+    )
+    config = {
+        "enabled": True,
+        "classifier": {"model": "judge", "provider": "judge-rail"},
+        "fail_safe": {"profile": "coder", "model": "strong", "provider": "safe"},
+        "blocklist": {"manual_ban": [], "fallback_chain": [], "auto_breaker": {"enabled": False}},
+        "rules": [
+            {
+                "id": "hard-verbs",
+                "status": "stable",
+                "when": {"verb_class": {"eq": "hard"}},
+                "then": {"profile": "coder", "model": "T4"},
+            }
+        ],
+        "default": {"action": "classify"},
+        "tiers": {
+            "T1": {
+                "model": "glm-4.7",
+                "provider": "zai",
+                "fallback": [
+                    {"model": "gpt-5.6-luna", "provider": "openai-codex"},
+                    {"model": "mimo-v2.5", "provider": "xiaomi"},
+                ],
+            },
+            "T2": {"model": "small", "provider": "cheap"},
+            "T3": {"model": "medium", "provider": "strong"},
+            "T4": {"model": "strong", "provider": "strong"},
+        },
+    }
+    if compaction_block is not None:
+        config["compaction"] = compaction_block
+    policy_path = tmp_path / "router.yaml"
+    policy_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return SidecarApp(
+        RouterService(policy_path),
+        token_path=lambda: token_path,
+        core_config_path=lambda: core,
+        restart_runner=runner,
+    ), core
+
+
+def test_compaction_apply_writes_auxiliary_compression_from_the_policy(tmp_path):
+    captured = {}
+
+    def runner(candidate_path):
+        captured["yaml"] = candidate_path.read_text(encoding="utf-8")
+        return {"ok": True, "restart": "scheduled"}
+
+    app, _core = _compaction_policy_app(
+        tmp_path,
+        runner,
+        {"provider": "zai", "model": "glm-4.5-flash", "fallback_mode": "tier:T1"},
+    )
+    status, _body = app.dispatch(
+        "POST", "/apply", _auth(),
+        body={"action": "compaction", "confirm": "COMPACT", "aggressiveness": 100},
+    )
+    assert status == 202
+    reloaded = yaml.safe_load(captured["yaml"])
+    compression = reloaded["auxiliary"]["compression"]
+    assert compression["provider"] == "zai"
+    assert compression["model"] == "glm-4.5-flash"
+    assert compression["fallback_chain"] == [
+        {"provider": "zai", "model": "glm-4.7"},
+        {"provider": "openai-codex", "model": "gpt-5.6-luna"},
+        {"provider": "xiaomi", "model": "mimo-v2.5"},
+    ]
+    # The dynamic-threshold pass still runs alongside the choice.
+    assert reloaded["compression"]["aggressiveness"] == 100
+
+
+def test_compaction_apply_preserves_sibling_auxiliary_and_api_key(tmp_path):
+    captured = {}
+
+    def runner(candidate_path):
+        captured["yaml"] = candidate_path.read_text(encoding="utf-8")
+        return {"ok": True}
+
+    app, _core = _compaction_policy_app(
+        tmp_path,
+        runner,
+        {"provider": "zai", "model": "glm-4.5-flash", "fallback_mode": "tier:T1"},
+        core_yaml=yaml.safe_dump(
+            {
+                "model": {"default": "gpt-5.6-terra"},
+                "auxiliary": {
+                    "vision": {"provider": "openai", "model": "gpt-5.6-luna"},
+                    "compression": {"api_key": "s3cr3t", "timeout": 90},
+                },
+            },
+            sort_keys=False,
+        ),
+    )
+    status, _body = app.dispatch(
+        "POST", "/apply", _auth(), body={"action": "compaction", "confirm": "COMPACT"}
+    )
+    assert status == 202
+    reloaded = yaml.safe_load(captured["yaml"])
+    aux = reloaded["auxiliary"]
+    assert aux["vision"] == {"provider": "openai", "model": "gpt-5.6-luna"}
+    assert aux["compression"]["api_key"] == "s3cr3t"
+    assert aux["compression"]["timeout"] == 90
+    assert aux["compression"]["model"] == "glm-4.5-flash"
+    assert reloaded["model"] == {"default": "gpt-5.6-terra"}
+
+
+def test_compaction_apply_refuses_scalar_auxiliary_in_core_config(tmp_path):
+    calls = []
+    app, _core = _compaction_policy_app(
+        tmp_path,
+        lambda p: calls.append(p) or {"ok": True},
+        {"provider": "zai", "model": "glm-4.5-flash", "fallback_mode": "tier:T1"},
+        core_yaml="auxiliary: not-a-mapping\n",
+    )
+    status, body = app.dispatch(
+        "POST", "/apply", _auth(), body={"action": "compaction", "confirm": "COMPACT"}
+    )
+    assert status == 400
+    assert "auxiliary in core config must be a mapping" in body["error"]
+    assert calls == []
+
+
+def test_compaction_apply_refuses_scalar_compression_in_core_config(tmp_path):
+    calls = []
+    app, _core = _compaction_policy_app(
+        tmp_path,
+        lambda p: calls.append(p) or {"ok": True},
+        {"provider": "zai", "model": "glm-4.5-flash", "fallback_mode": "tier:T1"},
+        core_yaml="auxiliary:\n  compression: not-a-mapping\n",
+    )
+    status, body = app.dispatch(
+        "POST", "/apply", _auth(), body={"action": "compaction", "confirm": "COMPACT"}
+    )
+    assert status == 400
+    assert "auxiliary.compression in core config must be a mapping" in body["error"]
+    assert calls == []
+
+
+def test_compaction_apply_refuses_an_unknown_model(tmp_path):
+    calls = []
+    app, _core = _compaction_policy_app(
+        tmp_path,
+        lambda p: calls.append(p) or {"ok": True},
+        {"provider": "zai", "model": "no-such-model", "fallback_mode": "tier:T1"},
+    )
+    status, body = app.dispatch(
+        "POST", "/apply", _auth(), body={"action": "compaction", "confirm": "COMPACT"}
+    )
+    assert status == 400
+    assert "no-such-model" in body["error"]
+    assert calls == []  # the restart runner was never invoked
+
+
+def test_compaction_apply_refuses_a_missing_tier_by_name(tmp_path):
+    calls = []
+    app, _core = _compaction_policy_app(
+        tmp_path,
+        lambda p: calls.append(p) or {"ok": True},
+        {"provider": "zai", "model": "glm-4.5-flash", "fallback_mode": "tier:T9"},
+    )
+    status, body = app.dispatch(
+        "POST", "/apply", _auth(), body={"action": "compaction", "confirm": "COMPACT"}
+    )
+    assert status == 400
+    assert "T9" in body["error"]
+    assert calls == []
+
+
+def test_compaction_get_route_reports_the_resolved_choice(tmp_path):
+    app, _core = _compaction_policy_app(
+        tmp_path,
+        lambda p: {"ok": True},
+        {"provider": "zai", "model": "glm-4.5-flash", "fallback_mode": "tier:T1"},
+    )
+    status, body = app.dispatch("GET", "/compaction", _auth(), {"aggr": ["50"]})
+    assert status == 200
+    assert body["compaction"]["model"] == "glm-4.5-flash"
+    assert body["compaction"]["fallback_chain"][0] == {
+        "provider": "zai",
+        "model": "glm-4.7",
+    }
+    assert body["compaction_errors"] == []
+
+
+def test_compaction_get_route_reports_the_refusal_instead_of_a_400(tmp_path):
+    app, _core = _compaction_policy_app(
+        tmp_path,
+        lambda p: {"ok": True},
+        {"provider": "zai", "model": "no-such-model", "fallback_mode": "tier:T1"},
+    )
+    status, body = app.dispatch("GET", "/compaction", _auth(), {"aggr": ["50"]})
+    assert status == 200
+    assert body["compaction"] is None
+    assert any("no-such-model" in e for e in body["compaction_errors"])
+
+
 def test_post_body_must_be_object(tmp_path):
     app = _app(tmp_path)
     # A non-object JSON body (list) to a write route is a 400.

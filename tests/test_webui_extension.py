@@ -1527,6 +1527,8 @@ def test_plugin_read_paths_answer_over_a_broken_install(
         # The price-window overlay degrades to an empty table over a broken
         # install, exactly as `tiers` does.
         "price_windows": {},
+        # The compaction choice degrades to absent over a broken install too.
+        "compaction": None,
     }
     assert served["blocklist"] == RouterService(plugin_api._CONFIG_PATH).blocklist()
     assert served["blocklist"]["manual_bans"] == []
