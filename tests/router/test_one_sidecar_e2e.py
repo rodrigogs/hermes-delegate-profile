@@ -44,6 +44,32 @@ def _get(url: str, token: str | None = None, method: str = "GET"):
         return exc.code, (json.loads(body) if body else None)
 
 
+def _boot_test_server(app):
+    """Sobe o servidor de teste com teardown determinístico.
+
+    O ThreadingHTTPServer de produção traz daemon_threads=True, e o
+    `_Threads` do ThreadingMixIn recusa thread daemon — logo o server_close()
+    NÃO espera as threads de atendimento, só o join do teste espera o
+    serve_forever. Invertemos as duas marcas na instância para o
+    server_close() fazer join de cada handler em voo.
+
+    O build_server de PRODUÇÃO fica como está: lá o daemon é deliberado — um
+    shutdown não deve esperar uma requisição pendurada.
+
+    NOTA (medido em 2026-08-27): isto torna o teardown determinístico, mas
+    NÃO é a causa do flake da linha 668. A causa medida foi o cliente fechar
+    antes de ler o corpo do /console (595 KB): o write estourava
+    ConnectionResetError e o _serve nunca chegava ao return — por isso os
+    testes de /console leem o corpo inteiro (test_console_served_over_http_tokenless).
+    """
+    server = build_server("127.0.0.1", 0, app)
+    server.daemon_threads = False
+    server.block_on_close = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
 @pytest.fixture()
 def running_sidecar(tmp_path, monkeypatch):
     token_file = tmp_path / "hermes-smart-router.token"
@@ -57,9 +83,7 @@ def running_sidecar(tmp_path, monkeypatch):
         "HERMES_EXT_SIDECAR_TOKEN_FILE", str(tmp_path / "no-such-env.token")
     )
     app = SidecarApp(RouterService(ROOT / "router.yaml"), token_path=lambda: token_file)
-    server = build_server("127.0.0.1", 0, app)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    server, thread = _boot_test_server(app)
     host, port = server.server_address[0], server.server_address[1]
     base = f"http://{host}:{port}"
     try:
@@ -95,9 +119,7 @@ def test_health_says_missing_while_gated_routes_answer_503(tmp_path):
     """
     missing = tmp_path / "absent.token"
     app = SidecarApp(RouterService(ROOT / "router.yaml"), token_path=lambda: missing)
-    server = build_server("127.0.0.1", 0, app)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    server, thread = _boot_test_server(app)
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
         status, payload = _get(f"{base}/health")
@@ -308,9 +330,7 @@ def test_apply_revert_with_empty_body_over_http(running_sidecar):
 def test_missing_token_file_fails_closed(tmp_path):
     missing = tmp_path / "absent.token"
     app = SidecarApp(RouterService(ROOT / "router.yaml"), token_path=lambda: missing)
-    server = build_server("127.0.0.1", 0, app)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    server, thread = _boot_test_server(app)
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
         assert _get(f"{base}/status", token="anything")[0] == 503
