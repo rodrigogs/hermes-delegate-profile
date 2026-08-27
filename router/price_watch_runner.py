@@ -26,13 +26,23 @@ DEFAULT_ADAPTERS = (
     ProviderAdapter(
         "xiaomi",
         "https://mimo.mi.com/docs/zh-CN/price/pay-as-you-go",
-        "按量付费",
+        # A página é servida no servidor (a medição de 2026-08-26 que "precisou de
+        # browser" foi antes de o site mudar); a âncora antiga "按量付费" nunca
+        # casava porque a página diz "按量计费", e a primeira ocorrência de
+        # "按量计费" é um rótulo do menu. Esta frase única é a sentença que carrega
+        # a regra "pay-as-you-go fatura pelo uso real, sem dimensão de tempo" — a
+        # ausência de janela aqui é o que justifica não modelar o 0.8x no registry.
+        "按实际 Token 用量消耗账户余额",
         key="xiaomi-pay-as-you-go",
     ),
     ProviderAdapter(
         "xiaomi",
         "https://mimo.mi.com/docs/zh-CN/quick-start/faq/token-plan",
-        "Token Plan",
+        # A âncora antiga "Token Plan" casava primeiro no <meta property="og:title">
+        # e o detector dizia confirmed vigiando o TÍTULO, não a regra. 非高峰期
+        # aparece primeiro na linha da regra: "夜间优惠速率:非高峰期（北京时间
+        # 0:00-8:00，即 UTC 16:00-24:00） 0.8x 消耗系数。" — o coeficiente e a janela.
+        "非高峰期",
         key="xiaomi-token-plan",
     ),
 )

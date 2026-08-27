@@ -207,3 +207,16 @@ def test_fetch_uses_a_browser_user_agent_without_live_network(monkeypatch) -> No
         "agent": "Mozilla/5.0 (pricing provenance watcher)",
         "timeout": 30,
     }
+
+
+def test_xiaomi_anchors_target_the_rule_phrase_not_the_title() -> None:
+    # These strings are the contract with the supplier pages: the token-plan
+    # anchor must be the off-peak clause (非高峰期), never "Token Plan", which
+    # resolves to the og:title meta tag; the pay-as-you-go anchor must be the
+    # metered-billing sentence, never "按量付费", which never appears on the
+    # page ("按量计费" does, and its first hit is a nav label). Changing them is
+    # a deliberate operator act, so the pin breaks loudly instead of silently
+    # watching a title again.
+    by_key = {adapter.key: adapter for adapter in runner.DEFAULT_ADAPTERS}
+    assert by_key["xiaomi-token-plan"].anchor == "非高峰期"
+    assert by_key["xiaomi-pay-as-you-go"].anchor == "按实际 Token 用量消耗账户余额"
