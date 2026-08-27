@@ -157,6 +157,13 @@ def test_create_card_and_main_are_thin_edges(monkeypatch, capsys) -> None:
         connect=lambda board: calls.append(board) or Connection(),
         create_task=lambda conn, **kwargs: calls.append((conn, kwargs)),
     )
+    # CI installs no hermes_cli at all (CI-parity pitfall): `from hermes_cli
+    # import kanban_db` resolves the PACKAGE from sys.modules, so faking only
+    # the submodule key leaves the bare import to fail with ModuleNotFoundError
+    # on the runner — the submodule fake alone works for `from
+    # hermes_cli.kanban_db import X`, never for `from hermes_cli import X`.
+    hermes_cli = types.SimpleNamespace(kanban_db=kanban)
+    monkeypatch.setitem(sys.modules, "hermes_cli", hermes_cli)
     monkeypatch.setitem(sys.modules, "hermes_cli.kanban_db", kanban)
     runner._create_card({"title": "review", "body": "evidence"})
     assert calls[0] == "capability-router"
