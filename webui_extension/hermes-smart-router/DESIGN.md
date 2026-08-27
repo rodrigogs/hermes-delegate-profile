@@ -429,6 +429,19 @@ facts echoed other surfaces. The rules the fixes encode:
   loaded / router.yaml changed) says which source is stale, which a bare HH:MM
   cannot — it is the "checked HH:MM" clock replaced by the three ages that
   matter.
+- **Each staleness fact keeps one authority.** The stale banner says the
+  code on disk is newer than the process; the restart banner says the process
+  is newer than this document. A deploy mid-session makes both true at once,
+  and they still do not share a word: the first names `systemctl … restart`,
+  the second names fechar e reabrir o painel — the gesture each one resolves
+  by. The restart fact needs its own witness because the panel refetches
+  /console only on open (e7ce972): a panel left open for hours never reopens,
+  so the document itself is the only thing that can notice it got old —
+  which is why the quiet /status cycle exists (measured: 380 bytes, ~18 ms
+  loopback, once a minute) and why that cycle dies quietly on failure: a
+  probe that flips the dead-sidecar words during every deploy's restart
+  window would cry wolf once a minute.
+
 - **A title is not drawn twice.** Inside the panel, the shell already names the
   surface twice (rail label, sidebar head), so the console's own masthead is
   hidden under `.is-embedded`; the standalone page at /console still

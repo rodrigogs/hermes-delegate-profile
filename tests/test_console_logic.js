@@ -10234,3 +10234,125 @@ test('a missing /compaction read degrades to the stated absence', () => {
     'the block says the read failed - it does not render zeros as if they were facts');
   assert.doesNotMatch(text, /0 tokens/);
 });
+
+// ── the restart banner (card t_06d5abf9) ──────────────────────────────────
+// The panel fetches /console on open and swaps the srcdoc only on a byte
+// change, so the panel left open for hours keeps the pre-deploy document.
+// This document is the only one that can notice: a deploy restarts the
+// sidecar, so a later /status read carries a process_started_at DIFFERENT
+// from the one this document first read. The banner below says that fact and
+// names the gesture that resolves it — close and reopen the panel.
+
+test('a process_started_at change between two reads warns and names the gesture', async () => {
+  // The VM reads `fetch` from its own sandbox, so the probe stub rides in
+  // through loadConsole — patching the test file's globalThis reaches nothing.
+  const fetches = [];
+  const fetchStub = (url, opts) => {
+    fetches.push({ url, opts });
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ process_started_at: '2026-08-27T16:40:00.000Z' }) });
+  };
+  const { api, dom } = loadConsole({ fetch: fetchStub });
+  // First read of this document's life: the birthmark lands.
+  api.state.status = { process_started_at: '2026-08-27T10:00:00.000Z' };
+  api.noteProcStart();
+  assert.equal(api.state.sessionProcStart, '2026-08-27T10:00:00.000Z');
+
+  // The quiet cycle reads a RESTARTED sidecar: same shape, new process.
+  await api.watchStatus();
+  assert.equal(fetches.length, 1);
+  assert.match(fetches[0].url, /\/status$/);
+  assert.equal(api.state.status.process_started_at, '2026-08-27T16:40:00.000Z');
+  assert.equal(api.state.sessionProcStart, '2026-08-27T10:00:00.000Z',
+    'a restart mid-session never re-marks the birthmark');
+
+  // The banner says the fact and names the gesture — pinned words.
+  assert.equal(dom.get('restartBanner').hidden, false);
+  const banner = flat(dom.get('restartBanner'));
+  assert.match(banner, /o roteador reiniciou depois que esta tela abriu/);
+  assert.match(banner, /feche e reabra o painel para buscar a tela atual/);
+});
+
+test('an unchanged process_started_at renders nothing for nothing', () => {
+  const { api, dom } = loadConsole();
+  api.state.status = { process_started_at: '2026-08-27T10:00:00.000Z' };
+  api.noteProcStart();
+  api.renderRestartBanner();
+  assert.equal(dom.get('restartBanner').hidden, true, 'no change → no banner');
+  assert.equal(flat(dom.get('restartBanner')), '',
+    'render nothing for nothing: no text, not empty-but-present text');
+});
+
+test('the restart banner does not repeat the stale banner’s fact', () => {
+  const { api, dom } = loadConsole();
+  const T = Date.UTC(2026, 7, 19, 12, 0, 0);
+  api.state.clock = new Date(T);
+  api.state.unreachable = false;
+  // For BOTH banners to fire at once, the ages must nest: the process that
+  // served this document's first read (T-2h) is older than the document's
+  // birthmark session, the RESTARTED process (T-1h) is newer than that
+  // birthmark, and the code on disk (T-30m) is newer than the restarted
+  // process. That is exactly a deploy mid-session: new code, new process,
+  // old document — all three ages true at once.
+  api.state.status = {
+    process_started_at: new Date(T - 2 * 3600 * 1000).toISOString(),
+    code_mtime: new Date(T - 30 * 60 * 1000).toISOString(),
+    config_mtime: new Date(T - 5 * 60 * 1000).toISOString(),
+  };
+  api.noteProcStart();
+  api.state.status = { ...api.state.status, process_started_at: new Date(T - 1 * 3600 * 1000).toISOString() };
+  api.renderRail();
+
+  // Both banners fire together — the facts differ, and each keeps its own words.
+  assert.equal(dom.get('staleBanner').hidden, false);
+  assert.equal(dom.get('restartBanner').hidden, false);
+  const restart = flat(dom.get('restartBanner'));
+  const stale = flat(dom.get('staleBanner'));
+  // The restart banner does NOT carry the stale banner's command...
+  assert.doesNotMatch(restart, /systemctl/);
+  // ...nor its fact, in either direction.
+  assert.doesNotMatch(restart, /rodando código de/);
+  assert.doesNotMatch(stale, /reiniciou depois que esta tela abriu/);
+});
+
+test('a document that never read /status stays silent about restarts', () => {
+  const { api, dom } = loadConsole();
+  api.renderRestartBanner();
+  assert.equal(dom.get('restartBanner').hidden, true,
+    'no birthmark, no comparison, no banner');
+});
+
+test('the quiet cycle dies quietly — a failed probe leaves the header words alone', async () => {
+  const { api, dom } = loadConsole({ fetch: () => Promise.reject(new Error('sidecar down')) });
+  api.state.status = { process_started_at: '2026-08-27T10:00:00.000Z' };
+  api.noteProcStart();
+  api.state.unreachable = false;
+  api.state.readFailures = {};
+  // The markup ships the banner hidden; the stub creates nodes unhidden, so
+  // the test seeds the shipped state before probing.
+  dom.get('restartBanner').hidden = true;
+  await api.watchStatus();
+  assert.equal(api.state.unreachable, false, 'a quiet probe never flips the dead-sidecar words');
+  assert.equal(Object.keys(api.state.readFailures).length, 0);
+  assert.equal(dom.get('restartBanner').hidden, true, 'and it never invents a restart either');
+});
+
+test('the refresh path marks the birthmark too, and re-renders the pair', () => {
+  const { api, dom } = loadConsole();
+  const T = Date.UTC(2026, 7, 19, 12, 0, 0);
+  api.state.clock = new Date(T);
+  api.state.unreachable = false;
+  api.state.status = {
+    process_started_at: new Date(T - 2 * 3600 * 1000).toISOString(),
+    code_mtime: new Date(T - 3 * 3600 * 1000).toISOString(),
+    config_mtime: new Date(T - 5 * 60 * 1000).toISOString(),
+  };
+  // The full read path (fetchAll → noteProcStart) lands the birthmark; the
+  // operator then refreshes into a restarted sidecar.
+  api.noteProcStart();
+  api.renderRail();
+  assert.equal(dom.get('restartBanner').hidden, true, 'same process → still nothing');
+  api.state.status = { ...api.state.status, process_started_at: new Date(T - 30 * 60 * 1000).toISOString() };
+  api.renderRail();
+  assert.equal(dom.get('restartBanner').hidden, false);
+  assert.match(flat(dom.get('restartBanner')), /reiniciou depois que esta tela abriu/);
+});

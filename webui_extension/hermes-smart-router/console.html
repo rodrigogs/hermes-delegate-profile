@@ -1245,6 +1245,15 @@
        It is a warn-line style banner with the restart command. Hidden by default. -->
   <div class="warn-line is-stale-banner" id="staleBanner" hidden></div>
 
+  <!-- Restart banner (document-scoped): shows when a later /status read carries
+       a process_started_at different from the one this document first read —
+       the router restarted after this screen opened, so the srcdoc the panel
+       wrote may be older than what /console serves now. Mirror pair of the
+       stale banner above: that one says the code on disk is newer than the
+       process; this one says the process is newer than this document. Hidden
+       by default. -->
+  <div class="warn-line is-restart-banner" id="restartBanner" hidden></div>
+
   <main class="body" id="shell">
     <div class="measure">
       <!-- The pricing clock, on every screen because the hour decides what a
@@ -1522,6 +1531,12 @@
         mode: 'reading',   // 'reading' or 'editing'
         health: null, status: null, policy: null, blocklist: null,
         liveness: null, routes: [],
+        // The birthmark of THIS document: the process_started_at of the first
+        // /status read of its life. A later read with a different value means
+        // the router restarted after this screen opened — the panel fetches
+        // /console on open, so this document was written under the OLD
+        // process, and nothing short of a reopen rewrites the srcdoc.
+        sessionProcStart: null,
         // Which preset the operator is looking at, and which one the plan on screen
         // belongs to. Neither is persisted anywhere: §5.1 adds no key to router.yaml,
         // and "which preset is in force" is read back off the groups themselves.
@@ -3024,6 +3039,80 @@
             staleBanner.classList.add('is-stale-banner');
           }
         }
+
+        // Restart banner (document-scoped) — the mirror pair of the one above.
+        // The stale banner's fact is CODE NEWER THAN PROCESS; this one's fact
+        // is PROCESS NEWER THAN THIS DOCUMENT. Two different authorities on
+        // purpose: each banner says the one thing it is the authority on, so
+        // neither repeats the other's fact (DESIGN.md "a summary fact must
+        // exist nowhere else"). It renders ONLY from the birthmark vs the
+        // latest read — a screen that never re-read /status has nothing to
+        // compare and stays silent, which is why the quiet cycle below exists.
+        // No self-reload: the document is a srcdoc the panel writes, and a
+        // screen swapping itself under a half-typed edit is worse than a word.
+        renderRestartBanner();
+      }
+
+      // ── the quiet /status cycle ─────────────────────────────────────
+      // The panel fetches /console on open and swaps the srcdoc only on a
+      // byte change (e7ce972), which covers the operator who moves between
+      // panels — and not the panel left open for hours, which never reopens
+      // and therefore keeps the pre-deploy document. That screen reported
+      // three times as "ainda vejo a tela antiga" with the server right every
+      // time: no-store at both ends and ZERO console requests in the 30
+      // minutes after a deploy. A deploy restarts the sidecar, so
+      // process_started_at MOVES — and only this document can notice that the
+      // document itself is the old thing. The cycle reads /status alone
+      // (measured on the live sidecar: 380 bytes, ~18 ms loopback), never
+      // touches /console, and never reloads itself.
+      function noteProcStart() {
+        const started = state.status && state.status.process_started_at;
+        if (!started) return;
+        // First read of this document's life is the birthmark. Later reads
+        // only compare against it; a restart mid-session never re-marks, or
+        // the banner would never fire after the first deploy.
+        if (state.sessionProcStart === null) state.sessionProcStart = started;
+      }
+
+      function renderRestartBanner() {
+        const restartBanner = $('restartBanner');
+        if (!restartBanner) return;
+        const procStart = state.status && state.status.process_started_at;
+        const restarted = !!(state.sessionProcStart && procStart
+          && state.sessionProcStart !== procStart);
+        restartBanner.hidden = !restarted;
+        if (restarted) {
+          clear(restartBanner);
+          restartBanner.append(
+            el('strong', '', 'o roteador reiniciou depois que esta tela abriu'),
+            el('span', '', '; o que ela mostra pode ser mais velho que o que roda'),
+            el('br'),
+            el('span', '', 'feche e reabra o painel para buscar a tela atual')
+          );
+          restartBanner.classList.add('is-restart-banner');
+        }
+      }
+
+      async function watchStatus() {
+        // NOT call(): a failed call() writes state.readFailures and
+        // state.unreachable, and this cycle runs every 60 s — during a
+        // deploy's restart window it would flip the header to "Não consegui
+        // falar com o roteador" on a screen whose data layer is otherwise
+        // healthy. The deploy IS the restart the banner exists to name; a
+        // probe that dies with the thing it watches must die quietly.
+        try {
+          const res = await fetch(`${SIDECAR}/status`, {
+            credentials: 'same-origin',
+            cache: 'no-store',
+          });
+          if (!res.ok) return;
+          const data = await res.json();
+          const started = data && data.process_started_at;
+          if (!started) return;
+          state.status = { ...state.status, process_started_at: started };
+          noteProcStart();
+          renderRestartBanner();
+        } catch (_) { /* unreachable sidecar: the data layer already says so */ }
       }
 
       // ── the pricing clock ───────────────────────────────────────────
@@ -8626,6 +8715,11 @@
         // sheet exists to answer. Truncation drops the OLDEST rows, so this gets
         // worse as the log grows; raising the limit alone would only move the cliff.
         state.routesTotal = routes.error ? 0 : (Number(routes.data && routes.data.count) || state.routes.length);
+        // Where fetchAll lands its /status read: the birthmark is noted on
+        // every read the console itself makes, so the first full read of a
+        // fresh document marks it and any later read (the quiet cycle, the
+        // refresh button) compares against that mark.
+        noteProcStart();
         state.checkedAt = nowUtc();
         state.loading = false;
         // §3.4(b): a fresh read brings the dismissed unknown-model warnings
@@ -8708,6 +8802,11 @@
         // it repaints two spans and three list items, nothing else. Guarded because
         // a headless harness need not provide timers.
         if (typeof setInterval === 'function') setInterval(renderClock, 60000);
+        // ── the quiet /status cycle ─────────────────────────────────────
+        // One quiet read per minute keeps the restart banner honest on a
+        // panel left open for hours — the case this card exists for. Same
+        // guard as the clock: a headless harness need not provide timers.
+        if (typeof setInterval === 'function') setInterval(() => { void watchStatus(); }, 60000);
         window.addEventListener('resize', applyLayout);
         // visualViewport fires for the keyboard; resize does not, on iOS.
         window.visualViewport?.addEventListener('resize', syncKeyboard);
@@ -8726,6 +8825,11 @@
       globalThis.__router = {
         state, setMode, renderRail, renderHealth, renderRoutes, renderStep, renderInspector,
         renderWarnings,
+        // The two provenance banners: the stale one reports the router's own
+        // code age, the restart one reports THIS document's age. Exported so
+        // the pair's independence is pinned — the restart banner must not
+        // restate the stale banner's fact.
+        noteProcStart, renderRestartBanner, watchStatus,
         // The lint fix path, exported whole: the jump itself (showLintTarget)
         // and the two payload readers it is built from. The button wiring is
         // exercised by driving showLintTarget, because a test that only counted
