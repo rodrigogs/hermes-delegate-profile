@@ -199,7 +199,15 @@ def test_no_response_is_cacheable(running_sidecar):
         if token is not None:
             req.add_header(TOKEN_HEADER, token)
         with urllib.request.urlopen(req, timeout=5) as resp:
-            return resp.status, {k.lower(): v for k, v in resp.headers.items()}
+            head = {k.lower(): v for k, v in resp.headers.items()}
+            # Drenar o corpo antes de fechar. Medido em 2026-08-27: um cliente
+            # que fecha no meio do /console (595 KB) faz o write do handler
+            # estourar ConnectionResetError e aborta o _serve antes do seu
+            # return — a linha 668 sumia da cobertura e o gate reprovava em
+            # 99,99% por sorteio. Navegador de verdade lê a página inteira;
+            # o teste também.
+            resp.read()
+            return resp.status, head
 
     status, head = headers_of("/console")
     assert status == 200
@@ -244,12 +252,25 @@ def _post(url: str, token: str | None, payload: dict):
 
 
 def test_console_served_over_http_tokenless(running_sidecar):
+    """O console chega inteiro, não truncado.
+
+    Lê o corpo COMPLETO (595 KB) e confere contra o Content-Length. Dois
+    motivos, um de contrato e um de medição:
+    - contrato: um console truncado quebra a tela; o painel depende do HTML
+      todo.
+    - medição (2026-08-27): um cliente que fecha antes do fim do write faz o
+      handler estourar ConnectionResetError e aborta o _serve antes do seu
+      return — a última linha do ramo /console sumia da cobertura e o gate
+      reprovava em 99,99% por sorteio. Cliente que lê tudo não tem corrida.
+    """
     base, _token = running_sidecar
     req = urllib.request.Request(f"{base}/console", method="GET")
     with urllib.request.urlopen(req, timeout=5) as resp:
         assert resp.status == 200
         assert resp.headers.get("Content-Type", "").startswith("text/html")
-        assert resp.read(9).lower() == b"<!doctype"
+        body = resp.read()
+        assert int(resp.headers.get("Content-Length", "0")) == len(body)
+        assert body[:9].lower() == b"<!doctype"
 
 
 def test_plan_route_happy_path_over_http(running_sidecar):
