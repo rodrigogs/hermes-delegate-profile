@@ -59,6 +59,19 @@ except ImportError:  # capabilities.py absent or mid-write — degrade, never cr
     except ImportError:
         _caps = None
 
+# The top-level ``price_windows`` overlay merge (spec t_c90c5336). Guarded like
+# ``_caps``: the CLI is the operator's last-resort tool and must still start —
+# and still lint — beside a rules.py that predates the overlay, so the merge
+# degrades to the identity (no overlay, no change) rather than a crash.
+try:
+    from .rules import with_global_price_windows
+except ImportError:  # pragma: no cover - flat layout, or rules.py without the overlay
+    try:
+        from router.rules import with_global_price_windows
+    except ImportError:  # pragma: no cover - rules.py predates the overlay
+        def with_global_price_windows(config: Dict[str, Any]) -> Dict[str, Any]:
+            return config
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -316,6 +329,7 @@ def cmd_explain(args: argparse.Namespace) -> None:
     """
     task = args.task
     config = load_config(args.config)
+    config = with_global_price_windows(config)
 
     when, at_source = resolve_when(args)
     features = extract(task)
@@ -372,6 +386,7 @@ def cmd_chain(args: argparse.Namespace) -> None:
     as ``n/a``.
     """
     config = load_config(args.config)
+    config = with_global_price_windows(config)
     task = args.task
     when, at_source = resolve_when(args)
     # The task stays the GOAL line (it is what the classifier and the response

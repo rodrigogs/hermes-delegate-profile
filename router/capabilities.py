@@ -137,6 +137,7 @@ demote two providers simultaneously without emptying a chain.
 from __future__ import annotations
 
 import random
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -227,6 +228,7 @@ _COMMERCIAL_FIELDS: frozenset = frozenset(
         "price_in",
         "price_out",
         "price_windows",
+        "price_windows_verified",
         "notes",
     }
 )
@@ -384,6 +386,7 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "price_windows": [
             {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
         ],
+        "price_windows_verified": "2026-08-26",
         "notes": "metered API not launched; credit multipliers only",
     },
     "glm-5-turbo": {
@@ -399,6 +402,7 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "price_windows": [
             {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
         ],
+        "price_windows_verified": "2026-08-26",
     },
     "glm-4.7": {
         "provider": "zai",
@@ -413,6 +417,7 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "price_windows": [
             {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
         ],
+        "price_windows_verified": "2026-08-26",
         "notes": "also purchasable metered at the same price",
     },
     "glm-4.7-flashx": {
@@ -508,6 +513,7 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "price_windows": [
             {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
         ],
+        "price_windows_verified": "2026-08-26",
     },
     "glm-4.5v": {
         "provider": "zai",
@@ -552,6 +558,7 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
             {"hours_utc": [1, 4], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
             {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
         ],
+        "price_windows_verified": "2026-08-26",
         "notes": "cache-hit input 0.007 off-peak",
     },
     "deepseek-v4-pro": {
@@ -568,6 +575,7 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
             {"hours_utc": [1, 4], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
             {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
         ],
+        "price_windows_verified": "2026-08-26",
         "notes": "cache-hit input 0.022 off-peak",
     },
     # -- openai-codex ------------------------------------------------------
@@ -1860,10 +1868,42 @@ def registry_diagnostics() -> List[str]:
             if not isinstance(entry.get(field), bool):
                 problems.append(f"model '{model}': '{field}' must be a bool")
         problems.extend(price_window_diagnostics(model, entry.get("price_windows")))
+        problems.extend(
+            verified_date_diagnostics(model, entry.get("price_windows_verified"))
+        )
         unknown_fields = set(entry) - _REGISTRY_FIELDS
         for field in sorted(unknown_fields):
             problems.append(f"model '{model}': unrecognized field '{field}'")
     return problems
+
+
+def verified_date_diagnostics(model: str, value: Any) -> List[str]:
+    """Return lint strings for a ``price_windows_verified`` value — [] means clean.
+
+    ``price_windows_verified`` is the date a HUMAN confirmed the windows against
+    the provider's official page. It is ISO-shaped (``YYYY-MM-DD``) and nothing
+    else: the automatic read time lives in the price-watch detector's state file
+    (``price_watch_runner``), never here, and the two facts must not share one
+    field — that was the contradiction that once left a deepseek window four days
+    stale with nobody able to say when a person last looked at it.
+
+    Shared by :func:`registry_diagnostics` (the registry self-check) and the
+    router.yaml overlay lint in ``rules``, so the two surfaces agree on what a
+    confirmation date is and neither can accept what the other refuses. Absent
+    (None) is legal and clean: a window nobody has confirmed simply has no date.
+    """
+    if value is None:
+        return []
+    if (
+        not isinstance(value, str)
+        or not re.match(r"^\d{4}-\d{2}-\d{2}$", value.strip())
+        or value.strip() != value
+    ):
+        return [
+            f"model '{model}': price_windows_verified must be an ISO date "
+            f"string (YYYY-MM-DD)"
+        ]
+    return []
 
 
 def price_window_diagnostics(model: str, windows: Any) -> List[str]:

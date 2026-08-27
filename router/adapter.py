@@ -29,7 +29,13 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .signals import extract
-from .rules import match, resolve_tiers, explain as rules_explain, lint as rules_lint
+from .rules import (
+    match,
+    resolve_tiers,
+    explain as rules_explain,
+    lint as rules_lint,
+    with_global_price_windows,
+)
 from .blocklist import Blocklist
 from .classify import Classifier
 from .cache import Cache, SessionPin
@@ -225,6 +231,7 @@ def route(
     ``return`` cannot skip it the way the eight returns below once skipped the
     plan.
     """
+    config = with_global_price_windows(config)
     bl = blocklist or Blocklist(config)
     cch = cache or Cache()
     pin = session_pin or SessionPin()

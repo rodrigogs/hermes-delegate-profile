@@ -3404,6 +3404,23 @@ test('the detector proves a pair only by one of the three shapes — 15 pinned c
   });
 });
 
+test('with the rules in hand the warning names the covering rule, not just its number', () => {
+  const { api } = loadConsole();
+  const rules = [
+    { id: 'huge-context-read', when: { est_input_tokens: { gte: 128000 } } },
+    { id: 'dead', when: { est_input_tokens: { gte: 200000 } } },
+  ];
+  const pairs = api.shadowPairs(rules);
+  // Índice E frase: o número localiza a linha, a frase a identifica. Um operador que
+  // só recebe "a regra 1" tem de contar linhas para saber quem o atropelou.
+  assert.equal(api.shadowReasonWords(pairs[0], rules),
+    'a regra 2 nunca decide: a regra 1, Leitura de contexto enorme, já cobre todo caso desta (est_input_tokens >= 200.000 é subconjunto de >= 128.000); mova-a acima da 1');
+  // Sem as regras em mão, a sentença é a de sempre — o enriquecimento é aditivo e
+  // nunca inventa um nome que o chamador não forneceu.
+  assert.equal(api.shadowReasonWords(pairs[0]),
+    'a regra 2 nunca decide: a regra 1 já casa tudo que ela pede (est_input_tokens >= 200.000 é subconjunto de >= 128.000); mova-a acima da 1');
+});
+
 test('the warning is one sentence naming the pair, the clause and the remedy', () => {
   const { api } = loadConsole();
   const pairs = api.shadowPairs([
@@ -3455,7 +3472,7 @@ test('the sheet warns with the exact reason and two jumps only when the detector
   assert.ok(dead, 'the dead row exists');
   const warn = dead.children.find((c) => c.className === 'step-when');
   assert.ok(warn, 'the reason rides the row itself');
-  assert.match(flat(warn), /a regra 2 nunca decide: a regra 1 já casa tudo que ela pede \(est_input_tokens >= 200\.000 é subconjunto de >= 128\.000\); mova-a acima da 1/);
+  assert.match(flat(warn), /a regra 2 nunca decide: a regra 1, Leitura de contexto enorme, já cobre todo caso desta \(est_input_tokens >= 200\.000 é subconjunto de >= 128\.000\); mova-a acima da 1/);
   const buttons = findAll(warn, 'btn');
   assert.equal(buttons.length, 2, 'the shadower AND the dead rule are both one click away');
   assert.deepEqual(buttons.map((b) => b.textContent), ['Ir para a regra 2', 'Ir para a regra 1']);
@@ -3480,7 +3497,7 @@ test('when two rules shadow the same row, the warning names the EARLIEST and cou
   api.renderSheet();
   const dead = dom.get('sheet').children.find((c) => c.dataset.ruleId === 'c');
   const warn = dead.children.find((c) => c.className === 'step-when');
-  assert.match(flat(warn), /a regra 3 nunca decide: a regra 1 já casa tudo/);
+  assert.match(flat(warn), /a regra 3 nunca decide: a regra 1, Leitura de contexto enorme, já cobre todo caso desta/);
   assert.deepEqual(findAll(warn, 'btn').map((b) => b.textContent),
     ['Ir para a regra 3', 'Ir para a regra 1'],
     'moving before the earliest shadower resolves every finding at once');
@@ -10298,4 +10315,424 @@ test('a drag between two editable rows writes the move', async () => {
   assert.ok(apply, 'the drop wrote');
   const sent = JSON.parse(apply.body).policy.rules.map((r) => r.id);
   assert.deepEqual(sent, ['r2', 'r3', 'r4', 'r1'], 'r1 landed after r4');
+});
+
+// ── Card t_7c5d6f91: the Modelos tab's three read-only blocks ─────────────
+// The contract is comp-modelos.html plus the LEIA-ME axis correction (spec
+// t_c90c5336): the 24-cell strip is PER MODEL, grouped visually by provider —
+// never aggregated by provider, because two models of one provider may declare
+// different windows and the aggregation would hide the divergence.
+
+// A registry table with TWO zai models sharing the 06-10 Mon-Fri peak, one
+// deepseek model with its daily 01-04 peak, and one flat openai-codex model.
+// The windows are real registry shapes (capabilities.py carries exactly these
+// hours/multipliers for the zai family), so the strip test prices the same
+// declarations the running path prices.
+function stripRegistry() {
+  return {
+    'glm-4.7': {
+      provider: 'zai', context_window: 200000, billing_mode: 'plan',
+      price_in: 0.60, price_out: 2.20,
+      price_windows: [{ hours_utc: [6, 10], weekdays: [0, 1, 2, 3, 4], multiplier: 2.0 }],
+    },
+    'glm-5.3': {
+      provider: 'zai', context_window: 200000, billing_mode: 'plan',
+      price_in: 1.20, price_out: 4.00,
+      price_windows: [{ hours_utc: [6, 10], weekdays: [0, 1, 2, 3, 4], multiplier: 2.0 }],
+    },
+    'deepseek-v4-pro': {
+      provider: 'deepseek', context_window: 128000, billing_mode: 'metered',
+      price_windows: [{ hours_utc: [1, 4], multiplier: 2.0 }],
+    },
+    'gpt-5.6-luna': {
+      provider: 'openai-codex', context_window: 272000, billing_mode: 'subscription',
+    },
+  };
+}
+
+test('the price strip draws one 24-cell band PER MODEL, two rows inside one provider group', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  api.state.capabilities = stripRegistry();
+  api.state.clock = PEAK; // Monday 07:14 UTC - inside zai's and deepseek's peaks
+  api.renderPriceStrip();
+  const box = dom.get('priceStrip');
+  // Provider groups: zai, deepseek, openai-codex. The group is a frame, the
+  // strip is a row inside it - aggregating by provider is the defect the spec
+  // corrected, so the counts assert BOTH levels.
+  const groups = findAll(box, 'price-group');
+  assert.equal(groups.length, 3, 'one visual group per provider');
+  const bands = findAll(box, 'price-band');
+  assert.equal(bands.length, 4, 'one band per MODEL - glm-4.7 and glm-5.3 are two bands, not one zai band');
+  // Floor AND ceiling on the band: exactly 24 cells, never 23 or 25.
+  bands.forEach((band) => {
+    const cells = findAll(band, 'h-cell');
+    assert.equal(cells.length, 24, 'every band has exactly 24 cells');
+  });
+  // The zai group must contain the two divergent-capable models, named.
+  const zaiText = flat(groups[0]);
+  assert.match(zaiText, /glm-4\.7/);
+  assert.match(zaiText, /glm-5\.3/);
+});
+
+test('peak, cheap and base cells get the three states, and ONLY the current hour is marked now', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  api.state.capabilities = stripRegistry();
+  api.state.clock = PEAK; // Monday 07:14 UTC: zai peak (6..10), deepseek NOT (1..4)
+  api.renderPriceStrip();
+  const bands = findAll(dom.get('priceStrip'), 'price-band');
+  // Band order follows the registry's own key order: glm-4.7, glm-5.3, deepseek, codex.
+  const zaiCells = findAll(bands[0], 'h-cell');
+  assert.equal(zaiCells.filter((c) => c.classList.contains('peak')).length, 4,
+    "zai peak is hours 6,7,8,9 - the half-open window [6,10)");
+  assert.equal(zaiCells.filter((c) => c.classList.contains('now')).length, 1,
+    'exactly one now cell per band');
+  assert.ok(zaiCells[7].classList.contains('now'), 'hour 7 is now - clock is 07:14 UTC');
+  assert.ok(zaiCells[7].classList.contains('peak'), 'the now cell can also be a peak cell');
+  const dsCells = findAll(bands[2], 'h-cell');
+  assert.equal(dsCells.filter((c) => c.classList.contains('peak')).length, 3,
+    'deepseek peak is hours 1,2,3 - daily, no weekday gate needed here');
+  const codexCells = findAll(bands[3], 'h-cell');
+  assert.equal(codexCells.filter((c) => c.classList.contains('peak')).length, 0,
+    'a model with no declared windows has no peak cells at all');
+  assert.equal(codexCells.filter((c) => c.classList.contains('cheap')).length, 0,
+    'and no cheap cells - flat is flat');
+});
+
+test('the now mark follows the INJECTED clock, not a second reader', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  api.state.capabilities = stripRegistry();
+  // NIGHT is Monday 18:00 UTC - outside every window in the fixture.
+  api.state.clock = NIGHT;
+  api.renderPriceStrip();
+  let bands = findAll(dom.get('priceStrip'), 'price-band');
+  bands.forEach((band) => {
+    const nowCells = findAll(band, 'h-cell').filter((c) => c.classList.contains('now'));
+    assert.equal(nowCells.length, 1);
+    assert.ok(findAll(band, 'h-cell')[18].classList.contains('now'),
+      'hour 18 is now - the mark moved with the injected clock');
+  });
+  // Move the clock and the mark moves: same state, same render, new hour.
+  api.state.clock = new Date(Date.UTC(2026, 7, 17, 2, 0));
+  api.renderPriceStrip();
+  bands = findAll(dom.get('priceStrip'), 'price-band');
+  const ds = findAll(bands[2], 'h-cell');
+  assert.ok(ds[2].classList.contains('now'));
+  assert.ok(ds[2].classList.contains('peak'), '02:00 UTC is inside deepseek peak');
+  assert.equal(ds.filter((c) => c.classList.contains('now')).length, 1);
+});
+
+test('a weekday-gated window only paints peak on the days it declared', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  api.state.capabilities = stripRegistry();
+  // WEEKEND is Saturday 07:00 UTC: zai's peak is Mon-Fri, so Saturday paints base.
+  api.state.clock = WEEKEND;
+  api.renderPriceStrip();
+  const bands = findAll(dom.get('priceStrip'), 'price-band');
+  assert.equal(findAll(bands[0], 'h-cell').filter((c) => c.classList.contains('peak')).length, 0,
+    "zai's Mon-Fri gate holds - Saturday 07:00 is base price");
+});
+
+test('a cheap window paints cheap cells below the base', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  const registry = stripRegistry();
+  registry['mimo-v2.5'] = {
+    provider: 'xiaomi', context_window: 1050000, billing_mode: 'metered',
+    price_windows: [{ hours_utc: [16, 24], multiplier: 0.8 }],
+  };
+  api.state.capabilities = registry;
+  api.state.clock = NIGHT; // Monday 18:00 UTC - inside the 16-24 discount
+  api.renderPriceStrip();
+  const bands = findAll(dom.get('priceStrip'), 'price-band');
+  const mimo = bands[bands.length - 1];
+  const cells = findAll(mimo, 'h-cell');
+  assert.equal(cells.filter((c) => c.classList.contains('cheap')).length, 8,
+    'hours 16..23 are cheap - the [16,24) window');
+  assert.ok(cells[18].classList.contains('cheap'));
+  assert.equal(cells.filter((c) => c.classList.contains('cheap')).length, 8,
+    'no arithmetic shortcut: exactly 8 cheap cells');
+});
+
+test('an empty or unreadable registry renders the honest absence, not an empty frame', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  api.state.capabilities = null;
+  api.renderPriceStrip();
+  // The section's title is static markup beside the box; the BOX is what the
+  // render owns, so the absence is asserted where the render draws it.
+  const text = flat(dom.get('priceStrip'));
+  assert.match(text, /sem catálogo/i,
+    'the strip says WHY there are no bands - an absent catalogue is a stated absence, not a blank box');
+  assert.doesNotMatch(text, /preço base|pico, custa mais/,
+    'and it draws no legend for bands that do not exist');
+  assert.equal(findAll(dom.get('priceStrip'), 'price-band').length, 0);
+});
+
+// ── the groups block: observed share + the DISABLED peak-policy selector ──
+
+test('each group card shows its observed share of decisions, derived from decisionGroup', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [
+      { id: 'r1', status: 'stable', when: {}, then: { model: 'T2' } },
+    ],
+    default: {},
+    tiers: {
+      T2: { model: 'glm-5.3', provider: 'zai', fallback: [], fallback_strategy: 'sequential' },
+    },
+  };
+  const now = PEAK.getTime() / 998;
+  const routes = [];
+  for (let i = 0; i < 6; i += 1) routes.push({ ts: now - 60 - i, model: 'glm-5.3', provider: 'zai', rule_id: 'r1', cause: 'hard_rule', task: 't' });
+  for (let i = 0; i < 2; i += 1) routes.push({ ts: now - 90 - i, model: 'glm-4.7', provider: 'zai', rule_id: null, cause: 'profile_ignored', task: 't' });
+  api.state.routes = routes;
+  api.renderLadder();
+  const text = flat(dom.get('ladder'));
+  assert.match(text, /6 de 8/, 'six of the eight decisions went through T2');
+});
+
+test('the peak-policy selector renders DISABLED and names the follow-up card as the reason', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [], default: {},
+    tiers: { T1: { model: 'glm-4.7', provider: 'zai', fallback: [], fallback_strategy: 'sequential' } },
+  };
+  api.state.routes = [];
+  api.renderLadder();
+  const selects = findAll(dom.get('ladder'), 'peak-policy');
+  assert.equal(selects.length, 1, 'one selector per group card');
+  const sel = selects[0];
+  assert.equal(sel.disabled, true, 'the selector does not write yet');
+  assert.match(sel.title, /card filho|ainda não grava|não grava/,
+    'the reason rides on the control itself, where the pointer lands');
+  const opts = (sel.children || []).filter((c) => c.tagName === 'option');
+  assert.deepEqual(opts.map((o) => o.textContent), ['manter a ordem', 'evitar o pico', 'usar o mais barato'],
+    'the three contract states, in contract order');
+});
+
+// ── the compaction block: state read off the real /compaction shape ───────
+
+function compactionPayload() {
+  return {
+    aggressiveness: 50,
+    summarizer_window: 272000,
+    threshold_fraction: 0.766,
+    threshold_tokens: 208352,
+    warning: false,
+    model_thresholds: { 'glm-4.7': 0.8, 'deepseek-v4-pro': 0.85, 'gpt-5.6-terra': 0.62 },
+    compaction: {
+      provider: 'zai',
+      model: 'glm-4.5-flash',
+      fallback_chain: [
+        { model: 'glm-4.7', provider: 'zai' },
+        { model: 'gpt-5.6-luna', provider: 'openai-codex' },
+        { model: 'mimo-v2.5', provider: 'xiaomi' },
+      ],
+    },
+    compaction_errors: [],
+  };
+}
+
+test('the compaction block states threshold, window, aggressiveness and every model threshold', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.compaction = compactionPayload();
+  api.renderCompaction();
+  const text = flat(dom.get('compactionBox'));
+  assert.match(text, /208\.352 tokens/, 'the threshold in tokens, formatted pt-BR');
+  assert.match(text, /272\.000/, 'the summarizer window it is a fraction of');
+  assert.match(text, /76,6%|0,766/, 'the fraction named');
+  assert.match(text, /glm-4\.5-flash/, 'the model that compacts today');
+  assert.match(text, /zai/, 'its provider');
+  assert.match(text, /glm-4\.7 → gpt-5\.6-luna → mimo-v2\.5/, 'the fallback queue, said once, in order');
+  ['glm-4.7', 'deepseek-v4-pro', 'gpt-5.6-terra'].forEach((m) => {
+    assert.match(text, new RegExp(m.replace(/\./g, '\\.')),
+      `per-model threshold for ${m} is on screen`);
+  });
+});
+
+test('a compaction block that is not declared is an honest absence, not a fake zero', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.compaction = Object.assign({}, compactionPayload(), { compaction: null, compaction_errors: [] });
+  api.renderCompaction();
+  const text = flat(dom.get('compactionBox'));
+  assert.match(text, /208\.352 tokens/);
+  assert.match(text, /nenhum modelo escolhido|sem escolha|não informado/,
+    'no invented model - the absence is said in words');
+  assert.doesNotMatch(text, /modelo não informado: null|undefined/,
+    'and never a stringified null standing in for an answer');
+});
+
+test('compaction refusals ride on screen, not as a 400 page', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.compaction = {
+    ...compactionPayload(),
+    compaction: null,
+    compaction_errors: ["compaction.model 'glm-9' is not in the capability registry - compacting on an unknown id would fail only when the conversation is already too large to carry"],
+  };
+  api.renderCompaction();
+  const text = flat(dom.get('compactionBox'));
+  assert.match(text, /glm-9/);
+  assert.match(text, /não está no catálogo|is not in the capability registry/,
+    'the refusal is displayed verbatim - it is the motor speaking, not the screen guessing');
+});
+
+test('the compaction controls are disabled and say why', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.compaction = compactionPayload();
+  api.renderCompaction();
+  const disableds = findAll(dom.get('compactionBox'), 'ctl');
+  assert.ok(disableds.length >= 2, 'model choice and fallback queue are both controls');
+  disableds.forEach((c) => {
+    assert.equal(c.disabled, true);
+    assert.match(c.title, /card filho|ainda não grava|não grava/);
+  });
+});
+
+test('a missing /compaction read degrades to the stated absence', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.compaction = null;
+  api.renderCompaction();
+  const text = flat(dom.get('compactionBox'));
+  assert.match(text, /sem leitura|não respondeu|Sem leitura/,
+    'the block says the read failed - it does not render zeros as if they were facts');
+  assert.doesNotMatch(text, /0 tokens/);
+});
+
+// ── the restart banner (card t_06d5abf9) ──────────────────────────────────
+// The panel fetches /console on open and swaps the srcdoc only on a byte
+// change, so the panel left open for hours keeps the pre-deploy document.
+// This document is the only one that can notice: a deploy restarts the
+// sidecar, so a later /status read carries a process_started_at DIFFERENT
+// from the one this document first read. The banner below says that fact and
+// names the gesture that resolves it — close and reopen the panel.
+
+test('a process_started_at change between two reads warns and names the gesture', async () => {
+  // The VM reads `fetch` from its own sandbox, so the probe stub rides in
+  // through loadConsole — patching the test file's globalThis reaches nothing.
+  const fetches = [];
+  const fetchStub = (url, opts) => {
+    fetches.push({ url, opts });
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ process_started_at: '2026-08-27T16:40:00.000Z' }) });
+  };
+  const { api, dom } = loadConsole({ fetch: fetchStub });
+  // First read of this document's life: the birthmark lands.
+  api.state.status = { process_started_at: '2026-08-27T10:00:00.000Z' };
+  api.noteProcStart();
+  assert.equal(api.state.sessionProcStart, '2026-08-27T10:00:00.000Z');
+
+  // The quiet cycle reads a RESTARTED sidecar: same shape, new process.
+  await api.watchStatus();
+  assert.equal(fetches.length, 1);
+  assert.match(fetches[0].url, /\/status$/);
+  assert.equal(api.state.status.process_started_at, '2026-08-27T16:40:00.000Z');
+  assert.equal(api.state.sessionProcStart, '2026-08-27T10:00:00.000Z',
+    'a restart mid-session never re-marks the birthmark');
+
+  // The banner says the fact and names the gesture — pinned words.
+  assert.equal(dom.get('restartBanner').hidden, false);
+  const banner = flat(dom.get('restartBanner'));
+  assert.match(banner, /o roteador reiniciou depois que esta tela abriu/);
+  assert.match(banner, /feche e reabra o painel para buscar a tela atual/);
+});
+
+test('an unchanged process_started_at renders nothing for nothing', () => {
+  const { api, dom } = loadConsole();
+  api.state.status = { process_started_at: '2026-08-27T10:00:00.000Z' };
+  api.noteProcStart();
+  api.renderRestartBanner();
+  assert.equal(dom.get('restartBanner').hidden, true, 'no change → no banner');
+  assert.equal(flat(dom.get('restartBanner')), '',
+    'render nothing for nothing: no text, not empty-but-present text');
+});
+
+test('the restart banner does not repeat the stale banner’s fact', () => {
+  const { api, dom } = loadConsole();
+  const T = Date.UTC(2026, 7, 19, 12, 0, 0);
+  api.state.clock = new Date(T);
+  api.state.unreachable = false;
+  // For BOTH banners to fire at once, the ages must nest: the process that
+  // served this document's first read (T-2h) is older than the document's
+  // birthmark session, the RESTARTED process (T-1h) is newer than that
+  // birthmark, and the code on disk (T-30m) is newer than the restarted
+  // process. That is exactly a deploy mid-session: new code, new process,
+  // old document — all three ages true at once.
+  api.state.status = {
+    process_started_at: new Date(T - 2 * 3600 * 1000).toISOString(),
+    code_mtime: new Date(T - 30 * 60 * 1000).toISOString(),
+    config_mtime: new Date(T - 5 * 60 * 1000).toISOString(),
+  };
+  api.noteProcStart();
+  api.state.status = { ...api.state.status, process_started_at: new Date(T - 1 * 3600 * 1000).toISOString() };
+  api.renderRail();
+
+  // Both banners fire together — the facts differ, and each keeps its own words.
+  assert.equal(dom.get('staleBanner').hidden, false);
+  assert.equal(dom.get('restartBanner').hidden, false);
+  const restart = flat(dom.get('restartBanner'));
+  const stale = flat(dom.get('staleBanner'));
+  // The restart banner does NOT carry the stale banner's command...
+  assert.doesNotMatch(restart, /systemctl/);
+  // ...nor its fact, in either direction.
+  assert.doesNotMatch(restart, /rodando código de/);
+  assert.doesNotMatch(stale, /reiniciou depois que esta tela abriu/);
+});
+
+test('a document that never read /status stays silent about restarts', () => {
+  const { api, dom } = loadConsole();
+  api.renderRestartBanner();
+  assert.equal(dom.get('restartBanner').hidden, true,
+    'no birthmark, no comparison, no banner');
+});
+
+test('the quiet cycle dies quietly — a failed probe leaves the header words alone', async () => {
+  const { api, dom } = loadConsole({ fetch: () => Promise.reject(new Error('sidecar down')) });
+  api.state.status = { process_started_at: '2026-08-27T10:00:00.000Z' };
+  api.noteProcStart();
+  api.state.unreachable = false;
+  api.state.readFailures = {};
+  // The markup ships the banner hidden; the stub creates nodes unhidden, so
+  // the test seeds the shipped state before probing.
+  dom.get('restartBanner').hidden = true;
+  await api.watchStatus();
+  assert.equal(api.state.unreachable, false, 'a quiet probe never flips the dead-sidecar words');
+  assert.equal(Object.keys(api.state.readFailures).length, 0);
+  assert.equal(dom.get('restartBanner').hidden, true, 'and it never invents a restart either');
+});
+
+test('the refresh path marks the birthmark too, and re-renders the pair', () => {
+  const { api, dom } = loadConsole();
+  const T = Date.UTC(2026, 7, 19, 12, 0, 0);
+  api.state.clock = new Date(T);
+  api.state.unreachable = false;
+  api.state.status = {
+    process_started_at: new Date(T - 2 * 3600 * 1000).toISOString(),
+    code_mtime: new Date(T - 3 * 3600 * 1000).toISOString(),
+    config_mtime: new Date(T - 5 * 60 * 1000).toISOString(),
+  };
+  // The full read path (fetchAll → noteProcStart) lands the birthmark; the
+  // operator then refreshes into a restarted sidecar.
+  api.noteProcStart();
+  api.renderRail();
+  assert.equal(dom.get('restartBanner').hidden, true, 'same process → still nothing');
+  api.state.status = { ...api.state.status, process_started_at: new Date(T - 30 * 60 * 1000).toISOString() };
+  api.renderRail();
+  assert.equal(dom.get('restartBanner').hidden, false);
+  assert.match(flat(dom.get('restartBanner')), /reiniciou depois que esta tela abriu/);
 });

@@ -4778,9 +4778,12 @@ def test_rules_module_never_reads_the_wall_clock():
     # No IO, no state, no network: the import list is the proof. ``adapter`` is
     # the function-local _cause_labeller delegation (sibling module, same
     # relative/absolute pair as the capabilities registry), not a data source.
+    # ``copy`` deep-copies overlay windows so routing never mutates the parsed
+    # config; ``datetime`` is the TYPE_CHECKING-only annotation import (the no-
+    # clock property the module docstring states), never read at run time.
     assert imported <= {
-        "", "__future__", "adapter", "datetime", "inspect", "random", "re",
-        "router", "typing",
+        "", "__future__", "adapter", "copy", "datetime", "inspect", "random",
+        "re", "router", "typing",
     }
 
 def test_the_lint_knows_the_injected_role_field():

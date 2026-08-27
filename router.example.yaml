@@ -52,6 +52,27 @@
 #         xiaomi    NO window: the 0.8x night rate is a prepaid Token Plan credit
 #                   coefficient, and pay-as-you-go bills flat (measured 2026-08-26)
 #     06:00-10:00 covers 06:00 through 09:59; hour 10 already bills at base.
+#   * PRICE-WINDOW OVERLAY. The top-level `price_windows` table lets you move a
+#     model's windows without editing the code registry. It is keyed by EXACT
+#     model id (no provider key) and REPLACES that model's registry windows
+#     whole; a model absent from it keeps the registry's windows, and `[]` makes
+#     a model flat ("sem janela local"). A per-elo `price_windows` on a tier
+#     still wins over this table. Precedence: tier declaration > overlay >
+#     registry. UTC, half-open [start, end), like every window:
+#
+#         price_windows:
+#           glm-5.3:
+#             - hours_utc: [6, 10]
+#               weekdays: [0, 1, 2, 3, 4]
+#               multiplier: 2.0
+#           # The extended form also carries WHEN a person last confirmed the
+#           # window against the provider's page (never the auto-read time):
+#           mimo-v2.5:
+#             price_windows: [{hours_utc: [16, 24], multiplier: 0.8}]
+#             price_windows_verified: "2026-08-26"
+#
+#     A window crossing midnight is TWO entries; a malformed overlay is refused
+#     at the write gate, never half-applied.
 #   * Order of operations in one decision is fixed: capability filter -> time_cap
 #     -> time_policy -> fallback_strategy ordering. Filtering first, so a trace
 #     can never show a promotion that a later filter silently removed.
@@ -162,6 +183,36 @@ blocklist:
     base_cooldown_seconds: 60
     max_cooldown_seconds: 900
     backoff_multiplier: 2.0
+# The compaction model + fallback queue. This is a DECLARATIVE choice: it is
+# written to router.yaml through the same /plan + /apply hot path as everything
+# above, linted here, and only made EFFECTIVE when the console fires the
+# RESTART-class apply (POST /apply action=compaction), which resolves it into
+# ~/.hermes/config.yaml under auxiliary.compression.{provider,model,base_url,
+# fallback_chain} and hands the candidate to the safe-restart dead-man switch.
+#
+#   provider   who runs the compaction model.
+#   model      the compaction model. It must exist in the capability registry —
+#              the write is REFUSED otherwise, because compacting on an unknown
+#              id fails exactly when the conversation is already too large to
+#              carry (the worst moment a misconfiguration can pick).
+#   base_url   optional custom endpoint (omit to use the provider's default).
+#   fallback_mode   "standalone" (this block carries its own `fallback_chain`)
+#              OR "tier:<NAME>" — a REFERENCE to that tier's queue, resolved at
+#              apply time, never copied here. One authority per fact: edit the
+#              tier and the compaction fallback follows in the same breath. A
+#              tier deleted AFTER this block is written is refused by name at
+#              apply time, never silently skipped.
+#   required_provider_context_window   optional floor (tokens): when set, the
+#              chosen model's registry context_window must clear it or the
+#              write is refused. Left out below because the floor is a
+#              workload judgement, not a default.
+#
+# "usar a fila do T1" below resolves to glm-4.7 -> gpt-5.6-luna -> mimo-v2.5
+# (the tier primary plus its two fallback hops), the same queue T1 routes on.
+compaction:
+  provider: zai
+  model: glm-4.5-flash
+  fallback_mode: tier:T1
 # Watchdog params live in config.yaml: plugins.entries.delegate-profile.watchdog
 # Table 1 — ordered, FIRST MATCH WINS. Order is severity-descending after the
 # one narrow row, so a task that trips two rules lands on the stronger tier.
