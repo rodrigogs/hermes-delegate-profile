@@ -132,6 +132,19 @@ except ImportError:  # pragma: no cover - flat layout, or rules.py without findi
     except ImportError:  # pragma: no cover - rules.py without structured findings
         rules_lint_findings = None  # type: ignore[assignment]
 
+# The top-level ``price_windows`` overlay merge (spec t_c90c5336). Defensive for
+# the same reason as lint_warnings: this file is deployed by copy and can land
+# beside a rules.py that predates the overlay, in which case the merge degrades
+# to the identity — no overlay, no change — instead of a read path 500.
+try:
+    from .rules import with_global_price_windows
+except ImportError:  # pragma: no cover - flat layout, or rules.py without the overlay
+    try:
+        from router.rules import with_global_price_windows
+    except ImportError:  # pragma: no cover - rules.py predates the overlay
+        def with_global_price_windows(config: Dict[str, Any]) -> Dict[str, Any]:
+            return config
+
 try:
     from . import capabilities as _caps
 except ImportError:  # pragma: no cover - flat layout, or registry absent
@@ -259,6 +272,11 @@ _CATALOGUE_COMMERCIAL_FIELDS: Tuple[str, ...] = (
     "price_in",
     "price_out",
     "price_windows",
+    # The HUMAN confirmation date for a model's windows (see
+    # capabilities.verified_date_diagnostics). A date string, not free text and
+    # not a secret, so it is safe to serve — the console shows "confirmado por
+    # uma pessoa em YYYY-MM-DD" beside the window.
+    "price_windows_verified",
 )
 
 # Used only when the installed capabilities.py predates
@@ -305,16 +323,28 @@ def _is_number(value: Any) -> bool:
 # routed through here.
 #
 # Capability routing and the time layer added NO member here, deliberately: the
-# new knobs (``fallback_strategy``, ``pin_primary``, ``billing_mode``,
+# per-elo knobs (``fallback_strategy``, ``pin_primary``, ``billing_mode``,
 # ``requirements``, ``time_cap``, ``time_policy``, per-elo declared capability and
 # ``price_windows`` overrides) all live INSIDE ``tiers``, which is already hot,
 # and ``classifier.chain`` lives inside ``classifier``.
 # ``_deep_merge_value`` recurses through dicts, so a tier edit carrying them
 # round-trips untouched, while a tier's ``fallback`` LIST still replaces
 # wholesale — which is exactly what makes reordering hops or deleting an elo
-# expressible. Adding a key here would only widen the write surface.
+# expressible.
+#
+# ``price_windows`` IS the one deliberate addition, and it is top-level because
+# it has to be: the model-keyed overlay (spec t_c90c5336) is a table the operator
+# edits whole, keyed by exact model id, and it is merged OVER the registry and
+# UNDER a per-elo ``tier[].price_windows`` declaration. It could not live inside
+# ``tiers`` without inventing a tier to host it, and a per-tier spelling would
+# invite the divergence the spec forbids (a window edited in one tier and not
+# another). Adding the key here widens the write surface by exactly one table,
+# gated by the same lint that refuses a malformed window anywhere else.
 _HOT_KEYS = frozenset(
-    {"rules", "default", "tiers", "classifier", "fail_safe", "blocklist", "enabled"}
+    {
+        "rules", "default", "tiers", "classifier", "fail_safe", "blocklist",
+        "enabled", "price_windows",
+    }
 )
 
 
@@ -698,6 +728,9 @@ class RouterService:
             "default": config.get("default", {}),
             "tiers": self._policy_tiers(config.get("tiers")),
             "fail_safe": config.get("fail_safe", {}),
+            # The model-keyed price-window overlay, served verbatim so the console
+            # can render the current table and post edits back through plan/apply.
+            "price_windows": config.get("price_windows", {}),
         }
 
     @staticmethod
@@ -826,7 +859,17 @@ class RouterService:
             config, errors = self._load()
             blocklist = Blocklist(config)
             references = self._policy_references(config, blocklist.fallback_chain())
-            declared_caps = self._declared_capability_index(config)
+            # Per-elo YAML declarations only, read off the RAW config: the
+            # "declared" origin is decided against THIS index, before the overlay
+            # is injected, so an overlay window is never mistaken for a hand-made
+            # declaration (or the reverse).
+            declared_raw = self._declared_capability_index(config)
+            # The effective declared view: the top-level ``price_windows`` overlay
+            # merged into the tiers (a copy), so pricing reads the overlay through
+            # the same ``declared`` channel a per-elo declaration uses.
+            declared_caps = self._declared_capability_index(
+                with_global_price_windows(config)
+            )
             manual_bans = blocklist.manual_bans()
             breaker_status = {
                 entry.get("model_key"): entry
@@ -860,8 +903,18 @@ class RouterService:
                     "breaker": breaker,
                 }
                 record.update(
-                    self._time_state(model, declared_caps.get(model), when)
+                    self._time_state(
+                        model,
+                        declared_caps.get(model),
+                        when,
+                        origin=self._price_windows_origin(
+                            config, declared_raw, model
+                        ),
+                    )
                 )
+                windows = self._served_windows(model, declared_caps.get(model))
+                if windows:
+                    record["price_windows"] = windows
                 models.append(record)
 
             worst = max((entry["state"] for entry in models), key=self._liveness_rank, default="alive")
@@ -1008,10 +1061,11 @@ class RouterService:
         model: str,
         declared: Optional[Dict[str, Any]],
         when: datetime,
+        origin: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Price-window state for one elo at ``when``.
 
-        Three EXTRA FIELDS on a liveness entry, never a new ``state`` value:
+        Four EXTRA FIELDS on a liveness entry, never a new ``state`` value:
 
           ``in_expensive_window``  True only inside a ``multiplier > 1.0`` window,
               so xiaomi's 0.8x night discount — also a window — never reads as
@@ -1021,6 +1075,13 @@ class RouterService:
           ``next_window_change``   WHEN that multiplier next changes and to what
               (``{hour, weekday, hours_ahead, multiplier}``), or None when it never
               does (a flat-priced or unknown elo).
+          ``price_windows_origin`` WHICH source produced the windows the numbers
+              above came from — ``declared`` (a per-elo YAML override), ``overlay``
+              (the top-level ``price_windows`` table) or ``registry`` (the code
+              registry). This function cannot decide it (the source is a property
+              of the CONFIG, not of the merged ``declared`` it is handed), so it is
+              INJECTED as ``origin`` by the caller; the neutral degrade reports
+              None, "no source attributable".
 
         ``next_window_change`` is carried through as the registry's own MAPPING,
         not reduced to its hour. The day and ``hours_ahead`` are load-bearing: a
@@ -1034,10 +1095,10 @@ class RouterService:
         ``declared`` carries the per-elo overrides policy declares, so an operator
         who corrected a stale window in YAML sees the corrected window here.
 
-        Degrades to the neutral 1.0 / not-expensive / no-change answer when the
-        registry is absent, raises, or answers with something that is not a number.
-        That is the registry's OWN neutral for "no window matched or nothing is
-        known", not an invented number, and
+        Degrades to the neutral 1.0 / not-expensive / no-change / origin-None answer
+        when the registry is absent, raises, or answers with something that is not a
+        number. That is the registry's OWN neutral for "no window matched or nothing
+        is known", not an invented number, and
         ``capabilities_known`` sits beside it to tell an operator which of the two
         they are looking at. Degrading per elo rather than per response is
         deliberate: one unpriceable elo must not blank the price state of every
@@ -1047,6 +1108,7 @@ class RouterService:
             "in_expensive_window": False,
             "price_multiplier": _FLAT_MULTIPLIER,
             "next_window_change": None,
+            "price_windows_origin": origin,
         }
         if _caps is None:
             return neutral
@@ -1063,7 +1125,69 @@ class RouterService:
             "in_expensive_window": bool(expensive),
             "price_multiplier": float(multiplier),
             "next_window_change": _next_window_change(change),
+            "price_windows_origin": origin,
         }
+
+    @staticmethod
+    def _price_windows_origin(
+        config: Any,
+        declared_raw: Any,
+        model: str,
+    ) -> Optional[str]:
+        """Which source produced ``model``'s price windows — a fact, not a deduction.
+
+        The three sources, in precedence order (spec t_c90c5336):
+
+          * ``declared``  a per-elo ``price_windows`` the operator wrote on a
+              tier or fallback hop in router.yaml — the deliberate local exception;
+          * ``overlay``   the top-level ``price_windows`` table;
+          * ``registry``  the code registry (or "no windows anywhere": flat
+              pricing is still the registry's own answer).
+
+        ``declared_raw`` must be the index built from the RAW config, BEFORE the
+        overlay is injected — the whole point of this function is to tell the two
+        YAML sources apart, and a merged index has already blurred them. Returns
+        None only when ``declared_raw`` cannot be trusted (a non-mapping), which
+        the caller reports as "no source attributable".
+        """
+        if not isinstance(declared_raw, dict):
+            return None
+        declared = declared_raw.get(model)
+        if isinstance(declared, dict) and "price_windows" in declared:
+            return "declared"
+        overlay = config.get("price_windows") if isinstance(config, dict) else None
+        if isinstance(overlay, dict) and model in overlay:
+            return "overlay"
+        return "registry"
+
+    @staticmethod
+    def _served_windows(
+        model: str, declared: Optional[Dict[str, Any]]
+    ) -> Optional[List[Dict[str, Any]]]:
+        """The windows list in force for ``model``, or None when it has none.
+
+        Read through ``capabilities_for`` — the same merge, with the same
+        precedence, the running path prices with — so a liveness entry can never
+        describe a window the router is not applying. None means "no time-varying
+        price" (flat, or the model is unknown to the registry), and an empty list
+        is treated the same way: ``[]`` is the operator's explicit "flatten this
+        model", so serving it as a window list would contradict what it means.
+        """
+        if _caps is None:
+            return None
+        try:
+            caps = _caps.capabilities_for(model, declared or None)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if not isinstance(caps, dict):
+            return None
+        windows = caps.get("price_windows")
+        if not isinstance(windows, list) or not windows:
+            return None
+        return [
+            dict(window) if isinstance(window, dict) else window
+            for window in windows
+        ]
 
     @staticmethod
     def _is_manually_banned(
@@ -1171,7 +1295,14 @@ class RouterService:
         }
         try:
             config, _errors = self._load()
-            declared_index = self._declared_capability_index(config)
+            # Two indexes: the raw one names what the operator WROTE (origin
+            # "declared", ``declared_overrides``), and the injected one carries the
+            # top-level ``price_windows`` overlay merged in, so the catalogue
+            # describes the same windows the running path prices with.
+            declared_raw = self._declared_capability_index(config)
+            declared_index = self._declared_capability_index(
+                with_global_price_windows(config)
+            )
             providers = self._policy_provider_index(config)
             fields = _catalogue_fields()
 
@@ -1216,9 +1347,19 @@ class RouterService:
                     model, declared, caps
                 )
                 entry["in_registry"] = model in registry
-                entry["declared_overrides"] = sorted(
-                    key for key in (declared or {}) if key in fields
+                entry["price_windows_origin"] = self._price_windows_origin(
+                    config, declared_raw, model
                 )
+                # ``declared_overrides`` names what the OPERATOR wrote, never the
+                # injected overlay, so it reads off the RAW index.
+                entry["declared_overrides"] = sorted(
+                    key for key in (declared_raw.get(model) or {}) if key in fields
+                )
+                # The explicit empty overlay list means flat pricing: no windows to
+                # serve, so the key is dropped rather than served as [] — a list
+                # that reads as "windowed" when the operator asked for the opposite.
+                if entry.get("price_windows") == []:
+                    entry.pop("price_windows")
                 models[model] = entry
 
             result["models"] = models
@@ -1381,6 +1522,11 @@ class RouterService:
         config, errors = self._load()
         if errors:
             raise ValueError("router policy is invalid")
+        # The top-level ``price_windows`` overlay is merged into the tiers so the
+        # dry-run prices the same windows the production path (adapter.route) does
+        # — a preview that ignored the overlay would answer a different question
+        # than the path it exists to reproduce.
+        config = with_global_price_windows(config)
         features = self._explain_features(prompt, when)
         decision = self._explain_decision(task, features, config, when)
         plan = self._chain_plan_of(decision)

@@ -2042,6 +2042,7 @@ def test_liveness_price_window_state_degrades_per_elo(monkeypatch):
         "in_expensive_window": False,
         "price_multiplier": 1.0,
         "next_window_change": None,
+        "price_windows_origin": None,
     }
     when = _PEAK_0700
 

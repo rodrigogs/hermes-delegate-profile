@@ -52,6 +52,27 @@
 #         xiaomi    NO window: the 0.8x night rate is a prepaid Token Plan credit
 #                   coefficient, and pay-as-you-go bills flat (measured 2026-08-26)
 #     06:00-10:00 covers 06:00 through 09:59; hour 10 already bills at base.
+#   * PRICE-WINDOW OVERLAY. The top-level `price_windows` table lets you move a
+#     model's windows without editing the code registry. It is keyed by EXACT
+#     model id (no provider key) and REPLACES that model's registry windows
+#     whole; a model absent from it keeps the registry's windows, and `[]` makes
+#     a model flat ("sem janela local"). A per-elo `price_windows` on a tier
+#     still wins over this table. Precedence: tier declaration > overlay >
+#     registry. UTC, half-open [start, end), like every window:
+#
+#         price_windows:
+#           glm-5.3:
+#             - hours_utc: [6, 10]
+#               weekdays: [0, 1, 2, 3, 4]
+#               multiplier: 2.0
+#           # The extended form also carries WHEN a person last confirmed the
+#           # window against the provider's page (never the auto-read time):
+#           mimo-v2.5:
+#             price_windows: [{hours_utc: [16, 24], multiplier: 0.8}]
+#             price_windows_verified: "2026-08-26"
+#
+#     A window crossing midnight is TWO entries; a malformed overlay is refused
+#     at the write gate, never half-applied.
 #   * Order of operations in one decision is fixed: capability filter -> time_cap
 #     -> time_policy -> fallback_strategy ordering. Filtering first, so a trace
 #     can never show a promotion that a later filter silently removed.

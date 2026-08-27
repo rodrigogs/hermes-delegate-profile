@@ -1021,8 +1021,9 @@ def test_capabilities_module_never_reads_the_wall_clock():
     assert not called & {
         "now", "utcnow", "today", "monotonic", "time", "fromtimestamp", "open",
     }
-    # No IO, no state, no network: the import list is the proof.
-    assert imported <= {"__future__", "datetime", "random", "typing"}
+    # No IO, no state, no network: the import list is the proof. ``re`` is the
+    # ISO-date shape check for price_windows_verified — pure pattern matching.
+    assert imported <= {"__future__", "datetime", "random", "re", "typing"}
 
 
 def test_the_reference_clocks_are_the_weekdays_they_claim():

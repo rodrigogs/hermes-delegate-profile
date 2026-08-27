@@ -22,6 +22,7 @@ trace would show a promotion that never took effect.
 
 from __future__ import annotations
 
+import copy
 import inspect
 import random
 import re
@@ -493,6 +494,7 @@ def lint(config: Dict[str, Any]) -> List[str]:
                 errors.append(f"missing tier {tn}")
 
     errors.extend(_lint_tier_shapes(tiers_cfg))
+    errors.extend(_lint_global_price_windows(config))
 
     # The default is the route EVERY fall-through takes, so an unresolvable tier
     # alias there misroutes more traffic than any single rule can. The identical
@@ -961,6 +963,76 @@ def _tier_chain(tier: Dict[str, Any]) -> List[Dict[str, Any]]:
     return chain
 
 
+def with_global_price_windows(config: Any) -> Any:
+    """Return ``config`` with the top-level ``price_windows`` overlay merged in.
+
+    The overlay is the writable, model-keyed price-window table at the top of
+    ``router.yaml`` (spec t_c90c5336). It is applied to every tier primary and
+    fallback hop whose model it names, and it sits BELOW a per-elo declaration
+    the hop already carries: a hop that declares its own ``price_windows`` keeps
+    it, so the precedence is ``tier[].price_windows`` (declared) > this overlay >
+    the code registry. Routing reads the windows through the same ``declared``
+    override channel a per-elo declaration uses, so no consumer learns a new
+    path.
+
+    Returns a DEEP COPY when there is an overlay to apply — never the caller's
+    object, so a plan can mutate the returned view without writing back into the
+    parsed config — and the caller's own object (unmutated) when there is none,
+    so the hot routing path pays nothing when the operator has not written an
+    overlay. A malformed overlay (not a mapping) is a no-op here: ``lint()`` is
+    the gate that refuses it, and nothing reaches the routing path without
+    passing the gate.
+    """
+    if not isinstance(config, dict):
+        return config
+    overlay = config.get("price_windows")
+    # An empty overlay (``{}``) is "no overlay": returning the caller's object
+    # avoids a deep copy on the hot routing path for the state the console's
+    # write path can leave behind (posting an edited policy with no windows).
+    if not isinstance(overlay, dict) or not overlay:
+        return config
+    result = copy.deepcopy(config)
+    tiers = result.get("tiers")
+    if isinstance(tiers, dict):
+        for tier in tiers.values():
+            if isinstance(tier, dict):
+                _inject_overlay_windows(tier, overlay)
+                for hop in tier.get("fallback") or []:
+                    if isinstance(hop, dict):
+                        _inject_overlay_windows(hop, overlay)
+    return result
+
+
+def _inject_overlay_windows(hop: Dict[str, Any], overlay: Dict[str, Any]) -> None:
+    """Inject one model's overlay windows into ``hop``, unless it declares its own.
+
+    Two spellings are accepted because the provenance field grew a sibling out of
+    the plain list: ``model: [window, ...]`` (the list) and ``model:
+    {price_windows: [...], price_windows_verified: 'YYYY-MM-DD'}`` (the extended
+    form). Both inject the same ``price_windows`` list into ``declared``; the
+    extended form also carries the human confirmation date so the catalogue can
+    serve it. The injection is a COPY so routing can never mutate the parsed
+    overlay, and a hop that already carries ``price_windows`` is left alone — the
+    per-elo declaration is the deliberate local exception.
+    """
+    model = hop.get("model")
+    if not isinstance(model, str) or not model:
+        return
+    if "price_windows" in hop:
+        return
+    entry = overlay.get(model)
+    if entry is None:
+        return
+    if isinstance(entry, dict):
+        windows = entry.get("price_windows")
+        if windows is not None:
+            hop["price_windows"] = copy.deepcopy(windows)
+        if "price_windows_verified" in entry:
+            hop["price_windows_verified"] = entry["price_windows_verified"]
+        return
+    hop["price_windows"] = copy.deepcopy(entry)
+
+
 def _lint_tier_shapes(tiers_cfg: Dict[str, Any]) -> List[str]:
     """Hard-error checks for the per-tier routing knobs."""
     errors: List[str] = []
@@ -1213,6 +1285,54 @@ def _lint_price_windows(tier: Dict[str, Any]) -> List[str]:
             )
         except (AttributeError, TypeError, ValueError):
             continue
+    return errors
+
+
+def _lint_global_price_windows(config: Dict[str, Any]) -> List[str]:
+    """Hard-error checks for the top-level ``price_windows`` overlay block.
+
+    The overlay is a write target (it sits in :data:`service._HOT_KEYS`), so its
+    defects are REFUSED here rather than applied half-way: a malformed window
+    must never become a silent multiplier. The window-shape rules are delegated
+    to ``capabilities.price_window_diagnostics`` — the same validator the
+    registry is held to — and the confirmation date to
+    ``capabilities.verified_date_diagnostics``, so the overlay can never accept
+    a window or a date the registry would refuse. Two spellings are accepted,
+    mirroring :func:`_inject_overlay_windows`: the plain list and the extended
+    ``{price_windows: [...], price_windows_verified: 'YYYY-MM-DD'}`` form. Absent
+    (None) is legal and clean — an operator with no overlay has nothing to lint.
+    """
+    overlay = config.get("price_windows")
+    if overlay is None:
+        return []
+    if not isinstance(overlay, dict):
+        return ["top-level price_windows must be a mapping of model id -> windows"]
+    errors: List[str] = []
+    windows_fn: Any = getattr(_caps, "price_window_diagnostics", None) if _caps else None
+    verified_fn: Any = getattr(_caps, "verified_date_diagnostics", None) if _caps else None
+    for model, entry in overlay.items():
+        if isinstance(entry, dict):
+            # Extended form. A mapping without 'price_windows' is a bare window or
+            # a typo — neither is the documented shape, so it is refused rather
+            # than silently treated as flat pricing.
+            if "price_windows" not in entry:
+                errors.append(
+                    f"model '{model}': overlay entry must be a list of windows "
+                    f"or a mapping with 'price_windows'"
+                )
+                continue
+            windows = entry["price_windows"]
+            verified = entry.get("price_windows_verified")
+            unknown = set(entry) - {"price_windows", "price_windows_verified"}
+            for field in sorted(unknown, key=str):
+                errors.append(f"model '{model}': unrecognized overlay field '{field}'")
+        else:
+            windows = entry
+            verified = None
+        if callable(windows_fn):
+            errors.extend(windows_fn(model, windows))
+        if verified is not None and callable(verified_fn):
+            errors.extend(verified_fn(model, verified))
     return errors
 
 
