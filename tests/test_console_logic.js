@@ -58,6 +58,11 @@ function fakeDom() {
       clientWidth: 900,
       scrollIntoView(opts) { node._scrolledTo = opts || null; },
       focus() {},
+      // Card t_3ba979a1: the JSON tools drive the editor programmatically —
+      // Copiar selects the whole text, Formatar lands the cursor back on the
+      // key. The stub records the calls so the flows are assertable.
+      select() {},
+      setSelectionRange(a, b) { node.selectionStart = a; node.selectionEnd = b; },
     };
     Object.defineProperty(node, 'firstChild', { get: () => node.children[0] || null });
     return node;
@@ -79,7 +84,7 @@ function fakeDom() {
   };
 }
 
-function loadConsole({ width = 1440, embedded = false, csrfToken, fetch: fetchStub, dom: domIn, keepWire = false } = {}) {
+function loadConsole({ width = 1440, embedded = false, csrfToken, fetch: fetchStub, dom: domIn, keepWire = false, navigator: navIn } = {}) {
   const html = fs.readFileSync(sourcePath, 'utf8');
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1]
     // Skip the init calls that need a live browser; keep everything else intact.
@@ -97,6 +102,10 @@ function loadConsole({ width = 1440, embedded = false, csrfToken, fetch: fetchSt
     console, window: win, document: dom.document, globalThis: {},
     fetch: fetchStub || (() => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') })),
     setTimeout() {}, Math, JSON, Number, Object, Array, String, Set, Map, Date, encodeURIComponent,
+    // Card t_3ba979a1: Copiar reads navigator.clipboard. The default stub has
+    // no clipboard, so the fallback path is what runs; a test injects a
+    // clipboard stub to pin the happy path.
+    navigator: navIn !== undefined ? navIn : { clipboard: null },
   };
   vm.runInNewContext(script, context, { filename: sourcePath });
   return { api: context.globalThis.__router, dom, win };
@@ -821,23 +830,32 @@ test('a missing endpoint is distinguished from a rejected write', async () => {
 
 test('preview shows the diff without writing anything', async () => {
   const posted = [];
-  const { api } = loadConsole({
+  // Card t_3ba979a1: the diff is now the two DOCUMENTS — the file this
+  // screen read vs the plan's merged result — rendered as − / + lines with
+  // the count head and the whole-list replacement note. The old pin on the
+  // server's raw text ('+ new') is superseded: the server's text is YAML
+  // and cannot say "9 rules replace 8" — the two documents can.
+  const antes = { rules: Array.from({ length: 8 }, (_, i) => ({ id: `r${i}` })), fail_safe: { strong: true } };
+  const depois = { rules: Array.from({ length: 9 }, (_, i) => ({ id: `r${i}` })), fail_safe: { strong: false } };
+  const { api, dom } = loadConsole({
     csrfToken: 'tok',
     fetch: (url) => {
       posted.push(url);
       if (url.endsWith('/policy')) {
         // The disk matches the snapshot the screen rendered.
-        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(antes)) });
       }
       return Promise.resolve({
         ok: true, status: 200,
-        text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '- old\n+ new' })),
+        text: () => Promise.resolve(JSON.stringify({ valid: true, policy: depois, diff: '- old\n+ new' })),
       });
     },
   });
-  api.state.policy = {};
+  api.state.policy = antes;
   const msg = { textContent: '', className: '' };
-  const diff = { hidden: true, textContent: '' };
+  // The diff node is a DOM node: renderJsonDiff builds −/+ rows inside it
+  // (append/children), which the old text-only fixture did not carry.
+  const diff = dom.get('jsonDiff');
   await api.doPreview({ rules: [] }, msg, diff);
 
   assert.equal(posted.length, 3, 'preview must not write: lint, freshness, plan');
@@ -845,7 +863,13 @@ test('preview shows the diff without writing anything', async () => {
   assert.match(posted[1], /\/policy$/, 'then the staleness guard reads');
   assert.match(posted[2], /\/plan$/);
   assert.equal(diff.hidden, false);
-  assert.match(diff.textContent, /\+ new/, 'the diff is the point of previewing');
+  const said = flat(diff);
+  assert.match(said, /2 chaves mudam · 1 lista substituída inteira/,
+    'the head counts the change the preview exists to show');
+  assert.match(said, /"rules": \[ 8 itens \]/);
+  assert.match(said, /"rules": \[ 9 itens \]/);
+  assert.match(said, /Quem manda 9 itens troca os 8 que estão lá/,
+    'the whole-list replacement is said out loud');
   assert.match(msg.className, /ok/);
 });
 
@@ -1551,29 +1575,37 @@ test('a no-op apply is refused, because writing it destroys the undo', async () 
 test('applying shows what it is about to change', async () => {
   // /plan deep-merges the draft over whatever is on disk NOW and replaces lists
   // wholesale (service.py:50), so a rule added by a CLI edit or another tab since
-  // page load is deleted by the next Apply. The diff contains that deletion. The
-  // old two-click path made it unavoidable — Validate rendered it and Apply was
+  // page load is deleted by the next Apply. The diff contains that deletion.
+  // The old two-click path made it unavoidable — Validate rendered it and Apply was
   // unreachable until it had. One-click Apply was computing it and throwing it away.
-  const diff = { hidden: true, textContent: '' };
-  const { api } = loadConsole({
+  // Card t_3ba979a1: the deletion renders as the whole-list swap (the merged
+  // policy went from two rules to one), because that is what the merge does —
+  // the item-by-item view would be the lie this card exists to prevent.
+  const antes = { rules: [{ id: 'URGENT-block-prod' }, { id: 'keep' }] };
+  const depois = { rules: [{ id: 'keep' }] };
+  const { api, dom } = loadConsole({
     csrfToken: 'tok',
     fetch: (url) => Promise.resolve({
       ok: true, status: 200,
       text: () => Promise.resolve(JSON.stringify(
         url.endsWith('/policy')
-          ? {} // the disk matches the snapshot the screen rendered
+          ? antes // the disk matches the snapshot the screen rendered
           : (url.endsWith('/plan')
-            ? { valid: true, policy: {}, base_hash: 'h', diff: '-  - id: URGENT-block-prod\n' }
+            ? { valid: true, policy: depois, base_hash: 'h', diff: '-  - id: URGENT-block-prod\n' }
             : { ok: true }),
       )),
     }),
   });
-  api.state.policy = {};
+  api.state.policy = antes;
+  const diff = dom.get('jsonDiff');
   await api.doApply('/apply', { textContent: '', className: '' }, { rules: [] }, diff);
 
   assert.equal(diff.hidden, false, 'the operator must see the diff they authorised');
-  assert.match(diff.textContent, /URGENT-block-prod/,
-    'including a concurrent edit this write would remove');
+  const said = flat(diff);
+  assert.match(said, /"rules": \[ 2 itens \]/,
+    'including a concurrent edit this write would remove — the list swap names it');
+  assert.match(said, /"rules": \[ 1 item \]/,
+    'and the side that remains, one rule');
 });
 
 test('a double-clicked apply does not race itself', async () => {
@@ -1874,6 +1906,304 @@ test('the mirror and the gutter scroll with the textarea', () => {
   assert.equal(mirror.scrollTop, 123, 'the mirror follows the vertical scroll');
   assert.equal(mirror.scrollLeft, 45, 'and the horizontal one');
   assert.equal(gutter.scrollTop, 123, 'the gutter follows too — the numbers stay on their lines');
+});
+
+// ── the JSON tools (card t_3ba979a1) ──────────────────────────────────────
+// Formatar, Copiar, Dobrar, a busca literal e o caminho da chave — cada um é
+// função pura onde dá para ser, exportada para a regra ser presa aqui em vez
+// de olhada uma vez no navegador.
+
+test('foldSummary dobra valor composto e recusa os vazios', () => {
+  const { api } = loadConsole();
+  assert.equal(api.foldSummary(Array.from({ length: 14 }, (_, i) => i)), '[ 14 itens ]');
+  assert.equal(api.foldSummary({ T1: 1, T2: 2, T3: 3, T4: 4 }), '{ 4 chaves — T1, T2, T3, T4 }');
+  assert.equal(api.foldSummary([]), null, 'lista vazia não dobra — não há o que esconder');
+  assert.equal(api.foldSummary({}), null, 'objeto vazio também não');
+  assert.equal(api.foldSummary('texto'), null, 'nem escalar');
+  // Mais de quatro chaves: nomeia as quatro primeiras e para.
+  assert.equal(api.foldSummary({ a: 1, b: 2, c: 3, d: 4, e: 5 }), '{ 5 chaves — a, b, c, d, … }');
+});
+
+test('dobrar e expandir NUNCA alteram o texto do editor', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  const text = [
+    '{',
+    '  "rules": [',
+    '    { "id": "a" },',
+    '    { "id": "b" }',
+    '  ],',
+    '  "tiers": {',
+    '    "T1": { "model": "glm-5.3" }',
+    '  }',
+    '}',
+  ].join('\n');
+  ta.value = text;
+  ta._listeners.input();
+  const mirror = dom.get('policyMirror');
+  assert.equal(mirror.children.length, 9, 'tudo expandido: uma linha por linha de origem');
+
+  dom.get('jsonFold')._listeners.click();
+  assert.equal(ta.value, text, 'dobrar é só visual: o value NÃO muda');
+  assert.equal(mirror.children.length, 4, 'rules e tiers viraram uma linha cada');
+  assert.equal(flat(mirror.children[0]), '{');
+  assert.equal(flat(mirror.children[1]), '"rules": [ 2 itens ]');
+  assert.equal(flat(mirror.children[2]), '"tiers": { 1 chave — T1 }');
+  assert.equal(flat(mirror.children[3]), '}');
+  // A medianiz marca as linhas dobradas — quem procura a chave que sumiu
+  // olha o número da linha, e o ▸ (CSS ::before) diz que há mais ali.
+  const gutter = dom.get('policyLines');
+  assert.equal(gutter.children[0].className, '', 'linha 1 não dobra');
+  assert.equal(gutter.children[1].className, 'dobrada', 'a linha da rules');
+  assert.equal(gutter.children[5].className, 'dobrada', 'a linha da tiers');
+
+  dom.get('jsonFold')._listeners.click();
+  assert.equal(ta.value, text, 'expandir tampouco');
+  assert.equal(mirror.children.length, 9, 'as linhas voltam, uma por linha de origem');
+});
+
+test('texto inválido não dobra — a linha do erro tem de ficar visível', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  ta.value = '{\n  "rules": [1, 2],\n  "a": 1, }';
+  ta._listeners.input();
+  const mirror = dom.get('policyMirror');
+  assert.ok(mirror.children.some((r) => /bad/.test(r.className)),
+    'a linha do erro continua pintada');
+  assert.equal(findAll(mirror, 'fold-resumo').length, 0, 'nenhuma linha dobrada enquanto o texto não é JSON');
+  assert.equal(dom.get('jsonFold').disabled, true, 'e o botão não tem o que fazer');
+});
+
+test('o botão de dobra diz o que o clique FAZ', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  ta.value = '{\n  "rules": [1, 2],\n  "tiers": { "T1": { "model": "x" } }\n}';
+  ta._listeners.input();
+  const btn = dom.get('jsonFold');
+  assert.equal(btn.textContent, 'Dobrar tudo', 'nada dobrado: o clique dobra');
+  assert.equal(btn.disabled, false);
+  btn._listeners.click();
+  assert.equal(btn.textContent, 'Expandir tudo', 'tudo dobrado: o clique expande');
+  btn._listeners.click();
+  assert.equal(btn.textContent, 'Dobrar tudo', 'de volta ao expandido');
+  // Sem chave composta não há o que dobrar — o botão desarma.
+  ta.value = '{ "a": 1 }';
+  ta._listeners.input();
+  assert.equal(btn.disabled, true);
+});
+
+test("a busca é literal: 'glm-5.3' acha 7 e não acha 'glmX5.3' nem 'glm-5X3'", () => {
+  const { api } = loadConsole();
+  // Duas armadilhas, uma por metacaractere: o hífen (glmX5.3) e o ponto
+  // (glm-5X3) — uma busca com regex casaria a segunda, onde o `.` do padrão
+  // vale qualquer caractere. A literal não casa nenhuma das duas.
+  const comArmadilha = `${Array.from({ length: 7 }, () => '"glm-5.3"').join(', ')}, "glmX5.3", "glm-5X3"`;
+  assert.ok(comArmadilha.includes('glmX5.3'), 'a armadilha do hífen está mesmo no texto');
+  assert.ok(comArmadilha.includes('glm-5X3'), 'a armadilha do ponto está mesmo no texto');
+  const hits = api.findAll(comArmadilha, 'glm-5.3');
+  assert.equal(hits.length, 7, `as 7 ocorrências reais, achou ${hits.length}`);
+  for (const h of hits) {
+    assert.equal(comArmadilha.slice(h.inicio, h.fim), 'glm-5.3', 'cada ocorrência é o literal exato');
+  }
+  // Numa linha de política de verdade: os irmãos com X não casam — o ponto e
+  // o hífen são caracteres, não metacaracteres.
+  const linha = '{ "model": "glm-5.3", "modeloX": "glmX5.3", "modeloY": "glm-5X3" }';
+  const dois = api.findAll(linha, 'glm-5.3');
+  assert.equal(dois.length, 1, 'nem glmX5.3 nem glm-5X3 são achados por glm-5.3');
+  assert.equal(linha.slice(dois[0].inicio, dois[0].fim), 'glm-5.3');
+});
+
+test('a busca pinta forte a corrente e fraca as outras, e navega', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  const text = '{ "a": "glm-5.3", "b": "glm-5.3" }';
+  ta.value = text;
+  ta._listeners.input();
+  const search = dom.get('jsonSearch');
+  search.value = 'glm-5.3';
+  search._listeners.input();
+  const mirror = dom.get('policyMirror');
+  assert.equal(findAll(mirror, 'hl-cur').length, 1, 'uma ocorrência corrente');
+  assert.equal(findAll(mirror, 'hl').length, 1, 'as outras, fracas');
+  assert.equal(dom.get('jsonSearchCount').textContent, '1 de 2');
+  assert.equal(dom.get('jsonSearchCount').hidden, false);
+  // Enter = próximo, Shift+Enter = anterior.
+  search._listeners.keydown({ key: 'Enter', shiftKey: false, preventDefault() {} });
+  assert.equal(dom.get('jsonSearchCount').textContent, '2 de 2');
+  assert.equal(findAll(mirror, 'hl-cur').length, 1, 'a corrente migrou, não duplicou');
+  search._listeners.keydown({ key: 'Enter', shiftKey: true, preventDefault() {} });
+  assert.equal(dom.get('jsonSearchCount').textContent, '1 de 2');
+  // Esc limpa.
+  search._listeners.keydown({ key: 'Escape', shiftKey: false, preventDefault() {} });
+  assert.equal(search.value, '', 'o campo limpa');
+  assert.equal(dom.get('jsonSearchCount').hidden, true, 'a contagem some');
+  assert.equal(findAll(mirror, 'hl-cur').length, 0, 'e o realce sai');
+});
+
+test('keyPathAt diz onde o cursor está, em cinco posições', () => {
+  const { api } = loadConsole();
+  const text = [
+    '{',
+    '  "rules": [',
+    '    { "when": { "verb_class": { "eq": "x" } }, "model": "g1" },',
+    '    { "when": { "verb_class": { "eq": "y" } }, "model": "g2" },',
+    '    { "when": { "verb_class": { "eq": "z" } }, "model": "g3" },',
+    '    { "when": { "utc_hour": { "gte": 20 } }, "model": "glm-5.3" }',
+    '  ]',
+    '}',
+  ].join('\n');
+  // 1. dentro de uma chave (o nome "model" da 4ª regra — a última do texto).
+  assert.equal(api.keyPathAt(text, text.lastIndexOf('"model"') + 1), 'rules › 3 › model');
+  // 2. dentro de um valor de texto.
+  assert.equal(api.keyPathAt(text, text.indexOf('"glm-5.3"') + 2), 'rules › 3 › model');
+  // 3. dentro de um número (o gte da 4ª regra — o exemplo do card, com o
+  //    índice 3 do array na frente).
+  assert.equal(api.keyPathAt(text, text.indexOf('20') + 1), 'rules › 3 › when › utc_hour › gte');
+  // 4. dentro de uma chave de outra regra do mesmo array (a segunda).
+  const segundaRegra = text.indexOf('"verb_class"', text.indexOf('"verb_class"') + 1);
+  assert.equal(api.keyPathAt(text, segundaRegra + 1), 'rules › 1 › when › verb_class');
+  // 5. na raiz: a chave de topo.
+  assert.equal(api.keyPathAt(text, text.indexOf('"rules"') + 1), 'rules');
+  // E o inverso: a posição da chave no texto formatado volta para a mesma chave.
+  const pos = api.posOfPath(JSON.stringify(JSON.parse(text), null, 2), 'rules › 3 › when › utc_hour › gte');
+  const novo = JSON.stringify(JSON.parse(text), null, 2);
+  assert.equal(api.keyPathAt(novo, pos + 1), 'rules › 3 › when › utc_hour › gte');
+});
+
+test('o caminho da chave aparece no rodapé e some na raiz', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  const text = '{ "rules": [ { "model": "glm-5.3" } ] }';
+  ta.value = text;
+  ta._listeners.input();
+  ta.selectionStart = text.indexOf('glm-5.3') + 2;
+  ta._listeners.keyup();
+  const span = dom.get('jsonPath');
+  assert.equal(span.textContent, 'rules › 0 › model', 'o rodapé nomeia o lugar do cursor');
+  assert.equal(span.hidden, false);
+  // A frase da validade continua no rodapé — o caminho é o segundo texto, à direita.
+  assert.equal(dom.get('jsonFoot').textContent,
+    'JSON válido · 1 linha · 1 regra, 0 grupos, 0 provedores com janela');
+  // Na raiz não há chave a nomear: o caminho some.
+  ta.selectionStart = 1; // dentro do { de abertura
+  ta._listeners.keyup();
+  assert.equal(span.textContent, '', 'raiz não tem caminho');
+  assert.equal(span.hidden, true);
+});
+
+test('formatar com texto inválido não muda o texto e escreve a frase', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  const broken = '{ "a": 1, }';
+  ta.value = broken;
+  ta._listeners.input();
+  dom.get('jsonFormat')._listeners.click();
+  assert.equal(ta.value, broken, 'o texto NÃO muda');
+  const msg = dom.get('jsonMsg');
+  assert.match(msg.textContent, /Não formatei: Não é JSON válido — linha 1, coluna 11: vírgula sobrando/,
+    'a frase diz por que não formatou, nas palavras do scanner');
+  assert.match(msg.className, /bad/);
+});
+
+test('formatar reindenta e devolve o cursor à MESMA chave', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  const text = '{ "rules": [ { "model": "glm-5.3" } ], "tiers": { "T1": { "model": "glm-4.7" } } }';
+  ta.value = text;
+  ta.selectionStart = text.indexOf('glm-5.3') + 2; // dentro do valor da chave model
+  ta._listeners.input();
+  // O clique no botão desfoca o textarea e o Chrome zera o selectionStart —
+  // o handler lê o caret RASTREADO (state.caret), gravado nos eventos de
+  // cursor. O keyup é o evento que o grava aqui.
+  ta._listeners.keyup();
+  const before = ta.value;
+  dom.get('jsonFormat')._listeners.click();
+  assert.notEqual(ta.value, before, 'formatou');
+  assert.equal(ta.value.split('\n').length, 12, 'reindentado em 2 espaços, cada nível na sua linha');
+  assert.equal(JSON.parse(ta.value).rules[0].model, 'glm-5.3', 'o conteúdo é o mesmo');
+  assert.equal(JSON.parse(ta.value).tiers.T1.model, 'glm-4.7');
+  // O cursor voltou pela CHAVE, não pelo índice de caractere (que mudou).
+  assert.equal(api.keyPathAt(ta.value, ta.selectionStart), 'rules › 0 › model',
+    'o cursor está na mesma chave de antes');
+});
+
+test('copiar usa a área de transferência e confirma no rodapé', async () => {
+  const written = [];
+  const { api, dom } = loadConsole({
+    keepWire: true,
+    navigator: { clipboard: { writeText: async (t) => { written.push(t); } } },
+  });
+  const ta = dom.get('policyEditor');
+  ta.value = '{ "a": 1 }';
+  ta._listeners.input();
+  assert.equal(await api.copiarJson(), true);
+  assert.deepEqual(written, ['{ "a": 1 }'], 'o texto inteiro foi para a área de transferência');
+  assert.equal(dom.get('jsonFoot').textContent, 'Copiado.', 'a frase do rodapé confirma');
+  assert.equal(dom.get('jsonFoot').className, 'editor-foot ok');
+});
+
+test('sem clipboard o fallback falha com a frase, não em silêncio', async () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  ta.value = '{ "a": 1 }';
+  ta._listeners.input();
+  assert.equal(await api.copiarJson(), false);
+  assert.match(dom.get('jsonFoot').textContent, /Não consegui copiar/,
+    'a falha é dita, e a frase vive no rodapé como a confirmação');
+});
+
+test('o diff conta os dois lados de uma lista: 8 → 9 é substituição inteira', () => {
+  const { api } = loadConsole();
+  const antes = { rules: Array.from({ length: 8 }, (_, i) => ({ id: `r${i}` })), fail_safe: { strong: true } };
+  const depois = { rules: Array.from({ length: 9 }, (_, i) => ({ id: `r${i}` })), fail_safe: { strong: false } };
+  const rec = api.jsonDiffLines(antes, depois);
+  assert.equal(rec.cabecalho, '2 chaves mudam · 1 lista substituída inteira',
+    'a linha de contagem do comp: as duas chaves (rules e strong) e a lista trocada');
+  assert.match(rec.nota, /Uma lista no corpo substitui a lista inteira no servidor/);
+  assert.match(rec.nota, /Quem manda 9 itens troca os 8 que estão lá/);
+  // Cada lista vira UMA linha − e UMA linha + com o resumo dos dois lados.
+  const del = rec.linhas.find((l) => l.tipo === 'del' && l.texto.includes('"rules"'));
+  const add = rec.linhas.find((l) => l.tipo === 'add' && l.texto.includes('"rules"'));
+  assert.equal(del.texto, '"rules": [ 8 itens ]');
+  assert.equal(add.texto, '"rules": [ 9 itens ]');
+  // A chave que muda dentro do objeto aparece como −/+ no corpo do objeto.
+  assert.ok(rec.linhas.some((l) => l.tipo === 'del' && /"strong": true/.test(l.texto)));
+  assert.ok(rec.linhas.some((l) => l.tipo === 'add' && /"strong": false/.test(l.texto)));
+  // Dois documentos iguais: nenhum cabeçalho, uma linha de contexto.
+  const parado = api.jsonDiffLines({ rules: [1] }, { rules: [1] });
+  assert.equal(parado.cabecalho, '');
+  assert.equal(parado.linhas.length, 1);
+  assert.equal(parado.linhas[0].tipo, 'ctx');
+});
+
+test('as ferramentas novas respeitam o toque e empilham a 360px', () => {
+  const { style } = consoleStyle();
+  const touch = style.slice(style.indexOf('@media (hover: none) and (pointer: coarse)'));
+  assert.match(touch, /\.json-nav \{ [^}]*min-height: 44px/, 'os ‹ › são botões: 44px sob toque');
+  const guard = touch.match(/([^{}]*)\{\s*font-size: max\(16px, 1em\);?\s*\}/);
+  assert.ok(guard && guard[1].includes('.json-search-input'),
+    'a busca é um input: 16px sob toque, nomeada — o seletor bare perde para a classe');
+  // A 360px a barra empilha como no comp-360: coluna, busca de largura total.
+  const narrow = style.slice(style.indexOf('@media (max-width: 360px)'));
+  assert.match(narrow, /\.json-tools \{ [^}]*flex-direction: column/, 'a barra vira coluna');
+  assert.match(narrow, /\.json-search \{ [^}]*margin-left: 0/, 'a busca deixa a direita e toma a linha');
+  // A medianiz marca a linha dobrada com ▸, e o realce usa os tokens do host.
+  assert.match(style, /content:\s*["']\s*▸\s*["']/, 'o ▸ da linha dobrada existe no CSS');
+  assert.match(style, /\.hl-cur \{ [^}]*background: var\(--accent\)/, 'forte = accent cheio');
+  assert.match(style, /\.hl \{ [^}]*background: var\(--accent-bg\)/, 'fraca = wash do accent');
+});
+
+test('revealHit centraliza a linha da ocorrência corrente', () => {
+  const { api } = loadConsole();
+  const editor = { clientHeight: 200, scrollTop: 0 };
+  const mirror = { scrollTop: 0 };
+  const gutter = { scrollTop: 0 };
+  assert.equal(api.revealHit(editor, mirror, gutter, { offsetTop: 400 }), true);
+  assert.equal(editor.scrollTop, 300, '400 - 200/2: a linha centraliza');
+  assert.equal(mirror.scrollTop, 300, 'o espelho acompanha');
+  assert.equal(gutter.scrollTop, 300, 'e a medianiz');
+  // Sem métricas (o stub do DOM) não há o que rolar — e não quebra.
+  assert.equal(api.revealHit({ clientHeight: 200 }, {}, {}, {}), false);
 });
 
 // ── it belongs to the shell ───────────────────────────────────────────────
@@ -8144,6 +8474,10 @@ test('the §4.7 write literals are exact, and each lives in exactly one place: t
     // The reorder's two words (card: reordenar pelo punho) — once each, in
     // the map, like every other gesture word.
     `'${api.WRITE.moveRule}'`, `'${api.WRITE.movingRule}'`,
+    // Card t_3ba979a1: the JSON tools' static button words — Formatar,
+    // Copiar and the fold button's two labels — live in the map once each,
+    // like every other button word on this editor.
+    `'${api.WRITE.format}'`, `'${api.WRITE.copy}'`, `'${api.WRITE.foldAll}'`, `'${api.WRITE.expandAll}'`,
   ];
   once.forEach((lit) => {
     const n = code.split(lit).length - 1;
