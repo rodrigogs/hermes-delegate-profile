@@ -218,7 +218,7 @@
        `scrollbar-gutter` is already reserved on the route list; this is the colour. */
     ::selection { background: var(--accent-bg-strong); color: var(--text); }
     input, textarea { caret-color: var(--accent); }
-    .body, .route-list, .code, .editor {
+    .body, .route-list, .code {
       scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent;
     }
     .body::-webkit-scrollbar, .route-list::-webkit-scrollbar,
@@ -1048,11 +1048,152 @@
       font: var(--t-small)/1.6 var(--mono);
       white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto;
     }
+    /* ── the whole-file editor: a mirror behind the textarea ────────────
+       The textarea keeps receiving the keystrokes; a mirror with the SAME
+       metrics paints the tokens behind it, and the two scroll together —
+       the textarea's scroll event writes scrollTop/scrollLeft into the
+       mirror and the gutter. This is the GitHub code-view technique; the
+       Custom Highlight API cannot do it (it paints ranges of the DOCUMENT,
+       and a textarea's content is not document), and contenteditable would
+       trade a form field for an imitation that breaks paste, undo and IME.
+       The metrics live in ONE rule reaching .editor, .editor-mirror and
+       .editor-gutter (whose rows must sit on the same line grid), so the
+       overlay cannot drift: a font-size that only the mirror carried would
+       shift the first line and nothing but the eye would catch it. */
+    .editor-shell { position: relative; margin-top: 10px; }
+    .editor, .editor-mirror, .editor-gutter {
+      font: var(--t-small)/1.6 var(--mono);
+      letter-spacing: normal;
+      white-space: pre;
+      tab-size: 2;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px 12px 10px 58px;
+    }
     .editor {
-      width: 100%; min-height: 240px; resize: vertical; padding: 10px 12px; margin-top: 10px;
-      border: 1px solid var(--line); border-radius: var(--radius);
+      display: block; width: 100%; min-height: 240px; resize: vertical;
+      margin: 0; background: transparent; color: transparent;
+      /* The caret is WHERE YOU ARE, so it wears the accent — the same
+         meaning the selected tab and the focus ring wear (see the colour
+         rule in :root). The raw --accent as TEXT measured 2.96:1 worst in
+         light skins (terracotta; style.css, 2026-08-27) — below the 4.5:1
+         floor — so the caret and the numbers use --accent-text, the host's
+         own text-safe accent, which clears the floor in every skin (worst
+         4.79:1, catppuccin). */
+      caret-color: var(--accent-text);
+      overflow: auto; position: relative; z-index: 1;
+      /* A barra de rolagem daqui é declarada NESTA regra, e não no grupo com
+         .body/.route-list/.code, por dois motivos. Um: o editor é o único desses
+         que também define `color: transparent` (ele é o overlay do espelho), e
+         uma segunda regra `.editor` partiria a autoridade sobre o mesmo seletor
+         em dois lugares. Dois, e foi o que um teste pegou: com `.editor` no fim
+         do grupo o seletor continha a substring `.editor {`, e o teste do
+         overlay — que acha a regra por texto — casava a regra de scrollbar em vez
+         da do overlay. Uma regra por seletor resolve os dois. */
+      scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent;
+    }
+    .editor-mirror {
+      position: absolute; inset: 0; margin: 0;
       background: var(--host-code-bg, var(--surface)); color: var(--text);
-      font: var(--t-small)/1.6 var(--mono); tab-size: 2;
+      overflow: hidden; pointer-events: none; z-index: 0;
+    }
+    .editor-gutter {
+      position: absolute; left: 0; top: 0; bottom: 0; width: 46px; z-index: 2;
+      margin: 0; padding: 0 10px 0 0;
+      border-radius: var(--radius) 0 0 var(--radius);
+      background: var(--bg); color: var(--muted);
+      overflow: hidden; text-align: right; user-select: none;
+      font-variant-numeric: tabular-nums;
+      /* Clicks and the wheel over the numbers belong to the textarea below:
+         a scroll that stops at the gutter's 46px would be a dead strip in
+         the middle of the editor's own surface. */
+      pointer-events: none;
+    }
+    .editor-lines { padding: 10px 0; }
+    .editor-lines div { display: block; }
+    .editor-lines .err { color: var(--bad-text); font-weight: 600; }
+    .code-line { display: block; width: max-content; min-width: 100%; }
+    .code-line.bad { background: var(--bad-bg); box-shadow: inset 2px 0 0 var(--bad); }
+    /* Token colours: host tokens, never a palette (§6). The state pairs are
+       the -text forms, which are made for text (measured in :root); numbers
+       wear the accent's text form (the raw --accent as text failed the light
+       skins — 2.96:1 worst, terracotta; --accent-text clears everywhere);
+       punctuation is --muted, the same step the chrome already accepts at
+       12px. */
+    .tk-chave { color: var(--info-text); }
+    .tk-texto { color: var(--ok-text); }
+    .tk-numero { color: var(--accent-text); }
+    .tk-palavra { color: var(--warn-text); }
+    .tk-pontuacao { color: var(--muted); }
+    .editor-foot { margin-top: 8px; font-size: var(--t-body); color: var(--muted); }
+    .editor-foot.ok { color: var(--ok-text); }
+    .editor-foot.bad { color: var(--bad-text); }
+    .editor-legend {
+      margin-top: 10px; display: flex; gap: 14px; flex-wrap: wrap;
+      font-size: var(--t-label); color: var(--muted);
+    }
+    .editor-legend .lk { color: var(--text); }
+    /* ── the JSON tools (card t_3ba979a1) ──────────────────────────────
+       The bar wraps: at 360px the buttons and the search stack like the
+       comp-360 (the search takes its own row, full width). The touch
+       block below lifts the buttons to 44px and the field to 16px. */
+    .json-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+    .json-search {
+      display: flex; align-items: center; gap: 2px; margin-left: auto;
+      border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--surface-raised); padding: 2px 4px 2px 10px;
+    }
+    .json-search-input {
+      border: 0; background: transparent; color: var(--text); outline: none;
+      font: var(--t-body) var(--sans); padding: 5px 4px; min-width: 0; width: 150px;
+    }
+    .json-search-input::placeholder { color: var(--muted); }
+    .json-count {
+      color: var(--muted); font: var(--t-label) var(--mono);
+      font-variant-numeric: tabular-nums; white-space: nowrap; padding: 0 2px;
+    }
+    .json-nav {
+      border: 0; background: transparent; color: var(--muted);
+      font: 700 16px/1 var(--sans); padding: 6px 9px; cursor: pointer;
+      border-radius: var(--radius-sm);
+    }
+    .json-nav:hover { color: var(--text); background: var(--surface-hover); }
+    .json-nav:disabled { color: var(--faint); cursor: default; }
+    /* The search hits ride the host's accent: the current one is the filled
+       accent (with its text-safe foreground — the raw accent as TEXT fails
+       the light skins, measured 2.96:1 worst), the others are the accent
+       wash. Both are host tokens, never a palette. */
+    .hl { background: var(--accent-bg); }
+    .hl-cur { background: var(--accent); color: var(--accent-fg); }
+    /* A folded line (top-level key with a compound value): the key keeps its
+       token colour, the summary reads as chrome. The gutter marks the line
+       with ▸ BEFORE the number — who looks for the hidden key looks at the
+       line number, and the arrow is what says "there is more here". */
+    .code-line.dobrada .fold-resumo { color: var(--muted); }
+    .editor-lines .dobrada::before { content: "▸ "; }
+    /* The footer's two halves: the phrase (text node) left, the JSON path
+       right — the answer to "onde eu estou nesse arquivo". */
+    .editor-foot { display: flex; gap: 12px; align-items: baseline; }
+    .json-path {
+      margin-left: auto; color: var(--muted); font: var(--t-label) var(--mono);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%;
+    }
+    /* The diff ("Ver o que muda"): − lines on the bad wash, + lines on the
+       ok wash, context in muted, the count in the head. A line is a block so
+       the wash spans its full width. */
+    .json-diff { margin-top: 16px; }
+    .json-diff .df-head { color: var(--text); font: 600 var(--t-body) var(--sans); padding: 8px 0 6px; }
+    .json-diff .df-line { display: block; white-space: pre-wrap; }
+    .json-diff .df-del { background: var(--bad-bg); }
+    .json-diff .df-add { background: var(--ok-bg); }
+    .json-diff .df-ctx { color: var(--muted); }
+    .json-diff .df-note { margin-top: 10px; color: var(--muted); font-size: var(--t-body); }
+    /* At 360px the tools stop fighting for one row: buttons keep their own
+       line and the search takes the whole width, like comp-360.html. */
+    @media (max-width: 360px) {
+      .json-tools { flex-direction: column; align-items: stretch; }
+      .json-search { margin-left: 0; }
+      .json-search-input { flex: 1; width: auto; }
     }
     /* Noisy internals stay collapsed by default, which is the host's own rule. */
     details > summary { color: var(--muted); font: 500 var(--t-body) var(--sans); cursor: pointer; padding: 8px 0; }
@@ -1140,9 +1281,13 @@
        chrome, against 120px for the old three-row masthead. */
     @media (max-width: 640px) {
       .view-head { padding: 8px 14px; }
-      /* The tabs scroll rather than wrap: three destinations with live state
+      /* The tabs scroll rather than wrap: six destinations with live state
          dots do not fit 390px, and a wrapped tab strip reads as two
-         navigations. Scroll-snap so a partial swipe settles on a boundary. */
+         navigations. Scroll-snap so a partial swipe settles on a boundary.
+         It said THREE until 2026-08-27, which was true before t_51196512 split
+         Simular, Precos and Politica out — and the fade forty lines above
+         already counted six. A file that disagrees with itself about how many
+         destinations it has cannot be read for the reason it is commented. */
       .tabs {
         padding: 0 14px; overflow-x: auto; scroll-snap-type: x proximity;
         -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; scrollbar-width: none;
@@ -1277,9 +1422,34 @@
     @media (hover: none) and (pointer: coarse) {
       .tab { min-height: 44px; }
       .btn { min-height: 44px; }
+      /* Card t_3ba979a1: the search's ‹ › are also buttons — a finger needs
+         44px there too, and the input inside the search box is an input that
+         must not trigger the iOS focus-zoom (named below with the others). */
+      .json-nav { min-height: 44px; min-width: 44px; }
       .scope { min-height: 44px; padding: 0 16px; }
       .row.route { min-height: 56px; }
       summary { min-height: 44px; display: flex; align-items: center; }
+      /* Card t_5fb727b5, measured at 360px (dpr 3, coarse pointer): six
+         controls sat under the 44px floor — the reorder arrows 22px, the
+         destination chip 21px, the peak-policy and compaction selects
+         20px, the probe hour and the decision filter 39px. Named, for
+         the same reason as the 16px guard below: a bare `button, select,
+         input` scores (0,0,1) and loses to the class rules that size
+         them. min-height grows the TARGET only — the glyphs and text
+         stay where they are (the 44px-with-small-glyph pattern).
+         `.step-grip` is already 44px tall with -12px margins, so the
+         arrows do not inflate the row the lane already fixed. */
+      .step-target { min-height: 44px; }
+      .peak-policy { min-height: 44px; }
+      .ctl { min-height: 44px; }
+      .step-grip .grip-arrow { min-height: 44px; }
+      #probeHour { min-height: 44px; }
+      #routesFilter { min-height: 44px; }
+      /* The JSON search came with the tools card (t_3ba979a1) — AFTER the
+         operator's measurement that produced the six above, so it is not
+         in their table; measured here at 29px on a coarse pointer, it
+         violates the same floor. */
+      .json-search-input { min-height: 44px; }
       /* iOS Safari zooms in when a focused input is under 16px and never zooms
          back out, so tapping the filter left the operator on a magnified,
          sideways-scrolling console.
@@ -1293,7 +1463,8 @@
          max() keeps anything already larger; .editor stays at --t-small on a mouse
          because it holds JSON, and gets 16px here for the same reason as the rest. */
       input, textarea, select,
-      .probe-input, .editor, .field input, .field select {
+      .probe-input, .editor, .editor-mirror, .editor-gutter, .field input, .field select,
+      .json-search-input {
         font-size: max(16px, 1em);
       }
       /* An input the keyboard covers is an input you cannot see while typing.
@@ -1428,7 +1599,13 @@
        the line that names it. */
     .pwin { border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 8px; overflow: hidden; }
     .pwin-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: baseline; padding: 9px 12px 7px; }
-    .pwin-name { font: 600 var(--t-name) var(--sans); letter-spacing: -.012em; min-width: 0; }
+    /* A model id is one token with no break point. Measured at 360px,
+       nvidia/nemotron-3-super-120b-a… ran 13px past its 121px box, clipped
+       by the card. What distinguishes these names sits at the END
+       ("…-120b" contra "…-550b"), so ellipsis would cut exactly the part
+       that answers "qual dos dois?" — wrap anywhere instead, and the id
+       stays whole across two lines. */
+    .pwin-name { font: 600 var(--t-name) var(--sans); letter-spacing: -.012em; min-width: 0; overflow-wrap: anywhere; }
     .pwin-name small { display: block; font: var(--t-micro) var(--sans); color: var(--muted); font-weight: 400; letter-spacing: 0; overflow-wrap: anywhere; }
     .pwin-now { font: var(--t-meta) var(--mono); color: var(--ok-text); white-space: nowrap; }
     .pwin-now.up { color: var(--bad-text); }
@@ -1844,7 +2021,45 @@
                ride the map and boot stamps this line from it, like the
                three buttons below. -->
           <p class="field-note" id="jsonNote"></p>
-          <textarea id="policyEditor" class="editor" spellcheck="false" aria-label="Política como texto"></textarea>
+          <!-- Card t_3ba979a1: the four JSON tools. Formatar, Copiar and the
+               fold button get their labels from the WRITE map like the write
+               buttons below (stampWriteLabels); the search field owns its own
+               placeholder because "buscar" is not write vocabulary. -->
+          <div class="json-tools">
+            <button class="btn" id="jsonFormat" type="button"></button>
+            <button class="btn" id="jsonCopy" type="button"></button>
+            <button class="btn" id="jsonFold" type="button" disabled></button>
+            <div class="json-search">
+              <input id="jsonSearch" type="search" class="json-search-input" placeholder="buscar" aria-label="Buscar no texto" autocomplete="off" spellcheck="false">
+              <span class="json-count" id="jsonSearchCount" aria-live="polite" hidden></span>
+              <button class="json-nav" id="jsonSearchPrev" type="button" aria-label="Ocorrência anterior">‹</button>
+              <button class="json-nav" id="jsonSearchNext" type="button" aria-label="Próxima ocorrência">›</button>
+            </div>
+          </div>
+          <!-- The overlay editor: the textarea still receives the typing; the
+               mirror behind it paints the tokens, the gutter carries the line
+               numbers and the footer names the first error. The mirror and the
+               gutter are aria-hidden — the textarea is the only surface a
+               reader or a keyboard touches, and it carries the real value. -->
+          <div class="editor-shell">
+            <div class="editor-gutter" id="policyGutter" aria-hidden="true"><div class="editor-lines" id="policyLines"></div></div>
+            <div class="editor-mirror" id="policyMirror" aria-hidden="true"></div>
+            <textarea id="policyEditor" class="editor" spellcheck="false" aria-label="Política como texto"></textarea>
+          </div>
+          <!-- The footer carries the error/validity phrase AND, to the right,
+               the answer to "onde eu estou nesse arquivo" — the JSON path of
+               the cursor (card t_3ba979a1), filled by updateJsonPath. The
+               phrase is a text node; the path is the span, so the two never
+               overwrite each other. -->
+          <p class="editor-foot" id="jsonFoot" aria-live="polite"><span id="jsonPath" class="json-path" hidden></span></p>
+          <div class="editor-legend" aria-hidden="true">
+            <span class="tk-chave">"chave"</span>
+            <span class="tk-texto">"texto"</span>
+            <span class="tk-numero">número</span>
+            <span class="tk-palavra">true / null</span>
+            <span class="tk-pontuacao">pontuação</span>
+            <span class="lk">a linha do erro fica marcada até o texto mudar</span>
+          </div>
           <!-- No Confirm button. It POSTed /apply/confirm, which on the server
                is the SAME function as /apply — one_sidecar.py:346 and :353 both
                return _commit_policy(body). Two buttons, one effect, and nothing
@@ -1857,7 +2072,7 @@
             <button class="btn warn" id="jsonRevert" type="button"></button>
           </div>
           <p class="msg" id="jsonMsg" aria-live="polite"></p>
-          <pre class="code" id="jsonDiff" hidden></pre>
+          <pre class="code json-diff" id="jsonDiff" hidden></pre>
         </div>
       </section>
     </div>
@@ -1891,6 +2106,18 @@
         // /console on open, so this document was written under the OLD
         // process, and nothing short of a reopen rewrites the srcdoc.
         sessionProcStart: null,
+        // Card t_3ba979a1: the fold and the search live here so a refresh or
+        // an edit does not drop them — folding is VISUAL (the textarea value
+        // never changes), so the state is a client-side view of the text, and
+        // the search term survives re-renders the way the route filter does.
+        folded: new Set(),
+        busca: { termo: '', matches: [], atual: -1 },
+        // The last KNOWN caret position (card t_3ba979a1): updateJsonPath
+        // records it on every cursor event, and Formatar reads THIS, not the
+        // live selectionStart — clicking the button blurs the textarea and
+        // Chrome resets selectionStart to 0 on the blur, so the live value
+        // at click time is "where the caret is now" only by accident.
+        caret: 0,
         // The WIDTH the phone/desktop draw switches on (priceMode/ruleMode).
         // The renders read it and syncModes() keeps it in step on resize —
         // ONE writer, mirroring how nowUtc() is the ONE clock reader: no
@@ -4019,10 +4246,30 @@
         // 300s" reads as time still owed; "300s left" read as a label.
         banned: 'banido',
         cooldownLeft: 'faltam {N}s',
+        // Card t_376a14ac: the numbers that make a cooldown READABLE. The route
+        // publishes the threshold, the sliding window and what each failure kind
+        // weighs (`auto_breaker`); without them "3" on a row is a number the
+        // operator has to read the source to interpret — 3 is one ttfb_stall away
+        // from tripping, or three nonzero_exits that would need five.
+        // Two phrases, because the weight is only sayable when the row names the
+        // kind that produced it, and a row without that kind must not invent one.
+        breakerScore: '{N} de {MAX} em {WIN}',
+        breakerWeight: '{KIND} pesa {W}',
         // §4.7: the whole-file editor's warning. It names "Ver o que muda"
         // and "Salvar" — the words in double quotes are the spec's own — so
         // the sentence rides the map like the buttons it quotes.
         textEdit: 'Aqui você edita o arquivo de política inteiro. O que você escrever aqui substitui qualquer coisa que você tenha mexido nos campos das outras abas e ainda não salvo. O caminho de gravação é o mesmo: "Ver o que muda" e depois "Salvar".',
+        // Card t_3ba979a1: the JSON tools' two static labels. They are not
+        // writes, but they are static button words on the SAME editor, and
+        // the map is the single copy of every button's word here — a second
+        // copy is how one of them drifts. The fold button is one button with
+        // two labels, and the label says what the click DOES: "Dobrar tudo"
+        // while something is expanded, "Expandir tudo" when everything is
+        // folded (updateFoldButton).
+        format: 'Formatar',
+        copy: 'Copiar',
+        foldAll: 'Dobrar tudo',
+        expandAll: 'Expandir tudo',
         // The "nothing here yet" word — unreachable in today's flow, but an
         // unreachable English string is a landmine: the day the flow reaches
         // it, it ships.
@@ -4053,7 +4300,8 @@
       // so neither can own its words in the markup.
       function stampWriteLabels() {
         [['jsonApply', WRITE.save], ['jsonPreview', WRITE.plan], ['jsonRevert', WRITE.revert],
-         ['refresh', WRITE.refresh], ['jsonNote', WRITE.textEdit]]
+         ['refresh', WRITE.refresh], ['jsonNote', WRITE.textEdit],
+         ['jsonFormat', WRITE.format], ['jsonCopy', WRITE.copy], ['jsonFold', WRITE.foldAll]]
           .forEach(([id, label]) => { const n = $(id); if (n) n.textContent = label; });
       }
       // The draft-edited hint, naming the two buttons by the map's labels so it
@@ -4585,6 +4833,51 @@
       }
 
       // ── §2.6 / §3.3: Fora de rotação ─────────────────────────────────
+      // ── the breaker's numbers, on the row they explain ──────────────
+      // Card t_376a14ac, item 3. `GET /blocklist` now publishes `auto_breaker`
+      // (threshold, window, and what each failure kind weighs), and this is what
+      // turns it into words. PURE — entry plus policy in, strings out — so its
+      // limits are pinned without a DOM.
+      //
+      // The numbers ride the COOLDOWN ROW, not a panel of their own. A threshold
+      // with nothing counting against it is decoration, and DESIGN.md rule 1 says
+      // an absence renders nothing: with no cooldown there is no count, so there
+      // is no line. Where a cooldown exists, "3 de 5 em 10 min" is the whole
+      // answer to "how did this open".
+      function breakerWindowWords(seconds) {
+        const s = Number(seconds);
+        if (!Number.isFinite(s) || s <= 0) return null;
+        // Whole minutes read as minutes; anything else stays in seconds rather
+        // than inventing "1min30", which is a unit nobody configured.
+        return s % 60 === 0 ? `${s / 60} min` : `${s}s`;
+      }
+
+      function breakerNotes(entry, policy) {
+        const e = entry || {};
+        const p = policy || {};
+        const notes = [];
+        const max = Number(p.threshold);
+        const count = Number(e.failure_count);
+        const win = breakerWindowWords(p.window_seconds);
+        // All three or nothing: "3 de 5" without the window is a rate with no
+        // period, and a period the route did not serve must not be guessed.
+        if (Number.isFinite(max) && Number.isFinite(count) && win) {
+          notes.push(fill(WRITE.breakerScore, { N: count, MAX: max, WIN: win }));
+        }
+        const kind = e.last_failure_kind;
+        if (kind) {
+          const weights = p.failure_weights;
+          const w = weights ? Number(weights[kind]) : NaN;
+          // The kind is said ONCE: with a weight when the route served one, bare
+          // when it did not. Two notes naming the same kind would be the same
+          // fact from two authorities, which is what §2 forbids.
+          notes.push(Number.isFinite(w)
+            ? fill(WRITE.breakerWeight, { KIND: String(kind), W: w })
+            : String(kind));
+        }
+        return notes;
+      }
+
       // Who is out of rotation (manual bans + breaker cooldowns) and — the
       // half the review found missing — the queue that SUBSTITUTES a banned
       // model. The manual-ban row always carries its lift control — "exists"
@@ -4627,12 +4920,18 @@
           row.append(name, right);
           banBox.append(row);
         });
+        const policy = bl.auto_breaker || {};
         breakers.forEach((b) => {
           const row = el('div', 'row is-degraded');
           row.append(el('span', 'dot'));
           const name = el('div', 'row-main');
           name.append(el('div', 'row-name', b.model_key || '—'));
-          if (b.last_failure_kind) name.append(el('div', 'row-note', b.last_failure_kind));
+          // The failure kind used to be this row's only note. It still is when the
+          // sidecar serves no policy (an older one does not), and it now carries
+          // the weight beside it when there is one — see breakerNotes.
+          breakerNotes(b, policy).forEach((text) => {
+            name.append(el('div', 'row-note', text));
+          });
           row.append(name);
           row.append(el('span', 'row-value', fill(WRITE.cooldownLeft, { N: Math.ceil(Number(b.cooldown_remaining_s) || 0) })));
           banBox.append(row);
@@ -9469,7 +9768,17 @@
         state.plan = res.data;
         if (diffNode) {
           diffNode.hidden = false;
-          diffNode.textContent = res.data.diff || pretty(res.data.preview || {});
+          // Card t_3ba979a1: the diff is now the two DOCUMENTS — the file
+          // this screen read and the plan's merged result (what the server
+          // would write) — rendered as − / + lines with the count head and
+          // the whole-list replacement note. The raw text diff stays as the
+          // fallback for the one case it cannot be derived (no policy read).
+          if (state.policy && typeof state.policy === 'object'
+              && res.data.policy && typeof res.data.policy === 'object') {
+            renderJsonDiff(diffNode, state.policy, res.data.policy);
+          } else {
+            diffNode.textContent = res.data.diff || pretty(res.data.preview || {});
+          }
         }
         if (!res.data.valid) {
           setMsg(msg, fill(WRITE.invalid, { reasons: (res.data.errors || []).join('; ') }), 'bad');
@@ -10190,7 +10499,781 @@
         else root.style.removeProperty('--keyboard-inset');
       }
 
-      // ── load ────────────────────────────────────────────────────────
+      // ── the JSON scanner: one pass, tokens AND the error ─────────────
+      // JSON.parse gives a different message per engine (and often no
+      // position); this scanner walks the text once and returns both the
+      // highlight tokens and the FIRST structural error in OUR closed
+      // vocabulary, so the phrase is pt-BR and identical in every browser —
+      // and testable without one. Line and column count from 1, like every
+      // editor.
+      function tokenizeJson(texto) {
+        const tokens = [];
+        const n = texto.length;
+        let pos = 0, line = 1, col = 1;
+        const advance = (k) => {
+          for (let i = 0; i < k && pos < n; i++) {
+            if (texto[pos] === '\n') { line += 1; col = 1; }
+            else col += 1;
+            pos += 1;
+          }
+        };
+        const err = (codigo) => ({ pos, linha: line, coluna: col, codigo });
+        const tok = (tipo, inicio, fim) => tokens.push({ tipo, inicio, fim });
+        const isWs = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r';
+        const isDigit = (c) => c >= '0' && c <= '9';
+        const isWordChar = (c) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        const isHex = (c) => isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        const isValueSlot = () => expect === 'value' || expect === 'arr-value-or-close';
+        // What the next non-space token must be: a VALUE (document start,
+        // after ':', after '[' or an array comma), a KEY (an object's start
+        // or after an object comma), the ':' after a key, or AFTER (a value
+        // is complete; only a comma or a closer may follow). The stack is the
+        // open containers; a frame pops when its closer lands.
+        let expect = 'value';
+        const stack = [];
+        const top = () => stack[stack.length - 1];
+        // Set only right after a legal comma — the trailing-comma error is
+        // the closer that follows a comma, and without the flag `{}` and
+        // `{"a":1,}` would be the same arrival.
+        let afterComma = false;
+        // Where the last legal comma started. Engines — and this scanner,
+        // before the operator measured it — report the trailing-comma error
+        // at the CLOSER that follows the comma ("linha 113, coluna 3" for a
+        // comma at the end of line 112), because that is where the parser
+        // discovers it. The operator goes to line 113 and sees no comma; it
+        // is on the line above. So virgula-sobrando points at the comma
+        // itself; every other code keeps pointing where it is.
+        let commaPos = null;
+
+        while (pos < n) {
+          const c = texto[pos];
+          if (isWs(c)) {
+            const start = pos;
+            while (pos < n && isWs(texto[pos])) advance(1);
+            tok('espaco', start, pos);
+            // afterComma deliberately survives whitespace: the trailing-comma
+            // error is `1, }` — the closer AFTER the space — and a flag that
+            // the whitespace cleared would let `{"a":1, }` pass as an empty
+            // object.
+            continue;
+          }
+          if (c === ':') {
+            if (expect !== 'colon') return { tokens, erro: err('caractere-inesperado') };
+            tok('pontuacao', pos, pos + 1); advance(1);
+            expect = 'value'; afterComma = false;
+            continue;
+          }
+          // After a key, anything but ':' is a key without its value.
+          if (expect === 'colon') return { tokens, erro: err('chave-sem-valor') };
+          if (c === '"') {
+            const start = pos;
+            const isKey = expect === 'obj-key-or-close';
+            if (!isKey && !isValueSlot()) return { tokens, erro: err('caractere-inesperado') };
+            advance(1); // the opening quote
+            let closed = false;
+            while (pos < n) {
+              const s = texto[pos];
+              if (s === '\\') {
+                advance(1);
+                if (pos >= n) break; // a trailing backslash: unterminated
+                const e = texto[pos];
+                if (e === 'u') {
+                  advance(1);
+                  let ok = true;
+                  for (let i = 0; i < 4; i++) {
+                    if (pos < n && isHex(texto[pos])) advance(1);
+                    else { ok = false; break; }
+                  }
+                  if (!ok) return { tokens, erro: err('caractere-inesperado') };
+                } else if (e === '"' || e === '\\' || e === '/' || e === 'b' || e === 'f' || e === 'n' || e === 'r' || e === 't') {
+                  advance(1);
+                } else {
+                  return { tokens, erro: err('caractere-inesperado') };
+                }
+              } else if (s === '"') {
+                advance(1); closed = true; break;
+              } else if (s === '\n' || s === '\r') {
+                break; // a raw newline cannot live inside a JSON string
+              } else {
+                advance(1);
+              }
+            }
+            if (!closed) return { tokens, erro: err('texto-nao-fechado') };
+            tok(isKey ? 'chave' : 'texto', start, pos);
+            expect = isKey ? 'colon' : 'after';
+            afterComma = false;
+            continue;
+          }
+          if (c === '-' || isDigit(c)) {
+            if (!isValueSlot()) return { tokens, erro: err('caractere-inesperado') };
+            // The error points at the FIRST character of the malformed
+            // number, where the eye lands first — not past its last digit.
+            const start = pos, startLine = line, startCol = col;
+            while (pos < n && /[0-9+\-.eE]/.test(texto[pos])) advance(1);
+            if (!/^-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?$/.test(texto.slice(start, pos))) {
+              return { tokens, erro: { pos: start, linha: startLine, coluna: startCol, codigo: 'numero-invalido' } };
+            }
+            tok('numero', start, pos);
+            expect = 'after'; afterComma = false;
+            continue;
+          }
+          if (isWordChar(c)) {
+            const start = pos, startLine = line, startCol = col;
+            while (pos < n && isWordChar(texto[pos])) advance(1);
+            const word = texto.slice(start, pos);
+            if (isValueSlot() && (word === 'true' || word === 'false' || word === 'null')) {
+              tok('palavra', start, pos);
+              expect = 'after'; afterComma = false;
+              continue;
+            }
+            return { tokens, erro: { pos: start, linha: startLine, coluna: startCol, codigo: 'caractere-inesperado' } };
+          }
+          if (c === '{' || c === '[') {
+            if (!isValueSlot()) return { tokens, erro: err('caractere-inesperado') };
+            tok('pontuacao', pos, pos + 1); advance(1);
+            stack.push(c === '{' ? 'obj' : 'arr');
+            expect = c === '{' ? 'obj-key-or-close' : 'arr-value-or-close';
+            afterComma = false;
+            continue;
+          }
+          if (c === '}' || c === ']') {
+            const frame = c === '}' ? 'obj' : 'arr';
+            const close = () => {
+              tok('pontuacao', pos, pos + 1); advance(1);
+              stack.pop(); expect = 'after'; afterComma = false;
+            };
+            if (top() === frame && expect === 'after') { close(); continue; }
+            if (top() === frame && expect === (frame === 'obj' ? 'obj-key-or-close' : 'arr-value-or-close')) {
+              if (afterComma) return { tokens, erro: { ...commaPos, codigo: 'virgula-sobrando' } };
+              close(); continue; // the empty container: {} or []
+            }
+            return { tokens, erro: err('caractere-inesperado') };
+          }
+          if (c === ',') {
+            if (expect === 'after') {
+              tok('pontuacao', pos, pos + 1);
+              commaPos = { pos, linha: line, coluna: col };
+              advance(1);
+              expect = top() === 'obj' ? 'obj-key-or-close' : 'arr-value-or-close';
+              afterComma = true;
+              continue;
+            }
+            return { tokens, erro: err('caractere-inesperado') };
+          }
+          return { tokens, erro: err('caractere-inesperado') };
+        }
+        // End of the document: a key that never saw its ':' is a key without
+        // a value; anything else unfinished is an unexpected end.
+        if (expect === 'colon') return { tokens, erro: err('chave-sem-valor') };
+        if (expect !== 'after' || stack.length) return { tokens, erro: err('fim-inesperado') };
+        return { tokens, erro: null };
+      }
+
+      const JSON_ERROR_WORDS = {
+        'virgula-sobrando': 'vírgula sobrando',
+        'chave-sem-valor': 'chave sem valor',
+        'texto-nao-fechado': 'texto não fechado',
+        'numero-invalido': 'número inválido',
+        'caractere-inesperado': 'caractere inesperado',
+        'fim-inesperado': 'fim inesperado',
+      };
+      const jsonFootPhrase = (erro) =>
+        `Não é JSON válido — linha ${erro.linha}, coluna ${erro.coluna}: ${JSON_ERROR_WORDS[erro.codigo]}`;
+
+      // The valid footer's counts are read from the DOCUMENT (the text that
+      // is in the box), never from state: "8 regras" is how many rules the
+      // text declares, not how many state.policy had when the panel loaded.
+      // The provider of a windowed model is resolved from the tiers' own
+      // hops (the overlay keys are models), falling back to the model@vendor
+      // spelling the log itself uses.
+      function jsonCounts(texto, doc) {
+        const linhas = texto.split('\n').length;
+        const regras = Array.isArray(doc && doc.rules) ? doc.rules.length : 0;
+        const grupos = doc && doc.tiers && typeof doc.tiers === 'object' ? Object.keys(doc.tiers).length : 0;
+        const overlay = doc && doc.price_windows && typeof doc.price_windows === 'object' ? doc.price_windows : {};
+        const tiers = doc && doc.tiers && typeof doc.tiers === 'object' ? doc.tiers : {};
+        const providerOf = (model) => {
+          for (const tier of Object.values(tiers)) {
+            if (!tier || typeof tier !== 'object') continue;
+            if (tier.model === model && tier.provider) return tier.provider;
+            for (const hop of (Array.isArray(tier.fallback) ? tier.fallback : [])) {
+              if (hop && hop.model === model && hop.provider) return hop.provider;
+            }
+          }
+          const at = String(model).indexOf('@');
+          return at >= 0 ? String(model).slice(at + 1) : '';
+        };
+        const provedores = new Set();
+        for (const model of Object.keys(overlay)) {
+          const p = providerOf(model);
+          if (p) provedores.add(p);
+        }
+        return { linhas, regras, grupos, provedoresComJanela: provedores.size };
+      }
+      const plural = (n, um, muitos) => `${n} ${n === 1 ? um : muitos}`;
+      const jsonOkPhrase = (texto, doc) => {
+        const c = jsonCounts(texto, doc);
+        return `JSON válido · ${plural(c.linhas, 'linha', 'linhas')} · `
+          + `${plural(c.regras, 'regra', 'regras')}, ${plural(c.grupos, 'grupo', 'grupos')}, `
+          + `${plural(c.provedoresComJanela, 'provedor com janela', 'provedores com janela')}`;
+      };
+
+      // ── the JSON tools (card t_3ba979a1) ─────────────────────────────
+      // Every tool below rides the SAME tokenizeJson scan the mirror paints —
+      // no second walker of the text. foldSummary and jsonDiffLines work on
+      // VALUES (the parsed document); keyPathAt/posOfPath/findAll work on the
+      // token stream or the raw text (a literal search is not a JSON scan).
+
+      // What a folded line shows for a compound value. Empty containers do
+      // not fold — there is nothing to hide — so they return null and the
+      // fold button leaves them alone. The object summary names the first
+      // four keys, because "quem procura a chave que sumiu" reads the names
+      // (the count is the first number, the names the second half).
+      function foldSummary(valor) {
+        if (Array.isArray(valor)) {
+          return valor.length ? `[ ${plural(valor.length, 'item', 'itens')} ]` : null;
+        }
+        if (valor && typeof valor === 'object') {
+          const chaves = Object.keys(valor);
+          if (!chaves.length) return null;
+          const nomes = chaves.slice(0, 4).join(', ') + (chaves.length > 4 ? ', …' : '');
+          return `{ ${plural(chaves.length, 'chave', 'chaves')} — ${nomes} }`;
+        }
+        return null;
+      }
+
+      // The per-token JSON path, computed in one walk of the token stream:
+      // the stack mirrors the open containers, and every token's path is the
+      // slot its content occupies. An object slot is the key name; an array
+      // slot is the 0-based index (the same numbering the diff and the code
+      // use — an operator writing JSON reads rules[3] as the fourth rule).
+      // A chave token's path includes the key itself, so a cursor inside a
+      // key name and a cursor inside its value report the same place.
+      function tokenPaths(texto, tokens) {
+        const out = [];
+        const stack = [];
+        const seg = (t) => texto.slice(t.inicio, t.fim);
+        const framePath = () => (stack.length ? stack[stack.length - 1].path : []);
+        for (const t of tokens) {
+          if (t.tipo === 'chave') {
+            const key = JSON.parse(seg(t));
+            const frame = stack[stack.length - 1];
+            if (frame) frame.key = key;
+            out.push(framePath().concat([key]));
+            continue;
+          }
+          // Whitespace changes nothing — in an array it must not advance the
+          // index (the first element is index 0, not 1).
+          if (t.tipo === 'espaco') {
+            out.push(framePath());
+            continue;
+          }
+          if (t.tipo === 'pontuacao') {
+            const s = seg(t);
+            if (s === '{' || s === '[') {
+              const frame = stack[stack.length - 1];
+              if (frame && frame.tipo === 'arr') frame.index += 1;
+              const path = frame ? frame.path.concat(frame.tipo === 'obj' ? [frame.key] : [frame.index]) : [];
+              stack.push({ tipo: s === '{' ? 'obj' : 'arr', path, key: null, index: -1 });
+              out.push(path);
+              continue;
+            }
+            if (s === '}' || s === ']') {
+              const frame = stack.pop();
+              out.push(frame ? frame.path : []);
+              continue;
+            }
+            if (s === ':') {
+              const frame = stack[stack.length - 1];
+              out.push(frame && frame.key !== null ? frame.path.concat([frame.key]) : []);
+              continue;
+            }
+            // ',' — the slot before it is the one the cursor is leaving.
+            out.push(framePath());
+            continue;
+          }
+          // texto / numero / palavra: the slot the value fills.
+          const frame = stack[stack.length - 1];
+          if (!frame) { out.push([]); continue; }
+          if (frame.tipo === 'arr') frame.index += 1;
+          out.push(frame.tipo === 'arr' ? frame.path.concat([frame.index]) : frame.path.concat([frame.key]));
+        }
+        return out;
+      }
+
+      // The path of the key slot a character offset sits in — the answer to
+      // "onde eu estou nesse arquivo de 214 linhas". The offset that is not
+      // inside any token (whitespace, the end of the document) belongs to
+      // the last token that started before it, so a cursor parked after a
+      // key's value still names the key.
+      function keyPathAt(texto, posicao) {
+        const { tokens, erro } = tokenizeJson(texto);
+        if (erro || !tokens.length) return '';
+        const pos = Number(posicao) || 0;
+        let idx = -1;
+        for (let i = 0; i < tokens.length; i += 1) {
+          if (pos >= tokens[i].inicio && pos < tokens[i].fim) { idx = i; break; }
+          if (tokens[i].fim <= pos) idx = i;
+        }
+        if (idx < 0) return '';
+        const paths = tokenPaths(texto, tokens);
+        return (paths[idx] || []).join(' › ');
+      }
+
+      // The inverse of keyPathAt: where a path's slot starts in a text.
+      // Formatar uses it to put the cursor back on the key the operator was
+      // editing — by KEY, not by character index (which formatting changes).
+      function posOfPath(texto, caminho) {
+        const { tokens, erro } = tokenizeJson(texto);
+        if (erro || !tokens.length) return 0;
+        const paths = tokenPaths(texto, tokens);
+        for (let i = 0; i < tokens.length; i += 1) {
+          if (paths[i].join(' › ') === caminho) return tokens[i].inicio;
+        }
+        return 0;
+      }
+
+      // Literal search: who looks for `glm-5.3` does not want the `.` to
+      // match anything, so this is indexOf over the raw text — no regex, no
+      // escaping, exact characters. Matches do not overlap.
+      function findAll(texto, termo) {
+        if (!termo) return [];
+        const out = [];
+        let from = 0;
+        for (;;) {
+          const at = texto.indexOf(termo, from);
+          if (at < 0) break;
+          out.push({ inicio: at, fim: at + termo.length });
+          from = at + termo.length;
+        }
+        return out;
+      }
+
+      // Formatar: JSON.stringify(v, null, 2), keeping the cursor on the key
+      // it was in. An invalid document is not formatted — the caller writes
+      // the phrase saying why (criterion 5), and the text stays untouched.
+      function formatarJson(texto, posicao) {
+        const { erro } = tokenizeJson(texto);
+        if (erro) return { ok: false, erro };
+        let doc = null;
+        try { doc = JSON.parse(texto); } catch (_) { return { ok: false, erro: { pos: 0, linha: 1, coluna: 1, codigo: 'fim-inesperado' } }; }
+        const novo = JSON.stringify(doc, null, 2);
+        const caminho = keyPathAt(texto, posicao || 0);
+        return { ok: true, texto: novo, pos: posOfPath(novo, caminho) };
+      }
+
+      // The diff of two policy documents (the file this screen read vs the
+      // plan's merged result — what the server would actually write). The
+      // server deep-merges dictionaries and REPLACES lists wholesale
+      // (router/service.py), so a 9-rule draft replaces the 8 rules on disk:
+      // the most expensive operation error this screen can prevent. The diff
+      // therefore counts the items on BOTH sides of every list, folds each
+      // list to its summary line, and says out loud when a list is being
+      // replaced whole. The head counts the leaf keys that change (rules,
+      // fail_safe.strong → "2 chaves mudam") and the lists replaced ("1
+      // lista substituída inteira"). Equal values collapse to one context
+      // line; equal objects to their summary — the diff shows the changes.
+      function jsonDiffLines(antes, depois) {
+        const linhas = [];
+        const rec = { cabecalho: '', nota: '', linhas };
+        let mudancas = 0;
+        let substituidas = 0;
+        let primeiroTroca = null;
+        const fmt = (v) => {
+          const resumo = foldSummary(v);
+          if (resumo !== null) return resumo;
+          if (Array.isArray(v)) return '[]';
+          if (v && typeof v === 'object') return '{}';
+          return JSON.stringify(v);
+        };
+        const walk = (a, b, profundidade) => {
+          const ind = '  '.repeat(profundidade);
+          const jaVistos = new Set();
+          for (const k of Object.keys(b || {})) {
+            jaVistos.add(k);
+            if (!a || !Object.prototype.hasOwnProperty.call(a, k)) {
+              const v = b[k];
+              if (Array.isArray(v)) {
+                substituidas += 1;
+                if (!primeiroTroca) primeiroTroca = { antes: 0, depois: v.length };
+              }
+              mudancas += 1;
+              linhas.push({ tipo: 'add', texto: `${ind}${JSON.stringify(k)}: ${fmt(v)}` });
+              continue;
+            }
+            const va = a[k];
+            const vb = b[k];
+            if (samePolicy(va, vb)) {
+              linhas.push({ tipo: 'ctx', texto: `${ind}${JSON.stringify(k)}: ${fmt(va)}` });
+              continue;
+            }
+            if (Array.isArray(va) && Array.isArray(vb)) {
+              mudancas += 1;
+              substituidas += 1;
+              if (!primeiroTroca) primeiroTroca = { antes: va.length, depois: vb.length };
+              linhas.push({ tipo: 'del', texto: `${ind}${JSON.stringify(k)}: ${fmt(va)}` });
+              linhas.push({ tipo: 'add', texto: `${ind}${JSON.stringify(k)}: ${fmt(vb)}` });
+              continue;
+            }
+            if (va && vb && typeof va === 'object' && typeof vb === 'object') {
+              linhas.push({ tipo: 'ctx', texto: `${ind}${JSON.stringify(k)}: {` });
+              walk(va, vb, profundidade + 1);
+              linhas.push({ tipo: 'ctx', texto: `${ind}}` });
+              continue;
+            }
+            mudancas += 1;
+            linhas.push({ tipo: 'del', texto: `${ind}${JSON.stringify(k)}: ${fmt(va)}` });
+            linhas.push({ tipo: 'add', texto: `${ind}${JSON.stringify(k)}: ${fmt(vb)}` });
+          }
+          for (const k of Object.keys(a || {})) {
+            if (jaVistos.has(k)) continue;
+            const v = a[k];
+            if (Array.isArray(v)) {
+              substituidas += 1;
+              if (!primeiroTroca) primeiroTroca = { antes: v.length, depois: 0 };
+            }
+            mudancas += 1;
+            linhas.push({ tipo: 'del', texto: `${ind}${JSON.stringify(k)}: ${fmt(v)}` });
+          }
+        };
+        walk(antes, depois, 0);
+        if (!mudancas && !substituidas) return rec;
+        rec.cabecalho = `${plural(mudancas, 'chave muda', 'chaves mudam')} · `
+          + `${plural(substituidas, 'lista substituída inteira', 'listas substituídas inteiras')}`;
+        if (substituidas && primeiroTroca) {
+          const { antes, depois: d } = primeiroTroca;
+          rec.nota = 'Uma lista no corpo substitui a lista inteira no servidor — não junta item por item. '
+            + `Quem manda ${plural(d, 'item', 'itens')} troca${antes === 1 ? ' o ' : ' os '}${antes} ${antes === 1 ? 'que está lá' : 'que estão lá'}.`;
+        }
+        return rec;
+      }
+
+      // The fold map: which top-level keys fold, and over which lines.
+      // Derived from the token stream (the same scan), with the parsed doc
+      // supplying the summary counts. A key folds only when its value is a
+      // NON-EMPTY compound (foldSummary !== null).
+      function topLevelFoldRanges(texto, tokens, offsets, doc) {
+        const out = [];
+        const stack = [];
+        const lineOf = (pos) => {
+          let lo = 0; let hi = offsets.length;
+          while (lo + 1 < hi) { const mid = (lo + hi) >> 1; if (offsets[mid] <= pos) lo = mid; else hi = mid; }
+          return lo + 1;
+        };
+        for (let i = 0; i < tokens.length; i += 1) {
+          const t = tokens[i];
+          const s = texto.slice(t.inicio, t.fim);
+          if (t.tipo === 'chave') {
+            if (stack.length === 1 && stack[0] === '{') {
+              const chave = JSON.parse(s);
+              out.push({ chave, linha: lineOf(t.inicio), fimLinha: lineOf(t.inicio),
+                keyInicio: t.inicio, keyFim: t.fim,
+                resumo: doc && typeof doc === 'object' && !Array.isArray(doc) ? foldSummary(doc[chave]) : null });
+            }
+            continue;
+          }
+          if (t.tipo !== 'pontuacao') continue;
+          if (s === '{' || s === '[') stack.push(s);
+          else if (s === '}' || s === ']') {
+            stack.pop();
+            if (stack.length === 1) {
+              const rec = out[out.length - 1];
+              if (rec) rec.fimLinha = lineOf(t.inicio);
+            }
+          }
+        }
+        return out;
+      }
+
+      // Paint one token piece into the mirror, splitting it at the search
+      // hits. A hit inside a piece gets the token class AND the hit class —
+      // the token keeps its colour, the hit adds the background. The current
+      // hit is returned so the caller can scroll it into view.
+      function paintPiece(row, text, from, to, tipo, matches, atual) {
+        const base = tipo === 'espaco' ? '' : 'tk-' + tipo;
+        let p = from;
+        let cur = null;
+        for (let m = 0; m < matches.length; m += 1) {
+          const hit = matches[m];
+          const s = Math.max(hit.inicio, from);
+          const e = Math.min(hit.fim, to);
+          if (s >= e) continue;
+          if (s > p) row.append(el('span', base, text.slice(p, s)));
+          const cls = m === atual ? 'hl-cur' : 'hl';
+          const hitEl = el('span', base ? `${base} ${cls}` : cls, text.slice(s, e));
+          row.append(hitEl);
+          if (m === atual) cur = hitEl;
+          p = e;
+          if (hit.fim >= to) break;
+        }
+        if (p < to) row.append(el('span', base, text.slice(p, to)));
+        return cur;
+      }
+
+      // Bring the current hit's line into view: center it in the textarea
+      // (the mirror rows share the textarea's metrics, so the row's offset
+      // is the text's offset). Guarded on the metrics existing — the DOM
+      // stub has neither, and the pure math is what the test pins.
+      function revealHit(editor, mirror, gutter, row) {
+        if (!editor || !row || typeof row.offsetTop !== 'number' || !Number.isFinite(editor.clientHeight)) return false;
+        const top = Math.max(0, row.offsetTop - editor.clientHeight / 2);
+        editor.scrollTop = top;
+        if (mirror) mirror.scrollTop = top;
+        if (gutter) gutter.scrollTop = top;
+        return true;
+      }
+
+      // ── the search field's helpers ───────────────────────────────────
+      function buscaPular(step) {
+        const { matches, atual } = state.busca;
+        if (!matches.length) return;
+        state.busca.atual = (atual + step + matches.length) % matches.length;
+        renderJsonEditor();
+        updateSearchCount();
+      }
+      function updateSearchCount() {
+        const count = $('jsonSearchCount');
+        const prev = $('jsonSearchPrev');
+        const next = $('jsonSearchNext');
+        const { matches, atual } = state.busca;
+        if (count) {
+          if (!state.busca.termo) { count.hidden = true; count.textContent = ''; }
+          else {
+            count.hidden = false;
+            count.textContent = matches.length ? `${atual + 1} de ${matches.length}` : '0 de 0';
+          }
+        }
+        if (prev) prev.disabled = !matches.length;
+        if (next) next.disabled = !matches.length;
+      }
+
+      // ── the fold button's label and the toggle ───────────────────────
+      // One button; the label says what the click DOES: "Dobrar tudo" while
+      // anything is expanded, "Expandir tudo" when every foldable key is
+      // folded. Disabled while the text is not JSON — an invalid document
+      // is not folded at all, so there is nothing the button could do (and
+      // the error line must stay visible).
+      function foldButtonLabel(doc) {
+        if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return WRITE.foldAll;
+        const foldaveis = Object.keys(doc).filter((k) => foldSummary(doc[k]) !== null);
+        if (!foldaveis.length) return WRITE.foldAll;
+        return foldaveis.every((k) => state.folded.has(k)) ? WRITE.expandAll : WRITE.foldAll;
+      }
+      function updateFoldButton(doc) {
+        const btn = $('jsonFold');
+        if (!btn) return;
+        if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
+          btn.disabled = true;
+          btn.textContent = WRITE.foldAll;
+          return;
+        }
+        const foldaveis = Object.keys(doc).filter((k) => foldSummary(doc[k]) !== null);
+        btn.disabled = !foldaveis.length;
+        btn.textContent = foldButtonLabel(doc);
+      }
+      function toggleFoldAll() {
+        const editor = $('policyEditor');
+        if (!editor) return;
+        const texto = editor.value;
+        const { erro } = tokenizeJson(texto);
+        if (erro) return;
+        let doc = null;
+        try { doc = JSON.parse(texto); } catch (_) { return; }
+        if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return;
+        const foldaveis = Object.keys(doc).filter((k) => foldSummary(doc[k]) !== null);
+        const allFolded = foldaveis.length > 0 && foldaveis.every((k) => state.folded.has(k));
+        if (allFolded) state.folded.clear();
+        else foldaveis.forEach((k) => state.folded.add(k));
+        renderJsonEditor();
+      }
+
+      // ── the JSON path in the footer ──────────────────────────────────
+      // The phrase is set as the footer's text node (renderJsonEditor) —
+      // which REMOVES the path span from the document (textContent wipes
+      // children). So the span is recreated when it is gone: a detached
+      // node cannot be found by getElementById, and a footer without its
+      // path is a footer that cannot answer "onde eu estou".
+      function updateJsonPath() {
+        const editor = $('policyEditor');
+        const foot = $('jsonFoot');
+        if (!editor || !foot) return;
+        state.caret = Number(editor.selectionStart) || 0;
+        let span = $('jsonPath');
+        if (!span) {
+          span = el('span', 'json-path');
+          span.id = 'jsonPath';
+          span.hidden = true;
+          foot.append(span);
+        }
+        const caminho = keyPathAt(editor.value, Number(editor.selectionStart) || 0);
+        if (caminho) {
+          span.textContent = caminho;
+          span.hidden = false;
+        } else {
+          span.textContent = '';
+          span.hidden = true;
+        }
+      }
+
+      // ── the copy button ──────────────────────────────────────────────
+      // Clipboard API first; the fallback is the selection + execCommand
+      // pair for hosts that do not grant the permission. Either way the
+      // footer confirms for 2s — the timer hands the footer back to the
+      // live view (renderJsonEditor), which recomputes the phrase.
+      async function copiarJson() {
+        const editor = $('policyEditor');
+        if (!editor) return false;
+        const texto = editor.value;
+        let ok = false;
+        try {
+          if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            await navigator.clipboard.writeText(texto);
+            ok = true;
+          }
+        } catch (_) { ok = false; }
+        if (!ok) {
+          try {
+            editor.focus();
+            if (typeof editor.select === 'function') editor.select();
+            ok = typeof document.execCommand === 'function' && document.execCommand('copy');
+          } catch (_) { ok = false; }
+        }
+        const foot = $('jsonFoot');
+        if (foot) {
+          foot.className = 'editor-foot ok';
+          foot.textContent = ok ? 'Copiado.' : 'Não consegui copiar: o navegador não deu acesso à área de transferência.';
+          setTimeout(() => { renderJsonEditor(); }, 2000);
+        }
+        return ok;
+      }
+
+      // ── the diff renderer ────────────────────────────────────────────
+      // "Ver o que muda" shows the two documents as − / + lines on the
+      // host's bad/ok washes, context in muted, the count in the head, and
+      // the replacement note when a list is being swapped whole. Diffing
+      // client-side is what makes the COUNT honest: the server's text diff
+      // is YAML and cannot say "9 rules replace 8" — the two documents can.
+      function renderJsonDiff(diffNode, antes, depois) {
+        if (!diffNode) return;
+        const rec = jsonDiffLines(antes, depois);
+        diffNode.hidden = false;
+        clear(diffNode);
+        if (rec.cabecalho) diffNode.append(el('div', 'df-head', rec.cabecalho));
+        for (const l of rec.linhas) {
+          const cls = l.tipo === 'del' ? 'df-line df-del'
+            : l.tipo === 'add' ? 'df-line df-add' : 'df-line df-ctx';
+          const row = el('div', cls);
+          row.append(el('span', 'df-mark', l.tipo === 'del' ? '− ' : l.tipo === 'add' ? '+ ' : ''));
+          row.append(el('span', '', l.texto));
+          diffNode.append(row);
+        }
+        if (rec.nota) diffNode.append(el('div', 'df-note', rec.nota));
+      }
+
+      // One scan feeds the mirror, the gutter, the footer and Salvar's
+      // arming — the four cannot disagree because they read the same result.
+      function renderJsonEditor() {
+        const editor = $('policyEditor');
+        const text = editor ? editor.value : '';
+        const { tokens, erro } = tokenizeJson(text);
+        const mirror = $('policyMirror');
+        // One parse feeds the footer AND the folds — the two read the same
+        // document, so they cannot disagree. An invalid text is not folded:
+        // the error line must stay visible, and there is no document to
+        // summarize. The search matches come from the raw text (findAll is a
+        // literal search, the one tool that legitimately reads characters).
+        let doc = null;
+        if (!erro) { try { doc = JSON.parse(text); } catch (_) { doc = null; } }
+        const matches = state.busca.termo ? findAll(text, state.busca.termo) : [];
+        if (state.busca.atual < 0 && matches.length) state.busca.atual = 0;
+        else if (state.busca.atual >= matches.length) state.busca.atual = matches.length ? matches.length - 1 : -1;
+        // The fold map is computed once and feeds the mirror AND the gutter —
+        // the two cannot disagree about which lines are hidden.
+        const offsets = (() => {
+          const lines = text.split('\n');
+          const out = [0];
+          for (let i = 0; i < lines.length - 1; i++) out.push(out[i] + lines[i].length + 1);
+          return out;
+        })();
+        const folds = (!erro && doc) ? topLevelFoldRanges(text, tokens, offsets, doc) : [];
+        const foldedByLine = new Map();
+        for (const rec of folds) {
+          if (state.folded.has(rec.chave) && rec.resumo !== null) foldedByLine.set(rec.linha, rec);
+        }
+        if (mirror) {
+          clear(mirror);
+          const lines = text.split('\n');
+          let ti = 0;
+          let curRow = null;
+          for (let ln = 0; ln < lines.length; ln++) {
+            const start = offsets[ln];
+            const end = start + lines[ln].length;
+            const folded = foldedByLine.get(ln + 1);
+            if (folded) {
+              // The folded line is ONE row: the key, a colon, and the
+              // summary. The lines it hides are skipped below. The gutter
+              // marks it with ▸ (CSS ::before) — who looks for the hidden
+              // key looks at the line number, and the arrow says "more here".
+              const row = el('div', 'code-line dobrada');
+              row.append(el('span', 'tk-chave', text.slice(folded.keyInicio, folded.keyFim)));
+              row.append(el('span', '', ': '));
+              row.append(el('span', 'fold-resumo', folded.resumo));
+              mirror.append(row);
+              ln = folded.fimLinha - 1; // the loop's ln++ lands past the fold
+              continue;
+            }
+            const row = el('div', 'code-line' + (erro && erro.linha === ln + 1 ? ' bad' : ''));
+            let pos = start;
+            while (ti < tokens.length && tokens[ti].fim <= start) ti += 1;
+            while (ti < tokens.length && tokens[ti].inicio < end) {
+              const t = tokens[ti];
+              const from = Math.max(t.inicio, start);
+              const to = Math.min(t.fim, end);
+              if (from >= to) { ti += 1; continue; } // the token ended on the previous line
+              if (from > pos) row.append(el('span', '', text.slice(pos, from)));
+              if (paintPiece(row, text, from, to, t.tipo, matches, state.busca.atual)) curRow = row;
+              pos = to;
+              if (t.fim >= end) break; // a whitespace run crossing the newline; the next line continues it
+              ti += 1;
+            }
+            if (pos < end) {
+              if (paintPiece(row, text, pos, end, 'espaco', matches, state.busca.atual)) curRow = row;
+            }
+            mirror.append(row);
+          }
+          // The current hit's line centers in the textarea (mirror rows and
+          // the textarea share one line grid — the metrics rule).
+          if (curRow) revealHit(editor, mirror, $('policyGutter'), curRow);
+        }
+        const gutter = $('policyLines');
+        if (gutter) {
+          clear(gutter);
+          const count = text.split('\n').length;
+          for (let i = 1; i <= count; i++) {
+            const cls = foldedByLine.has(i) ? 'dobrada' : (erro && erro.linha === i ? 'err' : '');
+            gutter.append(el('div', cls, String(i)));
+          }
+        }
+        const foot = $('jsonFoot');
+        if (foot) {
+          foot.className = 'editor-foot' + (erro ? ' bad' : ' ok');
+          if (erro) {
+            foot.textContent = jsonFootPhrase(erro);
+          } else {
+            foot.textContent = doc === null ? 'JSON válido' : jsonOkPhrase(text, doc);
+          }
+        }
+        // Salvar is armed only while the text parses: a button that exists
+        // solely to refuse the click must not be armed.
+        const apply = $('jsonApply');
+        if (apply) apply.disabled = Boolean(erro);
+        // The right half of the footer, the fold button's label and the
+        // search counter all follow the same text — one render, one source.
+        updateJsonPath();
+        updateFoldButton(doc);
+        updateSearchCount();
+      }
+
       function renderAll() {
         renderClock();
         renderWarnings();
@@ -10218,9 +11301,14 @@
         if (editor.value === '' || editor.value === state.lastJsonFill) {
           editor.value = state.policy ? pretty(fullPolicy()) : '';
           state.lastJsonFill = editor.value;
+          // The fill counts as an edit for the live view: the mirror, the
+          // gutter, the footer and Salvar's arming follow the text that is
+          // actually in the box, and the first read put it there.
+          renderJsonEditor();
         }
       }
 
+      // ── load ────────────────────────────────────────────────────────
       async function load() {
         // An armed Voltar à versão anterior does not survive a re-read: the question is
         // about the file the screen was showing, and after a refresh that is a different
@@ -10342,9 +11430,18 @@
         $('refresh').addEventListener('click', load);
         // One parse, used by both buttons. Malformed JSON is reported before any
         // request goes out, because "your text is not JSON" is not something the
-        // server should have to tell you.
+        // server should have to tell you — and the phrase is the SAME scanner's
+        // phrase the footer already shows, so the click-time message and the
+        // live footer cannot disagree (the engine's own message only escapes
+        // if the scanner ever lets a document through that JSON.parse refuses).
         const jsonDraft = () => {
-          try { return { ok: true, value: JSON.parse($('policyEditor').value) }; }
+          const text = $('policyEditor').value;
+          const { erro } = tokenizeJson(text);
+          if (erro) {
+            setMsg($('jsonMsg'), jsonFootPhrase(erro), 'bad');
+            return { ok: false };
+          }
+          try { return { ok: true, value: JSON.parse(text) }; }
           catch (e) { setMsg($('jsonMsg'), `Não é JSON válido: ${e.message}`, 'bad'); return { ok: false }; }
         };
         $('jsonApply').addEventListener('click', () => {
@@ -10356,6 +11453,83 @@
           if (draft.ok) doPreview(draft.value, $('jsonMsg'), $('jsonDiff'));
         });
         $('jsonRevert').addEventListener('click', () => { void requestRevert(); });
+        // ── the whole-file editor's live view ─────────────────────────
+        // The mirror and the gutter scroll with the textarea; the scan runs
+        // on every input (a policy is a few KB — one pass is nothing), and
+        // Salvar's arming reads the SAME scan, so the button and the phrase
+        // cannot disagree.
+        const policyEditor = $('policyEditor');
+        if (policyEditor) {
+          policyEditor.addEventListener('input', renderJsonEditor);
+          policyEditor.addEventListener('scroll', () => {
+            const mirror = $('policyMirror');
+            const gutter = $('policyGutter');
+            if (mirror) { mirror.scrollTop = policyEditor.scrollTop; mirror.scrollLeft = policyEditor.scrollLeft; }
+            if (gutter) gutter.scrollTop = policyEditor.scrollTop;
+          });
+          // The JSON path answers "onde eu estou" — it follows the CURSOR,
+          // so it re-reads on every movement, not only on input. input
+          // re-renders (which also re-reads it); keyup/click cover the moves
+          // a test can dispatch, and selectionchange — a DOCUMENT property,
+          // not the field's — covers the rest in a real browser (the DOM
+          // stub's document.addEventListener is a no-op, which is fine).
+          policyEditor.addEventListener('keyup', updateJsonPath);
+          policyEditor.addEventListener('click', updateJsonPath);
+          document.addEventListener('selectionchange', updateJsonPath);
+          // Boot: before the first read lands, the editor is empty — and an
+          // empty document is not JSON, so Salvar must not be armed to
+          // refuse.
+          renderJsonEditor();
+        }
+        // ── the JSON tools (card t_3ba979a1) ───────────────────────────
+        const jsonFormat = $('jsonFormat');
+        if (jsonFormat) jsonFormat.addEventListener('click', () => {
+          const editor = $('policyEditor');
+          if (!editor) return;
+          // state.caret, not editor.selectionStart: the click blurred the
+          // textarea and Chrome reset its selection to 0 — the tracked caret
+          // is where the operator actually was (see state.caret).
+          const res = formatarJson(editor.value, state.caret);
+          if (!res.ok) {
+            // The live footer already names the error; this line says what
+            // the CLICK did not do and why, in the scanner's own words.
+            setMsg($('jsonMsg'), `Não formatei: ${jsonFootPhrase(res.erro)}`, 'bad');
+            return;
+          }
+          editor.value = res.texto;
+          if (typeof editor.setSelectionRange === 'function') editor.setSelectionRange(res.pos, res.pos);
+          renderJsonEditor();
+        });
+        const jsonCopy = $('jsonCopy');
+        if (jsonCopy) jsonCopy.addEventListener('click', () => { void copiarJson(); });
+        const jsonFold = $('jsonFold');
+        if (jsonFold) jsonFold.addEventListener('click', toggleFoldAll);
+        const jsonSearch = $('jsonSearch');
+        if (jsonSearch) {
+          const reindex = () => {
+            const editor = $('policyEditor');
+            const texto = editor ? editor.value : '';
+            state.busca.matches = findAll(texto, jsonSearch.value);
+            state.busca.atual = state.busca.matches.length ? 0 : -1;
+          };
+          jsonSearch.addEventListener('input', () => {
+            state.busca.termo = jsonSearch.value;
+            reindex();
+            renderJsonEditor();
+          });
+          jsonSearch.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); buscaPular(e.shiftKey ? -1 : 1); }
+            else if (e.key === 'Escape') {
+              jsonSearch.value = '';
+              state.busca.termo = '';
+              state.busca.matches = [];
+              state.busca.atual = -1;
+              renderJsonEditor();
+            }
+          });
+          $('jsonSearchPrev').addEventListener('click', () => buscaPular(-1));
+          $('jsonSearchNext').addEventListener('click', () => buscaPular(1));
+        }
         $('probeForm').addEventListener('submit', (e) => { e.preventDefault(); probe($('probeTask').value.trim()); });
         $('routesFilter').addEventListener('input', (e) => { state.query = e.target.value; renderRoutes(); });
         const setScope = (scope) => { state.scope = scope; renderRoutes(); };
@@ -10413,6 +11587,10 @@
         // and the one-line cause+remedy the sheet renders. Exported so the
         // twelve-case table and the exact phrase are pinned, not eyeballed.
         shadowPairs, shadowPairFor, shadowReasonWords,
+        // Card t_376a14ac: the breaker's numbers as words. Pure, so the limits
+        // that matter (a policy the route did not serve, a kind with no weight,
+        // a window that is not whole minutes) are pinned without a DOM.
+        breakerNotes, breakerWindowWords,
         // The reorder write (card: reordenar pelo punho): the pure move, the
         // consequence sentence, the new-shadow delta, and the drop geometry —
         // exported so the splice direction (up vs down), the antes/depois
@@ -10559,6 +11737,29 @@
         // semantics, and the fixo-sem-reserva N are pinned by tests.
         destField, destOptionList, destValue, fixedReserveWords,
         profileField, profileUnion,
+        // Card t_8e79466b: the live JSON view. tokenizeJson is the scanner
+        // (tokens AND the first error, our closed vocabulary); jsonCounts and
+        // jsonFootPhrase build the footer's two phrases; renderJsonEditor is
+        // the whole live view (mirror, gutter, footer, Salvar arming).
+        // Exported so every token type, every error code with its exact
+        // line/column, the count words and the arming are pinned by tests,
+        // not eyeballed.
+        tokenizeJson, jsonCounts, jsonFootPhrase, renderJsonEditor,
+        // Card t_3ba979a1: the JSON tools. foldSummary is what a folded line
+        // shows; keyPathAt/posOfPath are the cursor's JSON path and its
+        // inverse (format keeps the cursor by key); findAll is the literal
+        // search; formatarJson is the format-with-cursor-preservation;
+        // jsonDiffLines is the two-document diff (the head counts, the list
+        // replacement note); toggleFoldAll is the one fold button; buscaPular
+        // and updateSearchCount drive the search field; revealHit centers the
+        // current hit's line; copiarJson is the clipboard path with fallback.
+        // Exported so the empty-container refusal, the five cursor positions,
+        // the literal-match proof, the invalid-format refusal, the 8→9 list
+        // swap and the fold-never-touches-the-text rule are pinned by tests,
+        // not eyeballed.
+        foldSummary, keyPathAt, posOfPath, findAll, formatarJson,
+        jsonDiffLines, renderJsonDiff, toggleFoldAll, foldButtonLabel,
+        buscaPular, updateSearchCount, revealHit, copiarJson,
       };
     })();
   </script>

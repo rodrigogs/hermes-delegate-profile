@@ -58,6 +58,11 @@ function fakeDom() {
       clientWidth: 900,
       scrollIntoView(opts) { node._scrolledTo = opts || null; },
       focus() {},
+      // Card t_3ba979a1: the JSON tools drive the editor programmatically —
+      // Copiar selects the whole text, Formatar lands the cursor back on the
+      // key. The stub records the calls so the flows are assertable.
+      select() {},
+      setSelectionRange(a, b) { node.selectionStart = a; node.selectionEnd = b; },
     };
     Object.defineProperty(node, 'firstChild', { get: () => node.children[0] || null });
     return node;
@@ -79,7 +84,7 @@ function fakeDom() {
   };
 }
 
-function loadConsole({ width = 1440, embedded = false, csrfToken, fetch: fetchStub, dom: domIn, keepWire = false } = {}) {
+function loadConsole({ width = 1440, embedded = false, csrfToken, fetch: fetchStub, dom: domIn, keepWire = false, navigator: navIn } = {}) {
   const html = fs.readFileSync(sourcePath, 'utf8');
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1]
     // Skip the init calls that need a live browser; keep everything else intact.
@@ -97,6 +102,10 @@ function loadConsole({ width = 1440, embedded = false, csrfToken, fetch: fetchSt
     console, window: win, document: dom.document, globalThis: {},
     fetch: fetchStub || (() => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') })),
     setTimeout() {}, Math, JSON, Number, Object, Array, String, Set, Map, Date, encodeURIComponent,
+    // Card t_3ba979a1: Copiar reads navigator.clipboard. The default stub has
+    // no clipboard, so the fallback path is what runs; a test injects a
+    // clipboard stub to pin the happy path.
+    navigator: navIn !== undefined ? navIn : { clipboard: null },
   };
   vm.runInNewContext(script, context, { filename: sourcePath });
   return { api: context.globalThis.__router, dom, win };
@@ -821,23 +830,32 @@ test('a missing endpoint is distinguished from a rejected write', async () => {
 
 test('preview shows the diff without writing anything', async () => {
   const posted = [];
-  const { api } = loadConsole({
+  // Card t_3ba979a1: the diff is now the two DOCUMENTS — the file this
+  // screen read vs the plan's merged result — rendered as − / + lines with
+  // the count head and the whole-list replacement note. The old pin on the
+  // server's raw text ('+ new') is superseded: the server's text is YAML
+  // and cannot say "9 rules replace 8" — the two documents can.
+  const antes = { rules: Array.from({ length: 8 }, (_, i) => ({ id: `r${i}` })), fail_safe: { strong: true } };
+  const depois = { rules: Array.from({ length: 9 }, (_, i) => ({ id: `r${i}` })), fail_safe: { strong: false } };
+  const { api, dom } = loadConsole({
     csrfToken: 'tok',
     fetch: (url) => {
       posted.push(url);
       if (url.endsWith('/policy')) {
         // The disk matches the snapshot the screen rendered.
-        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({})) });
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(antes)) });
       }
       return Promise.resolve({
         ok: true, status: 200,
-        text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: '- old\n+ new' })),
+        text: () => Promise.resolve(JSON.stringify({ valid: true, policy: depois, diff: '- old\n+ new' })),
       });
     },
   });
-  api.state.policy = {};
+  api.state.policy = antes;
   const msg = { textContent: '', className: '' };
-  const diff = { hidden: true, textContent: '' };
+  // The diff node is a DOM node: renderJsonDiff builds −/+ rows inside it
+  // (append/children), which the old text-only fixture did not carry.
+  const diff = dom.get('jsonDiff');
   await api.doPreview({ rules: [] }, msg, diff);
 
   assert.equal(posted.length, 3, 'preview must not write: lint, freshness, plan');
@@ -845,7 +863,13 @@ test('preview shows the diff without writing anything', async () => {
   assert.match(posted[1], /\/policy$/, 'then the staleness guard reads');
   assert.match(posted[2], /\/plan$/);
   assert.equal(diff.hidden, false);
-  assert.match(diff.textContent, /\+ new/, 'the diff is the point of previewing');
+  const said = flat(diff);
+  assert.match(said, /2 chaves mudam · 1 lista substituída inteira/,
+    'the head counts the change the preview exists to show');
+  assert.match(said, /"rules": \[ 8 itens \]/);
+  assert.match(said, /"rules": \[ 9 itens \]/);
+  assert.match(said, /Quem manda 9 itens troca os 8 que estão lá/,
+    'the whole-list replacement is said out loud');
   assert.match(msg.className, /ok/);
 });
 
@@ -1551,29 +1575,37 @@ test('a no-op apply is refused, because writing it destroys the undo', async () 
 test('applying shows what it is about to change', async () => {
   // /plan deep-merges the draft over whatever is on disk NOW and replaces lists
   // wholesale (service.py:50), so a rule added by a CLI edit or another tab since
-  // page load is deleted by the next Apply. The diff contains that deletion. The
-  // old two-click path made it unavoidable — Validate rendered it and Apply was
+  // page load is deleted by the next Apply. The diff contains that deletion.
+  // The old two-click path made it unavoidable — Validate rendered it and Apply was
   // unreachable until it had. One-click Apply was computing it and throwing it away.
-  const diff = { hidden: true, textContent: '' };
-  const { api } = loadConsole({
+  // Card t_3ba979a1: the deletion renders as the whole-list swap (the merged
+  // policy went from two rules to one), because that is what the merge does —
+  // the item-by-item view would be the lie this card exists to prevent.
+  const antes = { rules: [{ id: 'URGENT-block-prod' }, { id: 'keep' }] };
+  const depois = { rules: [{ id: 'keep' }] };
+  const { api, dom } = loadConsole({
     csrfToken: 'tok',
     fetch: (url) => Promise.resolve({
       ok: true, status: 200,
       text: () => Promise.resolve(JSON.stringify(
         url.endsWith('/policy')
-          ? {} // the disk matches the snapshot the screen rendered
+          ? antes // the disk matches the snapshot the screen rendered
           : (url.endsWith('/plan')
-            ? { valid: true, policy: {}, base_hash: 'h', diff: '-  - id: URGENT-block-prod\n' }
+            ? { valid: true, policy: depois, base_hash: 'h', diff: '-  - id: URGENT-block-prod\n' }
             : { ok: true }),
       )),
     }),
   });
-  api.state.policy = {};
+  api.state.policy = antes;
+  const diff = dom.get('jsonDiff');
   await api.doApply('/apply', { textContent: '', className: '' }, { rules: [] }, diff);
 
   assert.equal(diff.hidden, false, 'the operator must see the diff they authorised');
-  assert.match(diff.textContent, /URGENT-block-prod/,
-    'including a concurrent edit this write would remove');
+  const said = flat(diff);
+  assert.match(said, /"rules": \[ 2 itens \]/,
+    'including a concurrent edit this write would remove — the list swap names it');
+  assert.match(said, /"rules": \[ 1 item \]/,
+    'and the side that remains, one rule');
 });
 
 test('a double-clicked apply does not race itself', async () => {
@@ -1612,20 +1644,595 @@ test('a double-clicked apply does not race itself', async () => {
   assert.equal(writes.length, 1, 'the second click must not produce a second write');
 });
 
-test('the JSON twisty write controls are always armed — there is no mode to disarm them', () => {
-  // Expanding "Edit the whole policy as JSON" to READ it used to put a live green
-  // Apply and a live Revert one tap away — and Revert takes no plan, shows no diff,
-  // and restores whatever the .bak holds. The guard that replaced the mode's
-  // disarming is §3.4(a): while the file lints bad there is NO Salvar in the DOM
-  // (absent, not disabled), and the destructive one is two clicks away (CA5).
+test('Salvar is disarmed while the text is not JSON, and only then (card t_8e79466b)', () => {
+  // The whole-file editor validates LIVE — the scanner IS the validator — and
+  // a button that exists solely to refuse the click must not be armed. The
+  // mode-era rule this test used to pin ("no code path leaves Apply inert")
+  // is superseded for the SYNTAX gate: the lint gate still refuses by ABSENCE
+  // (§3.4(a), DESIGN.md:435-463 — a policy that parses but fails lint), while
+  // the syntax gate refuses by disarming — the two gates refuse differently
+  // because the two failures are different: lint is a verdict on a document,
+  // and a broken text is not a document at all.
   const src = fs.readFileSync(sourcePath, 'utf8');
-  assert.doesNotMatch(src, /jsonApply[^>]*disabled/,
-    'no disabled attribute on Apply in the markup — the mode that set it is gone');
-  assert.doesNotMatch(src, /jsonRevert[^>]*disabled/,
-    'nor on Revert — the two-click rule is the only gate');
-  const { api, dom } = loadConsole({ csrfToken: 'tok' });
-  assert.ok(!dom.get('jsonApply').disabled, 'and no code path leaves Apply inert');
-  assert.ok(!dom.get('jsonRevert').disabled, 'the destructive one is two clicks away, not greyed out');
+  const markup = src.slice(0, src.indexOf('<script>'));
+  assert.doesNotMatch(markup, /jsonApply[^>]*disabled/,
+    'no disabled attribute on Apply in the markup — the arming is a live property');
+  assert.doesNotMatch(markup, /jsonRevert[^>]*disabled/,
+    'nor on Revert — the two-click rule is the only gate there');
+  const { api, dom } = loadConsole({ keepWire: true, csrfToken: 'tok' });
+  const ta = dom.get('policyEditor');
+  const apply = dom.get('jsonApply');
+  assert.equal(apply.disabled, true, 'boot arms nothing: an empty document is not JSON');
+  ta.value = '{ "a": 1, }';
+  ta._listeners.input();
+  assert.equal(apply.disabled, true, 'a trailing comma leaves Salvar disarmed');
+  ta.value = '{ "a": 1 }';
+  ta._listeners.input();
+  assert.equal(apply.disabled, false, 'fixing the text arms it again');
+  ta.value = '{ "a": ';
+  ta._listeners.input();
+  assert.equal(apply.disabled, true, 'an unfinished value disarms it again');
+  assert.ok(!dom.get('jsonRevert').disabled, 'the destructive one is two clicks away, never greyed out');
+});
+
+// ── the JSON scanner: tokens AND the error in one pass ───────────────────
+// JSON.parse reports a different message per engine (and often no position),
+// so the console's live validation is OUR scanner, in OUR words. Every token
+// type and every error code is pinned here with exact spans and exact
+// line/column — a scanner that "mostly" validates is exactly the bug this
+// card exists to kill, so the table is exhaustive.
+
+test('tokenizeJson emits every token type, and the tokens rebuild the text', () => {
+  const { api } = loadConsole();
+  const text = '{ "chave": "texto", "n": 12.5, "b": true, "nulo": null }';
+  const { tokens, erro } = api.tokenizeJson(text);
+  assert.equal(erro, null);
+  const kinds = new Set(tokens.map((t) => t.tipo));
+  for (const kind of ['chave', 'texto', 'numero', 'palavra', 'pontuacao', 'espaco']) {
+    assert.ok(kinds.has(kind), `the sample must exercise ${kind}`);
+  }
+  // The tokens partition the document exactly: concatenating their slices
+  // rebuilds the input, or the mirror would drop or duplicate text.
+  assert.equal(tokens.map((t) => text.slice(t.inicio, t.fim)).join(''), text,
+    'every character belongs to exactly one token');
+  const chave = tokens.find((t) => t.tipo === 'chave');
+  assert.equal(text.slice(chave.inicio, chave.fim), '"chave"');
+  assert.deepEqual(plain({ inicio: chave.inicio, fim: chave.fim }), { inicio: 2, fim: 9 });
+  const numero = tokens.find((t) => t.tipo === 'numero');
+  assert.equal(text.slice(numero.inicio, numero.fim), '12.5');
+  const palavra = tokens.find((t) => t.tipo === 'palavra');
+  assert.equal(text.slice(palavra.inicio, palavra.fim), 'true');
+});
+
+test('tokenizeJson keeps accents and escaped quotes as ordinary string content', () => {
+  const { api } = loadConsole();
+  const text = '{ "política": "café", "chave \\"com\\" aspas": "a\\nb" }';
+  const { tokens, erro } = api.tokenizeJson(text);
+  assert.equal(erro, null, 'accents and escaped quotes are legal string content');
+  const chaves = tokens.filter((t) => t.tipo === 'chave').map((t) => text.slice(t.inicio, t.fim));
+  assert.ok(chaves.includes('"política"'), 'the accented key survives whole');
+  assert.ok(chaves.includes('"chave \\"com\\" aspas"'), 'the escaped quotes stay inside the key');
+  // And the escapes are the real thing: JSON.parse agrees with the scanner.
+  assert.equal(JSON.parse(text).política, 'café');
+});
+
+test('tokenizeJson names each error code with the exact line and column', () => {
+  const { api } = loadConsole();
+  // The column points at the character where the scanner gives up — or at
+  // the end of the document, past the last character.
+  const cases = [
+    // virgula-sobrando points at the COMMA, not at the closer that follows
+    // it: engines report the closer (where the parser gives up), and the
+    // operator walks to that line and finds no comma — it is on the line
+    // above (card t_5fb727b5, operator's measurement). Other codes keep
+    // pointing where they are.
+    ['{ "a": 1, }', 'virgula-sobrando', 1, 9],    // the comma's own column
+    ['[1, 2,]', 'virgula-sobrando', 1, 6],
+    ['{ "a" 1 }', 'chave-sem-valor', 1, 7],       // a key that never saw its ':'
+    ['{ "a"', 'chave-sem-valor', 1, 6],           // ... at the end of the document
+    ['{ "a": "ab', 'texto-nao-fechado', 1, 11],   // the string never closed
+    ['{ "a": 01 }', 'numero-invalido', 1, 8],     // leading zero
+    ['{ "a": 1.2.3 }', 'numero-invalido', 1, 8],  // a second dot
+    ['{ a: 1 }', 'caractere-inesperado', 1, 3],   // a bare word where a key belongs
+    ['{ "a": x }', 'caractere-inesperado', 1, 8], // a word that is not true/false/null
+    ['{ "a": 1', 'fim-inesperado', 1, 9],         // the object never closed
+    ['', 'fim-inesperado', 1, 1],                 // an empty document
+  ];
+  for (const [text, codigo, linha, coluna] of cases) {
+    const { erro } = api.tokenizeJson(text);
+    assert.ok(erro, `"${text}" must fail`);
+    assert.equal(erro.codigo, codigo, `"${text}" must say ${codigo}, got ${erro && erro.codigo}`);
+    assert.deepEqual(plain({ linha: erro.linha, coluna: erro.coluna }), { linha, coluna },
+      `"${text}" must report the exact position`);
+  }
+});
+
+test('every error code has its pt-BR phrase — the footer can never say "undefined"', () => {
+  const { api } = loadConsole();
+  // The comp's own example is the first line: the same words, the same order.
+  const expected = {
+    'virgula-sobrando': 'Não é JSON válido — linha 9, coluna 48: vírgula sobrando',
+    'chave-sem-valor': 'Não é JSON válido — linha 9, coluna 48: chave sem valor',
+    'texto-nao-fechado': 'Não é JSON válido — linha 9, coluna 48: texto não fechado',
+    'numero-invalido': 'Não é JSON válido — linha 9, coluna 48: número inválido',
+    'caractere-inesperado': 'Não é JSON válido — linha 9, coluna 48: caractere inesperado',
+    'fim-inesperado': 'Não é JSON válido — linha 9, coluna 48: fim inesperado',
+  };
+  for (const [code, phrase] of Object.entries(expected)) {
+    assert.equal(api.jsonFootPhrase({ linha: 9, coluna: 48, codigo: code }), phrase, code);
+  }
+});
+
+test('a 200+ line document reports an error far from the first line', () => {
+  const { api } = loadConsole();
+  // 200 entries then a trailing comma: the error lands on the COMMA's own
+  // line, 201 — not on the first line, where a scanner that validated by
+  // regex over the head of the document would give up, and not on line
+  // 202, where the closer that follows it sits (the position engines
+  // report and the operator walks to without finding a comma).
+  const entries = Array.from({ length: 200 }, (_, i) => `  "k${i}": ${i}`);
+  const text = '{\n' + entries.join(',\n') + ',\n}';
+  assert.equal(text.split('\n').length, 202, 'the fixture really is 200+ lines');
+  const { tokens, erro } = api.tokenizeJson(text);
+  assert.equal(erro.codigo, 'virgula-sobrando');
+  // Line 201 is `  "k199": 199,` — the comma is the 14th character.
+  assert.deepEqual(plain({ linha: erro.linha, coluna: erro.coluna }), { linha: 201, coluna: 14 });
+  // The highlight still covers everything before the error.
+  const lastChave = tokens.filter((t) => t.tipo === 'chave').pop();
+  assert.equal(text.slice(lastChave.inicio, lastChave.fim), '"k199"');
+});
+
+// ── the overlay editor's CSS contract ─────────────────────────────────────
+// The mirror paints each character at the same pixel as the textarea's text:
+// that is the whole technique, so the metrics are pinned as a static scan —
+// a drift would shift the first line and nothing but the eye would catch it.
+
+test('the mirror and the textarea share ONE metric rule — alignment cannot drift', () => {
+  const { style } = consoleStyle();
+  const rules = [...style.matchAll(/([^{}]+)\{([^}]*)\}/g)];
+  const shared = rules.find((m) => m[1].includes('.editor,') && m[1].includes('.editor-mirror'));
+  assert.ok(shared, 'one rule must name both the textarea and the mirror');
+  // line-height rides inside the `font` shorthand (var(--t-small)/1.6), so
+  // `font` is the property to pin; the METRICS scan below still refuses a
+  // literal line-height on the mirror anywhere else.
+  for (const prop of ['font', 'letter-spacing', 'padding', 'border', 'white-space', 'tab-size']) {
+    assert.ok(shared[2].includes(prop), `the shared rule declares ${prop}`);
+  }
+  // And no OTHER top-level rule may style a mirror metric without naming the
+  // textarea in the same selector.
+  const METRICS = ['font-size', 'line-height', 'letter-spacing', 'white-space', 'tab-size', 'padding'];
+  // `.editor` as a STANDALONE selector — a bare `.includes('.editor')` would
+  // be fooled by `.editor-mirror` itself (the prefix).
+  const namesEditor = (sel) => /(^|,)\s*\.editor(?=[\s,{])/.test(sel);
+  for (const m of rules) {
+    if (!m[1].includes('.editor-mirror')) continue;
+    for (const metric of METRICS) {
+      if (m[2].includes(metric)) {
+        assert.ok(namesEditor(m[1]),
+          `a rule naming .editor-mirror must name .editor too when it sets ${metric} — got "${m[1].trim()}"`);
+      }
+    }
+  }
+  // The touch guard lifts the editor to 16px under a coarse pointer (iOS
+  // zooms in below 16px and never zooms back); it must lift the mirror and
+  // the gutter with it, or the overlay misaligns exactly on the devices
+  // that cannot zoom back out.
+  const touch = style.slice(style.indexOf('@media (hover: none) and (pointer: coarse)'));
+  const guard = touch.match(/([^{}]*)\{\s*font-size: max\(16px, 1em\);\s*\}/);
+  assert.ok(guard, 'the touch guard that lifts the editor to 16px still exists');
+  for (const sel of ['.editor', '.editor-mirror', '.editor-gutter']) {
+    assert.ok(guard[1].includes(sel), `the 16px touch guard names ${sel} — the mirror must grow with the textarea`);
+  }
+});
+
+test('the live editor is an overlay: visible caret, transparent text and chrome', () => {
+  const { style } = consoleStyle();
+  assert.match(style, /caret-color: var\(--accent-text\)/,
+    'the caret is painted — transparent text still needs a visible caret');
+  const editor = style.match(/\.editor \{[^}]*\}/)[0];
+  assert.match(editor, /color: transparent/, 'the textarea text is transparent so the mirror shows through');
+  assert.match(editor, /background: transparent/, 'the textarea background is transparent too');
+  assert.match(style, /\.editor-mirror \{[^}]*pointer-events: none/, 'the mirror never eats a click');
+  assert.match(style, /\.editor-gutter \{[^}]*pointer-events: none/, 'the gutter never eats a click or the wheel');
+});
+
+// ── the live view: mirror, gutter, footer, arming, one scan ───────────────
+
+test('typing paints the mirror, the gutter and the footer from one scan', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  const valid = '{"rules": [{"id": "r1"}], "tiers": {"T1": {"model": "glm-4.7", "provider": "zai"}}, "price_windows": {"glm-4.7@zai": [{"hours_utc": [20, 22], "multiplier": 3.0}]}}';
+  ta.value = valid;
+  ta._listeners.input();
+  // Footer: one line, one rule, one tier, one provider with a window.
+  assert.equal(dom.get('jsonFoot').textContent,
+    'JSON válido · 1 linha · 1 regra, 1 grupo, 1 provedor com janela');
+  assert.equal(dom.get('jsonFoot').className, 'editor-foot ok');
+  // Mirror: one row per source line; the first row carries the tokens.
+  const mirror = dom.get('policyMirror');
+  assert.equal(mirror.children.length, 1, 'one source line, one row');
+  assert.equal(mirror.children[0].className, 'code-line', 'no error, no mark');
+  const chave = mirror.children[0].children.find((c) => c.className === 'tk-chave');
+  assert.ok(chave && chave.textContent === '"rules"', 'the key is painted as a chave token');
+  const numero = mirror.children[0].children.find((c) => c.className === 'tk-numero');
+  assert.ok(numero && numero.textContent === '20', 'a window hour is a numero token');
+  // Gutter: one number per line, none marked.
+  const gutter = dom.get('policyLines');
+  assert.equal(gutter.children.length, 1);
+  assert.equal(gutter.children[0].textContent, '1');
+  assert.equal(gutter.children[0].className, '');
+  assert.equal(dom.get('jsonApply').disabled, false, 'Salvar is armed');
+
+  // Break it: the same scan names the error, marks the row and disarms Salvar.
+  ta.value = '{ "a": 1, }';
+  ta._listeners.input();
+  assert.equal(dom.get('jsonFoot').textContent,
+    'Não é JSON válido — linha 1, coluna 9: vírgula sobrando');
+  assert.equal(dom.get('jsonFoot').className, 'editor-foot bad');
+  assert.match(dom.get('policyMirror').children[0].className, /bad/,
+    'the line that carries the error is marked');
+  assert.equal(dom.get('policyLines').children[0].className, 'err',
+    'the gutter names the same line');
+  assert.equal(dom.get('jsonApply').disabled, true, 'Salvar is disarmed');
+
+  // The mark leaves the moment the text changes again.
+  ta.value = '{ "a": 1 }';
+  ta._listeners.input();
+  assert.doesNotMatch(dom.get('policyMirror').children[0].className, /bad/,
+    'a change clears the error mark');
+  assert.equal(dom.get('jsonFoot').textContent, 'JSON válido · 1 linha · 0 regras, 0 grupos, 0 provedores com janela');
+});
+
+test('a trailing comma reports ITS OWN line, and the gutter marks that line', () => {
+  // Card t_5fb727b5, operator's measurement: a comma at the end of line N
+  // used to report line N+1 (the closer, where the parser gives up) — the
+  // operator walked to N+1 and found no comma. Both the footer phrase and
+  // the gutter read erro.linha, so one fix moves both.
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  ta.value = '{\n  "a": 1,\n  "b": 2,\n}';
+  ta._listeners.input();
+  assert.equal(dom.get('jsonFoot').textContent,
+    'Não é JSON válido — linha 3, coluna 9: vírgula sobrando');
+  const gutter = dom.get('policyLines');
+  assert.equal(gutter.children.length, 4, 'four source lines, four gutter rows');
+  assert.equal(gutter.children[2].className, 'err', 'the gutter marks the COMMA line');
+  assert.equal(gutter.children[3].className, '', 'the closer line is not the mark');
+  assert.match(dom.get('policyMirror').children[2].className, /bad/,
+    'the mirror marks the same line');
+  assert.equal(dom.get('policyMirror').children[3].className, 'code-line',
+    'the closer row stays clean');
+});
+
+test('the valid footer counts come from the document in the box, not from state', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  // The state says "no rules, no tiers" — the footer must ignore it and read
+  // the text: the whole point of the editor is that the TEXT is the policy.
+  api.state.policy = { rules: [], tiers: {} };
+  const text = '{\n  "rules": [{"id": "a"}, {"id": "b"}],\n'
+    + '  "tiers": {"T1": {"model": "glm-4.7", "provider": "zai"}, "T2": {"model": "deepseek-v4-pro", "provider": "deepseek"}},\n'
+    + '  "price_windows": {"glm-4.7@zai": [], "deepseek-v4-pro": []}\n}';
+  const ta = dom.get('policyEditor');
+  ta.value = text;
+  ta._listeners.input();
+  assert.equal(dom.get('jsonFoot').textContent,
+    'JSON válido · 5 linhas · 2 regras, 2 grupos, 2 provedores com janela');
+  // And jsonCounts is the pure reader behind it — the provider of a windowed
+  // model resolves from the tiers' own hops, or from the model@vendor
+  // spelling when the model is not in the tiers.
+  assert.deepEqual(plain(api.jsonCounts(text, JSON.parse(text))),
+    { linhas: 5, regras: 2, grupos: 2, provedoresComJanela: 2 });
+});
+
+test('the mirror and the gutter scroll with the textarea', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  const mirror = dom.get('policyMirror');
+  const gutter = dom.get('policyGutter');
+  ta.scrollTop = 123;
+  ta.scrollLeft = 45;
+  ta._listeners.scroll();
+  assert.equal(mirror.scrollTop, 123, 'the mirror follows the vertical scroll');
+  assert.equal(mirror.scrollLeft, 45, 'and the horizontal one');
+  assert.equal(gutter.scrollTop, 123, 'the gutter follows too — the numbers stay on their lines');
+});
+
+// ── the JSON tools (card t_3ba979a1) ──────────────────────────────────────
+// Formatar, Copiar, Dobrar, a busca literal e o caminho da chave — cada um é
+// função pura onde dá para ser, exportada para a regra ser presa aqui em vez
+// de olhada uma vez no navegador.
+
+test('foldSummary dobra valor composto e recusa os vazios', () => {
+  const { api } = loadConsole();
+  assert.equal(api.foldSummary(Array.from({ length: 14 }, (_, i) => i)), '[ 14 itens ]');
+  assert.equal(api.foldSummary({ T1: 1, T2: 2, T3: 3, T4: 4 }), '{ 4 chaves — T1, T2, T3, T4 }');
+  assert.equal(api.foldSummary([]), null, 'lista vazia não dobra — não há o que esconder');
+  assert.equal(api.foldSummary({}), null, 'objeto vazio também não');
+  assert.equal(api.foldSummary('texto'), null, 'nem escalar');
+  // Mais de quatro chaves: nomeia as quatro primeiras e para.
+  assert.equal(api.foldSummary({ a: 1, b: 2, c: 3, d: 4, e: 5 }), '{ 5 chaves — a, b, c, d, … }');
+});
+
+test('dobrar e expandir NUNCA alteram o texto do editor', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  const text = [
+    '{',
+    '  "rules": [',
+    '    { "id": "a" },',
+    '    { "id": "b" }',
+    '  ],',
+    '  "tiers": {',
+    '    "T1": { "model": "glm-5.3" }',
+    '  }',
+    '}',
+  ].join('\n');
+  ta.value = text;
+  ta._listeners.input();
+  const mirror = dom.get('policyMirror');
+  assert.equal(mirror.children.length, 9, 'tudo expandido: uma linha por linha de origem');
+
+  dom.get('jsonFold')._listeners.click();
+  assert.equal(ta.value, text, 'dobrar é só visual: o value NÃO muda');
+  assert.equal(mirror.children.length, 4, 'rules e tiers viraram uma linha cada');
+  assert.equal(flat(mirror.children[0]), '{');
+  assert.equal(flat(mirror.children[1]), '"rules": [ 2 itens ]');
+  assert.equal(flat(mirror.children[2]), '"tiers": { 1 chave — T1 }');
+  assert.equal(flat(mirror.children[3]), '}');
+  // A medianiz marca as linhas dobradas — quem procura a chave que sumiu
+  // olha o número da linha, e o ▸ (CSS ::before) diz que há mais ali.
+  const gutter = dom.get('policyLines');
+  assert.equal(gutter.children[0].className, '', 'linha 1 não dobra');
+  assert.equal(gutter.children[1].className, 'dobrada', 'a linha da rules');
+  assert.equal(gutter.children[5].className, 'dobrada', 'a linha da tiers');
+
+  dom.get('jsonFold')._listeners.click();
+  assert.equal(ta.value, text, 'expandir tampouco');
+  assert.equal(mirror.children.length, 9, 'as linhas voltam, uma por linha de origem');
+});
+
+test('texto inválido não dobra — a linha do erro tem de ficar visível', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  ta.value = '{\n  "rules": [1, 2],\n  "a": 1, }';
+  ta._listeners.input();
+  const mirror = dom.get('policyMirror');
+  assert.ok(mirror.children.some((r) => /bad/.test(r.className)),
+    'a linha do erro continua pintada');
+  assert.equal(findAll(mirror, 'fold-resumo').length, 0, 'nenhuma linha dobrada enquanto o texto não é JSON');
+  assert.equal(dom.get('jsonFold').disabled, true, 'e o botão não tem o que fazer');
+});
+
+test('o botão de dobra diz o que o clique FAZ', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  ta.value = '{\n  "rules": [1, 2],\n  "tiers": { "T1": { "model": "x" } }\n}';
+  ta._listeners.input();
+  const btn = dom.get('jsonFold');
+  assert.equal(btn.textContent, 'Dobrar tudo', 'nada dobrado: o clique dobra');
+  assert.equal(btn.disabled, false);
+  btn._listeners.click();
+  assert.equal(btn.textContent, 'Expandir tudo', 'tudo dobrado: o clique expande');
+  btn._listeners.click();
+  assert.equal(btn.textContent, 'Dobrar tudo', 'de volta ao expandido');
+  // Sem chave composta não há o que dobrar — o botão desarma.
+  ta.value = '{ "a": 1 }';
+  ta._listeners.input();
+  assert.equal(btn.disabled, true);
+});
+
+test("a busca é literal: 'glm-5.3' acha 7 e não acha 'glmX5.3' nem 'glm-5X3'", () => {
+  const { api } = loadConsole();
+  // Duas armadilhas, uma por metacaractere: o hífen (glmX5.3) e o ponto
+  // (glm-5X3) — uma busca com regex casaria a segunda, onde o `.` do padrão
+  // vale qualquer caractere. A literal não casa nenhuma das duas.
+  const comArmadilha = `${Array.from({ length: 7 }, () => '"glm-5.3"').join(', ')}, "glmX5.3", "glm-5X3"`;
+  assert.ok(comArmadilha.includes('glmX5.3'), 'a armadilha do hífen está mesmo no texto');
+  assert.ok(comArmadilha.includes('glm-5X3'), 'a armadilha do ponto está mesmo no texto');
+  const hits = api.findAll(comArmadilha, 'glm-5.3');
+  assert.equal(hits.length, 7, `as 7 ocorrências reais, achou ${hits.length}`);
+  for (const h of hits) {
+    assert.equal(comArmadilha.slice(h.inicio, h.fim), 'glm-5.3', 'cada ocorrência é o literal exato');
+  }
+  // Numa linha de política de verdade: os irmãos com X não casam — o ponto e
+  // o hífen são caracteres, não metacaracteres.
+  const linha = '{ "model": "glm-5.3", "modeloX": "glmX5.3", "modeloY": "glm-5X3" }';
+  const dois = api.findAll(linha, 'glm-5.3');
+  assert.equal(dois.length, 1, 'nem glmX5.3 nem glm-5X3 são achados por glm-5.3');
+  assert.equal(linha.slice(dois[0].inicio, dois[0].fim), 'glm-5.3');
+});
+
+test('a busca pinta forte a corrente e fraca as outras, e navega', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  const text = '{ "a": "glm-5.3", "b": "glm-5.3" }';
+  ta.value = text;
+  ta._listeners.input();
+  const search = dom.get('jsonSearch');
+  search.value = 'glm-5.3';
+  search._listeners.input();
+  const mirror = dom.get('policyMirror');
+  assert.equal(findAll(mirror, 'hl-cur').length, 1, 'uma ocorrência corrente');
+  assert.equal(findAll(mirror, 'hl').length, 1, 'as outras, fracas');
+  assert.equal(dom.get('jsonSearchCount').textContent, '1 de 2');
+  assert.equal(dom.get('jsonSearchCount').hidden, false);
+  // Enter = próximo, Shift+Enter = anterior.
+  search._listeners.keydown({ key: 'Enter', shiftKey: false, preventDefault() {} });
+  assert.equal(dom.get('jsonSearchCount').textContent, '2 de 2');
+  assert.equal(findAll(mirror, 'hl-cur').length, 1, 'a corrente migrou, não duplicou');
+  search._listeners.keydown({ key: 'Enter', shiftKey: true, preventDefault() {} });
+  assert.equal(dom.get('jsonSearchCount').textContent, '1 de 2');
+  // Esc limpa.
+  search._listeners.keydown({ key: 'Escape', shiftKey: false, preventDefault() {} });
+  assert.equal(search.value, '', 'o campo limpa');
+  assert.equal(dom.get('jsonSearchCount').hidden, true, 'a contagem some');
+  assert.equal(findAll(mirror, 'hl-cur').length, 0, 'e o realce sai');
+});
+
+test('keyPathAt diz onde o cursor está, em cinco posições', () => {
+  const { api } = loadConsole();
+  const text = [
+    '{',
+    '  "rules": [',
+    '    { "when": { "verb_class": { "eq": "x" } }, "model": "g1" },',
+    '    { "when": { "verb_class": { "eq": "y" } }, "model": "g2" },',
+    '    { "when": { "verb_class": { "eq": "z" } }, "model": "g3" },',
+    '    { "when": { "utc_hour": { "gte": 20 } }, "model": "glm-5.3" }',
+    '  ]',
+    '}',
+  ].join('\n');
+  // 1. dentro de uma chave (o nome "model" da 4ª regra — a última do texto).
+  assert.equal(api.keyPathAt(text, text.lastIndexOf('"model"') + 1), 'rules › 3 › model');
+  // 2. dentro de um valor de texto.
+  assert.equal(api.keyPathAt(text, text.indexOf('"glm-5.3"') + 2), 'rules › 3 › model');
+  // 3. dentro de um número (o gte da 4ª regra — o exemplo do card, com o
+  //    índice 3 do array na frente).
+  assert.equal(api.keyPathAt(text, text.indexOf('20') + 1), 'rules › 3 › when › utc_hour › gte');
+  // 4. dentro de uma chave de outra regra do mesmo array (a segunda).
+  const segundaRegra = text.indexOf('"verb_class"', text.indexOf('"verb_class"') + 1);
+  assert.equal(api.keyPathAt(text, segundaRegra + 1), 'rules › 1 › when › verb_class');
+  // 5. na raiz: a chave de topo.
+  assert.equal(api.keyPathAt(text, text.indexOf('"rules"') + 1), 'rules');
+  // E o inverso: a posição da chave no texto formatado volta para a mesma chave.
+  const pos = api.posOfPath(JSON.stringify(JSON.parse(text), null, 2), 'rules › 3 › when › utc_hour › gte');
+  const novo = JSON.stringify(JSON.parse(text), null, 2);
+  assert.equal(api.keyPathAt(novo, pos + 1), 'rules › 3 › when › utc_hour › gte');
+});
+
+test('o caminho da chave aparece no rodapé e some na raiz', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  const text = '{ "rules": [ { "model": "glm-5.3" } ] }';
+  ta.value = text;
+  ta._listeners.input();
+  ta.selectionStart = text.indexOf('glm-5.3') + 2;
+  ta._listeners.keyup();
+  const span = dom.get('jsonPath');
+  assert.equal(span.textContent, 'rules › 0 › model', 'o rodapé nomeia o lugar do cursor');
+  assert.equal(span.hidden, false);
+  // A frase da validade continua no rodapé — o caminho é o segundo texto, à direita.
+  assert.equal(dom.get('jsonFoot').textContent,
+    'JSON válido · 1 linha · 1 regra, 0 grupos, 0 provedores com janela');
+  // Na raiz não há chave a nomear: o caminho some.
+  ta.selectionStart = 1; // dentro do { de abertura
+  ta._listeners.keyup();
+  assert.equal(span.textContent, '', 'raiz não tem caminho');
+  assert.equal(span.hidden, true);
+});
+
+test('formatar com texto inválido não muda o texto e escreve a frase', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  const broken = '{ "a": 1, }';
+  ta.value = broken;
+  ta._listeners.input();
+  dom.get('jsonFormat')._listeners.click();
+  assert.equal(ta.value, broken, 'o texto NÃO muda');
+  const msg = dom.get('jsonMsg');
+  assert.match(msg.textContent, /Não formatei: Não é JSON válido — linha 1, coluna 9: vírgula sobrando/,
+    'a frase diz por que não formatou, nas palavras do scanner');
+  assert.match(msg.className, /bad/);
+});
+
+test('formatar reindenta e devolve o cursor à MESMA chave', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  const text = '{ "rules": [ { "model": "glm-5.3" } ], "tiers": { "T1": { "model": "glm-4.7" } } }';
+  ta.value = text;
+  ta.selectionStart = text.indexOf('glm-5.3') + 2; // dentro do valor da chave model
+  ta._listeners.input();
+  // O clique no botão desfoca o textarea e o Chrome zera o selectionStart —
+  // o handler lê o caret RASTREADO (state.caret), gravado nos eventos de
+  // cursor. O keyup é o evento que o grava aqui.
+  ta._listeners.keyup();
+  const before = ta.value;
+  dom.get('jsonFormat')._listeners.click();
+  assert.notEqual(ta.value, before, 'formatou');
+  assert.equal(ta.value.split('\n').length, 12, 'reindentado em 2 espaços, cada nível na sua linha');
+  assert.equal(JSON.parse(ta.value).rules[0].model, 'glm-5.3', 'o conteúdo é o mesmo');
+  assert.equal(JSON.parse(ta.value).tiers.T1.model, 'glm-4.7');
+  // O cursor voltou pela CHAVE, não pelo índice de caractere (que mudou).
+  assert.equal(api.keyPathAt(ta.value, ta.selectionStart), 'rules › 0 › model',
+    'o cursor está na mesma chave de antes');
+});
+
+test('copiar usa a área de transferência e confirma no rodapé', async () => {
+  const written = [];
+  const { api, dom } = loadConsole({
+    keepWire: true,
+    navigator: { clipboard: { writeText: async (t) => { written.push(t); } } },
+  });
+  const ta = dom.get('policyEditor');
+  ta.value = '{ "a": 1 }';
+  ta._listeners.input();
+  assert.equal(await api.copiarJson(), true);
+  assert.deepEqual(written, ['{ "a": 1 }'], 'o texto inteiro foi para a área de transferência');
+  assert.equal(dom.get('jsonFoot').textContent, 'Copiado.', 'a frase do rodapé confirma');
+  assert.equal(dom.get('jsonFoot').className, 'editor-foot ok');
+});
+
+test('sem clipboard o fallback falha com a frase, não em silêncio', async () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  ta.value = '{ "a": 1 }';
+  ta._listeners.input();
+  assert.equal(await api.copiarJson(), false);
+  assert.match(dom.get('jsonFoot').textContent, /Não consegui copiar/,
+    'a falha é dita, e a frase vive no rodapé como a confirmação');
+});
+
+test('o diff conta os dois lados de uma lista: 8 → 9 é substituição inteira', () => {
+  const { api } = loadConsole();
+  const antes = { rules: Array.from({ length: 8 }, (_, i) => ({ id: `r${i}` })), fail_safe: { strong: true } };
+  const depois = { rules: Array.from({ length: 9 }, (_, i) => ({ id: `r${i}` })), fail_safe: { strong: false } };
+  const rec = api.jsonDiffLines(antes, depois);
+  assert.equal(rec.cabecalho, '2 chaves mudam · 1 lista substituída inteira',
+    'a linha de contagem do comp: as duas chaves (rules e strong) e a lista trocada');
+  assert.match(rec.nota, /Uma lista no corpo substitui a lista inteira no servidor/);
+  assert.match(rec.nota, /Quem manda 9 itens troca os 8 que estão lá/);
+  // Cada lista vira UMA linha − e UMA linha + com o resumo dos dois lados.
+  const del = rec.linhas.find((l) => l.tipo === 'del' && l.texto.includes('"rules"'));
+  const add = rec.linhas.find((l) => l.tipo === 'add' && l.texto.includes('"rules"'));
+  assert.equal(del.texto, '"rules": [ 8 itens ]');
+  assert.equal(add.texto, '"rules": [ 9 itens ]');
+  // A chave que muda dentro do objeto aparece como −/+ no corpo do objeto.
+  assert.ok(rec.linhas.some((l) => l.tipo === 'del' && /"strong": true/.test(l.texto)));
+  assert.ok(rec.linhas.some((l) => l.tipo === 'add' && /"strong": false/.test(l.texto)));
+  // Dois documentos iguais: nenhum cabeçalho, uma linha de contexto.
+  const parado = api.jsonDiffLines({ rules: [1] }, { rules: [1] });
+  assert.equal(parado.cabecalho, '');
+  assert.equal(parado.linhas.length, 1);
+  assert.equal(parado.linhas[0].tipo, 'ctx');
+});
+
+test('as ferramentas novas respeitam o toque e empilham a 360px', () => {
+  const { style } = consoleStyle();
+  const touch = style.slice(style.indexOf('@media (hover: none) and (pointer: coarse)'));
+  assert.match(touch, /\.json-nav \{ [^}]*min-height: 44px/, 'os ‹ › são botões: 44px sob toque');
+  const guard = touch.match(/([^{}]*)\{\s*font-size: max\(16px, 1em\);?\s*\}/);
+  assert.ok(guard && guard[1].includes('.json-search-input'),
+    'a busca é um input: 16px sob toque, nomeada — o seletor bare perde para a classe');
+  // A 360px a barra empilha como no comp-360: coluna, busca de largura total.
+  const narrow = style.slice(style.indexOf('@media (max-width: 360px)'));
+  assert.match(narrow, /\.json-tools \{ [^}]*flex-direction: column/, 'a barra vira coluna');
+  assert.match(narrow, /\.json-search \{ [^}]*margin-left: 0/, 'a busca deixa a direita e toma a linha');
+  // A medianiz marca a linha dobrada com ▸, e o realce usa os tokens do host.
+  assert.match(style, /content:\s*["']\s*▸\s*["']/, 'o ▸ da linha dobrada existe no CSS');
+  assert.match(style, /\.hl-cur \{ [^}]*background: var\(--accent\)/, 'forte = accent cheio');
+  assert.match(style, /\.hl \{ [^}]*background: var\(--accent-bg\)/, 'fraca = wash do accent');
+});
+
+test('revealHit centraliza a linha da ocorrência corrente', () => {
+  const { api } = loadConsole();
+  const editor = { clientHeight: 200, scrollTop: 0 };
+  const mirror = { scrollTop: 0 };
+  const gutter = { scrollTop: 0 };
+  assert.equal(api.revealHit(editor, mirror, gutter, { offsetTop: 400 }), true);
+  assert.equal(editor.scrollTop, 300, '400 - 200/2: a linha centraliza');
+  assert.equal(mirror.scrollTop, 300, 'o espelho acompanha');
+  assert.equal(gutter.scrollTop, 300, 'e a medianiz');
+  // Sem métricas (o stub do DOM) não há o que rolar — e não quebra.
+  assert.equal(api.revealHit({ clientHeight: 200 }, {}, {}, {}), false);
 });
 
 // ── it belongs to the shell ───────────────────────────────────────────────
@@ -3712,6 +4319,37 @@ test('the new phone surfaces are 44px targets, with the classes named', () => {
   // the 14px probe input survived a decorative guard once (measured, iPhone).
   assert.match(style, /\.pwin-add \{[^}]*min-height: 44px/);
   assert.match(style, /\.tab \{[^}]*min-height: 44px/);
+});
+
+test('the controls measured under the 44px floor get it, classes named', () => {
+  // Card t_5fb727b5, measured at 360px (dpr 3, coarse pointer): the reorder
+  // arrows 22px, the destination chip 21px, the peak-policy and compaction
+  // selects 20px, the probe hour and the decision filter 39px. The JSON
+  // search (29px) is the seventh — it arrived with the tools card
+  // (t_3ba979a1), after the operator's measurement, and was caught by the
+  // re-measurement here. Each rule must live INSIDE the coarse-pointer
+  // guard — on a desktop these controls keep the sizes a mouse earned —
+  // and must name the class or id, for the same (0,0,1)-loses reason as
+  // the test above.
+  const { style } = consoleStyle();
+  const touch = style.slice(style.indexOf('@media (hover: none) and (pointer: coarse)'));
+  for (const sel of ['.step-target', '.peak-policy', '.ctl',
+    '.step-grip .grip-arrow', '#probeHour', '#routesFilter',
+    '.json-search-input']) {
+    const esc = sel.replace(/\./g, '\\.');
+    assert.match(touch, new RegExp(`${esc} \\{[^}]*min-height: 44px`),
+      `${sel} needs the 44px floor inside the coarse-pointer guard`);
+  }
+});
+
+test('.pwin-name wraps anywhere — the model id end stays legible at 360px', () => {
+  // Card t_5fb727b5, measured at 360px: nvidia/nemotron-3-super-120b-a…
+  // ran 13px past its 121px box. What distinguishes these names sits at the
+  // END ("…-120b" contra "…-550b"), so ellipsis would cut exactly the part
+  // that answers "qual dos dois?" — the rule must wrap, not clip.
+  const { style } = consoleStyle();
+  assert.match(style, /\.pwin-name \{[^}]*overflow-wrap: anywhere/,
+    'the model id breaks anywhere so the full id stays readable');
 });
 
 test('the jump button drives the whole fix path: tab, hit row, inspector, scroll', () => {
@@ -7896,6 +8534,10 @@ test('the §4.7 write literals are exact, and each lives in exactly one place: t
     // The reorder's two words (card: reordenar pelo punho) — once each, in
     // the map, like every other gesture word.
     `'${api.WRITE.moveRule}'`, `'${api.WRITE.movingRule}'`,
+    // Card t_3ba979a1: the JSON tools' static button words — Formatar,
+    // Copiar and the fold button's two labels — live in the map once each,
+    // like every other button word on this editor.
+    `'${api.WRITE.format}'`, `'${api.WRITE.copy}'`, `'${api.WRITE.foldAll}'`, `'${api.WRITE.expandAll}'`,
   ];
   once.forEach((lit) => {
     const n = code.split(lit).length - 1;
@@ -11890,6 +12532,161 @@ test('doApply sends the DRAFT as the /apply changes, so a null removal actually 
   assert.ok(applyBody, '/apply was reached');
   assert.deepEqual(plain(applyBody.policy), { price_windows: { 'glm-5.3': null } },
     'the removal travels as the CHANGE (null), not as the merged plan.policy — re-merging the merged result would leave the key on disk');
+});
+
+// ── the breaker's numbers, on the row they explain (card t_376a14ac) ─────────
+// `GET /blocklist` publishes `auto_breaker`: the threshold, the sliding window and
+// what each failure kind weighs. Without them a cooldown row's `failure_count: 3`
+// is a number the operator has to read the source to interpret — 3 is one
+// ttfb_stall (weight 3) away from tripping, or three nonzero_exits (weight 1) that
+// would need five. Opposite diagnoses, same digit on screen.
+
+test('a cooldown row says how it opened, against the threshold that opened it', () => {
+  const { api } = loadConsole();
+  const policy = {
+    threshold: 5, window_seconds: 600,
+    failure_weights: { ttfb_stall: 3, nonzero_exit: 1 },
+  };
+  const notes = plain(api.breakerNotes(
+    { model_key: 'deepseek-v4-pro', failure_count: 3, last_failure_kind: 'ttfb_stall' },
+    policy,
+  ));
+  assert.deepEqual(notes, ['3 de 5 em 10 min', 'ttfb_stall pesa 3']);
+});
+
+test('the failure kind is named ONCE — with its weight, or bare, never twice', () => {
+  const { api } = loadConsole();
+  // §2, one authority per fact. The kind used to be this row's only note; it now
+  // carries the weight beside it, and a second note repeating the kind would be
+  // the same fact from two places.
+  const withWeight = plain(api.breakerNotes(
+    { failure_count: 2, last_failure_kind: 'idle_stall' },
+    { threshold: 5, window_seconds: 600, failure_weights: { idle_stall: 2 } },
+  ));
+  assert.deepEqual(withWeight, ['2 de 5 em 10 min', 'idle_stall pesa 2']);
+  assert.equal(withWeight.filter((n) => n.includes('idle_stall')).length, 1);
+
+  // A kind the served table does not price: the kind still shows, bare. Inventing
+  // a weight here would be inventing the criterion.
+  const unknownKind = plain(api.breakerNotes(
+    { failure_count: 2, last_failure_kind: 'kind_nobody_declared' },
+    { threshold: 5, window_seconds: 600, failure_weights: { idle_stall: 2 } },
+  ));
+  assert.deepEqual(unknownKind, ['2 de 5 em 10 min', 'kind_nobody_declared']);
+});
+
+test('an older sidecar that serves no policy still renders the row it always did', () => {
+  const { api } = loadConsole();
+  // The route gained `auto_breaker` on this branch. A console pointed at a sidecar
+  // without it must not go blank and must not print "undefined de undefined": the
+  // pre-existing note (the bare kind) is what it always showed.
+  assert.deepEqual(plain(api.breakerNotes(
+    { failure_count: 3, last_failure_kind: 'ttfb_stall' }, {})),
+    ['ttfb_stall']);
+  assert.deepEqual(plain(api.breakerNotes(
+    { failure_count: 3, last_failure_kind: 'ttfb_stall' }, null)),
+    ['ttfb_stall']);
+  // And with neither policy nor kind there is nothing to say — no line, per
+  // DESIGN.md rule 1, rather than an empty phrase.
+  assert.deepEqual(plain(api.breakerNotes({}, {})), []);
+  assert.deepEqual(plain(api.breakerNotes(null, null)), []);
+});
+
+test('the score needs all three numbers, or it is not said at all', () => {
+  const { api } = loadConsole();
+  // "3 de 5" with no window is a rate with no period, and a period the route did
+  // not serve must not be guessed. Each of the three missing in turn.
+  const base = { failure_count: 3, last_failure_kind: 'crash' };
+  const full = { threshold: 5, window_seconds: 600, failure_weights: { crash: 1 } };
+  assert.match(plain(api.breakerNotes(base, full))[0], /^3 de 5 em/);
+  for (const missing of ['threshold', 'window_seconds']) {
+    const partial = Object.assign({}, full);
+    delete partial[missing];
+    const notes = plain(api.breakerNotes(base, partial));
+    assert.equal(notes.length, 1, `sem ${missing} a frase do placar não sai`);
+    assert.doesNotMatch(notes[0], /de 5/);
+  }
+  // No count on the entry: same refusal, from the other side.
+  const noCount = plain(api.breakerNotes({ last_failure_kind: 'crash' }, full));
+  assert.deepEqual(noCount, ['crash pesa 1']);
+});
+
+test('the window is said in minutes only when it really is whole minutes', () => {
+  const { api } = loadConsole();
+  assert.equal(api.breakerWindowWords(600), '10 min');
+  assert.equal(api.breakerWindowWords(120), '2 min');
+  assert.equal(api.breakerWindowWords(60), '1 min');
+  // 90s is not "1min30": that is a unit nobody configured, and the seconds are
+  // what the operator typed.
+  assert.equal(api.breakerWindowWords(90), '90s');
+  assert.equal(api.breakerWindowWords(45), '45s');
+  // Nothing to say beats a wrong period.
+  for (const bad of [0, -60, null, undefined, 'dez', NaN]) {
+    assert.equal(api.breakerWindowWords(bad), null, String(bad));
+  }
+});
+
+test('the numbers reach the cooldown row the sheet really draws', () => {
+  const { api, dom } = loadConsole();
+  // Through renderBans, not through the pure function: a helper nothing calls is
+  // the shape this card is about.
+  api.state.blocklist = {
+    manual_bans: [],
+    fallback_chain: [],
+    breaker_cooldowns: [{
+      model_key: 'deepseek-v4-pro', cooldown_remaining_s: 300,
+      failure_count: 4, last_failure_kind: 'ttfb_stall',
+    }],
+    auto_breaker: {
+      threshold: 5, window_seconds: 600,
+      failure_weights: { ttfb_stall: 3 },
+    },
+  };
+  // Driven through renderHealth, which is what calls renderBans in production: a
+  // helper reached only by a test is the shape this card is about.
+  api.state.policy = { rules: [], tiers: {} };
+  api.state.liveness = { models: [] };
+  api.renderHealth();
+  const text = findAll(dom.get('bans'), 'row-note').map((n) => n.textContent);
+  assert.ok(text.includes('4 de 5 em 10 min'), `o placar está na linha: ${text}`);
+  assert.ok(text.includes('ttfb_stall pesa 3'), `o peso está na linha: ${text}`);
+  // The row still says the time it always said.
+  const values = findAll(dom.get('bans'), 'row-value').map((n) => n.textContent);
+  assert.ok(values.includes('faltam 300s'), values.join(' | '));
+});
+
+test('every phrase these notes say lives in the WRITE map, once', () => {
+  // §4.7: the map is the single copy of every phrase the screen says. Two of them
+  // are new; a literal built inline here is how one drifts from the other.
+  const source = fs.readFileSync(sourcePath, 'utf8');
+  for (const phrase of ['{N} de {MAX} em {WIN}', '{KIND} pesa {W}']) {
+    const hits = source.split(phrase).length - 1;
+    assert.equal(hits, 1, `${phrase} deve aparecer exatamente uma vez, no mapa`);
+  }
+  // ...and it has to be USED from the map. Counting the literal alone was not
+  // enough: a mutation that inlined `${count} de ${max} em ${win}` left the map
+  // entry sitting there dead, the literal still appearing exactly once, and this
+  // test green. What forbids the second copy is the REFERENCE.
+  for (const key of ['WRITE.breakerScore', 'WRITE.breakerWeight']) {
+    assert.ok(source.includes(`fill(${key}`),
+      `${key} deve ser lido do mapa por fill(), não recopiado inline`);
+  }
+});
+
+test('no two functions in this file share a name', () => {
+  // Found the hard way on this card: a new `windowWords(seconds)` silently
+  // overwrote the pricing `windowWords(windows, when)` — same scope, later
+  // declaration wins, no error anywhere. Three pricing tests failed and named a
+  // price phrase, which points at the wrong file. Nothing here forbade it, so
+  // this does.
+  const script = fs.readFileSync(sourcePath, 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
+  const names = [...script.matchAll(/^\s*function ([A-Za-z_$][\w$]*)\s*\(/gm)]
+    .map((m) => m[1]);
+  const seen = new Map();
+  names.forEach((n) => seen.set(n, (seen.get(n) || 0) + 1));
+  const dupes = [...seen.entries()].filter(([, n]) => n > 1);
+  assert.deepEqual(dupes, [], `nomes declarados duas vezes: ${JSON.stringify(dupes)}`);
+  assert.ok(names.length > 50, `o scanner precisa achar as funções, achou ${names.length}`);
 });
 
 // ── A VALUE THAT OPENS AN EDITOR IS A CONTROL, SO A KEYBOARD REACHES IT ──────

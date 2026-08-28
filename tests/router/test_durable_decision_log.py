@@ -7,7 +7,7 @@ import json
 import pytest
 
 import router.durable_decision_log as ddl
-from router.durable_decision_log import DurableDecisionLog, routes_path
+from router.durable_decision_log import DurableDecisionLog, merge_attempts, routes_path
 
 
 @pytest.fixture
@@ -41,7 +41,37 @@ def test_routes_path_honors_explicit_override(monkeypatch, tmp_path):
     assert routes_path() == override
 
 
-def test_record_appends_one_parseable_jsonl_line(state_home):
+def test_merge_attempts_joins_same_task_and_run_without_mutating_old_trace(state_home):
+    old = {"task_id": "t-old", "run_id": 1, "output": {"attempted_model": "old"}}
+    decision = {"task_id": "t-route", "run_id": 9, "output": {"attempted_model": "served"}}
+    attempts = ddl.attempts_path()
+    attempts.parent.mkdir(parents=True, exist_ok=True)
+    attempts.write_text("\n".join([
+        "{bad-json",
+        json.dumps({"schema": "other"}),
+        json.dumps({"schema": "route-attempts/1"}),
+        json.dumps({"schema": "route-attempts/1", "task_id": "t-route", "run_id": 9,
+                    "n": 1, "model": "failed", "provider": "p1", "started_at": 1,
+                    "duration_ms": 300, "outcome": "failed",
+                    "error": {"code": "rate_limit", "message": "quota"}}),
+        json.dumps({"schema": "route-attempts/1", "task_id": "t-route", "run_id": 9,
+                    "n": 2, "model": "served", "provider": "p2", "started_at": 2,
+                    "duration_ms": 400, "outcome": "served"}),
+        json.dumps({"schema": "route-attempts/1", "task_id": "t-route", "run_id": 8,
+                    "n": 1, "model": "stale", "provider": "p0", "started_at": 0,
+                    "duration_ms": 1, "outcome": "served"}),
+    ]) + "\n", encoding="utf-8")
+
+    with attempts.open("ab") as handle:
+        handle.write(b"\xff\n")
+
+    merged_old, merged, missing = merge_attempts([old, decision, {}])
+
+    assert "attempts" not in old and "attempts" not in merged_old
+    assert "attempts" not in missing
+    assert [(row["n"], row["outcome"]) for row in merged["attempts"]] == [(1, "failed"), (2, "served")]
+    assert merged["attempts"][1]["model"] == merged["output"]["attempted_model"]
+
     log = DurableDecisionLog()
     log.record("hard_rule", {"model": "T4"}, task_preview="fix a bug",
                steps=[{"stage": "blocklist", "out": {"blocked": False}}])

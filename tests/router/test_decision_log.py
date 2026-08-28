@@ -13,11 +13,45 @@ from router.decision_log import (
     DecisionLog,
     VALID_CAUSES,
     attempted_head_of,
+    attempts_of,
     chain_plan_of,
     empty_chain_plan,
     plan_head_of,
 )
 from router.durable_decision_log import DurableDecisionLog, read_entries
+
+
+def test_attempts_of_distinguishes_old_trace_from_instrumented_attempts():
+    assert attempts_of({"output": {"model": "head"}}) is None
+    attempts = attempts_of({
+        "attempts": [
+            {"n": 2, "model": "served", "provider": "p2", "started_at": 2.5,
+             "duration_ms": 500, "outcome": "served"},
+            {"n": 1, "model": "failed", "provider": "p1", "started_at": 1,
+             "duration_ms": 250, "outcome": "failed",
+             "error": {"code": "rate_limit", "message": "quota"}},
+            {"n": 3, "model": "bad", "provider": "p3", "started_at": 3,
+             "duration_ms": 1, "outcome": "failed"},
+        ]
+    })
+    assert attempts == [
+        {"n": 1, "model": "failed", "provider": "p1", "started_at": 1.0,
+         "duration_ms": 250, "outcome": "failed",
+         "error": {"code": "rate_limit", "message": "quota"}},
+        {"n": 2, "model": "served", "provider": "p2", "started_at": 2.5,
+         "duration_ms": 500, "outcome": "served"},
+    ]
+
+
+def test_attempts_of_rejects_corrupt_container_rows_and_error_contracts():
+    assert attempts_of({"attempts": "old-shape"}) is None
+    assert attempts_of({"attempts": [
+        None,
+        {"n": 0, "model": "bad", "provider": "p", "started_at": 0,
+         "duration_ms": 0, "outcome": "skipped"},
+        {"n": 1, "model": "served", "provider": "p", "started_at": 0,
+         "duration_ms": 0, "outcome": "served", "error": {"code": "x", "message": "wrong"}},
+    ]}) == []
 
 
 def test_record_without_steps_keeps_historical_shape():
