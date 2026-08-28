@@ -220,3 +220,52 @@ def test_xiaomi_anchors_target_the_rule_phrase_not_the_title() -> None:
     by_key = {adapter.key: adapter for adapter in runner.DEFAULT_ADAPTERS}
     assert by_key["xiaomi-token-plan"].anchor == "非高峰期"
     assert by_key["xiaomi-pay-as-you-go"].anchor == "按实际 Token 用量消耗账户余额"
+
+
+def test_zai_is_watched_for_model_coverage_as_well_as_for_its_window() -> None:
+    """A window is not the only fact the config leans on: coverage is the other.
+
+    On 2026-08-26 the vendor dropped glm-4.7 and glm-5-turbo from the plan and
+    began auto-routing both ids to glm-5.3-flash. The peak-hours clause — the only
+    zai clause watched until then — did not change one character, so the watcher
+    reported no change while four names in the shipped policy became aliases for a
+    model nobody had chosen. Two clauses, two anchors, one page.
+    """
+    zai = [adapter for adapter in runner.DEFAULT_ADAPTERS if adapter.provider == "zai"]
+    anchors = {adapter.anchor for adapter in zai}
+    assert "Singapore Standard Time" in anchors, "the peak window is still watched"
+    assert "will automatically be routed to" in anchors, (
+        "the substitution sentence is what says which id actually runs"
+    )
+    # Two adapters on one provider need distinct keys or one overwrites the other's
+    # recorded literal — the same shape the two xiaomi pages already have.
+    keys = [adapter.key for adapter in zai]
+    assert len(set(keys)) == len(keys), keys
+    assert "zai-plan-model-coverage" in keys
+
+
+def test_the_zai_coverage_anchor_resolves_to_the_substitution_clause() -> None:
+    """The anchor is checked against the page's own wording, not just declared.
+
+    An anchor that matches nothing raises at fetch time and lands in `failed`; one
+    that matches the page shell raises too. Both are silent for as long as nobody
+    runs the cron, so the resolution is exercised here against a captured line.
+    """
+    page = (
+        "### Supported Models\n"
+        "* All plans support **GLM-5.3**, GLM-5-Flash.\n"
+        "* Requests for GLM-5.2/GLM-5.1 will be automatically routed to GLM-5.3, "
+        "requests for GLM-5-Turbo/GLM-4.7 will automatically be routed to "
+        "GLM-5.3-Flash.\n"
+        "#### Usage Credit Allowance\n"
+    )
+    adapter = next(
+        a for a in runner.DEFAULT_ADAPTERS if a.key == "zai-plan-model-coverage"
+    )
+    literal = adapter.extract(page)
+    # The clause itself, with both arrows in it: the id on the RIGHT of each is
+    # what runs, and that is the half a config edit has to follow.
+    assert "GLM-5-Turbo/GLM-4.7 will automatically be routed to GLM-5.3-Flash" in literal
+    assert "GLM-5.2/GLM-5.1 will be automatically routed to GLM-5.3" in literal
+    # And it is the clause, not the bullet above it that only lists names.
+    assert "All plans support" not in literal

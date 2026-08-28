@@ -41,7 +41,7 @@ every declared window (see :func:`price_multiplier`).
 
 A MULTIPLIER IS DIMENSIONLESS — it scales whatever unit the rail bills in: USD
 for ``metered``/``subscription``, plan CREDITS for ``plan``, and nothing at all
-for ``free``. glm-4.7's weekday 2.0x doubles the CREDITS drawn off an allowance
+for ``free``. glm-5.3-flash's weekday 2.0x doubles the CREDITS off an allowance
 already bought; deepseek-v4-pro's 2.0x doubles a dollar invoice. The three
 time-dependent stages therefore read the same number differently, on purpose,
 and each says which in its own docstring:
@@ -62,14 +62,29 @@ the argument for all of them.
 
 Vendor context that does not fit a registry field, kept here so it is not lost:
 
-  zai (GLM) — the Coding Plan covers ONLY glm-5.3, glm-5-turbo and glm-4.7
-    (+ glm-4.6v through the Vision MCP); requests naming glm-5.2 or glm-5.1
-    are SILENTLY auto-routed to glm-5.3, and glm-5 is not plan-eligible at all.
+  zai (GLM) — the Coding Plan covers ONLY glm-5.3 and glm-5.3-flash, read
+    2026-08-27 off the plan's own credit table. It USED to cover glm-5-turbo,
+    glm-4.7 and (through the Vision MCP) glm-4.6v; those three are gone from the
+    table, and a plan key naming glm-5-turbo or glm-4.7 is now SILENTLY
+    auto-routed to glm-5.3-flash exactly as glm-5.2/glm-5.1 are auto-routed to
+    glm-5.3. glm-5 is still not plan-eligible at all. Vision on the plan is
+    served by glm-5.3-flash, whose credit line reads "Including MCP for visual
+    understanding" — it is the first plan-covered model that can see.
+    NAMING AN AUTO-ROUTED ID IS THE DEFECT THIS PARAGRAPH EXISTS TO PREVENT: the
+    request succeeds, the plan bills the model it substituted, and every trace,
+    decision log and console row reports the id nobody ran. glm-4.7 sat in four
+    places in the shipped policy (T1 primary, classifier pair, fail_safe,
+    blocklist.fallback_chain) for the whole window between the vendor's change
+    and 2026-08-27; the console said glm-4.7 and glm-5.3-flash answered.
     Plan credit multipliers (input/cached/output): glm-5.3 6.9/1.7/24,
-    glm-5-turbo 5.7/1.5/21, glm-4.7 4.6/1.2/16, glm-4.6v 1.2/0.3/2.7.
+    glm-5.3-flash 2.3/0.56/8 — Flash is ~3x cheaper per output token off the
+    same allowance, which is where the vendor's "3x the quota" claim comes from.
     Off-peak spends 50% of the credits; peak is Mon-Fri 14:00-18:00 UTC+8 ==
-    06:00-10:00 UTC on WEEKDAYS ONLY, encoded as a weekday-gated 2.0x window on
-    the four plan-covered models. The whole weekend bills off-peak.
+    06:00-10:00 UTC on WEEKDAYS ONLY (re-read 2026-08-27, unchanged), encoded as
+    a weekday-gated 2.0x window on the two plan-covered models. The whole
+    weekend bills off-peak. The three demoted ids keep their metered list price
+    and LOSE that window: peak/off-peak is a plan-CREDIT rule, and a metered zai
+    call is billed flat at any hour.
   deepseek — prices changed 2026-08-16 16:00 UTC and gained a peak/off-peak
     split. The vendor then narrowed it to WEEKDAYS on 2026-08-22 16:00 UTC, by a
     SILENT edit of the pricing page: the change is absent from the official
@@ -255,15 +270,21 @@ FALLBACK_STRATEGIES: frozenset = frozenset({_SEQUENTIAL, _RANDOM, _CHEAPEST_NOW}
 # and by nothing else — in particular NOT by whether a dollar price happens to be
 # published. An elo billed against the z.ai Coding PLAN is FREE AT THE MARGIN and
 # is not quoted in dollars at all: the plan spends CREDITS off an allowance
-# already bought (glm-5.3 24 output credits, glm-5-turbo 21, glm-4.7 16, glm-4.6v
-# 2.7), so the next token adds nothing to any invoice — however many dollars the
-# registry ALSO records as that model's separately-purchasable metered list price.
-# glm-4.7, glm-5-turbo and glm-4.6v are exactly that case — plan-covered AND
-# carrying a list price — and bucketing them by the ABSENCE of a price would
-# compare them in dollars the operator does not pay, then spend metered tokens to
-# avoid a cost that is already sunk: plan-covered glm-4.7 (2.20 out, 4.40 inside
-# zai's weekday peak) would sort behind metered mimo-v2.5 (0.28, 0.224 inside
-# xiaomi's night discount).
+# already bought (glm-5.3 24 output credits, glm-5.3-flash 8), so the next token
+# adds nothing to any invoice — however many dollars the registry ALSO records as
+# that model's separately-purchasable metered list price.
+# BOTH plan-covered models are now that case, which is what makes the rule
+# load-bearing rather than illustrative. It used to rest on three ids the plan has
+# since dropped (glm-4.7, glm-5-turbo, glm-4.6v), while glm-5.3 — the one id the
+# argument mattered for — happened to carry no price at all and would have
+# bucketed correctly either way. The vendor published glm-5.3 metered at 1.40/4.40
+# on 2026-08-27, so that accident is gone: bucketing by the ABSENCE of a price
+# would now compare both plan rails in dollars the operator does not pay, then
+# spend metered tokens to avoid a cost that is already sunk. On the SHIPPED T1
+# chain that is not hypothetical — plan-covered glm-5.3-flash (0.50 out, and
+# scaling its 2.0x weekday peak into dollars, which is itself the unit error, 1.00)
+# would sort behind metered mimo-v2.5 (0.28, 0.224 inside xiaomi's night
+# discount), two hops further down the same chain.
 #
 # `subscription` is deliberately NOT in that bucket, and it is the one line here
 # worth arguing about. A ChatGPT/Codex seat is flat-rate too, but every
@@ -286,8 +307,8 @@ FALLBACK_STRATEGIES: frozenset = frozenset({_SEQUENTIAL, _RANDOM, _CHEAPEST_NOW}
 # THE SAME TABLE ANSWERS THE PRICE CEILING'S UNIT QUESTION, because it is the
 # same question. A `time_cap`'s `max_multiplier` is a DOLLAR ceiling, so
 # :func:`apply_time_cap` can only remove an elo out of the DOLLARS bucket.
-# Capping plan-covered glm-4.7 at 06:00-10:00 UTC because its CREDIT multiplier
-# is 2.0 would evict the rail with zero marginal dollars and push the request
+# Capping plan-covered glm-5.3-flash at 06:00-10:00 UTC because its CREDIT
+# multiplier is 2.0 would evict the rail with zero marginal dollars and push the
 # onto a metered one — the very trade the paragraph above refuses, run by a
 # different function. The cap therefore steps aside for the plan-credit, free and
 # undescribable buckets and REPORTS the multiplier it declined to act on
@@ -320,8 +341,12 @@ _BILLING_MODE_UNKNOWN = "unknown"
 # converted into dollars without inventing an exchange rate, so it sorts behind
 # its priced bucket-mates in declared order rather than being treated as 0.0.
 # In the zai plan bucket that ordering also happens to be the credit ordering:
-# glm-4.6v/glm-4.7/glm-5-turbo cost 2.7/16/21 output credits in list-price order,
-# and unpriced glm-5.3 — last here — is the most expensive of the four at 24.
+# glm-5.3-flash and glm-5.3 cost 8 and 24 output credits, and 0.50 and 4.40
+# dollars, so dollars ascending puts them in credit order too. Do not lean on
+# that — it is a coincidence of one vendor's two-model roster, not a rule, and
+# the ordering the code performs is the dollar one. Until 2026-08-27 glm-5.3 was
+# the unpriced case this bucket-mate rule exists for; nothing plan-covered is
+# unpriced today, so _UNPRICED_IN_BUCKET now only ever sorts metered elos.
 _PRICED_IN_BUCKET = 0
 _UNPRICED_IN_BUCKET = 1
 
@@ -378,16 +403,60 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "tool_calling": True,
         "structured_output": True,
         "billing_mode": "plan",
-        "price_in": None,
-        "price_out": None,
-        # Plan credits, not dollars: 2.0x on weekday 06:00-10:00 UTC, half-rate
-        # every other hour including the whole weekend. price_in stays None —
-        # there is no dollar price to scale, and None must never become 0.0.
+        # The metered API DID launch: 1.40 in / 0.26 cached / 4.40 out, read off
+        # the vendor's own pricing table 2026-08-27. It was absent until then,
+        # and the absence was load-bearing in two comments that no longer hold.
+        # billing_mode stays `plan` because that is the rail this install calls
+        # it on; the dollars are what a plan-less operator would pay.
+        "price_in": 1.40,
+        "price_out": 4.40,
+        # The 2.0x is in plan CREDITS, not in those dollars: weekday
+        # 06:00-10:00 UTC, half-rate every other hour including the whole
+        # weekend. A multiplier is dimensionless and scales whichever unit the
+        # rail bills in — see the module docstring.
         "price_windows": [
             {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
         ],
-        "price_windows_verified": "2026-08-26",
-        "notes": "metered API not launched; credit multipliers only",
+        "price_windows_verified": "2026-08-27",
+        "notes": "plan 6.9/1.7/24 credits; metered launched at 1.40/4.40",
+    },
+    "glm-5.3-flash": {
+        "provider": "zai",
+        # The vendor's own model table says 1M for this id, same as glm-5.3, and
+        # that is the number recorded. TWO CAVEATS an operator will hit:
+        # OpenRouter's rail advertises 1_310_720 for the same weights, which is
+        # its hosting and not zai's; and on the Coding Plan the 1M window is
+        # opt-in through a `[1m]` SUFFIX on the model id (`glm-5.3-flash[1m]`),
+        # which nothing in this repo emits. If the plan rail ever refuses a long
+        # prompt, the honest fix is `max_input_tokens` here — the field that IS
+        # enforced against an input estimate — not a wider window.
+        "context_window": 1_000_000,
+        "max_output": 131_072,
+        # The first plan-covered model that can SEE: text + image + video
+        # natively, and the plan's Vision MCP is billed on this id's credit line
+        # ("Including MCP for visual understanding"). The `vision-required` row
+        # in policy routes on capability, so this is the entry that decides
+        # whether a screenshot can stay on the plan rail at all.
+        "vision": True,
+        "tool_calling": True,
+        "structured_output": True,
+        "billing_mode": "plan",
+        # LIST price, not the launch promo. Z.ai is running 50% off
+        # (0.075 / 0.015 / 0.25) until 2026-09-09 16:00 UTC; a discount with an
+        # expiry is not a rate, and a chain ordered on the promo would silently
+        # get 2x more expensive on 9 September. Budget the list.
+        "price_in": 0.15,
+        "price_out": 0.50,
+        "price_windows": [
+            {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
+        ],
+        "price_windows_verified": "2026-08-27",
+        "notes": (
+            "plan 2.3/0.56/8 credits (~3x the quota of glm-5.3); "
+            "list 0.15/0.50, 50% promo ends 2026-09-09 16:00 UTC; "
+            "thinking always on; the plan auto-routes glm-4.7 and "
+            "glm-5-turbo here"
+        ),
     },
     "glm-5-turbo": {
         "provider": "zai",
@@ -396,13 +465,14 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "vision": False,
         "tool_calling": True,
         "structured_output": True,
-        "billing_mode": "plan",
+        # Was `plan` until 2026-08-27, when the vendor dropped it from the plan's
+        # credit table. Metered is now the only rail that runs THIS id, and a
+        # metered zai call is flat at every hour — the peak/off-peak split is a
+        # plan-credit rule, so the 2.0x window went with the coverage.
+        "billing_mode": "metered",
         "price_in": 1.20,
         "price_out": 4.00,
-        "price_windows": [
-            {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
-        ],
-        "price_windows_verified": "2026-08-26",
+        "notes": "plan auto-routes this id to glm-5.3-flash",
     },
     "glm-4.7": {
         "provider": "zai",
@@ -411,14 +481,13 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "vision": False,
         "tool_calling": True,
         "structured_output": True,
-        "billing_mode": "plan",
+        # Same demotion as glm-5-turbo, and this one had four names in policy to
+        # its credit — see the module docstring. Still purchasable metered at the
+        # price below; on a plan key it is not a model, it is an alias.
+        "billing_mode": "metered",
         "price_in": 0.60,
         "price_out": 2.20,
-        "price_windows": [
-            {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
-        ],
-        "price_windows_verified": "2026-08-26",
-        "notes": "also purchasable metered at the same price",
+        "notes": "plan auto-routes this id to glm-5.3-flash",
     },
     "glm-4.7-flashx": {
         "provider": "zai",
@@ -507,13 +576,14 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "vision": True,
         "tool_calling": True,
         "structured_output": True,
-        "billing_mode": "plan",
+        # Was the plan's vision rail, through the Vision MCP, until 2026-08-27:
+        # that MCP is now billed on glm-5.3-flash's credit line and this id left
+        # the credit table with glm-4.7 and glm-5-turbo. Metered only, and flat,
+        # for the same reason theirs are.
+        "billing_mode": "metered",
         "price_in": 0.30,
         "price_out": 0.90,
-        "price_windows": [
-            {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
-        ],
-        "price_windows_verified": "2026-08-26",
+        "notes": "plan's Vision MCP moved to glm-5.3-flash",
     },
     "glm-4.5v": {
         "provider": "zai",
@@ -1216,7 +1286,7 @@ def next_window_change(
 
     The DAY and ``hours_ahead`` are load-bearing, not decoration: a
     weekday-gated window means an hour alone is ambiguous by up to two days.
-    ``next_window_change("glm-4.7", Saturday 07:00Z)`` lands on hour 6, which as
+    ``next_window_change("glm-5.3", Saturday 07:00Z)`` lands on hour 6, which as
     a bare hour reads as "23 hours away" when the real answer is Monday 06:00,
     47 hours away. Any consumer computing a countdown must read
     ``hours_ahead``; ``hour``/``weekday`` are for labelling the instant. Minutes
@@ -1387,11 +1457,11 @@ def order_chain(
        nothing to any dollar invoice), then ``free``, then the dollar-priced
        rails — ``subscription`` and ``metered`` TOGETHER — then an elo whose
        billing mode nothing can describe. The bucket is NOT decided by whether a
-       price is published: glm-4.7, glm-5-turbo and glm-4.6v are plan-covered AND
-       carry dollar list prices, and comparing those in dollars would sort
-       plan-covered glm-4.7 (2.20 out, 4.40 inside its peak) behind metered
-       mimo-v2.5 (0.28 out) — spending metered tokens to dodge a cost that is
-       already sunk. ``subscription`` shares the metered bucket on purpose: an
+       price is published: both plan-covered models carry dollar list prices, and
+       comparing those in dollars would sort plan-covered glm-5.3-flash (0.50
+       out) behind metered mimo-v2.5 (0.28 out) — spending metered tokens to
+       dodge a cost that is already sunk, two hops apart on the shipped T1 chain.
+       ``subscription`` shares the metered bucket on purpose: an
        openai-codex seat publishes the per-token rate that rail bills at, so it
        stays quoted in dollars and stays comparable. Ranking a seat as
        already-paid instead leaves a chain's order IDENTICAL at every hour — the
@@ -1623,21 +1693,23 @@ def apply_time_cap(
     multiplier doubles a credit draw and adds no dollars at all; a dollar ceiling
     has nothing to say about it and CANNOT remove it, whatever ``max_multiplier``
     is set to. Concretely, T1's ``max_multiplier: 1.5`` does NOT evict
-    plan-covered glm-4.7 at 06:00-10:00 UTC Mon-Fri even though its multiplier is
-    2.0: it reports ``cap_exempt: [{glm-4.7, 2.0, plan}]`` and leaves it first in
-    the chain. Capping it would spend metered dollars to dodge a cost that is
-    already sunk, and on the busiest trivial-work tier that is the opposite of
+    plan-covered glm-5.3-flash at 06:00-10:00 UTC Mon-Fri even though its
+    multiplier is 2.0: it reports ``cap_exempt: [{glm-5.3-flash, 2.0, plan}]``
+    and leaves it first in the chain. Capping it would spend metered dollars to
+    dodge a cost that is already sunk, and on the trivial-work tier that is the
+    opposite of
     what a cost control is for. What the cap still does there is exactly what its
     name says: it removes any ``metered``/``subscription`` hop over 1.5x, so the
     ceiling still governs every rail that can actually bill money, and it still
     REPORTS the credit peak it declined to act on.
 
     Predicting T1 specifically, since an operator reading ``max_multiplier: 1.5``
-    deserves the whole answer: behind glm-4.7 that tier holds flat-rate
+    deserves the whole answer: behind glm-5.3-flash that tier holds flat-rate
     gpt-5.6-luna and mimo-v2.5, whose only window is xiaomi's 0.8x DISCOUNT, so
     after the exemption nothing on that roster can exceed 1.5 at any hour. The
     cap removes nothing today; it is insurance against a future dollar-priced hop
-    plus a standing report of glm-4.7's weekday credit peak. An operator who wants
+    plus a standing report of the plan's weekday credit peak. An operator who
+    wants
     that credit peak stepped around wants ``time_policy``'s ``avoid_peak``, which
     is unit-agnostic because it demotes instead of removing — or a tier whose
     primary is not plan-covered.

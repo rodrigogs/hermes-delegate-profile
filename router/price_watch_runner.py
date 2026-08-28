@@ -24,6 +24,26 @@ DEFAULT_ADAPTERS = (
     ProviderAdapter("deepseek", "https://api-docs.deepseek.com/quick_start/pricing", "Peak hours"),
     ProviderAdapter("zai", "https://docs.z.ai/devpack/overview.md", "Singapore Standard Time"),
     ProviderAdapter(
+        "zai",
+        "https://docs.z.ai/devpack/overview.md",
+        # WHICH MODELS THE PLAN COVERS is a second load-bearing clause on the same
+        # page, and the window anchor above cannot see it. On 2026-08-26 the vendor
+        # dropped glm-4.7 and glm-5-turbo from the plan and began auto-routing both
+        # ids to glm-5.3-flash. The window clause did not change one character, so
+        # this watcher reported "confirmed" while four names in the shipped policy
+        # became vendor aliases — the request succeeds, another model answers, and
+        # every trace reports the id that did not run.
+        # The anchor is the substitution sentence itself: "Requests for
+        # GLM-5.2/GLM-5.1 will be automatically routed to GLM-5.3, requests for
+        # GLM-5-Turbo/GLM-4.7 will automatically be routed to GLM-5.3-Flash."
+        # Its own words are what must be diffed, because the id on the RIGHT of
+        # each arrow is what actually runs. Note the vendor writes "GLM-5-Flash" in
+        # the supported-models bullet one line above and "GLM-5.3-Flash" here and
+        # in the credit table; the callable id is glm-5.3-flash.
+        "will automatically be routed to",
+        key="zai-plan-model-coverage",
+    ),
+    ProviderAdapter(
         "xiaomi",
         "https://mimo.mi.com/docs/zh-CN/price/pay-as-you-go",
         # A página é servida no servidor (a medição de 2026-08-26 que "precisou de

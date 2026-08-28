@@ -5299,7 +5299,7 @@ test('an elo with no window of its own is priced flat, never at its rail\'s peak
   assert.doesNotMatch(words, /peak/);
 
   // An elo that DOES declare one keeps it, and it is the registry's own.
-  const windowed = api.eloWindows(catalogueEntry('glm-4.7'));
+  const windowed = api.eloWindows(catalogueEntry('glm-5.3-flash'));
   assert.deepEqual(plain(windowed), [{ hours: [6, 10], multiplier: 2, weekdays: [0, 1, 2, 3, 4] }]);
   assert.equal(api.priceMultiplier(windowed, { hour: 7, weekday: 0 }), 2);
   // A rate declared on the elo in router.yaml still wins over the registry's.
@@ -5354,10 +5354,13 @@ test('an overlap resolves the way the router resolves it, not the other way', ()
 test('the verified windows price the hour they say they do', () => {
   const { api } = loadConsole();
   // Per ELO, from the registry's own declarations: deepseek-v4-flash carries both
-  // peaks and glm-4.7 the weekday-gated one. No registry entry declares a CHEAP
-  // window any more, so that exemplar is declared inline below.
+  // peaks and glm-5.3-flash the weekday-gated one. No registry entry declares a
+  // CHEAP window any more, so that exemplar is declared inline below.
+  // The zai exemplar was glm-4.7 until 2026-08-27, when the plan dropped that id
+  // and it lost the credit window with the coverage: the weekday gate is a fact
+  // about a PLAN-covered elo, so the exemplar has to be one.
   const deepseek = api.eloWindows(catalogueEntry('deepseek-v4-flash'));
-  const zai = api.eloWindows(catalogueEntry('glm-4.7'));
+  const zai = api.eloWindows(catalogueEntry('glm-5.3-flash'));
   // O exemplar de janela BARATA e sem porta de dia é declarado aqui, não lido do
   // registry: o 0,8× do xiaomi era escopado ao Token Plan pré-pago e saiu das
   // entradas em 2026-08-26 (este install é pay-as-you-go). Um teste de mecanismo
@@ -5413,7 +5416,7 @@ test('the verified windows price the hour they say they do', () => {
 test('the next change is a real hour, so "until when" is not invented', () => {
   const { api } = loadConsole();
   const deepseek = api.eloWindows(catalogueEntry('deepseek-v4-flash'));
-  const zai = api.eloWindows(catalogueEntry('glm-4.7'));
+  const zai = api.eloWindows(catalogueEntry('glm-5.3-flash'));
   // O exemplar de janela BARATA e sem porta de dia é declarado aqui, não lido do
   // registry: o 0,8× do xiaomi era escopado ao Token Plan pré-pago e saiu das
   // entradas em 2026-08-26 (este install é pay-as-you-go). Um teste de mecanismo
@@ -6846,16 +6849,28 @@ test('an unanswered price question renders as silence, never as "no price"', () 
     'the multiplier is the router\'s and survives; the invented absence does not');
   assert.doesNotMatch(api.priceWords({}, 2, 'metered', null), /no per-token price/);
 
-  // THE CATALOGUE ANSWERED, and it says this elo bills in credits. That is a
-  // reported fact and it earns words — an operator has to know a plan rail is not
-  // free. `price_published` is service.py's, computed by asking the running path.
-  const plan = catalogueEntry('glm-5.3');
-  assert.equal(plan.price_published, false, 'glm-5.3 publishes no dollar rate');
+  // THE CATALOGUE ANSWERED, and it says this elo bills in credits with no dollar
+  // rate at all. That is a reported fact and it earns words — an operator has to
+  // know a plan rail is not free. `price_published` is service.py's, computed by
+  // asking the running path.
+  // Declared rather than read from the registry: glm-5.3 was this exemplar until
+  // 2026-08-27, when the vendor published its metered rate, and nothing
+  // plan-covered is unpriced today. The rendering still has to be right for the
+  // shape, and the next plan-only launch will be it again.
+  const plan = { provider: 'zai', billing_mode: 'plan', price_in: null,
+                 price_out: null, price_published: false };
   assert.equal(api.pricePublished(plan, plan), false);
   const words = api.priceWords(plan, 2, 'plan', api.pricePublished(plan, plan));
   assert.match(words, /2× em hora de pico/);
   assert.match(words, /cobrado em créditos do plano/);
   assert.doesNotMatch(words, /\$0/, 'a plan rail rendered as $0 would win every comparison on screen');
+  // And the real entry moved: it publishes dollars now, which is exactly why the
+  // console may not read "plan" off the price column.
+  const pricedPlan = catalogueEntry('glm-5.3');
+  assert.equal(pricedPlan.billing_mode, 'plan');
+  assert.equal(pricedPlan.price_published, true, 'glm-5.3 publishes a dollar rate since 2026-08-27');
+  assert.match(api.priceWords(pricedPlan, 1, 'plan', true), /cobrado em créditos do plano/,
+    'a published rate does not stop the credits qualifier — the unit is the billing mode');
 
   // THE CATALOGUE ANSWERED WITH A RATE: it is rendered, at the multiplier applied.
   const metered = catalogueEntry('deepseek-v4-flash');
@@ -6870,15 +6885,17 @@ test('an unanswered price question renders as silence, never as "no price"', () 
 });
 
 test('a plan-billed elo with a list price still says the dollars are not invoiced', () => {
-  // glm-4.7 is the case this line was wrong about: plan-covered AND carrying a
+  // glm-4.7 was the case this line was wrong about: plan-covered AND carrying a
   // published rate ("also purchasable metered at the same price"), so the console
   // rendered `2× peak · $1.20 in / $4.40 out per 1M` for a rail that draws 16 output
   // credits — 32 inside the window — and invoices none of those dollars on a plan
   // key. The credits-versus-dollars split is what cheapest_now buckets on and the
   // only thing a time_cap may act on, so the surface that shows prices must carry it.
+  // glm-5.3-flash is that shape today (plan-covered, 0.15/0.50 list, 8 output
+  // credits), and glm-4.7 stopped being it when the plan dropped the id.
   const { api } = loadConsole();
-  const entry = catalogueEntry('glm-4.7');
-  const facts = registryFacts('glm-4.7');
+  const entry = catalogueEntry('glm-5.3-flash');
+  const facts = registryFacts('glm-5.3-flash');
   assert.equal(entry.billing_mode, 'plan', 'the registry bills this one in credits');
   assert.equal(entry.price_published, true, 'and publishes a dollar rate anyway — that is the trap');
   assert.deepEqual(facts.price_windows, [{ hours_utc: [6, 10], weekdays: [0, 1, 2, 3, 4], multiplier: 2.0 }]);
@@ -6902,7 +6919,8 @@ test('a plan-billed elo with a list price still says the dollars are not invoice
     const words = api.priceWords(entry, 1, mode, true);
     assert.equal(/créditos/.test(words), units.inCredits.indexOf(mode) !== -1,
       `${mode} prices read in ${units.inCredits.indexOf(mode) !== -1 ? 'credits' : 'dollars'}`);
-    assert.match(words, /\$0\.60 entrada \/ \$2\.20 saída por 1M/, 'every mode still shows the published rate');
+    assert.match(words, new RegExp(`\\$${facts.price_in.toFixed(2)} entrada / \\$${facts.price_out.toFixed(2)} saída por 1M`),
+      'every mode still shows the published rate');
   });
 });
 

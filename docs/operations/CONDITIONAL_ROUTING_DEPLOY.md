@@ -256,7 +256,7 @@ change that invalidates the table fails the suite instead of quietly outdating t
 ## 7. Known and deliberate, at time of writing
 
 - `T1`'s `time_cap` removes nothing at any hour, and that one is genuinely inert: `max_multiplier` is a
-  DOLLAR ceiling, and T1's only peaking elo is plan-covered `glm-4.7`, whose 2.0x doubles a credit draw
+  DOLLAR ceiling, and T1's only peaking elo is plan-covered `glm-5.3-flash`, whose 2.0x doubles a credit draw
   and no invoice. Verified over all 168 hours, `capped: []` at every one. Changing a chain shape changes
   which model serves real traffic, so it was left to the operator.
   **`T3`/`T4`'s `avoid_peak` is NOT inert** — an earlier version of this bullet said both knobs "earn
@@ -283,7 +283,36 @@ change that invalidates the table fails the suite instead of quietly outdating t
   provider and window as `gpt-5.6-sol`, but no published input limit, and the registry will not invent
   one). Nothing in the shipped policy changes — `T3`'s floor is 200_000 — but a floor above 272_000 on a
   tier holding a codex-mini rail now behaves differently than it did.
-- The policy is designed around a z.ai Coding Plan that expires in roughly two months. When it does,
-  `glm-5.3` may not be purchasable per token at all — its metered API is not live, it carries no
-  published price, and the metered catalogue starts at GLM-5.2. The metered successor is `glm-4.7` at
-  $0.60/$2.20, which is already `T1`'s primary. Plan the switch before the expiry, not after.
+- The policy is designed around a z.ai Coding Plan that expires in roughly two months, and the exit is
+  now PRICED. An earlier version of this bullet said `glm-5.3` "may not be purchasable per token at all —
+  its metered API is not live, it carries no published price", and named `glm-4.7` at $0.60/$2.20 as the
+  metered successor. Both halves went stale on 2026-08-27: `glm-5.3` is metered at **$1.40/$4.40**, and
+  `glm-4.7` is no longer a model on a plan key at all — the plan dropped it and auto-routes the id to
+  `glm-5.3-flash`. The exit today is `glm-5.3-flash` metered at **$0.15/$0.50** list (50% promo to
+  2026-09-09 16:00 UTC; budget the list) for T1 and T2 — both now run on it — and `glm-5.3` at
+  $1.40/$4.40 where the flagship is wanted, which is T3/T4's third hop. The blast radius of the expiry
+  is therefore ~9x cheaper per token than it was under the old T2 primary.
+  Nothing needs a chain edit at expiry — both plan ids keep working, the bill just starts
+  arriving in dollars, which is what `cheapest_now`'s billing_mode bucketing is there to notice. Re-read
+  the vendor's credit table before the switch: this bullet has been wrong once already.
+- **`T2` — the general-purpose rail — runs `glm-5.3-flash`, not the flagship.** Whatever the classifier
+  cannot place elsewhere lands on T2, so this is the most consequential name in the policy. The trade,
+  measured rather than assumed: 8 output credits against 24 (3x the work off the same allowance; the
+  vendor's own weekly estimate is 146–292M tokens against 48–97M on Lite), and 9.3x/8.8x cheaper in
+  dollars. Against that, the vendor's own self-reported tables put Flash under four points behind on
+  Terminal-Bench 2.1 (84.3 vs 88.2) and DeepSWE v1.1 (63.4 vs 66.9), further behind on HLE-with-tools
+  (55.3 vs 62.5), and AHEAD on Toolathlon Verified (78.4 vs 73.0), AutomationBench and GDPval-AA.
+  Single-file standard-pattern work is the tool-use end of that, and the flagship's clear win — long
+  trajectories and hard reasoning — is T3/T4 work, where `glm-5.3` is still the third hop.
+  Two consequences worth knowing: **T1 and T2 now share a primary** (there is exactly one plan rail below
+  the flagship), so the tiers are separated by their fallback economics and time policy rather than by the
+  primary — T1 refuses a peak-rate dollar and falls to `mimo-v2.5` at $0.28, T2 reorders by the hour and
+  falls to `deepseek-v4-flash` at $0.66. And **`vision-required` finally stops costing money**: Flash is
+  natively multimodal, so an image turn stays on the plan rail instead of being filtered onto the
+  subscription seat. If the vendor ever gives the plan a second rung below the flagship, T1 is where to
+  spend it.
+- **The plan's model coverage changed under the config and nothing caught it.** `router/price_watch.py`
+  watches z.ai's devpack page, but its anchor is the peak-hours clause ("Singapore Standard Time"), which
+  did NOT change; the *supported models* and *credit multiplier* sections did. So the watcher reported no
+  change while four names in policy became vendor aliases. A window is not the only fact a config leans
+  on: coverage is the other, and it deserves its own anchor.

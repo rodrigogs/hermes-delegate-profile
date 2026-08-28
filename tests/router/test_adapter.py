@@ -1310,10 +1310,19 @@ class TestDefensiveShapes:
 # executor's FIRST attempt while the model the veto approved was one the
 # capability filter had already dropped.
 
-# The screenshot turn from the finding: on the shipped policy this matches
-# `vision-required` -> T2, whose declared primary glm-5.3 cannot see, so the
-# capability filter promotes gpt-5.6-luna to the head of the chain. That makes it
-# the one task where "what was vetted" and "what runs" are guaranteed to differ.
+# The screenshot turn from the finding: it matches `vision-required` -> T2, and
+# while T2's declared primary could not see, the capability filter promoted
+# gpt-5.6-luna to the head of the chain — the one task where "what was vetted" and
+# "what runs" were guaranteed to differ.
+#
+# ON THE SHIPPED POLICY THAT GAP IS GONE, and its going is an improvement: T2's
+# primary became glm-5.3-flash on 2026-08-27, which is natively multimodal, so the
+# filter drops nothing and a screenshot stays on the plan rail instead of billing
+# dollars on the seat. The veto tests still need the gap — it is the shape the
+# defect lived in — so they build it with `_vision_gap_config()` below instead of
+# borrowing it from the roster. The guard test in TestTheVetoBindsWhatRuns asserts
+# both halves: the shipped policy no longer needs a promotion, and the constructed
+# config still does.
 SHIPPED_VISION_TASK = "Look at this screenshot and tell me why the layout breaks"
 
 # 07:00 UTC on Monday 2026-08-17 — inside the overlapping deepseek/zai peak, so
@@ -1334,23 +1343,46 @@ SHIPPED_STANDARD_TASK = "Add a retry decorator to the http client in src/http.py
 # The ordinary shape of a provider incident: TWO rails degraded at once. T2's
 # plan-covered primary and the metered deepseek hop the shipped fallback_chain
 # hands back when that primary is refused, each with its own OPEN breaker.
-SHIPPED_TWO_RAIL_INCIDENT = [("glm-5.3", "zai"), ("deepseek-v4-flash", "deepseek")]
+SHIPPED_TWO_RAIL_INCIDENT = [
+    ("glm-5.3-flash", "zai"), ("deepseek-v4-flash", "deepseek"),
+]
+
+#: The text-only plan model T2 declared until 2026-08-27. Used to rebuild the
+#: declared-vs-attempted gap on purpose; it is a real registry entry with
+#: ``vision: False``, so the capability filter drops it for a vision turn exactly
+#: as it did when the shipped policy named it.
+VISION_BLIND_PRIMARY = "glm-5.3"
 
 
-def _banned_live_config(model, provider=""):
-    """The shipped policy with ``model`` added to blocklist.manual_ban.
+def _vision_gap_config():
+    """The shipped policy with a T2 primary that cannot see.
+
+    The veto defect lived in the gap between the model the veto vetted (the
+    declared primary) and the model the executor runs (the planned chain's head),
+    and a vision turn against a text-only primary is the shape that guarantees the
+    gap. The shipped policy stopped providing it when T2's primary gained vision,
+    which is the outcome anyone would want and would also silently hollow out
+    every test below — so the gap is CONSTRUCTED here rather than borrowed.
+    """
+    cfg = copy.deepcopy(_live_config())
+    cfg["tiers"]["T2"]["model"] = VISION_BLIND_PRIMARY
+    return cfg
+
+
+def _banned_live_config(model, provider="", base=None):
+    """``base`` (default: the shipped policy) with ``model`` in manual_ban.
 
     Built as a dict rather than by editing router.yaml: the file is the operator's
     and a test must not need to touch it to state a safety property.
     """
-    cfg = copy.deepcopy(_live_config())
+    cfg = copy.deepcopy(base if base is not None else _live_config())
     cfg["blocklist"]["manual_ban"].append(
         {"model": model, "provider": provider, "reason": "test-ban"}
     )
     return cfg
 
 
-def _open_breakers_config(pairs, tmp_path, monkeypatch, *, now=None):
+def _open_breakers_config(pairs, tmp_path, monkeypatch, *, now=None, base=None):
     """The shipped policy plus an OPEN breaker for every (model, provider) pair.
 
     Writes the state file Blocklist loads at construction, in the temp HERMES_HOME
@@ -1381,15 +1413,16 @@ def _open_breakers_config(pairs, tmp_path, monkeypatch, *, now=None):
             for model, provider in pairs
         },
     }), encoding="utf-8")
-    cfg = copy.deepcopy(_live_config())
+    cfg = copy.deepcopy(base if base is not None else _live_config())
     cfg["blocklist"]["auto_breaker"]["enabled"] = True
     return cfg
 
 
-def _open_breaker_config(model, provider, tmp_path, monkeypatch, *, now=None):
+def _open_breaker_config(model, provider, tmp_path, monkeypatch, *, now=None,
+                         base=None):
     """The shipped policy plus an OPEN breaker for one ``model@provider``."""
     return _open_breakers_config(
-        [(model, provider)], tmp_path, monkeypatch, now=now,
+        [(model, provider)], tmp_path, monkeypatch, now=now, base=base,
     )
 
 
@@ -1418,9 +1451,16 @@ def _declared_rails(cfg):
 # box than in CI.
 
 def _incident_banned_primary(tmp_path, monkeypatch):
-    """The T2 primary banned on every rail — the substitution branch."""
+    """The T2 primary banned on every rail — the substitution branch.
+
+    Read off the policy rather than named: this incident is "whatever T2 declares
+    is refused", and hard-coding the id made it silently assert nothing the day the
+    primary changed — the ban landed on a model no longer in the chain, `blocked`
+    came back empty, and the non-vacuity guard is what caught it.
+    """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    return _banned_live_config("glm-5.3"), SHIPPED_STANDARD_TASK
+    cfg = _live_config()
+    return _banned_live_config(cfg["tiers"]["T2"]["model"]), SHIPPED_STANDARD_TASK
 
 
 def _incident_two_rails_in_cooldown(tmp_path, monkeypatch):
@@ -1437,9 +1477,14 @@ def _incident_tail_hop_in_cooldown(tmp_path, monkeypatch):
 
 
 def _incident_filtered_chain_fully_banned(tmp_path, monkeypatch):
-    """Every hop the capability filter left is banned — the widening branch."""
+    """Every hop the capability filter left is banned — the widening branch.
+
+    Needs the filter to have dropped the primary, so it runs on the constructed
+    vision gap: with a multimodal primary nothing is filtered and this branch is
+    unreachable by construction.
+    """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    cfg = copy.deepcopy(_live_config())
+    cfg = _vision_gap_config()
     cfg["blocklist"]["manual_ban"].extend(
         {"model": model, "provider": "", "reason": "test-ban"}
         for model in (SHIPPED_VISION_HEAD, "deepseek-v4-flash")
@@ -1458,18 +1503,41 @@ VETO_INCIDENTS = [
 class TestTheVetoBindsWhatRuns:
     """The executor's FIRST attempt is never a banned or breaker-open elo."""
 
-    def test_the_shipped_vision_turn_really_does_promote_a_fallback_hop(self):
-        """The premise of every test below, asserted so they cannot go vacuous.
+    def test_the_shipped_vision_turn_keeps_a_screenshot_on_the_plan_rail(self):
+        """The better half of the news, and the reason the tests below construct.
 
-        If an operator edits the tier table so the declared primary can see, the
-        head stops differing from `model` and the tests after this one would pass
-        for the wrong reason. This one fails first and says why.
+        T2's primary is natively multimodal since 2026-08-27, so a screenshot no
+        longer skips it: the capability filter drops nothing, the attempted head IS
+        the declared primary, and the work stays on an allowance already bought
+        instead of billing dollars on the subscription seat.
         """
         cfg = _live_config()
         dlog = DecisionLog()
         result = route(SHIPPED_VISION_TASK, cfg, decision_log=dlog, now=PEAK_CLOCK)
 
-        assert result["model"] == "glm-5.3", "the rule still only picks a TIER"
+        assert result["model"] == "glm-5.3-flash", "the rule still only picks a TIER"
+        head = _targets(result)[0]
+        assert head == (result["model"], "zai"), (
+            "a vision turn must reach the plan primary itself now, not a hop "
+            "promoted past it"
+        )
+        assert dlog.tail(1)[0]["chain_plan"]["bypassed"] is False
+
+    def test_the_constructed_gap_really_does_promote_a_fallback_hop(self):
+        """The premise of every test below, asserted so they cannot go vacuous.
+
+        The veto tests need the declared primary and the attempted head to differ,
+        because that gap is where the defect lived. The shipped policy no longer
+        supplies it (see the test above), so `_vision_gap_config` puts a text-only
+        plan model back on T2 and this test proves the gap is really there. If the
+        promotion ever stops happening, this fails first and says why instead of
+        leaving the tests below passing for the wrong reason.
+        """
+        cfg = _vision_gap_config()
+        dlog = DecisionLog()
+        result = route(SHIPPED_VISION_TASK, cfg, decision_log=dlog, now=PEAK_CLOCK)
+
+        assert result["model"] == VISION_BLIND_PRIMARY, "the rule picks the TIER"
         assert _targets(result)[0] == (SHIPPED_VISION_HEAD,
                                       SHIPPED_VISION_HEAD_PROVIDER)
         assert _targets(result)[0][0] != result["model"], (
@@ -1481,11 +1549,11 @@ class TestTheVetoBindsWhatRuns:
     def test_a_manual_ban_is_removed_from_the_planned_chain(self):
         """FINDING 1's exact reproduction: ban the elo the PLAN promotes.
 
-        Before the fix: the veto tested glm-5.3 (clean, and dropped by the filter
-        for no_vision), passed the decision, and returned a one-hop chain whose
-        only hop was the banned gpt-5.6-luna — which is what the executor runs.
+        Before the fix: the veto tested the declared primary (clean, and dropped by
+        the filter for no_vision), passed the decision, and returned a one-hop chain
+        whose only hop was the banned gpt-5.6-luna — which is what the executor runs.
         """
-        cfg = _banned_live_config(SHIPPED_VISION_HEAD)
+        cfg = _banned_live_config(SHIPPED_VISION_HEAD, base=_vision_gap_config())
         bl = Blocklist(cfg)
         assert bl.is_blocked(SHIPPED_VISION_HEAD,
                             SHIPPED_VISION_HEAD_PROVIDER) is True
@@ -1515,13 +1583,13 @@ class TestTheVetoBindsWhatRuns:
         SHIPPED_VISION_HEAD,
         # The DECLARED primary: the case the old veto already covered. It must
         # keep working, and it must not be the only case that does.
-        "glm-5.3",
+        VISION_BLIND_PRIMARY,
         # The tail hop: banned, present in the declared chain, and dropped by the
         # capability filter anyway — so the veto must not depend on the filter.
         "deepseek-v4-flash",
     ])
     def test_the_first_attempt_is_never_a_manually_banned_elo(self, banned_model):
-        cfg = _banned_live_config(banned_model)
+        cfg = _banned_live_config(banned_model, base=_vision_gap_config())
         bl = Blocklist(cfg)
         # Non-vacuous by construction: the banned elo really is a member of the
         # tier this turn routes to, so a veto that removed nothing would have to
@@ -1551,7 +1619,7 @@ class TestTheVetoBindsWhatRuns:
         """
         cfg = _open_breaker_config(
             SHIPPED_VISION_HEAD, SHIPPED_VISION_HEAD_PROVIDER,
-            tmp_path, monkeypatch,
+            tmp_path, monkeypatch, base=_vision_gap_config(),
         )
         bl = Blocklist(cfg)
         assert bl.breaker_enabled() is True
@@ -1622,7 +1690,7 @@ class TestTheVetoBindsWhatRuns:
         # The declared primary was refused, so this is the substitution path and
         # the trace says so on the decision the caller got.
         assert result["cause"] == "blocklist_substituted"
-        assert result["blocked_model"] == "glm-5.3"
+        assert result["blocked_model"] == SHIPPED_TWO_RAIL_INCIDENT[0][0]
         entry = dlog.tail(1)[0]
         assert attempted_head_of(entry) == targets[0]
 
@@ -1651,7 +1719,7 @@ class TestTheVetoBindsWhatRuns:
         cause an outage is a worse failure than a blind hop, which is the same
         trade the capability filter's own bypass makes.
         """
-        cfg = copy.deepcopy(_live_config())
+        cfg = _vision_gap_config()
         cfg["blocklist"]["manual_ban"].extend(
             {"model": model, "provider": "", "reason": "test-ban"}
             for model in (SHIPPED_VISION_HEAD, "deepseek-v4-flash")
@@ -1662,7 +1730,7 @@ class TestTheVetoBindsWhatRuns:
                        decision_log=dlog, now=PEAK_CLOCK)
 
         targets = _targets(result)
-        assert targets == [("glm-5.3", "zai")]
+        assert targets == [(VISION_BLIND_PRIMARY, "zai")]
         assert dlog.tail(1)[0]["chain_plan"]["chain"], \
             "the recorded plan must not be an empty chain either"
         assert dlog.tail(1)[0]["chain_plan"]["blocklist_bypassed"] is False
@@ -1742,7 +1810,7 @@ class TestTheTraceNamesTheModelThatRuns:
         target list the executor derives, and the accessor a console reads, for
         the same turn.
         """
-        cfg = _live_config()
+        cfg = _vision_gap_config()
         dlog = DecisionLog()
         result = route(SHIPPED_VISION_TASK, cfg, decision_log=dlog, now=PEAK_CLOCK)
         entry = dlog.tail(1)[0]
@@ -1750,12 +1818,12 @@ class TestTheTraceNamesTheModelThatRuns:
         assert attempted_head_of(entry) == _targets(result)[0]
         # ...and the declared tier primary is still recorded, unredefined, next to
         # it — this is the fact that made the disagreement possible.
-        assert entry["output"]["model"] == "glm-5.3"
+        assert entry["output"]["model"] == VISION_BLIND_PRIMARY
         assert entry["output"]["attempted_model"] == SHIPPED_VISION_HEAD
 
     def test_the_attempted_head_is_the_head_the_veto_left(self):
         """A vetoed chain must move the reported head too, not just the run one."""
-        cfg = _banned_live_config(SHIPPED_VISION_HEAD)
+        cfg = _banned_live_config(SHIPPED_VISION_HEAD, base=_vision_gap_config())
         bl = Blocklist(cfg)
         dlog = DecisionLog()
         result = route(SHIPPED_VISION_TASK, cfg, blocklist=bl,

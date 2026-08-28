@@ -885,7 +885,7 @@ _TIME_KEYED = {
     ],
     "tiers": {
         "T1": {
-            "model": "glm-4.7",
+            "model": "glm-5.3-flash",
             "provider": "zai",
             "billing_mode": "plan",
             "fallback_strategy": "cheapest_now",
@@ -897,7 +897,7 @@ _TIME_KEYED = {
         },
         "T2": {"model": "glm-5.3", "provider": "zai"},
         "T3": {"model": "mimo-v2.5", "provider": "xiaomi"},
-        "T4": {"model": "glm-4.7", "provider": "zai"},
+        "T4": {"model": "glm-5.3-flash", "provider": "zai"},
     },
 }
 
@@ -1121,7 +1121,7 @@ def test_plugin_explain_fires_a_time_keyed_rule(plugin_config):
 
     outside = asyncio.run(plugin_api.api_explain(task=_HARD_TASK, at=_OFF_PEAK))
     assert outside["matched_rule_id"] is None, "off peak the row must NOT fire"
-    assert outside["output"]["model"] == "glm-4.7"
+    assert outside["output"]["model"] == "glm-5.3-flash"
     assert outside["evaluated_at"]["utc_hour"] == 15
 
 
@@ -1153,20 +1153,22 @@ def test_plugin_explain_agrees_with_the_service_at_the_same_instant(plugin_confi
 
     # Two blank plans also "agree", so pin that this instant produced REAL time
     # material — otherwise the assertions above would still pass with the clock
-    # dropped on both surfaces. At Monday 07:00 UTC zai bills glm-4.7 at 2.0x,
-    # over T1's declared ceiling of 1.5.
+    # dropped on both surfaces. At Monday 07:00 UTC zai bills glm-5.3-flash at
+    # 2.0x, over T1's declared ceiling of 1.5.
     ceiling = _TIME_KEYED["tiers"]["T1"]["time_cap"]["max_multiplier"]
     assert plugin_plan["time_agnostic"] is False, "the clock must reach the planner"
-    assert plugin_plan["multipliers"]["glm-4.7"] > ceiling, (
+    assert plugin_plan["multipliers"]["glm-5.3-flash"] > ceiling, (
         "the multipliers in force at this hour must be reported"
     )
-    # T1's ceiling is a DOLLAR ceiling and glm-4.7 is plan-billed, so the cap
+    # T1's ceiling is a DOLLAR ceiling and the primary is plan-billed, so the cap
     # cannot evict it (see capabilities.apply_time_cap: a credit multiplier adds no
     # dollars, and paying metered money to dodge a sunk cost is not a cost
     # control). What the cap governs on this tier is the metered tail, and neither
     # hop is over the ceiling at this hour — hence nothing removed.
     chain_models = [hop.get("model") for hop in plugin_plan["chain"]]
-    assert "glm-4.7" in chain_models, "a dollar ceiling may not evict a plan rail"
+    assert "glm-5.3-flash" in chain_models, (
+        "a dollar ceiling may not evict a plan rail"
+    )
     # Whatever the cap DID remove must be gone from the chain, unless it gave way
     # entirely — the one invariant that holds under either unit regime.
     if not plugin_plan.get("time_cap_bypassed"):
@@ -1600,7 +1602,7 @@ def test_plugin_serves_no_credential(plugin_config, hermetic_state, monkeypatch)
     # A traversal that reached nothing would pass every assertion below, so pin
     # that it descends into the nested material first.
     policy_keys, policy_values = _key_names_and_strings(served["rules"])
-    assert "time_cap" in policy_keys and "glm-4.7" in policy_values
+    assert "time_cap" in policy_keys and "glm-5.3-flash" in policy_values
 
     for name, payload in served.items():
         keys, values = _key_names_and_strings(payload)
