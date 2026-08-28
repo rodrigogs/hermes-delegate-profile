@@ -1384,6 +1384,27 @@
       .scope { min-height: 44px; padding: 0 16px; }
       .row.route { min-height: 56px; }
       summary { min-height: 44px; display: flex; align-items: center; }
+      /* Card t_5fb727b5, measured at 360px (dpr 3, coarse pointer): six
+         controls sat under the 44px floor — the reorder arrows 22px, the
+         destination chip 21px, the peak-policy and compaction selects
+         20px, the probe hour and the decision filter 39px. Named, for
+         the same reason as the 16px guard below: a bare `button, select,
+         input` scores (0,0,1) and loses to the class rules that size
+         them. min-height grows the TARGET only — the glyphs and text
+         stay where they are (the 44px-with-small-glyph pattern).
+         `.step-grip` is already 44px tall with -12px margins, so the
+         arrows do not inflate the row the lane already fixed. */
+      .step-target { min-height: 44px; }
+      .peak-policy { min-height: 44px; }
+      .ctl { min-height: 44px; }
+      .step-grip .grip-arrow { min-height: 44px; }
+      #probeHour { min-height: 44px; }
+      #routesFilter { min-height: 44px; }
+      /* The JSON search came with the tools card (t_3ba979a1) — AFTER the
+         operator's measurement that produced the six above, so it is not
+         in their table; measured here at 29px on a coarse pointer, it
+         violates the same floor. */
+      .json-search-input { min-height: 44px; }
       /* iOS Safari zooms in when a focused input is under 16px and never zooms
          back out, so tapping the filter left the operator on a magnified,
          sideways-scrolling console.
@@ -1533,7 +1554,13 @@
        the line that names it. */
     .pwin { border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 8px; overflow: hidden; }
     .pwin-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: baseline; padding: 9px 12px 7px; }
-    .pwin-name { font: 600 var(--t-name) var(--sans); letter-spacing: -.012em; min-width: 0; }
+    /* A model id is one token with no break point. Measured at 360px,
+       nvidia/nemotron-3-super-120b-a… ran 13px past its 121px box, clipped
+       by the card. What distinguishes these names sits at the END
+       ("…-120b" contra "…-550b"), so ellipsis would cut exactly the part
+       that answers "qual dos dois?" — wrap anywhere instead, and the id
+       stays whole across two lines. */
+    .pwin-name { font: 600 var(--t-name) var(--sans); letter-spacing: -.012em; min-width: 0; overflow-wrap: anywhere; }
     .pwin-name small { display: block; font: var(--t-micro) var(--sans); color: var(--muted); font-weight: 400; letter-spacing: 0; overflow-wrap: anywhere; }
     .pwin-now { font: var(--t-meta) var(--mono); color: var(--ok-text); white-space: nowrap; }
     .pwin-now.up { color: var(--bad-text); }
@@ -10379,6 +10406,14 @@
         // the closer that follows a comma, and without the flag `{}` and
         // `{"a":1,}` would be the same arrival.
         let afterComma = false;
+        // Where the last legal comma started. Engines — and this scanner,
+        // before the operator measured it — report the trailing-comma error
+        // at the CLOSER that follows the comma ("linha 113, coluna 3" for a
+        // comma at the end of line 112), because that is where the parser
+        // discovers it. The operator goes to line 113 and sees no comma; it
+        // is on the line above. So virgula-sobrando points at the comma
+        // itself; every other code keeps pointing where it is.
+        let commaPos = null;
 
         while (pos < n) {
           const c = texto[pos];
@@ -10479,14 +10514,16 @@
             };
             if (top() === frame && expect === 'after') { close(); continue; }
             if (top() === frame && expect === (frame === 'obj' ? 'obj-key-or-close' : 'arr-value-or-close')) {
-              if (afterComma) return { tokens, erro: err('virgula-sobrando') };
+              if (afterComma) return { tokens, erro: { ...commaPos, codigo: 'virgula-sobrando' } };
               close(); continue; // the empty container: {} or []
             }
             return { tokens, erro: err('caractere-inesperado') };
           }
           if (c === ',') {
             if (expect === 'after') {
-              tok('pontuacao', pos, pos + 1); advance(1);
+              tok('pontuacao', pos, pos + 1);
+              commaPos = { pos, linha: line, coluna: col };
+              advance(1);
               expect = top() === 'obj' ? 'obj-key-or-close' : 'arr-value-or-close';
               afterComma = true;
               continue;

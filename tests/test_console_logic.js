@@ -1721,8 +1721,13 @@ test('tokenizeJson names each error code with the exact line and column', () => 
   // The column points at the character where the scanner gives up — or at
   // the end of the document, past the last character.
   const cases = [
-    ['{ "a": 1, }', 'virgula-sobrando', 1, 11],   // the closer after a trailing comma
-    ['[1, 2,]', 'virgula-sobrando', 1, 7],
+    // virgula-sobrando points at the COMMA, not at the closer that follows
+    // it: engines report the closer (where the parser gives up), and the
+    // operator walks to that line and finds no comma — it is on the line
+    // above (card t_5fb727b5, operator's measurement). Other codes keep
+    // pointing where they are.
+    ['{ "a": 1, }', 'virgula-sobrando', 1, 9],    // the comma's own column
+    ['[1, 2,]', 'virgula-sobrando', 1, 6],
     ['{ "a" 1 }', 'chave-sem-valor', 1, 7],       // a key that never saw its ':'
     ['{ "a"', 'chave-sem-valor', 1, 6],           // ... at the end of the document
     ['{ "a": "ab', 'texto-nao-fechado', 1, 11],   // the string never closed
@@ -1760,15 +1765,18 @@ test('every error code has its pt-BR phrase — the footer can never say "undefi
 
 test('a 200+ line document reports an error far from the first line', () => {
   const { api } = loadConsole();
-  // 200 entries then a trailing comma: the error lands on the closer that
-  // follows it, on line 202 — not on the first line, where a scanner that
-  // validated by regex over the head of the document would give up.
+  // 200 entries then a trailing comma: the error lands on the COMMA's own
+  // line, 201 — not on the first line, where a scanner that validated by
+  // regex over the head of the document would give up, and not on line
+  // 202, where the closer that follows it sits (the position engines
+  // report and the operator walks to without finding a comma).
   const entries = Array.from({ length: 200 }, (_, i) => `  "k${i}": ${i}`);
   const text = '{\n' + entries.join(',\n') + ',\n}';
   assert.equal(text.split('\n').length, 202, 'the fixture really is 200+ lines');
   const { tokens, erro } = api.tokenizeJson(text);
   assert.equal(erro.codigo, 'virgula-sobrando');
-  assert.deepEqual(plain({ linha: erro.linha, coluna: erro.coluna }), { linha: 202, coluna: 1 });
+  // Line 201 is `  "k199": 199,` — the comma is the 14th character.
+  assert.deepEqual(plain({ linha: erro.linha, coluna: erro.coluna }), { linha: 201, coluna: 14 });
   // The highlight still covers everything before the error.
   const lastChave = tokens.filter((t) => t.tipo === 'chave').pop();
   assert.equal(text.slice(lastChave.inicio, lastChave.fim), '"k199"');
@@ -1859,7 +1867,7 @@ test('typing paints the mirror, the gutter and the footer from one scan', () => 
   ta.value = '{ "a": 1, }';
   ta._listeners.input();
   assert.equal(dom.get('jsonFoot').textContent,
-    'Não é JSON válido — linha 1, coluna 11: vírgula sobrando');
+    'Não é JSON válido — linha 1, coluna 9: vírgula sobrando');
   assert.equal(dom.get('jsonFoot').className, 'editor-foot bad');
   assert.match(dom.get('policyMirror').children[0].className, /bad/,
     'the line that carries the error is marked');
@@ -1873,6 +1881,27 @@ test('typing paints the mirror, the gutter and the footer from one scan', () => 
   assert.doesNotMatch(dom.get('policyMirror').children[0].className, /bad/,
     'a change clears the error mark');
   assert.equal(dom.get('jsonFoot').textContent, 'JSON válido · 1 linha · 0 regras, 0 grupos, 0 provedores com janela');
+});
+
+test('a trailing comma reports ITS OWN line, and the gutter marks that line', () => {
+  // Card t_5fb727b5, operator's measurement: a comma at the end of line N
+  // used to report line N+1 (the closer, where the parser gives up) — the
+  // operator walked to N+1 and found no comma. Both the footer phrase and
+  // the gutter read erro.linha, so one fix moves both.
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  ta.value = '{\n  "a": 1,\n  "b": 2,\n}';
+  ta._listeners.input();
+  assert.equal(dom.get('jsonFoot').textContent,
+    'Não é JSON válido — linha 3, coluna 9: vírgula sobrando');
+  const gutter = dom.get('policyLines');
+  assert.equal(gutter.children.length, 4, 'four source lines, four gutter rows');
+  assert.equal(gutter.children[2].className, 'err', 'the gutter marks the COMMA line');
+  assert.equal(gutter.children[3].className, '', 'the closer line is not the mark');
+  assert.match(dom.get('policyMirror').children[2].className, /bad/,
+    'the mirror marks the same line');
+  assert.equal(dom.get('policyMirror').children[3].className, 'code-line',
+    'the closer row stays clean');
 });
 
 test('the valid footer counts come from the document in the box, not from state', () => {
@@ -2100,7 +2129,7 @@ test('formatar com texto inválido não muda o texto e escreve a frase', () => {
   dom.get('jsonFormat')._listeners.click();
   assert.equal(ta.value, broken, 'o texto NÃO muda');
   const msg = dom.get('jsonMsg');
-  assert.match(msg.textContent, /Não formatei: Não é JSON válido — linha 1, coluna 11: vírgula sobrando/,
+  assert.match(msg.textContent, /Não formatei: Não é JSON válido — linha 1, coluna 9: vírgula sobrando/,
     'a frase diz por que não formatou, nas palavras do scanner');
   assert.match(msg.className, /bad/);
 });
@@ -4290,6 +4319,37 @@ test('the new phone surfaces are 44px targets, with the classes named', () => {
   // the 14px probe input survived a decorative guard once (measured, iPhone).
   assert.match(style, /\.pwin-add \{[^}]*min-height: 44px/);
   assert.match(style, /\.tab \{[^}]*min-height: 44px/);
+});
+
+test('the controls measured under the 44px floor get it, classes named', () => {
+  // Card t_5fb727b5, measured at 360px (dpr 3, coarse pointer): the reorder
+  // arrows 22px, the destination chip 21px, the peak-policy and compaction
+  // selects 20px, the probe hour and the decision filter 39px. The JSON
+  // search (29px) is the seventh — it arrived with the tools card
+  // (t_3ba979a1), after the operator's measurement, and was caught by the
+  // re-measurement here. Each rule must live INSIDE the coarse-pointer
+  // guard — on a desktop these controls keep the sizes a mouse earned —
+  // and must name the class or id, for the same (0,0,1)-loses reason as
+  // the test above.
+  const { style } = consoleStyle();
+  const touch = style.slice(style.indexOf('@media (hover: none) and (pointer: coarse)'));
+  for (const sel of ['.step-target', '.peak-policy', '.ctl',
+    '.step-grip .grip-arrow', '#probeHour', '#routesFilter',
+    '.json-search-input']) {
+    const esc = sel.replace(/\./g, '\\.');
+    assert.match(touch, new RegExp(`${esc} \\{[^}]*min-height: 44px`),
+      `${sel} needs the 44px floor inside the coarse-pointer guard`);
+  }
+});
+
+test('.pwin-name wraps anywhere — the model id end stays legible at 360px', () => {
+  // Card t_5fb727b5, measured at 360px: nvidia/nemotron-3-super-120b-a…
+  // ran 13px past its 121px box. What distinguishes these names sits at the
+  // END ("…-120b" contra "…-550b"), so ellipsis would cut exactly the part
+  // that answers "qual dos dois?" — the rule must wrap, not clip.
+  const { style } = consoleStyle();
+  assert.match(style, /\.pwin-name \{[^}]*overflow-wrap: anywhere/,
+    'the model id breaks anywhere so the full id stays readable');
 });
 
 test('the jump button drives the whole fix path: tab, hit row, inspector, scroll', () => {
