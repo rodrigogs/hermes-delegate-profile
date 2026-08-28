@@ -1016,12 +1016,82 @@
       font: var(--t-small)/1.6 var(--mono);
       white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto;
     }
-    .editor {
-      width: 100%; min-height: 240px; resize: vertical; padding: 10px 12px; margin-top: 10px;
-      border: 1px solid var(--line); border-radius: var(--radius);
-      background: var(--host-code-bg, var(--surface)); color: var(--text);
-      font: var(--t-small)/1.6 var(--mono); tab-size: 2;
+    /* ── the whole-file editor: a mirror behind the textarea ────────────
+       The textarea keeps receiving the keystrokes; a mirror with the SAME
+       metrics paints the tokens behind it, and the two scroll together —
+       the textarea's scroll event writes scrollTop/scrollLeft into the
+       mirror and the gutter. This is the GitHub code-view technique; the
+       Custom Highlight API cannot do it (it paints ranges of the DOCUMENT,
+       and a textarea's content is not document), and contenteditable would
+       trade a form field for an imitation that breaks paste, undo and IME.
+       The metrics live in ONE rule reaching .editor, .editor-mirror and
+       .editor-gutter (whose rows must sit on the same line grid), so the
+       overlay cannot drift: a font-size that only the mirror carried would
+       shift the first line and nothing but the eye would catch it. */
+    .editor-shell { position: relative; margin-top: 10px; }
+    .editor, .editor-mirror, .editor-gutter {
+      font: var(--t-small)/1.6 var(--mono);
+      letter-spacing: normal;
+      white-space: pre;
+      tab-size: 2;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px 12px 10px 58px;
     }
+    .editor {
+      display: block; width: 100%; min-height: 240px; resize: vertical;
+      margin: 0; background: transparent; color: transparent;
+      /* The caret is WHERE YOU ARE, so it wears the accent — the same
+         meaning the selected tab and the focus ring wear (see the colour
+         rule in :root). The raw --accent as TEXT measured 2.96:1 worst in
+         light skins (terracotta; style.css, 2026-08-27) — below the 4.5:1
+         floor — so the caret and the numbers use --accent-text, the host's
+         own text-safe accent, which clears the floor in every skin (worst
+         4.79:1, catppuccin). */
+      caret-color: var(--accent-text);
+      overflow: auto; position: relative; z-index: 1;
+    }
+    .editor-mirror {
+      position: absolute; inset: 0; margin: 0;
+      background: var(--host-code-bg, var(--surface)); color: var(--text);
+      overflow: hidden; pointer-events: none; z-index: 0;
+    }
+    .editor-gutter {
+      position: absolute; left: 0; top: 0; bottom: 0; width: 46px; z-index: 2;
+      margin: 0; padding: 0 10px 0 0;
+      border-radius: var(--radius) 0 0 var(--radius);
+      background: var(--bg); color: var(--muted);
+      overflow: hidden; text-align: right; user-select: none;
+      font-variant-numeric: tabular-nums;
+      /* Clicks and the wheel over the numbers belong to the textarea below:
+         a scroll that stops at the gutter's 46px would be a dead strip in
+         the middle of the editor's own surface. */
+      pointer-events: none;
+    }
+    .editor-lines { padding: 10px 0; }
+    .editor-lines div { display: block; }
+    .editor-lines .err { color: var(--bad-text); font-weight: 600; }
+    .code-line { display: block; width: max-content; min-width: 100%; }
+    .code-line.bad { background: var(--bad-bg); box-shadow: inset 2px 0 0 var(--bad); }
+    /* Token colours: host tokens, never a palette (§6). The state pairs are
+       the -text forms, which are made for text (measured in :root); numbers
+       wear the accent's text form (the raw --accent as text failed the light
+       skins — 2.96:1 worst, terracotta; --accent-text clears everywhere);
+       punctuation is --muted, the same step the chrome already accepts at
+       12px. */
+    .tk-chave { color: var(--info-text); }
+    .tk-texto { color: var(--ok-text); }
+    .tk-numero { color: var(--accent-text); }
+    .tk-palavra { color: var(--warn-text); }
+    .tk-pontuacao { color: var(--muted); }
+    .editor-foot { margin-top: 8px; font-size: var(--t-body); color: var(--muted); }
+    .editor-foot.ok { color: var(--ok-text); }
+    .editor-foot.bad { color: var(--bad-text); }
+    .editor-legend {
+      margin-top: 10px; display: flex; gap: 14px; flex-wrap: wrap;
+      font-size: var(--t-label); color: var(--muted);
+    }
+    .editor-legend .lk { color: var(--text); }
     /* Noisy internals stay collapsed by default, which is the host's own rule. */
     details > summary { color: var(--muted); font: 500 var(--t-body) var(--sans); cursor: pointer; padding: 8px 0; }
     details > summary:hover { color: var(--text); }
@@ -1261,7 +1331,7 @@
          max() keeps anything already larger; .editor stays at --t-small on a mouse
          because it holds JSON, and gets 16px here for the same reason as the rest. */
       input, textarea, select,
-      .probe-input, .editor, .field input, .field select {
+      .probe-input, .editor, .editor-mirror, .editor-gutter, .field input, .field select {
         font-size: max(16px, 1em);
       }
       /* An input the keyboard covers is an input you cannot see while typing.
@@ -1812,7 +1882,25 @@
                ride the map and boot stamps this line from it, like the
                three buttons below. -->
           <p class="field-note" id="jsonNote"></p>
-          <textarea id="policyEditor" class="editor" spellcheck="false" aria-label="Política como texto"></textarea>
+          <!-- The overlay editor: the textarea still receives the typing; the
+               mirror behind it paints the tokens, the gutter carries the line
+               numbers and the footer names the first error. The mirror and the
+               gutter are aria-hidden — the textarea is the only surface a
+               reader or a keyboard touches, and it carries the real value. -->
+          <div class="editor-shell">
+            <div class="editor-gutter" id="policyGutter" aria-hidden="true"><div class="editor-lines" id="policyLines"></div></div>
+            <div class="editor-mirror" id="policyMirror" aria-hidden="true"></div>
+            <textarea id="policyEditor" class="editor" spellcheck="false" aria-label="Política como texto"></textarea>
+          </div>
+          <p class="editor-foot" id="jsonFoot" aria-live="polite"></p>
+          <div class="editor-legend" aria-hidden="true">
+            <span class="tk-chave">"chave"</span>
+            <span class="tk-texto">"texto"</span>
+            <span class="tk-numero">número</span>
+            <span class="tk-palavra">true / null</span>
+            <span class="tk-pontuacao">pontuação</span>
+            <span class="lk">a linha do erro fica marcada até o texto mudar</span>
+          </div>
           <!-- No Confirm button. It POSTed /apply/confirm, which on the server
                is the SAME function as /apply — one_sidecar.py:346 and :353 both
                return _commit_policy(body). Two buttons, one effect, and nothing
@@ -10133,7 +10221,275 @@
         else root.style.removeProperty('--keyboard-inset');
       }
 
-      // ── load ────────────────────────────────────────────────────────
+      // ── the JSON scanner: one pass, tokens AND the error ─────────────
+      // JSON.parse gives a different message per engine (and often no
+      // position); this scanner walks the text once and returns both the
+      // highlight tokens and the FIRST structural error in OUR closed
+      // vocabulary, so the phrase is pt-BR and identical in every browser —
+      // and testable without one. Line and column count from 1, like every
+      // editor.
+      function tokenizeJson(texto) {
+        const tokens = [];
+        const n = texto.length;
+        let pos = 0, line = 1, col = 1;
+        const advance = (k) => {
+          for (let i = 0; i < k && pos < n; i++) {
+            if (texto[pos] === '\n') { line += 1; col = 1; }
+            else col += 1;
+            pos += 1;
+          }
+        };
+        const err = (codigo) => ({ pos, linha: line, coluna: col, codigo });
+        const tok = (tipo, inicio, fim) => tokens.push({ tipo, inicio, fim });
+        const isWs = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r';
+        const isDigit = (c) => c >= '0' && c <= '9';
+        const isWordChar = (c) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        const isHex = (c) => isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        const isValueSlot = () => expect === 'value' || expect === 'arr-value-or-close';
+        // What the next non-space token must be: a VALUE (document start,
+        // after ':', after '[' or an array comma), a KEY (an object's start
+        // or after an object comma), the ':' after a key, or AFTER (a value
+        // is complete; only a comma or a closer may follow). The stack is the
+        // open containers; a frame pops when its closer lands.
+        let expect = 'value';
+        const stack = [];
+        const top = () => stack[stack.length - 1];
+        // Set only right after a legal comma — the trailing-comma error is
+        // the closer that follows a comma, and without the flag `{}` and
+        // `{"a":1,}` would be the same arrival.
+        let afterComma = false;
+
+        while (pos < n) {
+          const c = texto[pos];
+          if (isWs(c)) {
+            const start = pos;
+            while (pos < n && isWs(texto[pos])) advance(1);
+            tok('espaco', start, pos);
+            // afterComma deliberately survives whitespace: the trailing-comma
+            // error is `1, }` — the closer AFTER the space — and a flag that
+            // the whitespace cleared would let `{"a":1, }` pass as an empty
+            // object.
+            continue;
+          }
+          if (c === ':') {
+            if (expect !== 'colon') return { tokens, erro: err('caractere-inesperado') };
+            tok('pontuacao', pos, pos + 1); advance(1);
+            expect = 'value'; afterComma = false;
+            continue;
+          }
+          // After a key, anything but ':' is a key without its value.
+          if (expect === 'colon') return { tokens, erro: err('chave-sem-valor') };
+          if (c === '"') {
+            const start = pos;
+            const isKey = expect === 'obj-key-or-close';
+            if (!isKey && !isValueSlot()) return { tokens, erro: err('caractere-inesperado') };
+            advance(1); // the opening quote
+            let closed = false;
+            while (pos < n) {
+              const s = texto[pos];
+              if (s === '\\') {
+                advance(1);
+                if (pos >= n) break; // a trailing backslash: unterminated
+                const e = texto[pos];
+                if (e === 'u') {
+                  advance(1);
+                  let ok = true;
+                  for (let i = 0; i < 4; i++) {
+                    if (pos < n && isHex(texto[pos])) advance(1);
+                    else { ok = false; break; }
+                  }
+                  if (!ok) return { tokens, erro: err('caractere-inesperado') };
+                } else if (e === '"' || e === '\\' || e === '/' || e === 'b' || e === 'f' || e === 'n' || e === 'r' || e === 't') {
+                  advance(1);
+                } else {
+                  return { tokens, erro: err('caractere-inesperado') };
+                }
+              } else if (s === '"') {
+                advance(1); closed = true; break;
+              } else if (s === '\n' || s === '\r') {
+                break; // a raw newline cannot live inside a JSON string
+              } else {
+                advance(1);
+              }
+            }
+            if (!closed) return { tokens, erro: err('texto-nao-fechado') };
+            tok(isKey ? 'chave' : 'texto', start, pos);
+            expect = isKey ? 'colon' : 'after';
+            afterComma = false;
+            continue;
+          }
+          if (c === '-' || isDigit(c)) {
+            if (!isValueSlot()) return { tokens, erro: err('caractere-inesperado') };
+            // The error points at the FIRST character of the malformed
+            // number, where the eye lands first — not past its last digit.
+            const start = pos, startLine = line, startCol = col;
+            while (pos < n && /[0-9+\-.eE]/.test(texto[pos])) advance(1);
+            if (!/^-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?$/.test(texto.slice(start, pos))) {
+              return { tokens, erro: { pos: start, linha: startLine, coluna: startCol, codigo: 'numero-invalido' } };
+            }
+            tok('numero', start, pos);
+            expect = 'after'; afterComma = false;
+            continue;
+          }
+          if (isWordChar(c)) {
+            const start = pos, startLine = line, startCol = col;
+            while (pos < n && isWordChar(texto[pos])) advance(1);
+            const word = texto.slice(start, pos);
+            if (isValueSlot() && (word === 'true' || word === 'false' || word === 'null')) {
+              tok('palavra', start, pos);
+              expect = 'after'; afterComma = false;
+              continue;
+            }
+            return { tokens, erro: { pos: start, linha: startLine, coluna: startCol, codigo: 'caractere-inesperado' } };
+          }
+          if (c === '{' || c === '[') {
+            if (!isValueSlot()) return { tokens, erro: err('caractere-inesperado') };
+            tok('pontuacao', pos, pos + 1); advance(1);
+            stack.push(c === '{' ? 'obj' : 'arr');
+            expect = c === '{' ? 'obj-key-or-close' : 'arr-value-or-close';
+            afterComma = false;
+            continue;
+          }
+          if (c === '}' || c === ']') {
+            const frame = c === '}' ? 'obj' : 'arr';
+            const close = () => {
+              tok('pontuacao', pos, pos + 1); advance(1);
+              stack.pop(); expect = 'after'; afterComma = false;
+            };
+            if (top() === frame && expect === 'after') { close(); continue; }
+            if (top() === frame && expect === (frame === 'obj' ? 'obj-key-or-close' : 'arr-value-or-close')) {
+              if (afterComma) return { tokens, erro: err('virgula-sobrando') };
+              close(); continue; // the empty container: {} or []
+            }
+            return { tokens, erro: err('caractere-inesperado') };
+          }
+          if (c === ',') {
+            if (expect === 'after') {
+              tok('pontuacao', pos, pos + 1); advance(1);
+              expect = top() === 'obj' ? 'obj-key-or-close' : 'arr-value-or-close';
+              afterComma = true;
+              continue;
+            }
+            return { tokens, erro: err('caractere-inesperado') };
+          }
+          return { tokens, erro: err('caractere-inesperado') };
+        }
+        // End of the document: a key that never saw its ':' is a key without
+        // a value; anything else unfinished is an unexpected end.
+        if (expect === 'colon') return { tokens, erro: err('chave-sem-valor') };
+        if (expect !== 'after' || stack.length) return { tokens, erro: err('fim-inesperado') };
+        return { tokens, erro: null };
+      }
+
+      const JSON_ERROR_WORDS = {
+        'virgula-sobrando': 'vírgula sobrando',
+        'chave-sem-valor': 'chave sem valor',
+        'texto-nao-fechado': 'texto não fechado',
+        'numero-invalido': 'número inválido',
+        'caractere-inesperado': 'caractere inesperado',
+        'fim-inesperado': 'fim inesperado',
+      };
+      const jsonFootPhrase = (erro) =>
+        `Não é JSON válido — linha ${erro.linha}, coluna ${erro.coluna}: ${JSON_ERROR_WORDS[erro.codigo]}`;
+
+      // The valid footer's counts are read from the DOCUMENT (the text that
+      // is in the box), never from state: "8 regras" is how many rules the
+      // text declares, not how many state.policy had when the panel loaded.
+      // The provider of a windowed model is resolved from the tiers' own
+      // hops (the overlay keys are models), falling back to the model@vendor
+      // spelling the log itself uses.
+      function jsonCounts(texto, doc) {
+        const linhas = texto.split('\n').length;
+        const regras = Array.isArray(doc && doc.rules) ? doc.rules.length : 0;
+        const grupos = doc && doc.tiers && typeof doc.tiers === 'object' ? Object.keys(doc.tiers).length : 0;
+        const overlay = doc && doc.price_windows && typeof doc.price_windows === 'object' ? doc.price_windows : {};
+        const tiers = doc && doc.tiers && typeof doc.tiers === 'object' ? doc.tiers : {};
+        const providerOf = (model) => {
+          for (const tier of Object.values(tiers)) {
+            if (!tier || typeof tier !== 'object') continue;
+            if (tier.model === model && tier.provider) return tier.provider;
+            for (const hop of (Array.isArray(tier.fallback) ? tier.fallback : [])) {
+              if (hop && hop.model === model && hop.provider) return hop.provider;
+            }
+          }
+          const at = String(model).indexOf('@');
+          return at >= 0 ? String(model).slice(at + 1) : '';
+        };
+        const provedores = new Set();
+        for (const model of Object.keys(overlay)) {
+          const p = providerOf(model);
+          if (p) provedores.add(p);
+        }
+        return { linhas, regras, grupos, provedoresComJanela: provedores.size };
+      }
+      const plural = (n, um, muitos) => `${n} ${n === 1 ? um : muitos}`;
+      const jsonOkPhrase = (texto, doc) => {
+        const c = jsonCounts(texto, doc);
+        return `JSON válido · ${plural(c.linhas, 'linha', 'linhas')} · `
+          + `${plural(c.regras, 'regra', 'regras')}, ${plural(c.grupos, 'grupo', 'grupos')}, `
+          + `${plural(c.provedoresComJanela, 'provedor com janela', 'provedores com janela')}`;
+      };
+
+      // One scan feeds the mirror, the gutter, the footer and Salvar's
+      // arming — the four cannot disagree because they read the same result.
+      function renderJsonEditor() {
+        const editor = $('policyEditor');
+        const text = editor ? editor.value : '';
+        const { tokens, erro } = tokenizeJson(text);
+        const mirror = $('policyMirror');
+        if (mirror) {
+          clear(mirror);
+          const lines = text.split('\n');
+          const offsets = [0];
+          for (let i = 0; i < lines.length - 1; i++) offsets.push(offsets[i] + lines[i].length + 1);
+          let ti = 0;
+          for (let ln = 0; ln < lines.length; ln++) {
+            const start = offsets[ln];
+            const end = start + lines[ln].length;
+            const row = el('div', 'code-line' + (erro && erro.linha === ln + 1 ? ' bad' : ''));
+            let pos = start;
+            while (ti < tokens.length && tokens[ti].fim <= start) ti += 1;
+            while (ti < tokens.length && tokens[ti].inicio < end) {
+              const t = tokens[ti];
+              const from = Math.max(t.inicio, start);
+              const to = Math.min(t.fim, end);
+              if (from >= to) { ti += 1; continue; } // the token ended on the previous line
+              if (from > pos) row.append(el('span', '', text.slice(pos, from)));
+              const piece = text.slice(from, to);
+              row.append(t.tipo === 'espaco' ? el('span', '', piece) : el('span', 'tk-' + t.tipo, piece));
+              pos = to;
+              if (t.fim >= end) break; // a whitespace run crossing the newline; the next line continues it
+              ti += 1;
+            }
+            if (pos < end) row.append(el('span', '', text.slice(pos, end)));
+            mirror.append(row);
+          }
+        }
+        const gutter = $('policyLines');
+        if (gutter) {
+          clear(gutter);
+          const count = text.split('\n').length;
+          for (let i = 1; i <= count; i++) {
+            gutter.append(el('div', erro && erro.linha === i ? 'err' : '', String(i)));
+          }
+        }
+        const foot = $('jsonFoot');
+        if (foot) {
+          foot.className = 'editor-foot' + (erro ? ' bad' : ' ok');
+          if (erro) {
+            foot.textContent = jsonFootPhrase(erro);
+          } else {
+            let doc = null;
+            try { doc = JSON.parse(text); } catch (_) { /* an engine that disagrees with the scanner keeps the plain word */ }
+            foot.textContent = doc === null ? 'JSON válido' : jsonOkPhrase(text, doc);
+          }
+        }
+        // Salvar is armed only while the text parses: a button that exists
+        // solely to refuse the click must not be armed.
+        const apply = $('jsonApply');
+        if (apply) apply.disabled = Boolean(erro);
+      }
+
       function renderAll() {
         renderClock();
         renderWarnings();
@@ -10161,9 +10517,14 @@
         if (editor.value === '' || editor.value === state.lastJsonFill) {
           editor.value = state.policy ? pretty(fullPolicy()) : '';
           state.lastJsonFill = editor.value;
+          // The fill counts as an edit for the live view: the mirror, the
+          // gutter, the footer and Salvar's arming follow the text that is
+          // actually in the box, and the first read put it there.
+          renderJsonEditor();
         }
       }
 
+      // ── load ────────────────────────────────────────────────────────
       async function load() {
         // An armed Voltar à versão anterior does not survive a re-read: the question is
         // about the file the screen was showing, and after a refresh that is a different
@@ -10278,9 +10639,18 @@
         $('refresh').addEventListener('click', load);
         // One parse, used by both buttons. Malformed JSON is reported before any
         // request goes out, because "your text is not JSON" is not something the
-        // server should have to tell you.
+        // server should have to tell you — and the phrase is the SAME scanner's
+        // phrase the footer already shows, so the click-time message and the
+        // live footer cannot disagree (the engine's own message only escapes
+        // if the scanner ever lets a document through that JSON.parse refuses).
         const jsonDraft = () => {
-          try { return { ok: true, value: JSON.parse($('policyEditor').value) }; }
+          const text = $('policyEditor').value;
+          const { erro } = tokenizeJson(text);
+          if (erro) {
+            setMsg($('jsonMsg'), jsonFootPhrase(erro), 'bad');
+            return { ok: false };
+          }
+          try { return { ok: true, value: JSON.parse(text) }; }
           catch (e) { setMsg($('jsonMsg'), `Não é JSON válido: ${e.message}`, 'bad'); return { ok: false }; }
         };
         $('jsonApply').addEventListener('click', () => {
@@ -10292,6 +10662,25 @@
           if (draft.ok) doPreview(draft.value, $('jsonMsg'), $('jsonDiff'));
         });
         $('jsonRevert').addEventListener('click', () => { void requestRevert(); });
+        // ── the whole-file editor's live view ─────────────────────────
+        // The mirror and the gutter scroll with the textarea; the scan runs
+        // on every input (a policy is a few KB — one pass is nothing), and
+        // Salvar's arming reads the SAME scan, so the button and the phrase
+        // cannot disagree.
+        const policyEditor = $('policyEditor');
+        if (policyEditor) {
+          policyEditor.addEventListener('input', renderJsonEditor);
+          policyEditor.addEventListener('scroll', () => {
+            const mirror = $('policyMirror');
+            const gutter = $('policyGutter');
+            if (mirror) { mirror.scrollTop = policyEditor.scrollTop; mirror.scrollLeft = policyEditor.scrollLeft; }
+            if (gutter) gutter.scrollTop = policyEditor.scrollTop;
+          });
+          // Boot: before the first read lands, the editor is empty — and an
+          // empty document is not JSON, so Salvar must not be armed to
+          // refuse.
+          renderJsonEditor();
+        }
         $('probeForm').addEventListener('submit', (e) => { e.preventDefault(); probe($('probeTask').value.trim()); });
         $('routesFilter').addEventListener('input', (e) => { state.query = e.target.value; renderRoutes(); });
         const setScope = (scope) => { state.scope = scope; renderRoutes(); };
@@ -10491,6 +10880,14 @@
         // semantics, and the fixo-sem-reserva N are pinned by tests.
         destField, destOptionList, destValue, fixedReserveWords,
         profileField, profileUnion,
+        // Card t_8e79466b: the live JSON view. tokenizeJson is the scanner
+        // (tokens AND the first error, our closed vocabulary); jsonCounts and
+        // jsonFootPhrase build the footer's two phrases; renderJsonEditor is
+        // the whole live view (mirror, gutter, footer, Salvar arming).
+        // Exported so every token type, every error code with its exact
+        // line/column, the count words and the arming are pinned by tests,
+        // not eyeballed.
+        tokenizeJson, jsonCounts, jsonFootPhrase, renderJsonEditor,
       };
     })();
   </script>

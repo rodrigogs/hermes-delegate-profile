@@ -1612,20 +1612,268 @@ test('a double-clicked apply does not race itself', async () => {
   assert.equal(writes.length, 1, 'the second click must not produce a second write');
 });
 
-test('the JSON twisty write controls are always armed — there is no mode to disarm them', () => {
-  // Expanding "Edit the whole policy as JSON" to READ it used to put a live green
-  // Apply and a live Revert one tap away — and Revert takes no plan, shows no diff,
-  // and restores whatever the .bak holds. The guard that replaced the mode's
-  // disarming is §3.4(a): while the file lints bad there is NO Salvar in the DOM
-  // (absent, not disabled), and the destructive one is two clicks away (CA5).
+test('Salvar is disarmed while the text is not JSON, and only then (card t_8e79466b)', () => {
+  // The whole-file editor validates LIVE — the scanner IS the validator — and
+  // a button that exists solely to refuse the click must not be armed. The
+  // mode-era rule this test used to pin ("no code path leaves Apply inert")
+  // is superseded for the SYNTAX gate: the lint gate still refuses by ABSENCE
+  // (§3.4(a), DESIGN.md:435-463 — a policy that parses but fails lint), while
+  // the syntax gate refuses by disarming — the two gates refuse differently
+  // because the two failures are different: lint is a verdict on a document,
+  // and a broken text is not a document at all.
   const src = fs.readFileSync(sourcePath, 'utf8');
-  assert.doesNotMatch(src, /jsonApply[^>]*disabled/,
-    'no disabled attribute on Apply in the markup — the mode that set it is gone');
-  assert.doesNotMatch(src, /jsonRevert[^>]*disabled/,
-    'nor on Revert — the two-click rule is the only gate');
-  const { api, dom } = loadConsole({ csrfToken: 'tok' });
-  assert.ok(!dom.get('jsonApply').disabled, 'and no code path leaves Apply inert');
-  assert.ok(!dom.get('jsonRevert').disabled, 'the destructive one is two clicks away, not greyed out');
+  const markup = src.slice(0, src.indexOf('<script>'));
+  assert.doesNotMatch(markup, /jsonApply[^>]*disabled/,
+    'no disabled attribute on Apply in the markup — the arming is a live property');
+  assert.doesNotMatch(markup, /jsonRevert[^>]*disabled/,
+    'nor on Revert — the two-click rule is the only gate there');
+  const { api, dom } = loadConsole({ keepWire: true, csrfToken: 'tok' });
+  const ta = dom.get('policyEditor');
+  const apply = dom.get('jsonApply');
+  assert.equal(apply.disabled, true, 'boot arms nothing: an empty document is not JSON');
+  ta.value = '{ "a": 1, }';
+  ta._listeners.input();
+  assert.equal(apply.disabled, true, 'a trailing comma leaves Salvar disarmed');
+  ta.value = '{ "a": 1 }';
+  ta._listeners.input();
+  assert.equal(apply.disabled, false, 'fixing the text arms it again');
+  ta.value = '{ "a": ';
+  ta._listeners.input();
+  assert.equal(apply.disabled, true, 'an unfinished value disarms it again');
+  assert.ok(!dom.get('jsonRevert').disabled, 'the destructive one is two clicks away, never greyed out');
+});
+
+// ── the JSON scanner: tokens AND the error in one pass ───────────────────
+// JSON.parse reports a different message per engine (and often no position),
+// so the console's live validation is OUR scanner, in OUR words. Every token
+// type and every error code is pinned here with exact spans and exact
+// line/column — a scanner that "mostly" validates is exactly the bug this
+// card exists to kill, so the table is exhaustive.
+
+test('tokenizeJson emits every token type, and the tokens rebuild the text', () => {
+  const { api } = loadConsole();
+  const text = '{ "chave": "texto", "n": 12.5, "b": true, "nulo": null }';
+  const { tokens, erro } = api.tokenizeJson(text);
+  assert.equal(erro, null);
+  const kinds = new Set(tokens.map((t) => t.tipo));
+  for (const kind of ['chave', 'texto', 'numero', 'palavra', 'pontuacao', 'espaco']) {
+    assert.ok(kinds.has(kind), `the sample must exercise ${kind}`);
+  }
+  // The tokens partition the document exactly: concatenating their slices
+  // rebuilds the input, or the mirror would drop or duplicate text.
+  assert.equal(tokens.map((t) => text.slice(t.inicio, t.fim)).join(''), text,
+    'every character belongs to exactly one token');
+  const chave = tokens.find((t) => t.tipo === 'chave');
+  assert.equal(text.slice(chave.inicio, chave.fim), '"chave"');
+  assert.deepEqual(plain({ inicio: chave.inicio, fim: chave.fim }), { inicio: 2, fim: 9 });
+  const numero = tokens.find((t) => t.tipo === 'numero');
+  assert.equal(text.slice(numero.inicio, numero.fim), '12.5');
+  const palavra = tokens.find((t) => t.tipo === 'palavra');
+  assert.equal(text.slice(palavra.inicio, palavra.fim), 'true');
+});
+
+test('tokenizeJson keeps accents and escaped quotes as ordinary string content', () => {
+  const { api } = loadConsole();
+  const text = '{ "política": "café", "chave \\"com\\" aspas": "a\\nb" }';
+  const { tokens, erro } = api.tokenizeJson(text);
+  assert.equal(erro, null, 'accents and escaped quotes are legal string content');
+  const chaves = tokens.filter((t) => t.tipo === 'chave').map((t) => text.slice(t.inicio, t.fim));
+  assert.ok(chaves.includes('"política"'), 'the accented key survives whole');
+  assert.ok(chaves.includes('"chave \\"com\\" aspas"'), 'the escaped quotes stay inside the key');
+  // And the escapes are the real thing: JSON.parse agrees with the scanner.
+  assert.equal(JSON.parse(text).política, 'café');
+});
+
+test('tokenizeJson names each error code with the exact line and column', () => {
+  const { api } = loadConsole();
+  // The column points at the character where the scanner gives up — or at
+  // the end of the document, past the last character.
+  const cases = [
+    ['{ "a": 1, }', 'virgula-sobrando', 1, 11],   // the closer after a trailing comma
+    ['[1, 2,]', 'virgula-sobrando', 1, 7],
+    ['{ "a" 1 }', 'chave-sem-valor', 1, 7],       // a key that never saw its ':'
+    ['{ "a"', 'chave-sem-valor', 1, 6],           // ... at the end of the document
+    ['{ "a": "ab', 'texto-nao-fechado', 1, 11],   // the string never closed
+    ['{ "a": 01 }', 'numero-invalido', 1, 8],     // leading zero
+    ['{ "a": 1.2.3 }', 'numero-invalido', 1, 8],  // a second dot
+    ['{ a: 1 }', 'caractere-inesperado', 1, 3],   // a bare word where a key belongs
+    ['{ "a": x }', 'caractere-inesperado', 1, 8], // a word that is not true/false/null
+    ['{ "a": 1', 'fim-inesperado', 1, 9],         // the object never closed
+    ['', 'fim-inesperado', 1, 1],                 // an empty document
+  ];
+  for (const [text, codigo, linha, coluna] of cases) {
+    const { erro } = api.tokenizeJson(text);
+    assert.ok(erro, `"${text}" must fail`);
+    assert.equal(erro.codigo, codigo, `"${text}" must say ${codigo}, got ${erro && erro.codigo}`);
+    assert.deepEqual(plain({ linha: erro.linha, coluna: erro.coluna }), { linha, coluna },
+      `"${text}" must report the exact position`);
+  }
+});
+
+test('every error code has its pt-BR phrase — the footer can never say "undefined"', () => {
+  const { api } = loadConsole();
+  // The comp's own example is the first line: the same words, the same order.
+  const expected = {
+    'virgula-sobrando': 'Não é JSON válido — linha 9, coluna 48: vírgula sobrando',
+    'chave-sem-valor': 'Não é JSON válido — linha 9, coluna 48: chave sem valor',
+    'texto-nao-fechado': 'Não é JSON válido — linha 9, coluna 48: texto não fechado',
+    'numero-invalido': 'Não é JSON válido — linha 9, coluna 48: número inválido',
+    'caractere-inesperado': 'Não é JSON válido — linha 9, coluna 48: caractere inesperado',
+    'fim-inesperado': 'Não é JSON válido — linha 9, coluna 48: fim inesperado',
+  };
+  for (const [code, phrase] of Object.entries(expected)) {
+    assert.equal(api.jsonFootPhrase({ linha: 9, coluna: 48, codigo: code }), phrase, code);
+  }
+});
+
+test('a 200+ line document reports an error far from the first line', () => {
+  const { api } = loadConsole();
+  // 200 entries then a trailing comma: the error lands on the closer that
+  // follows it, on line 202 — not on the first line, where a scanner that
+  // validated by regex over the head of the document would give up.
+  const entries = Array.from({ length: 200 }, (_, i) => `  "k${i}": ${i}`);
+  const text = '{\n' + entries.join(',\n') + ',\n}';
+  assert.equal(text.split('\n').length, 202, 'the fixture really is 200+ lines');
+  const { tokens, erro } = api.tokenizeJson(text);
+  assert.equal(erro.codigo, 'virgula-sobrando');
+  assert.deepEqual(plain({ linha: erro.linha, coluna: erro.coluna }), { linha: 202, coluna: 1 });
+  // The highlight still covers everything before the error.
+  const lastChave = tokens.filter((t) => t.tipo === 'chave').pop();
+  assert.equal(text.slice(lastChave.inicio, lastChave.fim), '"k199"');
+});
+
+// ── the overlay editor's CSS contract ─────────────────────────────────────
+// The mirror paints each character at the same pixel as the textarea's text:
+// that is the whole technique, so the metrics are pinned as a static scan —
+// a drift would shift the first line and nothing but the eye would catch it.
+
+test('the mirror and the textarea share ONE metric rule — alignment cannot drift', () => {
+  const { style } = consoleStyle();
+  const rules = [...style.matchAll(/([^{}]+)\{([^}]*)\}/g)];
+  const shared = rules.find((m) => m[1].includes('.editor,') && m[1].includes('.editor-mirror'));
+  assert.ok(shared, 'one rule must name both the textarea and the mirror');
+  // line-height rides inside the `font` shorthand (var(--t-small)/1.6), so
+  // `font` is the property to pin; the METRICS scan below still refuses a
+  // literal line-height on the mirror anywhere else.
+  for (const prop of ['font', 'letter-spacing', 'padding', 'border', 'white-space', 'tab-size']) {
+    assert.ok(shared[2].includes(prop), `the shared rule declares ${prop}`);
+  }
+  // And no OTHER top-level rule may style a mirror metric without naming the
+  // textarea in the same selector.
+  const METRICS = ['font-size', 'line-height', 'letter-spacing', 'white-space', 'tab-size', 'padding'];
+  // `.editor` as a STANDALONE selector — a bare `.includes('.editor')` would
+  // be fooled by `.editor-mirror` itself (the prefix).
+  const namesEditor = (sel) => /(^|,)\s*\.editor(?=[\s,{])/.test(sel);
+  for (const m of rules) {
+    if (!m[1].includes('.editor-mirror')) continue;
+    for (const metric of METRICS) {
+      if (m[2].includes(metric)) {
+        assert.ok(namesEditor(m[1]),
+          `a rule naming .editor-mirror must name .editor too when it sets ${metric} — got "${m[1].trim()}"`);
+      }
+    }
+  }
+  // The touch guard lifts the editor to 16px under a coarse pointer (iOS
+  // zooms in below 16px and never zooms back); it must lift the mirror and
+  // the gutter with it, or the overlay misaligns exactly on the devices
+  // that cannot zoom back out.
+  const touch = style.slice(style.indexOf('@media (hover: none) and (pointer: coarse)'));
+  const guard = touch.match(/([^{}]*)\{\s*font-size: max\(16px, 1em\);\s*\}/);
+  assert.ok(guard, 'the touch guard that lifts the editor to 16px still exists');
+  for (const sel of ['.editor', '.editor-mirror', '.editor-gutter']) {
+    assert.ok(guard[1].includes(sel), `the 16px touch guard names ${sel} — the mirror must grow with the textarea`);
+  }
+});
+
+test('the live editor is an overlay: visible caret, transparent text and chrome', () => {
+  const { style } = consoleStyle();
+  assert.match(style, /caret-color: var\(--accent-text\)/,
+    'the caret is painted — transparent text still needs a visible caret');
+  const editor = style.match(/\.editor \{[^}]*\}/)[0];
+  assert.match(editor, /color: transparent/, 'the textarea text is transparent so the mirror shows through');
+  assert.match(editor, /background: transparent/, 'the textarea background is transparent too');
+  assert.match(style, /\.editor-mirror \{[^}]*pointer-events: none/, 'the mirror never eats a click');
+  assert.match(style, /\.editor-gutter \{[^}]*pointer-events: none/, 'the gutter never eats a click or the wheel');
+});
+
+// ── the live view: mirror, gutter, footer, arming, one scan ───────────────
+
+test('typing paints the mirror, the gutter and the footer from one scan', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  const valid = '{"rules": [{"id": "r1"}], "tiers": {"T1": {"model": "glm-4.7", "provider": "zai"}}, "price_windows": {"glm-4.7@zai": [{"hours_utc": [20, 22], "multiplier": 3.0}]}}';
+  ta.value = valid;
+  ta._listeners.input();
+  // Footer: one line, one rule, one tier, one provider with a window.
+  assert.equal(dom.get('jsonFoot').textContent,
+    'JSON válido · 1 linha · 1 regra, 1 grupo, 1 provedor com janela');
+  assert.equal(dom.get('jsonFoot').className, 'editor-foot ok');
+  // Mirror: one row per source line; the first row carries the tokens.
+  const mirror = dom.get('policyMirror');
+  assert.equal(mirror.children.length, 1, 'one source line, one row');
+  assert.equal(mirror.children[0].className, 'code-line', 'no error, no mark');
+  const chave = mirror.children[0].children.find((c) => c.className === 'tk-chave');
+  assert.ok(chave && chave.textContent === '"rules"', 'the key is painted as a chave token');
+  const numero = mirror.children[0].children.find((c) => c.className === 'tk-numero');
+  assert.ok(numero && numero.textContent === '20', 'a window hour is a numero token');
+  // Gutter: one number per line, none marked.
+  const gutter = dom.get('policyLines');
+  assert.equal(gutter.children.length, 1);
+  assert.equal(gutter.children[0].textContent, '1');
+  assert.equal(gutter.children[0].className, '');
+  assert.equal(dom.get('jsonApply').disabled, false, 'Salvar is armed');
+
+  // Break it: the same scan names the error, marks the row and disarms Salvar.
+  ta.value = '{ "a": 1, }';
+  ta._listeners.input();
+  assert.equal(dom.get('jsonFoot').textContent,
+    'Não é JSON válido — linha 1, coluna 11: vírgula sobrando');
+  assert.equal(dom.get('jsonFoot').className, 'editor-foot bad');
+  assert.match(dom.get('policyMirror').children[0].className, /bad/,
+    'the line that carries the error is marked');
+  assert.equal(dom.get('policyLines').children[0].className, 'err',
+    'the gutter names the same line');
+  assert.equal(dom.get('jsonApply').disabled, true, 'Salvar is disarmed');
+
+  // The mark leaves the moment the text changes again.
+  ta.value = '{ "a": 1 }';
+  ta._listeners.input();
+  assert.doesNotMatch(dom.get('policyMirror').children[0].className, /bad/,
+    'a change clears the error mark');
+  assert.equal(dom.get('jsonFoot').textContent, 'JSON válido · 1 linha · 0 regras, 0 grupos, 0 provedores com janela');
+});
+
+test('the valid footer counts come from the document in the box, not from state', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  // The state says "no rules, no tiers" — the footer must ignore it and read
+  // the text: the whole point of the editor is that the TEXT is the policy.
+  api.state.policy = { rules: [], tiers: {} };
+  const text = '{\n  "rules": [{"id": "a"}, {"id": "b"}],\n'
+    + '  "tiers": {"T1": {"model": "glm-4.7", "provider": "zai"}, "T2": {"model": "deepseek-v4-pro", "provider": "deepseek"}},\n'
+    + '  "price_windows": {"glm-4.7@zai": [], "deepseek-v4-pro": []}\n}';
+  const ta = dom.get('policyEditor');
+  ta.value = text;
+  ta._listeners.input();
+  assert.equal(dom.get('jsonFoot').textContent,
+    'JSON válido · 5 linhas · 2 regras, 2 grupos, 2 provedores com janela');
+  // And jsonCounts is the pure reader behind it — the provider of a windowed
+  // model resolves from the tiers' own hops, or from the model@vendor
+  // spelling when the model is not in the tiers.
+  assert.deepEqual(plain(api.jsonCounts(text, JSON.parse(text))),
+    { linhas: 5, regras: 2, grupos: 2, provedoresComJanela: 2 });
+});
+
+test('the mirror and the gutter scroll with the textarea', () => {
+  const { api, dom } = loadConsole({ keepWire: true });
+  const ta = dom.get('policyEditor');
+  const mirror = dom.get('policyMirror');
+  const gutter = dom.get('policyGutter');
+  ta.scrollTop = 123;
+  ta.scrollLeft = 45;
+  ta._listeners.scroll();
+  assert.equal(mirror.scrollTop, 123, 'the mirror follows the vertical scroll');
+  assert.equal(mirror.scrollLeft, 45, 'and the horizontal one');
+  assert.equal(gutter.scrollTop, 123, 'the gutter follows too — the numbers stay on their lines');
 });
 
 // ── it belongs to the shell ───────────────────────────────────────────────
