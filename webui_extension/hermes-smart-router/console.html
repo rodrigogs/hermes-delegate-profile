@@ -4205,6 +4205,15 @@
         // 300s" reads as time still owed; "300s left" read as a label.
         banned: 'banido',
         cooldownLeft: 'faltam {N}s',
+        // Card t_376a14ac: the numbers that make a cooldown READABLE. The route
+        // publishes the threshold, the sliding window and what each failure kind
+        // weighs (`auto_breaker`); without them "3" on a row is a number the
+        // operator has to read the source to interpret — 3 is one ttfb_stall away
+        // from tripping, or three nonzero_exits that would need five.
+        // Two phrases, because the weight is only sayable when the row names the
+        // kind that produced it, and a row without that kind must not invent one.
+        breakerScore: '{N} de {MAX} em {WIN}',
+        breakerWeight: '{KIND} pesa {W}',
         // §4.7: the whole-file editor's warning. It names "Ver o que muda"
         // and "Salvar" — the words in double quotes are the spec's own — so
         // the sentence rides the map like the buttons it quotes.
@@ -4783,6 +4792,51 @@
       }
 
       // ── §2.6 / §3.3: Fora de rotação ─────────────────────────────────
+      // ── the breaker's numbers, on the row they explain ──────────────
+      // Card t_376a14ac, item 3. `GET /blocklist` now publishes `auto_breaker`
+      // (threshold, window, and what each failure kind weighs), and this is what
+      // turns it into words. PURE — entry plus policy in, strings out — so its
+      // limits are pinned without a DOM.
+      //
+      // The numbers ride the COOLDOWN ROW, not a panel of their own. A threshold
+      // with nothing counting against it is decoration, and DESIGN.md rule 1 says
+      // an absence renders nothing: with no cooldown there is no count, so there
+      // is no line. Where a cooldown exists, "3 de 5 em 10 min" is the whole
+      // answer to "how did this open".
+      function breakerWindowWords(seconds) {
+        const s = Number(seconds);
+        if (!Number.isFinite(s) || s <= 0) return null;
+        // Whole minutes read as minutes; anything else stays in seconds rather
+        // than inventing "1min30", which is a unit nobody configured.
+        return s % 60 === 0 ? `${s / 60} min` : `${s}s`;
+      }
+
+      function breakerNotes(entry, policy) {
+        const e = entry || {};
+        const p = policy || {};
+        const notes = [];
+        const max = Number(p.threshold);
+        const count = Number(e.failure_count);
+        const win = breakerWindowWords(p.window_seconds);
+        // All three or nothing: "3 de 5" without the window is a rate with no
+        // period, and a period the route did not serve must not be guessed.
+        if (Number.isFinite(max) && Number.isFinite(count) && win) {
+          notes.push(fill(WRITE.breakerScore, { N: count, MAX: max, WIN: win }));
+        }
+        const kind = e.last_failure_kind;
+        if (kind) {
+          const weights = p.failure_weights;
+          const w = weights ? Number(weights[kind]) : NaN;
+          // The kind is said ONCE: with a weight when the route served one, bare
+          // when it did not. Two notes naming the same kind would be the same
+          // fact from two authorities, which is what §2 forbids.
+          notes.push(Number.isFinite(w)
+            ? fill(WRITE.breakerWeight, { KIND: String(kind), W: w })
+            : String(kind));
+        }
+        return notes;
+      }
+
       // Who is out of rotation (manual bans + breaker cooldowns) and — the
       // half the review found missing — the queue that SUBSTITUTES a banned
       // model. The manual-ban row always carries its lift control — "exists"
@@ -4825,12 +4879,18 @@
           row.append(name, right);
           banBox.append(row);
         });
+        const policy = bl.auto_breaker || {};
         breakers.forEach((b) => {
           const row = el('div', 'row is-degraded');
           row.append(el('span', 'dot'));
           const name = el('div', 'row-main');
           name.append(el('div', 'row-name', b.model_key || '—'));
-          if (b.last_failure_kind) name.append(el('div', 'row-note', b.last_failure_kind));
+          // The failure kind used to be this row's only note. It still is when the
+          // sidecar serves no policy (an older one does not), and it now carries
+          // the weight beside it when there is one — see breakerNotes.
+          breakerNotes(b, policy).forEach((text) => {
+            name.append(el('div', 'row-note', text));
+          });
           row.append(name);
           row.append(el('span', 'row-value', fill(WRITE.cooldownLeft, { N: Math.ceil(Number(b.cooldown_remaining_s) || 0) })));
           banBox.append(row);
@@ -11450,6 +11510,10 @@
         // and the one-line cause+remedy the sheet renders. Exported so the
         // twelve-case table and the exact phrase are pinned, not eyeballed.
         shadowPairs, shadowPairFor, shadowReasonWords,
+        // Card t_376a14ac: the breaker's numbers as words. Pure, so the limits
+        // that matter (a policy the route did not serve, a kind with no weight,
+        // a window that is not whole minutes) are pinned without a DOM.
+        breakerNotes, breakerWindowWords,
         // The reorder write (card: reordenar pelo punho): the pure move, the
         // consequence sentence, the new-shadow delta, and the drop geometry —
         // exported so the splice direction (up vs down), the antes/depois
