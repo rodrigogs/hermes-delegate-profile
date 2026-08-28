@@ -1072,7 +1072,9 @@ class RouterService:
     def blocklist(self) -> Dict[str, Any]:
         """Return manual bans, the persisted breaker state, and its policy.
 
-        ``breaker_policy`` is the addition a console could not compute for itself.
+        ``auto_breaker`` is the addition a console could not compute for itself.
+        Named after the config section it reports, per the spec fixed on card
+        t_376a14ac, so a screen and the YAML an operator edits use one word.
         The cooldown list says who is blocked and for how long; it cannot say how
         close a healthy rail is to tripping, or which errors count at all, because
         both facts live in configuration and in a weight table this surface never
@@ -1087,7 +1089,7 @@ class RouterService:
             "fallback_chain": blocklist.fallback_chain(),
             "breaker_enabled": blocklist.breaker_enabled(),
             "breaker_cooldowns": blocklist.breaker_status(),
-            "breaker_policy": blocklist.breaker_policy(),
+            "auto_breaker": blocklist.breaker_policy(),
         }
 
     def liveness(self) -> Dict[str, Any]:

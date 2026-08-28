@@ -186,7 +186,7 @@ def test_blocklist_publishes_the_breakers_thresholds_and_its_criterion(config_pa
     to read the source to interpret, and a screen that GUESSED the threshold would
     be a second authority on it (card t_1c6a002d).
     """
-    policy = RouterService(config_path).blocklist()["breaker_policy"]
+    policy = RouterService(config_path).blocklist()["auto_breaker"]
 
     # The thresholds in force. This fixture declares no auto_breaker knobs, so
     # every value here is a shipped DEFAULT — which is the point: an absent key
@@ -222,7 +222,7 @@ def test_blocklist_publishes_the_breakers_thresholds_and_its_criterion(config_pa
         "the served weights must not be the table the breaker scores with"
     )
     assert RouterService(config_path).blocklist()[
-        "breaker_policy"]["failure_weights"] == before
+        "auto_breaker"]["failure_weights"] == before
 
 
 def test_the_breaker_policy_reports_what_the_operator_actually_set(tmp_path):
@@ -245,7 +245,7 @@ def test_the_breaker_policy_reports_what_the_operator_actually_set(tmp_path):
 
     served = RouterService(path).blocklist()
     assert served["breaker_enabled"] is True
-    policy = served["breaker_policy"]
+    policy = served["auto_breaker"]
     assert policy["threshold"] == 9, "the operator's number, not the default 5"
     assert policy["window_seconds"] == 120
     # Untouched knobs keep the shipped values rather than becoming absent or zero.
@@ -276,8 +276,8 @@ def test_the_breaker_policy_survives_a_malformed_auto_breaker_block(tmp_path):
 
     served = RouterService(path).blocklist()
     assert served["breaker_enabled"] is False, "a scalar cannot enable it"
-    assert served["breaker_policy"]["threshold"] == 5
-    assert served["breaker_policy"]["failure_weights"], "the criterion still ships"
+    assert served["auto_breaker"]["threshold"] == 5
+    assert served["auto_breaker"]["failure_weights"], "the criterion still ships"
 
 
 def test_explain_rejects_empty_or_oversized_tasks(config_path):
