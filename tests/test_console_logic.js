@@ -99,7 +99,7 @@ function loadConsole({ width = 1440, embedded = false, csrfToken, fetch: fetchSt
     setTimeout() {}, Math, JSON, Number, Object, Array, String, Set, Map, Date, encodeURIComponent,
   };
   vm.runInNewContext(script, context, { filename: sourcePath });
-  return { api: context.globalThis.__router, dom };
+  return { api: context.globalThis.__router, dom, win };
 }
 
 // Comment-free view of console.html for the single-source literal count: string
@@ -3490,6 +3490,228 @@ test('arrows walk the six tabs and wrap; exactly one is selected', () => {
   assert.equal(tabs[5].getAttribute('aria-selected'), 'true', '← wraps from the first to the sixth');
   assert.equal(selectedCount(), 1);
   assert.equal(activeCount(), 1, 'exactly one panel is visible at every step');
+});
+
+// ── the phone forms (card t_16e0c261): 360px, and what collapses ──────
+// Below the host's own 640px breakpoint the console stops drawing the
+// 24-cell band and the six-column rule row — the band is illegible before it
+// stops fitting (24 cells at 360px = 15px each), and a six-column row at 360
+// would give each column ~60px — and draws the written-window list and the
+// rule cards instead. The switch is a RENDER swap decided by two pure
+// functions, never display:none on both forms.
+
+test('priceMode and ruleMode hit the 640 breakpoint on BOTH sides', () => {
+  const { api } = loadConsole();
+  // 640 is the host's own collapse width (style.css:2137): below it the rail
+  // hides and the drawer is the only navigation, and this console's own
+  // @media (max-width: 640px) block matches it. The boundary is asserted on
+  // both sides because a one-sided limit is a half limit.
+  assert.equal(api.priceMode(360), 'lista');
+  assert.equal(api.priceMode(639), 'lista');
+  assert.equal(api.priceMode(640), 'lista');
+  assert.equal(api.priceMode(641), 'faixa');
+  assert.equal(api.priceMode(851), 'faixa');
+  assert.equal(api.ruleMode(360), 'cartao');
+  assert.equal(api.ruleMode(640), 'cartao');
+  assert.equal(api.ruleMode(641), 'grade');
+  assert.equal(api.ruleMode(861), 'grade');
+});
+
+test('below 640 the price strip draws the written list, not the band', () => {
+  const { api, dom } = loadConsole({ width: 360 });
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  api.state.capabilities = stripRegistry();
+  api.state.clock = PEAK;
+  api.renderPriceStrip();
+  const box = dom.get('priceStrip');
+  assert.equal(findAll(box, 'price-band').length, 0, 'the band is not drawn at 360');
+  assert.equal(findAll(box, 'h-cell').length, 0, 'and no hour cell with it');
+  const cards = findAll(box, 'pwin');
+  assert.equal(cards.length, 4, 'one written card per MODEL — the strip per-model axis survives the swap');
+  // The provider grouping survives too: zai still holds its two models.
+  const zai = flat(findAll(box, 'price-group')[0]);
+  assert.match(zai, /glm-4\.7/);
+  assert.match(zai, /glm-5\.3/);
+  // The window facts are said in words, not in 15px cells.
+  const text = flat(box);
+  assert.match(text, /06 – 10/);
+  assert.match(text, /de segunda a sexta/);
+  assert.match(text, /01 – 04/);
+  assert.match(text, /todo dia/);
+  assert.match(text, /o preço não varia com a hora/, 'the flat model says so in words');
+});
+
+test('the list head carries the now multiplier; each line carries its window', () => {
+  const { api, dom } = loadConsole({ width: 360 });
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  api.state.capabilities = stripRegistry();
+  api.state.clock = PEAK; // Monday 07:14 UTC: zai in its 06-10 peak, deepseek not
+  api.renderPriceStrip();
+  const cards = findAll(dom.get('priceStrip'), 'pwin');
+  const nowOf = (i) => findAll(cards[i], 'pwin-now')[0].textContent;
+  assert.equal(nowOf(0), '2× agora', 'glm-4.7 is inside zai peak');
+  assert.ok(findAll(cards[0], 'pwin-now')[0].classList.contains('up'), 'peak wears the danger colour');
+  assert.equal(nowOf(1), '2× agora');
+  assert.equal(nowOf(2), 'preço base agora', 'deepseek peak is 01-04; at 07 it is base');
+  assert.equal(nowOf(3), 'preço base agora', 'a model with no windows is flat now');
+  // The line's own multiplier is the WINDOW's, not the now one.
+  assert.equal(findAll(cards[2], 'pwin-mul')[0].textContent, '2×');
+  // The origin word rides the card as it rides the band row: give one model
+  // a registry origin and the card must say where its windows came from.
+  api.state.capabilities['glm-4.7'].price_windows_origin = 'registry';
+  api.renderPriceStrip();
+  assert.match(flat(dom.get('priceStrip')), /janela do catálogo/);
+});
+
+test('the list keeps the write surface: the band hour-click, at the hour on screen', () => {
+  const { api, dom } = loadConsole({ width: 360 });
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  api.state.capabilities = stripRegistry();
+  api.state.clock = PEAK;
+  api.renderPriceStrip();
+  const adds = findAll(dom.get('priceStrip'), 'pwin-add');
+  assert.equal(adds.length, 4, 'one button per editable model (declared models would lose it)');
+  assert.equal(adds[0].textContent, 'Remover a janela das 07h', 'glm-4.7 at 07 is in the peak — the click removes');
+  assert.equal(adds[2].textContent, 'Acrescentar janela', 'deepseek at 07 is base — the click adds');
+  // The click arms the SAME proposal spine the band's hour-click uses.
+  adds[0]._listeners.click();
+  const box = dom.get('priceStrip');
+  const area = box.children[box.children.length - 1];
+  assert.equal(area.hidden, false, 'the proposal row opens');
+  assert.match(flat(area), /volta ao preço base/, 'removing names the price change');
+  adds[2]._listeners.click();
+  const area2 = box.children[box.children.length - 1];
+  assert.match(flat(area2), /passa a custar 0,8×/, 'adding names the new price');
+});
+
+test('ruleMode decides the sheet draw: cards at 360, grid at 851', () => {
+  const { api, dom } = loadConsole({ width: 360 });
+  api.state.loading = false;
+  api.state.policy = { rules: [
+    { id: 'r1', when: { verb_class: { eq: 'trivial' } }, then: { model: 'T1' } },
+    { id: 'r2', when: {}, then: { deny: true } },
+  ], default: {}, tiers: {} };
+  api.renderSheet();
+  assert.equal(dom.get('sheet').classList.contains('mode-cards'), true, 'at 360 the sheet draws cards');
+  assert.equal(dom.get('sheetTailList').classList.contains('mode-cards'), true, 'the catch-all rows share the card form');
+  const wide = loadConsole({ width: 851 });
+  wide.api.state.loading = false;
+  wide.api.state.policy = { rules: [], default: {}, tiers: {} };
+  wide.api.renderSheet();
+  assert.equal(wide.dom.get('sheet').classList.contains('mode-cards'), false, 'at 851 the grid stays');
+});
+
+test('syncModes re-renders only when the mode actually crosses the breakpoint', () => {
+  const { api, dom, win } = loadConsole({ width: 851 });
+  api.state.loading = false;
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  api.state.capabilities = stripRegistry();
+  api.state.clock = PEAK;
+  api.renderPriceStrip();
+  assert.equal(findAll(dom.get('priceStrip'), 'price-band').length, 4, '851 draws the band');
+  // A resize inside the same mode must not redraw anything.
+  win.innerWidth = 700;
+  api.syncModes();
+  assert.equal(findAll(dom.get('priceStrip'), 'price-band').length, 4, '700 is still faixa — nothing redrawn');
+  // Crossing to 640 swaps the draw to the list.
+  win.innerWidth = 640;
+  api.syncModes();
+  assert.equal(findAll(dom.get('priceStrip'), 'price-band').length, 0, '640 crossed into lista — the draw swapped');
+  assert.equal(findAll(dom.get('priceStrip'), 'pwin').length, 4, 'and the list took over');
+  // Another resize inside lista stays put.
+  win.innerWidth = 360;
+  api.syncModes();
+  assert.equal(findAll(dom.get('priceStrip'), 'pwin').length, 4, '360 is still lista — no churn');
+});
+
+test('a keyboard tab change scrolls the selected tab into the strip', () => {
+  const dom = fakeDom();
+  const { tabs } = tabWire(dom);
+  loadConsole({ dom, keepWire: true });
+  const press = (tab, key) => {
+    const fn = tab._listeners && tab._listeners.keydown;
+    assert.ok(fn, 'wire() attached the keydown handler');
+    fn({ key, preventDefault() {} });
+  };
+  press(tabs[0], 'ArrowRight');
+  // Field compare, not deepEqual: the stub's scrollIntoView stores the VM
+  // realm's object literal, whose prototype differs from this file's.
+  assert.ok(tabs[1]._scrolledTo && tabs[1]._scrolledTo.block === 'nearest',
+    'the tab the keyboard moved to is brought into the scrollable strip');
+});
+
+test('the tab fade is lit by measurement of the rendered strip, not by width', () => {
+  const dom = fakeDom();
+  tabWire(dom);
+  const { api } = loadConsole({ dom, keepWire: true });
+  const nav = dom.get('sel:nav.tabs');
+  assert.ok(nav, 'the strip has a nav to measure');
+  nav.clientWidth = 360;
+  nav.scrollWidth = 360;
+  api.syncTabFade();
+  assert.equal(nav.classList.contains('tabstrip-fade'), false, 'fits — no fade');
+  nav.scrollWidth = 1200;
+  api.syncTabFade();
+  assert.equal(nav.classList.contains('tabstrip-fade'), true, 'overflows — the fade lights');
+});
+
+test('the tab strip scrolls with a click-through fade (comp-360)', () => {
+  const { style } = consoleStyle();
+  // The fade is the ONLY signal that the strip scrolls, so it has to be seen
+  // (34px, opaque at its root, the peeked tab showing under it) and it must
+  // never eat a tap on that tab.
+  assert.match(style, /\.tabs::after \{[^}]*width: 34px/);
+  assert.match(style, /\.tabs::after \{[^}]*pointer-events: none/);
+  assert.match(style, /\.tabs\.tabstrip-fade::after \{[^}]*opacity: 1/);
+  // The strip itself scrolls instead of wrapping (the ≤640 block).
+  const phone = style.slice(style.indexOf('@media (max-width: 640px)'));
+  assert.match(phone, /\.tabs \{[^}]*overflow-x: auto/);
+});
+
+test('the phone block treats the price list, the decisions table and the compaction pick', () => {
+  const { style } = consoleStyle();
+  const phone = style.slice(style.indexOf('@media (max-width: 640px)'));
+  assert.match(phone, /\.pwin/, 'the written-window list is folded in the same block');
+  assert.match(phone, /\.row\.route/, 'the decisions table keeps its two-row phone form');
+  // The compaction pick measured +181px at 360 (the 88px label column plus
+  // a select that refuses to shrink below its content); below 640 it stacks.
+  assert.match(phone, /\.compaction-pick \{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  assert.match(phone, /\.compaction-k \{[^}]*text-align:\s*left/);
+});
+
+test('more @media blocks than the original five, with the phone block intact', () => {
+  const { style } = consoleStyle();
+  const blocks = (style.match(/@media/g) || []).length;
+  assert.ok(blocks > 5, `more media blocks than the original five, got ${blocks}`);
+});
+
+test('the phone swap is a RENDER swap — no display:none hides the band or the rows', () => {
+  const { style } = consoleStyle();
+  // Below 640 the strip and the sheet change DRAW (priceMode/ruleMode), never
+  // hide-and-reveal: a display:none would take the fact out of the DOM and
+  // put the two forms at the mercy of a cascade order.
+  for (const sel of ['.price-row', '.price-band', '.pwin', '.step']) {
+    const esc = sel.replace('.', '\\.');
+    // (?![-\w:]) keeps the two pre-existing decorative rules out of the
+    // audit: .step::before (the spine tick, display:none on tail rows) and
+    // .step-grip .grip-glyph (the drag glyph, hidden on touch where the
+    // arrows replace it). A pseudo-element or a child control is not a fact
+    // being hidden — the ROW itself is the fact carrier.
+    assert.doesNotMatch(style, new RegExp(`${esc}(?![-\w:])[^{]*\\{[^}]*display:\\s*none`),
+      `${sel} must not be display:none'd`);
+  }
+});
+
+test('the new phone surfaces are 44px targets, with the classes named', () => {
+  const { style } = consoleStyle();
+  // §7: a finger needs 44px. The guard names the CLASS — a bare `button`
+  // (0,0,1) loses to any class-based sizing in this stylesheet, which is how
+  // the 14px probe input survived a decorative guard once (measured, iPhone).
+  assert.match(style, /\.pwin-add \{[^}]*min-height: 44px/);
+  assert.match(style, /\.tab \{[^}]*min-height: 44px/);
 });
 
 test('the jump button drives the whole fix path: tab, hit row, inspector, scroll', () => {

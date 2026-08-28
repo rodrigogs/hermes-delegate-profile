@@ -249,7 +249,7 @@
        leads to, because a destination whose contents are degraded should say so
        before you arrive. */
     .tabs {
-      display: flex; align-items: stretch; gap: 2px; flex-shrink: 0;
+      position: relative; display: flex; align-items: stretch; gap: 2px; flex-shrink: 0;
       padding: 0 clamp(14px, 2.4vw, 32px);
       border-bottom: 1px solid var(--line); background: var(--bg);
     }
@@ -286,6 +286,22 @@
     .is-degraded .dot { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-bg); }
     .is-quota    .dot { background: var(--info); box-shadow: 0 0 0 3px var(--info-bg); }
     .is-dead     .dot { background: var(--bad);  box-shadow: 0 0 0 3px var(--bad-bg); }
+
+    /* The strip's right fade (comp-360): the ONLY signal that the strip
+       scrolls below 640px, so it has to be seen — 34px, opaque at its root,
+       the peeked tab showing under it — and it must never eat a tap on that
+       tab (pointer-events:none, so the click falls through to the half-visible
+       tab underneath). The .tabstrip-fade class comes from syncTabFade():
+       whether the strip scrolls is a MEASUREMENT of the rendered strip
+       (scrollWidth vs clientWidth), not a pure function of the width — a
+       width-only rule would light the fade at 640px, where the six tabs
+       still fit. */
+    .tabs::after {
+      content: ""; position: absolute; top: 0; bottom: 1px; right: 0; width: 34px;
+      pointer-events: none; opacity: 0;
+      background: linear-gradient(to left, var(--bg) 34%, transparent);
+    }
+    .tabs.tabstrip-fade::after { opacity: 1; }
 
     /* ── controls ──────────────────────────────────────────────────────
        Shaped like the host's own header button (style.css:7074 .logs-copy):
@@ -1172,6 +1188,54 @@
          consecutive rows, measured. Which is the same ragged edge the two-row
          layout exists to remove. */
       .row.route > div { grid-column: 1 / -1; grid-row: 2; margin-left: 0; display: block; }
+
+      /* The compaction pick measured +181px at 360 (card t_16e0c261): the
+         88px label column plus a <select> that refuses to shrink below its
+         content. Below 640 the pick stacks — label above value — and the
+         value column is the whole width, so the select has room to be a
+         select. */
+      .compaction-pick { grid-template-columns: minmax(0, 1fr); gap: 5px 0; }
+      .compaction-k { text-align: left; }
+      .compaction-v { min-width: 0; }
+      .compaction-v .ctl { width: 100%; }
+
+      /* The price LIST's phone shape (the band is not drawn below 640px —
+         priceMode swaps the render — so these are the list's own folds: the
+         add button fills the card, the now word never wraps under itself). */
+      .pwin-add { width: 100%; }
+      .pwin-now { white-space: nowrap; }
+      .pwin-days { overflow-wrap: anywhere; }
+
+      /* The rule CARD (comp-360 Tarefas, ruleMode): below 640px a rule reads
+         as a card — ordinal, name and count on the first line, condition on
+         the second, destination on the third — instead of a six-column row
+         that 360px would crush to ~60px per column. The fallback stacking
+         above (the plain .step rules) keeps working if the class never
+         lands; .mode-cards only adds the card's chrome and the top-line
+         count. The reorder grip keeps its 44px lane on editable rows. */
+      .mode-cards.sheet { padding-left: 0; }
+      .mode-cards.sheet::before { content: none; }
+      .mode-cards.sheet-tail-list { padding-left: 0; }
+      .mode-cards .step { grid-template-columns: 26px minmax(0, 1fr) auto; }
+      .mode-cards .step::before { content: none; }
+      .mode-cards .step,
+      .mode-cards .step.editable {
+        border: 1px solid var(--line); border-radius: var(--radius);
+        background: var(--surface-raised); padding: 10px 12px; margin-bottom: 8px;
+      }
+      .mode-cards .step:last-child { border-bottom: 1px solid var(--line); }
+      .mode-cards .step .step-hits { grid-column: 3; grid-row: 1; justify-self: end; text-align: right; }
+      .mode-cards .step .step-to { grid-column: 2 / -1; grid-row: 2; }
+      .mode-cards .step .step-first { grid-column: 2 / -1; grid-row: 3; }
+      .mode-cards .step .step-open,
+      .mode-cards .step .step-chain { grid-column: 2 / -1; }
+      .mode-cards .step.editable { grid-template-columns: 44px 26px minmax(0, 1fr) auto; }
+      .mode-cards .step.editable .step-grip { grid-column: 1; grid-row: 1; margin-left: -12px; width: 44px; }
+      .mode-cards .step.editable .step-ord { grid-column: 2; grid-row: 1; }
+      .mode-cards .step.editable .step-what { grid-column: 3; grid-row: 1; }
+      .mode-cards .step.editable .step-hits { grid-column: 4; grid-row: 1; justify-self: end; }
+      .mode-cards .step.editable .step-to { grid-column: 3 / -1; grid-row: 2; }
+      .mode-cards .step.editable .step-first { grid-column: 3 / -1; grid-row: 3; }
     }
 
     /* Touch. The host requires 44px targets under a coarse pointer
@@ -1321,6 +1385,32 @@
     .sw-base { background: var(--surface-raised); border: 1px solid var(--line); }
     .sw-peak { background: color-mix(in srgb, var(--bad) 26%, var(--surface)); }
     .sw-cheap { background: color-mix(in srgb, var(--ok) 24%, var(--surface)); }
+
+    /* ── the written-window list (comp-360 Preços) ─────────────────────
+       Below 640px the 24-cell band is replaced by the windows in words
+       (priceMode — a render swap, one draw or the other, never display:none
+       on both): 24 cells at 360px are 15px each, illegible before they stop
+       fitting. The list keeps the strip's per-model axis (the LEIA-ME axis
+       correction): one card per model inside the provider group, the now
+       multiplier on the model's head, and the window's own multiplier on
+       the line that names it. */
+    .pwin { border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 8px; overflow: hidden; }
+    .pwin-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: baseline; padding: 9px 12px 7px; }
+    .pwin-name { font: 600 var(--t-name) var(--sans); letter-spacing: -.012em; min-width: 0; }
+    .pwin-name small { display: block; font: var(--t-micro) var(--sans); color: var(--muted); font-weight: 400; letter-spacing: 0; overflow-wrap: anywhere; }
+    .pwin-now { font: var(--t-meta) var(--mono); color: var(--ok-text); white-space: nowrap; }
+    .pwin-now.up { color: var(--bad-text); }
+    .pwin-windows { margin: 0; padding: 8px 12px 10px; list-style: none; border-top: 1px solid var(--soft); }
+    .pwin-window { display: grid; grid-template-columns: 74px minmax(0, 1fr) auto; gap: 9px; align-items: baseline; min-height: 32px; font: var(--t-meta) var(--mono); font-variant-numeric: tabular-nums; }
+    .pwin-when { color: var(--text); }
+    .pwin-days { color: var(--muted); font-family: var(--sans); font-size: var(--t-micro); overflow-wrap: anywhere; }
+    .pwin-mul { color: var(--bad-text); }
+    .pwin-mul.cheap { color: var(--ok-text); }
+    .pwin-flat { margin: 0; padding: 0 12px 10px; color: var(--muted); font-size: var(--t-micro); }
+    /* The write surface of the list form: the band's hour-click, offered at
+       the hour the operator is looking at (the "agora" the head names).
+       44px because a phone thumb is the audience of this form (§7). */
+    .pwin-add { width: 100%; min-height: 44px; background: none; border: 0; border-top: 1px solid var(--soft); color: var(--info-text); font: var(--t-meta) var(--sans); cursor: pointer; }
 
     /* The peak-policy selector: a real <select> disabled for now, so the one
        gesture that will eventually write is visible where it will live. The
@@ -1751,6 +1841,14 @@
 
       const SIDECAR = '/api/extensions/hermes-smart-router/sidecar';
       const NARROW_BELOW = 1120;
+      // The phone breakpoint: 640px is the host's OWN collapse width
+      // (style.css:2137 — below it the rail hides and the drawer is the only
+      // navigation), and this console's existing @media (max-width: 640px)
+      // block already matches it. It is deliberately a SECOND constant, not
+      // NARROW_BELOW: that one decides the canvas side-column layout
+      // (.is-narrow) and has nothing to do with the phone — reusing it
+      // would swap the price strip and the rule sheet at 1120px.
+      const MOBILE_BELOW = 640;
 
       const state = {
         health: null, status: null, policy: null, blocklist: null,
@@ -1761,6 +1859,11 @@
         // /console on open, so this document was written under the OLD
         // process, and nothing short of a reopen rewrites the srcdoc.
         sessionProcStart: null,
+        // The WIDTH the phone/desktop draw switches on (priceMode/ruleMode).
+        // The renders read it and syncModes() keeps it in step on resize —
+        // ONE writer, mirroring how nowUtc() is the ONE clock reader: no
+        // scattered window.innerWidth reads around the file.
+        viewWidth: window.innerWidth,
         // Which preset the operator is looking at, and which one the plan on screen
         // belongs to. Neither is persisted anywhere: §5.1 adds no key to router.yaml,
         // and "which preset is in force" is read back off the groups themselves.
@@ -5056,6 +5159,13 @@
         const tailBox = $('sheetTail');
         const tailList = $('sheetTailList');
         if (tailList) clear(tailList);
+        // The phone draws each rule as a CARD (ruleMode) — same facts, four
+        // lines, the comp-360 Tarefas form. The class switches the DRAW; the
+        // fallback stacking in the ≤640 block keeps working if this class
+        // never lands.
+        const cards = ruleMode(state.viewWidth) === 'cartao';
+        box.classList.toggle('mode-cards', cards);
+        if (tailList) tailList.classList.toggle('mode-cards', cards);
         const cols = $('sheetCols');
         const policy = state.policy;
         if (!policy) {
@@ -6201,6 +6311,137 @@
         if (!area || !area.pending) return Promise.resolve(false);
         return doApply('/apply', area.msg, area.pending.patch, area.diff, area.btn, WRITE.policySave);
       }
+      // The facts line shared by both price forms: the window note, the
+      // ORIGIN (a registry window and a hand-declared one must not look the
+      // same — the motor serves the origin, the screen says it) and, when the
+      // registry publishes it, the date a HUMAN confirmed the windows. The
+      // automatic read time lives in the detector's state file, which this
+      // screen never reads, so "há N h" is never invented here.
+      function priceModelFacts(entry, windows) {
+        const facts = [];
+        if (windows.length) {
+          const words = windows.map((w) => {
+            const span = `${String(w.hours[0]).padStart(2, '0')}–${String(w.hours[1]).padStart(2, '0')}`;
+            const gate = w.weekdays && w.weekdays.length
+              ? (w.weekdays.length === 7 ? '' : ` ${weekdayWords(w.weekdays)}`)
+              : '';
+            return `${times(w.multiplier)} ${span}${gate}`;
+          }).join(' · ');
+          facts.push(words);
+        } else {
+          facts.push('preço não varia com a hora');
+        }
+        const originWord = priceOriginWords(entry.price_windows_origin);
+        if (originWord && (windows.length || entry.price_windows_origin === 'overlay')) {
+          facts.push(originWord);
+        }
+        const verifiedWord = priceVerifiedWords(entry.price_windows_verified);
+        if (verifiedWord) facts.push(verifiedWord);
+        return facts;
+      }
+      // The LIST form's head line carries only origin/verified — the windows
+      // are already said by the list's own lines, and saying them twice in
+      // the same card would be noise.
+      function priceListFacts(entry, windows) {
+        const facts = [];
+        const originWord = priceOriginWords(entry.price_windows_origin);
+        if (originWord && (windows.length || entry.price_windows_origin === 'overlay')) {
+          facts.push(originWord);
+        }
+        const verifiedWord = priceVerifiedWords(entry.price_windows_verified);
+        if (verifiedWord) facts.push(verifiedWord);
+        return facts;
+      }
+      // One model as a 24-cell band row (the wide form): label + band, the
+      // band's cells being buttons exactly where the click can write.
+      function priceBandRow(model, entry, windows, when, nowHour) {
+        const row = el('div', 'price-row');
+        const label = el('div', 'price-model');
+        label.append(el('span', '', model));
+        label.append(el('small', '', priceModelFacts(entry, windows).join(' · ')));
+        if (entry.price_windows_origin === 'overlay') {
+          const back = el('button', 'linkish', 'voltar ao catálogo');
+          back.type = 'button';
+          back.addEventListener('click', () => proposePriceRestore(model));
+          label.append(back);
+        }
+        row.append(label);
+        const band = el('div', 'price-band');
+        const editable = entry.price_windows_origin !== 'declared';
+        for (let hour = 0; hour < 24; hour += 1) {
+          // A cell is a BUTTON only when the click can write — a declared
+          // model's hours render inert, with the reason on the row.
+          const cell = editable ? el('button', 'h-cell') : el('i', 'h-cell');
+          if (editable) cell.type = 'button';
+          // The multiplier at THIS hour, for the weekday the clock names —
+          // the same first-match-wins reading priceMultiplier applies.
+          const multiplier = priceMultiplier(windows, { hour, weekday: when.weekday });
+          if (multiplier > 1) cell.classList.add('peak');
+          else if (multiplier < 1) cell.classList.add('cheap');
+          if (hour === nowHour) cell.classList.add('now');
+          cell.title = editable
+            ? `${model} ${String(hour).padStart(2, '0')}:00 · ${times(multiplier)} — clique para declarar ou remover janela`
+            : `${model} ${String(hour).padStart(2, '0')}:00 · ${times(multiplier)} — declarada na tentativa do grupo; mude lá`;
+          if (editable) cell.addEventListener('click', () => proposePriceToggle(model, windows, hour, when.weekday));
+          band.append(cell);
+        }
+        row.append(band);
+        return row;
+      }
+      // One model as a written-window card (comp-360 Preços, the phone form):
+      // the now multiplier on the head, each window on its own line, and the
+      // band's hour-click offered as a 44px button at the hour on screen —
+      // same toggle, same consequence sentence, same write spine.
+      function priceListCard(model, entry, windows, when, nowHour) {
+        const card = el('div', 'pwin');
+        const head = el('div', 'pwin-head');
+        const name = el('div', 'pwin-name');
+        name.append(el('span', '', model));
+        const facts = priceListFacts(entry, windows);
+        if (facts.length) name.append(el('small', '', facts.join(' · ')));
+        if (entry.price_windows_origin === 'overlay') {
+          const back = el('button', 'linkish', 'voltar ao catálogo');
+          back.type = 'button';
+          back.addEventListener('click', () => proposePriceRestore(model));
+          name.append(back);
+        }
+        head.append(name);
+        const multiplier = priceMultiplier(windows, { hour: nowHour, weekday: when.weekday });
+        const now = el('span', 'pwin-now', multiplier === 1 ? 'preço base agora' : `${times(multiplier)} agora`);
+        if (multiplier > 1) now.classList.add('up');
+        else if (multiplier < 1) now.classList.add('cheap');
+        head.append(now);
+        card.append(head);
+        if (windows.length) {
+          const ul = el('ul', 'pwin-windows');
+          windows.forEach((w) => {
+            const li = el('li', 'pwin-window');
+            const span = `${String(w.hours[0]).padStart(2, '0')} – ${String(w.hours[1]).padStart(2, '0')}`;
+            li.append(el('span', 'pwin-when', span));
+            const gate = w.weekdays && w.weekdays.length && w.weekdays.length < 7
+              ? weekdayWords(w.weekdays) : 'todo dia';
+            li.append(el('span', 'pwin-days', gate));
+            const mul = el('span', 'pwin-mul', times(w.multiplier));
+            if (w.multiplier < 1) mul.classList.add('cheap');
+            li.append(mul);
+            ul.append(li);
+          });
+          card.append(ul);
+        } else {
+          card.append(el('p', 'pwin-flat', 'o preço não varia com a hora'));
+        }
+        if (entry.price_windows_origin !== 'declared') {
+          const add = el('button', 'pwin-add');
+          add.type = 'button';
+          add.textContent = multiplier !== 1
+            ? `Remover a janela das ${String(nowHour).padStart(2, '0')}h`
+            : 'Acrescentar janela';
+          add.title = priceToggleConsequence(windows, nowHour, when.weekday);
+          add.addEventListener('click', () => proposePriceToggle(model, windows, nowHour, when.weekday));
+          card.append(add);
+        }
+        return card;
+      }
       function renderPriceStrip() {
         const box = $('priceStrip');
         if (!box) return;
@@ -6218,6 +6459,10 @@
         const at = nowUtc();
         const when = whenOf(at);
         const nowHour = Math.floor(Number(when.hour));
+        // The phone draws the windows in WORDS (comp-360 Preços); the wide
+        // draw keeps the 24-cell band. ONE form renders — the switch is a
+        // render swap, never display:none on both.
+        const asList = priceMode(state.viewWidth) === 'lista';
         // Group the registry's models by provider, PRESERVING the registry's
         // own key order inside each group and the first-seen order of groups —
         // the strip never re-sorts by price or name, because the reader's
@@ -6249,84 +6494,34 @@
           byProvider[provider].forEach((model) => {
             const entry = registry[model];
             const windows = eloWindows(entry);
-            const row = el('div', 'price-row');
-            const label = el('div', 'price-model');
-            label.append(el('span', '', model));
-            // The facts line: the window note, the ORIGIN (a registry window
-            // and a hand-declared one must not look the same — the motor
-            // serves the origin, the screen says it) and, when the registry
-            // publishes it, the date a HUMAN confirmed the windows. The
-            // automatic read time lives in the detector's state file, which
-            // this screen never reads, so "há N h" is never invented here.
-            const facts = [];
-            if (windows.length) {
-              const words = windows.map((w) => {
-                const span = `${String(w.hours[0]).padStart(2, '0')}–${String(w.hours[1]).padStart(2, '0')}`;
-                const gate = w.weekdays && w.weekdays.length
-                  ? (w.weekdays.length === 7 ? '' : ` ${weekdayWords(w.weekdays)}`)
-                  : '';
-                return `${times(w.multiplier)} ${span}${gate}`;
-              }).join(' · ');
-              facts.push(words);
-            } else {
-              facts.push('preço não varia com a hora');
-            }
-            const originWord = priceOriginWords(entry.price_windows_origin);
-            if (originWord && (windows.length || entry.price_windows_origin === 'overlay')) {
-              facts.push(originWord);
-            }
-            const verifiedWord = priceVerifiedWords(entry.price_windows_verified);
-            if (verifiedWord) facts.push(verifiedWord);
-            label.append(el('small', '', facts.join(' · ')));
-            if (entry.price_windows_origin === 'overlay') {
-              const back = el('button', 'linkish', 'voltar ao catálogo');
-              back.type = 'button';
-              back.addEventListener('click', () => proposePriceRestore(model));
-              label.append(back);
-            }
-            row.append(label);
-            const band = el('div', 'price-band');
-            const editable = entry.price_windows_origin !== 'declared';
-            for (let hour = 0; hour < 24; hour += 1) {
-              // A cell is a BUTTON only when the click can write — a declared
-              // model's hours render inert, with the reason on the row.
-              const cell = editable ? el('button', 'h-cell') : el('i', 'h-cell');
-              if (editable) cell.type = 'button';
-              // The multiplier at THIS hour, for the weekday the clock names —
-              // the same first-match-wins reading priceMultiplier applies.
-              const multiplier = priceMultiplier(windows, { hour, weekday: when.weekday });
-              if (multiplier > 1) cell.classList.add('peak');
-              else if (multiplier < 1) cell.classList.add('cheap');
-              if (hour === nowHour) cell.classList.add('now');
-              cell.title = editable
-                ? `${model} ${String(hour).padStart(2, '0')}:00 · ${times(multiplier)} — clique para declarar ou remover janela`
-                : `${model} ${String(hour).padStart(2, '0')}:00 · ${times(multiplier)} — declarada na tentativa do grupo; mude lá`;
-              if (editable) cell.addEventListener('click', () => proposePriceToggle(model, windows, hour, when.weekday));
-              band.append(cell);
-            }
-            row.append(band);
-            group.append(row);
+            group.append(asList
+              ? priceListCard(model, entry, windows, when, nowHour)
+              : priceBandRow(model, entry, windows, when, nowHour));
           });
           box.append(group);
         });
-        // The ticks row: one label column + 24 hour cells, odds hidden so the
-        // numbers breathe at panel width. The label column carries the UTC note
-        // so the row explains its own axis.
-        const ticks = el('div', 'price-ticks');
-        ticks.append(el('span', '', 'UTC'));
-        for (let hour = 0; hour < 24; hour += 1) {
-          ticks.append(el('span', '', hour % 2 === 0 ? String(hour) : ''));
+        if (!asList) {
+          // The ticks row: one label column + 24 hour cells, odds hidden so
+          // the numbers breathe at panel width. The label column carries the
+          // UTC note so the row explains its own axis.
+          const ticks = el('div', 'price-ticks');
+          ticks.append(el('span', '', 'UTC'));
+          for (let hour = 0; hour < 24; hour += 1) {
+            ticks.append(el('span', '', hour % 2 === 0 ? String(hour) : ''));
+          }
+          box.append(ticks);
+          const legend = el('div', 'price-note');
+          const sw1 = el('span', ''); sw1.append(el('i', 'sw sw-base'), el('span', '', 'preço base'));
+          const sw2 = el('span', ''); sw2.append(el('i', 'sw sw-peak'), el('span', '', 'pico, custa mais'));
+          const sw3 = el('span', ''); sw3.append(el('i', 'sw sw-cheap'), el('span', '', 'janela barata'));
+          legend.append(sw1, sw2, sw3);
+          legend.append(el('span', '', `agora ${String(nowHour).padStart(2, '0')}:00 UTC, marcado — clique numa hora para declarar (0,8×) ou remover janela deste modelo`));
+          box.append(legend);
         }
-        box.append(ticks);
-        const legend = el('div', 'price-note');
-        const sw1 = el('span', ''); sw1.append(el('i', 'sw sw-base'), el('span', '', 'preço base'));
-        const sw2 = el('span', ''); sw2.append(el('i', 'sw sw-peak'), el('span', '', 'pico, custa mais'));
-        const sw3 = el('span', ''); sw3.append(el('i', 'sw sw-cheap'), el('span', '', 'janela barata'));
-        legend.append(sw1, sw2, sw3);
-        legend.append(el('span', '', `agora ${String(nowHour).padStart(2, '0')}:00 UTC, marcado — clique numa hora para declarar (0,8×) ou remover janela deste modelo`));
-        box.append(legend);
         box.append(priceProposal.row);
-        if (note) note.textContent = `UTC · agora ${String(nowHour).padStart(2, '0')}h, marcado`;
+        if (note) note.textContent = asList
+          ? `UTC · agora ${String(nowHour).padStart(2, '0')}h`
+          : `UTC · agora ${String(nowHour).padStart(2, '0')}h, marcado`;
       }
 
       // ── Compactação (card t_7c5d6f91) ─────────────────────────────────────
@@ -9876,6 +10071,46 @@
       function applyLayout() {
         $('shell').classList.toggle('is-narrow', isNarrow());
       }
+      // The mode pair: which DRAW the price strip and the rule sheet use.
+      // The breakpoint is the host's own (MOBILE_BELOW = 640, style.css:2137 —
+      // below it the rail hides and the drawer is the only navigation), NOT
+      // NARROW_BELOW: that one decides the canvas side-column layout
+      // (.is-narrow). The two modes are decided HERE, by the same width the
+      // @media (max-width: 640px) block uses, and the renders draw one form
+      // or the other — never display:none on both.
+      function priceMode(width) { return width <= MOBILE_BELOW ? 'lista' : 'faixa'; }
+      function ruleMode(width) { return width <= MOBILE_BELOW ? 'cartao' : 'grade'; }
+      function syncModes() {
+        const width = Number(window.innerWidth) || 0;
+        if (state.viewWidth === width) return;
+        const wasList = priceMode(state.viewWidth) === 'lista';
+        const wasCards = ruleMode(state.viewWidth) === 'cartao';
+        state.viewWidth = width;
+        if (priceMode(width) === wasList && ruleMode(width) === wasCards) return;
+        renderPriceStrip();
+        renderSheet();
+      }
+      // The tab strip's right fade (comp-360): the only sign the strip
+      // scrolls. It is drawn by CSS but turned ON by JS, because "does it
+      // scroll" is a measurement of the RENDERED strip (scrollWidth vs
+      // clientWidth), not a pure function of the width.
+      function syncTabFade() {
+        const nav = document.querySelector('nav.tabs');
+        if (!nav) return;
+        const over = typeof nav.scrollWidth === 'number' && typeof nav.clientWidth === 'number'
+          && nav.scrollWidth > nav.clientWidth + 1;
+        nav.classList.toggle('tabstrip-fade', over);
+      }
+      // One rAF per resize burst, then the three width/layout syncs run once,
+      // on the frame the browser is about to paint. Without the gate, resize
+      // fires at the browser's own rate and each event re-renders.
+      let resizeFrame = null;
+      function onResize() {
+        if (resizeFrame !== null) return;
+        const run = () => { resizeFrame = null; applyLayout(); syncModes(); syncTabFade(); };
+        if (typeof requestAnimationFrame === 'function') resizeFrame = requestAnimationFrame(run);
+        else run();
+      }
 
       // The on-screen keyboard covers the bottom of the frame without changing
       // its layout height, so a focused filter or probe input can end up behind
@@ -10035,6 +10270,9 @@
             const next = tabs[(i + step + tabs.length) % tabs.length];
             select(next);
             next.focus();
+            // The strip scrolls below 640px; a keyboard move must bring the
+            // selected tab into view — nearest, so the walk never jumps.
+            if (typeof next.scrollIntoView === 'function') next.scrollIntoView({ block: 'nearest' });
           });
         });
         $('refresh').addEventListener('click', load);
@@ -10070,7 +10308,10 @@
         // panel left open for hours — the case this card exists for. Same
         // guard as the clock: a headless harness need not provide timers.
         if (typeof setInterval === 'function') setInterval(() => { void watchStatus(); }, 60000);
-        window.addEventListener('resize', applyLayout);
+        // Resize drives the phone/desktop draw swap (syncModes), the tab
+        // fade (syncTabFade) and the canvas-side-column layout (applyLayout)
+        // — one rAF-throttled listener, not one per concern.
+        window.addEventListener('resize', onResize);
         // visualViewport fires for the keyboard; resize does not, on iOS.
         window.visualViewport?.addEventListener('resize', syncKeyboard);
         window.visualViewport?.addEventListener('scroll', syncKeyboard);
@@ -10078,6 +10319,8 @@
 
       wire();
       applyLayout();
+      syncModes();
+      syncTabFade();
       syncKeyboard();
       // The clock needs no sidecar: its windows are declared, so it is true before
       // the first read answers and stays true if none ever does.
@@ -10214,6 +10457,12 @@
         contextCeiling, unsatisfiableWords, peakPricing, peakPriceWords, nameList,
         say, ago, fmt, isNarrow, csrf, writable, call, load, absence, matchesQuery,
         utcClock, syncKeyboard,
+        // The phone/desktop draw pair (card t_16e0c261): the pure width
+        // deciders with their exact boundaries, and the two syncs that keep
+        // the draws in step with the rendered strip. Exported so the 640
+        // boundary on BOTH sides, the render swap and the measurement-driven
+        // tab fade are pinned by tests, not eyeballed.
+        priceMode, ruleMode, syncModes, syncTabFade,
         // The log-versus-policy crossing, pure: which ids the policy on screen
         // can dispatch, the one-line "fora da política" resolution (by id and by
         // source), the N/M/K reconciliation, and the adjacent-run collapse that
