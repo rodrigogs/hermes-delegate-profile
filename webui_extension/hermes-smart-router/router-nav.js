@@ -169,7 +169,10 @@
 
     const list = el('nav', 'router-sections');
     list.setAttribute('aria-label', 'Se\u00e7\u00f5es do console');
-    for (const [tab, label] of [['pipeline', 'Tarefas'], ['health', 'Modelos'], ['routes', 'Decis\u00f5es']]) {
+    for (const [tab, label] of [
+      ['tarefas', 'Tarefas'], ['simular', 'Simular'], ['modelos', 'Modelos'],
+      ['precos', 'Pre\u00e7os'], ['decisoes', 'Decis\u00f5es'], ['politica', 'Pol\u00edtica'],
+    ]) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'router-section';
@@ -189,7 +192,7 @@
    *
    * buildSidebar runs at install time, before the frame has a document, so its own
    * syncSections() finds no tabs and leaves every row unmarked — measured, the
-   * console had tab-health aria-selected="true" while all three rows were off. The
+   * console had tab-tarefas aria-selected="true" while all six rows were off. The
    * observer then keeps the two in step when the operator uses the console's own
    * tabs (they still exist; they are only undrawn) or when a section's count moves.
    */

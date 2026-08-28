@@ -12,17 +12,23 @@ impossible.
 
 ## 1. The three questions
 
-The console answers exactly three questions, in this order. Every screen belongs
-to one of them; anything serving none of them does not ship.
+The console answers exactly three questions. Every screen belongs to one of
+them — now with more than one screen per question — and anything serving none
+of them does not ship.
 
-| Question | Screen | The one thing it must show |
+| Question | Screens | The one thing each must show |
 |---|---|---|
-| Is it healthy? | **Health** | which models can be routed to, right now |
-| How does it route? | **Pipeline** | where a task lands, and the ordered policy that put it there |
-| What did it decide? | **Routes** | recent real decisions, replayable step by step — with the chain the router persisted for each |
+| Is it healthy? | **Modelos**, **Preços** | which models can be routed to, right now · the 24-hour band and what each hour costs |
+| How does it route? | **Tarefas**, **Simular**, **Política** | where a task lands, and the ordered policy that put it there · verifying one task against it · the policy file itself |
+| What did it decide? | **Decisões** | recent real decisions, replayable step by step — with the chain the router persisted for each |
 
 Blocklist and Compaction are subordinate detail, not peers: they live inside
-Health and Pipeline respectively unless they carry an active condition.
+Modelos — Compaction is a model choice and lives where the models are, and
+Fora de rotação is the model set's own exception list — and neither earns a
+tab of its own. Six destinations is the ceiling the tabs literature sustains
+(Eleken, PatternFly, uxpatterns.dev converge on 5–6); above it the excess
+goes to an overflow menu or to blind scrolling, and a hidden destination
+stops being visited.
 
 ## 2. Rules of subtraction
 
@@ -31,7 +37,7 @@ Applied in order. When two rules conflict, the earlier one wins.
 1. **Render nothing for nothing.** No empty card, no dashed placeholder box, no
    row that announces its own emptiness. A section with no data is absent, or a
    single muted line — never a framed void.
-2. **One authority per fact.** Health is signalled by the Health tab's dot and the
+2. **One authority per fact.** Health is signalled by the Modelos tab's dot and the
    model list. Write mode is signalled by the Edit control. Never a second chip
    repeating a state something else already owns; two sources that can disagree
    are worse than none. The header's reach chip is not an exception: its three
@@ -97,10 +103,10 @@ put five cyan destinations against a gold underline, an amber finding and two re
 in one viewport, which is what the host's guide forbids.
 
 - **Tab** = destination + its live state: a condition dot, plus a count when a
-  count is meaningful (recorded decisions; active bans). The Pipeline shows no
+  count is meaningful (recorded decisions; active bans). The Tarefas shows no
   count — the sheet's numbered rule list is its own counter, and `rules.length`
   undercounted the sheet (13 lines rendered, 8 counted: the fail-safe is not a
-  rule). The Health count counts EXCEPTIONS only (bans + breaker cooldowns) and
+  rule). The Modelos count counts EXCEPTIONS only (bans + breaker cooldowns) and
   wears amber, because counting elos made the number FALL from 8 to 1 the
   moment a problem appeared; the elo total lives in the lede.
 - **Cause colour** in a decision: deterministic rule `--ok-text`, classifier
@@ -333,7 +339,7 @@ is not any one screen's subject: it changes what all three of them mean.
   says `planned at 03:00 UTC`. When it reports none, the console's hour is used —
   which is the hour this line already names, so there is still one authority.
 - **A DECISION THAT ALREADY HAPPENED never falls back to the browser's hour.** On
-  Routes the subject is a recorded decision, and the clock line above reports NOW,
+  Decisões the subject is a recorded decision, and the clock line above reports NOW,
   which is not when the decision was made. So a replayed plan is priced at its own
   reported hour, then at the hour its TRACE records (`ts`, the log's own), then at
   no hour at all — never at the console's, because putting this morning's
@@ -342,11 +348,11 @@ is not any one screen's subject: it changes what all three of them mean.
   cannot name it: `planned at 03:00 UTC` when the router reported one, `priced at
   03:00 UTC, the hour this decision was recorded` when only the trace did. Liveness
   is not consulted at all for a replay: a read taken after the fact measures now.
-- **On Routes a SELECTED decision reprices the strip itself.** The same rule that
+- **On Decisões a SELECTED decision reprices the strip itself.** The same rule that
   prices the replayed chain plan at its own hour extends to the price line: while
-  a decision is picked on Routes, the strip shows that decision's hour (`clockLocal`
+  a decision is picked on Decisões, the strip shows that decision's hour (`clockLocal`
   gains `· hora da decisão`), because the question the operator is answering is
-  "what did THIS cost", not "what does it cost now". Leaving Routes hands the
+  "what did THIS cost", not "what does it cost now". Leaving Decisões hands the
   strip back to the present. Every row also stamps its own UTC hour beside the
   age — `17d ago · 03:20 UTC` — so a peak-hour decision stays a peak-hour decision
   no matter how long ago the operator looks at it.
@@ -368,9 +374,9 @@ is not any one screen's subject: it changes what all three of them mean.
 
 ## 3d. The tier vocabulary is defined where it decides
 
-The sheet's destinations and the Health rows once used words that assumed the
+The sheet's destinations and the Modelos rows once used words that assumed the
 reader already knew the policy's shape: "T3" read as a model id while meaning
-"try this chain", and a Health row for glm-5.3 looked like a one-tier elo while
+"try this chain", and a Modelos row for glm-5.3 looked like a one-tier elo while
 three tiers depended on it. The definitions now ride with the terms, in damage
 order — the misreading that costs most is the one defined first:
 
@@ -415,11 +421,11 @@ facts echoed other surfaces. The rules the fixes encode:
   problem appeared — the number moved the wrong way in the moment it mattered
   most. The elo total lives in the lede ("all 8 reachable" / "2 of 3 not
   routable"), where the unit is named.
-- **A list is its own counter.** The Pipeline badge is gone: the numbered rule
+- **A list is its own counter.** The Tarefas badge is gone: the numbered rule
   sheet already counts rules — and its 13 lines include the fail-safe, which
   `rules.length` (8) never counted, so the badge undercounted the very sheet it
   sat on. The dot keeps the condition; the list keeps the count.
-- **A summary fact must exist nowhere else.** The Health facts keep exactly
+- **A summary fact must exist nowhere else.** The Modelos facts keep exactly
   two — ROUTING on/off and the CLASSIFIER model — because those two are the
   only ones no other surface says. The rules count repeated the sheet, and the
   invalid count repeated the lint banner's "Policy invalid — N errors", which
@@ -488,18 +494,22 @@ operator choosing to edit is not the router degrading.
   which surface you are on; a mark repeating it spent 9 characters and a whole
   type voice the shell never uses on information the operator already had. The
   header carries the view's name and its actions and nothing else.
-- **The screen's question is answered in its first line.** Health opens with the
-  rollup of the model set ("all 5 reachable"), Pipeline with the probe, Routes
-  with what the log holds. There is no second heading repeating the panel title.
+- **The screen's question is answered in its first line.** Modelos opens with the
+  rollup of the model set ("all 5 reachable"), Tarefas with the sheet that
+  answers where a task lands, Decisões with what the log holds. There is no
+  second heading repeating the panel title. The simulator is NOT in that first
+  line: it was the first thing on the rules tab and pushed down the list that
+  answers the tab's question — a list answers by reading, a simulation is
+  verification, which you seek when you want it (2026-08-27 split).
 - **On a phone the clock yields, never the name of the surface.** At 390px the
   header's three items claimed 232px and truncated the title to "Capability R…";
   dropping the "checked HH:MM" text returns the 99px that fits it whole. The dot
   stays, and the words come back at any width when there is something to report
   (no read yet, or an unreachable sidecar).
-- **One column under that header.** Three destinations do not earn a permanent
-  vertical rail, and a host that already owns the left edge must never face a
-  second one. Measure is capped (`min(1180px, 100%)`) so a line of prose stays
-  readable on a wide monitor.
+- **One column under that header.** Six destinations still do not earn a
+  permanent vertical rail — the host already owns the left edge and must never
+  face a second one. Measure is capped (`min(1180px, 100%)`) so a line of prose
+  stays readable on a wide monitor.
 - One screen fills its width; nothing letterboxes.
 - Density: 11–16px inside a group, 30–38px between groups. More space above a
   heading than below it.
@@ -557,6 +567,11 @@ up. A cause label ("fail safe strong") is a phrase, so it is sans, not mono.
   traces contain attacker-influenceable task text.
 - Nav items keep `class="tab"` + `role="tab"` + `data-tab` + `aria-controls`,
   and panels keep `id="panel-<tab>"`; one delegate drives selection.
+- **Tabs and panels are a bijection.** For every `data-tab="X"` there exists an
+  `id="panel-X"` and the converse. The delegate builds the panel id from the tab
+  name (`panel-${name}`), so a tab without a panel, or a panel without a tab, is
+  a click that lands nowhere. A test reads the markup and asserts both
+  directions, in the approved order.
 - These ids are load-bearing for tests: `sheet`, `probeTask`, `ladder`,
   `routesTable`, `replayPath`, `chainPlan`, `replayPlan`, `clockbar`.
 - ONE chain renderer serves both surfaces. The Explain panel plans a task that has

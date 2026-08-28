@@ -268,7 +268,7 @@
     .tab-state { display: inline-flex; align-items: center; gap: 6px; }
     .count { color: var(--muted); font: 500 var(--t-label) var(--mono); }
     /* A count that names an EXCEPTION wears amber — the condition colour that
-       means "this needs your attention" — so the Health badge (bans + breaker
+       means "this needs your attention" — so the Modelos badge (bans + breaker
        cooldowns) reads as a condition, the same way the dot beside it does.
        A count that merely counts (recorded decisions) stays muted. */
     .count.is-warn { color: var(--warn-text); }
@@ -386,7 +386,7 @@
     .mechanism { display: block; font: var(--t-small) var(--sans); margin-top: 2px; }
     .mechanism.bad { color: var(--bad-text); }
     .mechanism.info { color: var(--info-text); }
-    /* The role an elo plays in the policy, on the Health row that monitors it:
+    /* The role an elo plays in the policy, on the Modelos row that monitors it:
        which tiers use it and at which position ("T2 primária, T3 hop 3").
        Tier ids and hop numbers dominate the phrase, so it takes the small mono
        treatment of the rail note it follows. */
@@ -1060,7 +1060,7 @@
     #warnings .warn-line { margin-bottom: 0; }
     #warnings .warn-line + .warn-line { margin-top: 18px; }
 
-    /* The window-stale disclosure on the Pipeline sheet: NOT a warning. Nothing
+    /* The window-stale disclosure on the Tarefas sheet: NOT a warning. Nothing
        is wrong — the recorded decisions just describe an older window than the
        current policy, so the per-rule counts do not exist for it. Same line
        shape as .warn-line, but the dot is the muted step and the halo the
@@ -1393,21 +1393,36 @@
     </div>
   </header>
 
-  <!-- Three destinations, drawn the way the host draws its own nav tabs: a quiet
+  <!-- Six destinations, drawn the way the host draws its own nav tabs: a quiet
        label that takes the accent when selected, with a 20px accent bar on the
-       bottom edge. Each carries the live state of what it leads to. -->
+       bottom edge. Each carries the live state of what it leads to. The order
+       is the approved split (2026-08-27): the task list first, then the
+       simulator, the model set, prices, decisions and the policy file —
+       "where does this go" before "show me what it costs". -->
   <nav class="tabs" role="tablist" aria-label="Seções da tela">
-    <button class="tab" id="tab-pipeline" role="tab" aria-selected="true" aria-controls="panel-pipeline" data-tab="pipeline" type="button">
+    <button class="tab" id="tab-tarefas" role="tab" aria-selected="true" aria-controls="panel-tarefas" data-tab="tarefas" type="button">
       <span class="tab-name">Tarefas</span>
-      <span class="tab-state" id="statePipeline"><span class="count" id="countPipeline" hidden></span><span class="dot"></span></span>
+      <span class="tab-state" id="stateTarefas"><span class="count" id="countTarefas" hidden></span><span class="dot"></span></span>
     </button>
-    <button class="tab" id="tab-health" role="tab" aria-selected="false" aria-controls="panel-health" data-tab="health" type="button">
+    <button class="tab" id="tab-simular" role="tab" aria-selected="false" aria-controls="panel-simular" data-tab="simular" type="button">
+      <span class="tab-name">Simular</span>
+      <span class="tab-state" id="stateSimular"><span class="count" id="countSimular" hidden></span><span class="dot"></span></span>
+    </button>
+    <button class="tab" id="tab-modelos" role="tab" aria-selected="false" aria-controls="panel-modelos" data-tab="modelos" type="button">
       <span class="tab-name">Modelos</span>
-      <span class="tab-state" id="stateHealth"><span class="count" id="countHealth" hidden></span><span class="dot"></span></span>
+      <span class="tab-state" id="stateModelos"><span class="count" id="countModelos" hidden></span><span class="dot"></span></span>
     </button>
-    <button class="tab" id="tab-routes" role="tab" aria-selected="false" aria-controls="panel-routes" data-tab="routes" type="button">
+    <button class="tab" id="tab-precos" role="tab" aria-selected="false" aria-controls="panel-precos" data-tab="precos" type="button">
+      <span class="tab-name">Preços</span>
+      <span class="tab-state" id="statePrecos"><span class="count" id="countPrecos" hidden></span><span class="dot"></span></span>
+    </button>
+    <button class="tab" id="tab-decisoes" role="tab" aria-selected="false" aria-controls="panel-decisoes" data-tab="decisoes" type="button">
       <span class="tab-name">Decisões</span>
-      <span class="tab-state" id="stateRoutes"><span class="count" id="countRoutes" hidden></span><span class="dot"></span></span>
+      <span class="tab-state" id="stateDecisoes"><span class="count" id="countDecisoes" hidden></span><span class="dot"></span></span>
+    </button>
+    <button class="tab" id="tab-politica" role="tab" aria-selected="false" aria-controls="panel-politica" data-tab="politica" type="button">
+      <span class="tab-name">Política</span>
+      <span class="tab-state" id="statePolitica"><span class="count" id="countPolitica" hidden></span><span class="dot"></span></span>
     </button>
   </nav>
 
@@ -1443,96 +1458,15 @@
       </div>
       <div id="warnings"></div>
 
-      <!-- ── Modelos: which models can this router reach right now ────── -->
-      <section class="screen" id="panel-health" role="tabpanel" aria-labelledby="tab-health">
-        <!-- The screen's one question, answered in its first line: the rollup of
-             the model set, with the router's own three facts on the opposite
-             margin. There is no second "Router" heading — the panel header
-             already names the surface, and a title that repeats the rail is the
-             clutter this console was rebuilt to remove. -->
-        <div class="lede">
-          <p class="lede-answer" id="modelsNote"></p>
-          <div class="facts" id="healthFacts"></div>
-        </div>
-
-        <!-- §2.4: "Melhor modelo por tarefa". A preset only ever writes `tiers` —
-             which models each group uses and in what order — and never `rules`,
-             because the order of rules IS the semantics (first match decides) and the
-             lint's shadowed-rule detection depends on it: a preset that rewrote rules
-             could create or delete dead rules without the operator seeing it. Which
-             group a task uses stays manual, one line at a time.
-
-             There is no Salvar in this markup: it is BUILT after a plan comes back, so
-             an /apply can never be one click away from a body nobody previewed (CA5). -->
-        <div class="group" id="presetBox">
-          <div class="group-head"><h2>Melhor modelo por tarefa</h2><span class="screen-note" id="presetActive"></span></div>
-          <div id="presetOptions"></div>
-          <p class="lede-answer is-quiet" id="presetNote"></p>
-          <div class="actions" id="presetActions"></div>
-          <p class="msg" id="presetMsg" aria-live="polite"></p>
-          <pre class="code" id="presetDiff" hidden></pre>
-        </div>
-
-        <!-- §1.2 item 4. The groups moved here from Tarefas: this tab answers "which
-             models are there, and in what order does each group try them", and CA4 is
-             verified by opening Modelos. On the Tarefas tab the same blocks were a
-             second subject under the rule list. -->
-        <!-- ── Preço por hora (card t_7c5d6f91, comp-modelos.html) ───────────
-             One 24-cell band PER MODEL (spec t_c90c5336 corrected the comp's
-             per-provider axis), grouped visually by provider. READ-ONLY in this
-             delivery: the click-to-declare gesture belongs to the controls card
-             (t_5d8491bf) — a strip that offered clicks that do not write would
-             be exactly the dead control this screen refuses to carry. The
-             current hour comes from nowUtc() — the ONE clock reader — so the
-             mark moves with state.clock in tests and with the minute repaint
-             in production. -->
-        <div class="price-section">
-          <div class="group-head"><h2>Preço por hora</h2><span class="screen-note" id="priceNote">UTC</span></div>
-          <div class="price-box" id="priceStrip"></div>
-        </div>
-
-        <div class="group">
-          <div class="group-head"><h2>Grupos de modelos</h2><span class="screen-note" id="ladderNote"></span></div>
-          <div id="ladder"></div>
-        </div>
-
-        <!-- §1.2 item 5 / §2.6: o último recurso, depois dos grupos. renderFailSafe
-             constrói tudo aqui dentro: com fail_safe, o bloco com a cadeia desenhada
-             pelo MESMO chainList dos grupos (§8); sem fail_safe, não existe moldura
-             (DESIGN.md regra 1) — só a frase do §5.4 no lugar onde o bloco estaria. -->
-        <div id="failSafeBox"></div>
-
-        <div id="models"></div>
-
-        <!-- ── Compactação (card t_7c5d6f91 + t_5d8491bf) ────────────────
-             Reads the state /compaction already serves (GET /compaction):
-             threshold in tokens, summarizer window, aggressiveness, every
-             model_thresholds entry, the RESOLVED choice (model + fallback
-             queue) and the refusals. The model and the fallback queue are
-             WRITABLE here (card t_5d8491bf): each change arms the block's one
-             proposal and only its Gravar button writes, through the same
-             /plan + /apply spine. The raw block (state.policy.compaction) is
-             the writable source of truth for fallback_mode; the resolved aux
-             is the display fallback when /policy carries no block yet. -->
-        <div class="compaction-box" id="compactionBox"></div>
-
-        <div class="group" id="bansGroup" hidden>
-          <div class="group-head"><h2>Fora de rotação</h2></div>
-          <div id="bans"></div>
-        </div>
-        <!-- The removal write's feedback lives where the block is, but OUTSIDE
-             the group: when the last ban is lifted the group hides itself, and
-             the confirmation must not hide with it. hidden until a write speaks. -->
-        <p class="msg" id="bansMsg" aria-live="polite" hidden></p>
-      </section>
-
       <!-- ── Tarefas: a decision sheet, read top to bottom ─────────── -->
-      <section class="screen active" id="panel-pipeline" role="tabpanel" aria-labelledby="tab-pipeline">
-        <!-- The probe is the first thing in the first viewport, because "where
-             would MY task land?" is the question this screen exists for and the
-             sheet below is the answer's audit trail. Backed by /explain (Stage 0,
-             deterministic): GET for a goal, POST once a context is supplied,
-             because that is the only pipe wide enough for one. -->
+      <section class="screen active" id="panel-tarefas" role="tabpanel" aria-labelledby="tab-tarefas">
+        <!-- The screen's one question, answered in its first line: where a task
+             lands, and the ordered policy that put it there. The sheet IS this
+             tab — the simulator that used to sit above it moved to its own tab
+             (Simular), because it occupied the first viewport and pushed down
+             the list that answers this tab's question: a list answers by
+             reading, a simulation is verification, which you seek when you
+             want it. -->
         <div class="lede">
           <p class="lede-answer is-quiet" id="pipelineNote">Leia de cima para baixo — a primeira regra que casar decide.</p>
         </div>
@@ -1544,11 +1478,6 @@
              the operator moves on. -->
         <p class="lede-answer is-quiet" id="reorderMsg" aria-live="polite" hidden></p>
 
-        <!-- §1.2: the LIST first, the probe after it. The list is what the tab is for
-             — the ordered types of task, first match decides — and the probe is a tool
-             for checking one case against it. With the probe first the screen opened
-             with an empty box above the answer, which reads as "type something to see
-             anything". -->
         <!-- The column heads (comp-tarefas): the six tracks of the rows below,
              so the bare number in the last column is read as what it is — use
              over the counted window. Hidden until a policy renders. -->
@@ -1571,6 +1500,24 @@
           <ol class="sheet-tail-list" id="sheetTailList"></ol>
         </div>
 
+        <!-- One line at the top of the Tarefas tab that names why the per-rule
+             counts below are missing: the newest recorded decision predates the
+             router.yaml on disk (or the window is older than STALE_WINDOW_DAYS,
+             or nothing is recorded at all). Not a warning — a disclosure. -->
+        <div class="window-stale" id="windowStale" hidden></div>
+
+        <div id="inspector"></div>
+      </section>
+
+      <!-- ── Simular: verificar uma tarefa contra a política ────────── -->
+      <section class="screen" id="panel-simular" role="tabpanel" aria-labelledby="tab-simular">
+        <!-- Why this is its own tab and not the first thing on Tarefas
+             (measured 2026-08-27): the simulator occupied the first viewport of
+             the rules tab and pushed down the list that answers the tab's
+             question. A list answers by reading; a simulation is verification,
+             which you seek when you want it. Backed by /explain (Stage 0,
+             deterministic): GET for a goal, POST once a context is supplied,
+             because that is the only pipe wide enough for one. -->
         <form class="probe" id="probeForm">
           <input id="probeTask" class="probe-input" autocomplete="off"
                  placeholder="Descreva uma tarefa — “Depurar uma condição de corrida no cache”" aria-label="Tarefa a rotear">
@@ -1638,42 +1585,96 @@
              Driven by chain_plan on the /explain response; absent until a task is
              probed, because there is no chain plan without a task. -->
         <div id="chainPlan"></div>
+      </section>
 
-        <!-- One line at the top of the Pipeline tab that names why the per-rule
-             counts below are missing: the newest recorded decision predates the
-             router.yaml on disk (or the window is older than STALE_WINDOW_DAYS,
-             or nothing is recorded at all). Not a warning — a disclosure. -->
-        <div class="window-stale" id="windowStale" hidden></div>
+      <!-- ── Modelos: which models can this router reach right now ────── -->
+      <section class="screen" id="panel-modelos" role="tabpanel" aria-labelledby="tab-modelos">
+        <!-- The screen's one question, answered in its first line: the rollup of
+             the model set, with the router's own three facts on the opposite
+             margin. There is no second "Router" heading — the panel header
+             already names the surface, and a title that repeats the rail is the
+             clutter this console was rebuilt to remove. -->
+        <div class="lede">
+          <p class="lede-answer" id="modelsNote"></p>
+          <div class="facts" id="healthFacts"></div>
+        </div>
 
-        <div id="inspector"></div>
+        <!-- §2.4: "Melhor modelo por tarefa". A preset only ever writes `tiers` —
+             which models each group uses and in what order — and never `rules`,
+             because the order of rules IS the semantics (first match decides) and the
+             lint's shadowed-rule detection depends on it: a preset that rewrote rules
+             could create or delete dead rules without the operator seeing it. Which
+             group a task uses stays manual, one line at a time.
+
+             There is no Salvar in this markup: it is BUILT after a plan comes back, so
+             an /apply can never be one click away from a body nobody previewed (CA5). -->
+        <div class="group" id="presetBox">
+          <div class="group-head"><h2>Melhor modelo por tarefa</h2><span class="screen-note" id="presetActive"></span></div>
+          <div id="presetOptions"></div>
+          <p class="lede-answer is-quiet" id="presetNote"></p>
+          <div class="actions" id="presetActions"></div>
+          <p class="msg" id="presetMsg" aria-live="polite"></p>
+          <pre class="code" id="presetDiff" hidden></pre>
+        </div>
+
+        <!-- §1.2 item 4. The groups moved here from Tarefas: this tab answers "which
+             models are there, and in what order does each group try them", and CA4 is
+             verified by opening Modelos. On the Tarefas tab the same blocks were a
+             second subject under the rule list. -->
         <div class="group">
-          <details>
-            <summary>Editar como texto</summary>
-            <!-- §4.7: the whole-file editor's warning. It names "Ver o que
-                 muda" and "Salvar", so it cannot re-spell them — the words
-                 ride the map and boot stamps this line from it, like the
-                 three buttons below. -->
-            <p class="field-note" id="jsonNote"></p>
-            <textarea id="policyEditor" class="editor" spellcheck="false" aria-label="Política como texto"></textarea>
-            <!-- No Confirm button. It POSTed /apply/confirm, which on the server
-                 is the SAME function as /apply — one_sidecar.py:346 and :353 both
-                 return _commit_policy(body). Two buttons, one effect, and nothing
-                 on screen said which to press or what the difference was.
-                 The labels are not here: §4.7 keeps the write vocabulary in the
-                 WRITE map, and boot stamps these three from it (stampWriteLabels). -->
-            <div class="actions" id="jsonActions">
-              <button class="btn go" id="jsonApply" type="button"></button>
-              <button class="btn" id="jsonPreview" type="button"></button>
-              <button class="btn warn" id="jsonRevert" type="button"></button>
-            </div>
-            <p class="msg" id="jsonMsg" aria-live="polite"></p>
-            <pre class="code" id="jsonDiff" hidden></pre>
-          </details>
+          <div class="group-head"><h2>Grupos de modelos</h2><span class="screen-note" id="ladderNote"></span></div>
+          <div id="ladder"></div>
+        </div>
+
+        <!-- §1.2 item 5 / §2.6: o último recurso, depois dos grupos. renderFailSafe
+             constrói tudo aqui dentro: com fail_safe, o bloco com a cadeia desenhada
+             pelo MESMO chainList dos grupos (§8); sem fail_safe, não existe moldura
+             (DESIGN.md regra 1) — só a frase do §5.4 no lugar onde o bloco estaria. -->
+        <div id="failSafeBox"></div>
+
+        <div id="models"></div>
+
+        <!-- ── Compactação (card t_7c5d6f91 + t_5d8491bf) ────────────────
+             Reads the state /compaction already serves (GET /compaction):
+             threshold in tokens, summarizer window, aggressiveness, every
+             model_thresholds entry, the RESOLVED choice (model + fallback
+             queue) and the refusals. The model and the fallback queue are
+             WRITABLE here (card t_5d8491bf): each change arms the block's one
+             proposal and only its Gravar button writes, through the same
+             /plan + /apply spine. The raw block (state.policy.compaction) is
+             the writable source of truth for fallback_mode; the resolved aux
+             is the display fallback when /policy carries no block yet. -->
+        <div class="compaction-box" id="compactionBox"></div>
+
+        <div class="group" id="bansGroup" hidden>
+          <div class="group-head"><h2>Fora de rotação</h2></div>
+          <div id="bans"></div>
+        </div>
+        <!-- The removal write's feedback lives where the block is, but OUTSIDE
+             the group: when the last ban is lifted the group hides itself, and
+             the confirmation must not hide with it. hidden until a write speaks. -->
+        <p class="msg" id="bansMsg" aria-live="polite" hidden></p>
+      </section>
+
+      <!-- ── Preços: a faixa de 24 horas, por modelo ────────────────── -->
+      <section class="screen" id="panel-precos" role="tabpanel" aria-labelledby="tab-precos">
+        <!-- ── Preço por hora (card t_7c5d6f91, comp-modelos.html) ───────────
+             One 24-cell band PER MODEL (spec t_c90c5336 corrected the comp's
+             per-provider axis), grouped visually by provider. READ-ONLY in this
+             delivery: the click-to-declare gesture belongs to the controls card
+             (t_5d8491bf) — a strip that offered clicks that do not write would
+             be exactly the dead control this screen refuses to carry. The
+             current hour comes from nowUtc() — the ONE clock reader — so the
+             mark moves with state.clock in tests and with the minute repaint
+             in production. -->
+        <div class="price-section">
+          <div class="group-head"><h2>Preço por hora</h2><span class="screen-note" id="priceNote">UTC</span></div>
+          <div class="price-box" id="priceStrip"></div>
         </div>
       </section>
 
       <!-- ── Decisões: what it actually decided ───────────────────────── -->
-      <section class="screen" id="panel-routes" role="tabpanel" aria-labelledby="tab-routes">
+      <section class="screen" id="panel-decisoes" role="tabpanel" aria-labelledby="tab-decisoes">
         <div class="lede">
           <p class="lede-answer is-quiet" id="routesNote"></p>
         </div>
@@ -1710,6 +1711,31 @@
                  hour is stated here with its source (DESIGN.md §3c). -->
             <div id="replayPlan"></div>
           </div>
+        </div>
+      </section>
+
+      <!-- ── Política: o arquivo que decide, como texto ──────────────── -->
+      <section class="screen" id="panel-politica" role="tabpanel" aria-labelledby="tab-politica">
+        <div class="group">
+          <!-- §4.7: the whole-file editor's warning. It names "Ver o que
+               muda" and "Salvar", so it cannot re-spell them — the words
+               ride the map and boot stamps this line from it, like the
+               three buttons below. -->
+          <p class="field-note" id="jsonNote"></p>
+          <textarea id="policyEditor" class="editor" spellcheck="false" aria-label="Política como texto"></textarea>
+          <!-- No Confirm button. It POSTed /apply/confirm, which on the server
+               is the SAME function as /apply — one_sidecar.py:346 and :353 both
+               return _commit_policy(body). Two buttons, one effect, and nothing
+               on screen said which to press or what the difference was.
+               The labels are not here: §4.7 keeps the write vocabulary in the
+               WRITE map, and boot stamps these three from it (stampWriteLabels). -->
+          <div class="actions" id="jsonActions">
+            <button class="btn go" id="jsonApply" type="button"></button>
+            <button class="btn" id="jsonPreview" type="button"></button>
+            <button class="btn warn" id="jsonRevert" type="button"></button>
+          </div>
+          <p class="msg" id="jsonMsg" aria-live="polite"></p>
+          <pre class="code" id="jsonDiff" hidden></pre>
         </div>
       </section>
     </div>
@@ -1784,12 +1810,12 @@
         // Which subset of decisions is on screen. 'all' or 'off-rule'.
         scope: 'all',
         // Which tab is active. renderClock reprices the strip at a SELECTED
-        // decision's hour only on Routes; every other screen's subject is now,
+        // decision's hour only on Decisões; every other screen's subject is now,
         // so the clock needs to know which subject it is serving.
-        // 'pipeline' (Tarefas): the first tab is the task list, the axis the
+        // 'tarefas': the first tab is the task list, the axis the
         // redesign hangs everything else on — a task row answers "where does
-        // this kind of work go?", and the other two tabs answer follow-ups.
-        tab: 'pipeline',
+        // this kind of work go?", and the other tabs answer follow-ups.
+        tab: 'tarefas',
         // THE INJECTED CLOCK. null means "use the wall clock", which only nowUtc()
         // ever does. Everything downstream takes the instant as a parameter, so a
         // rendering test pins an hour instead of passing at 05:59 and failing at
@@ -3184,28 +3210,28 @@
         };
         const cannotRead = state.unreachable || Object.keys(state.readFailures).length > 0;
         const health = cannotRead ? 'dead' : (models.length ? worstOf(models) : '');
-        // The Health badge counts EXCEPTIONS, not elos: a ban or a breaker
+        // The Modelos badge counts EXCEPTIONS, not elos: a ban or a breaker
         // cooldown is what an operator must act on, and the elo total already
         // lives in the lede ("all 8 reachable" / "2 of 3 not routable").
         // Counting elos here was worse than useless — ban one of eight models
         // and the badge fell from 8 to 1 at the moment the problem appeared.
         // Zero exceptions hides the badge entirely (badge.hidden = !count).
-        set('stateHealth', 'countHealth', health, bans.length + breakers.length, true);
-        // The Pipeline dot reports the POLICY, never the operator's own mode. It
+        set('stateModelos', 'countModelos', health, bans.length + breakers.length, true);
+        // The Tarefas dot reports the POLICY, never the operator's own mode. It
         // used to go amber ('degraded') whenever editing was open, so the console
         // claimed the router was degraded because someone had clicked a button —
         // and amber is the colour that means "this needs your attention". An
         // invalid policy is a real degradation; an open editor is not.
         const invalid = Array.isArray(state.status && state.status.validation_errors)
           && state.status.validation_errors.length > 0;
-        // The Pipeline count is GONE: the sheet's numbered rule list 1..N is its
+        // The Tarefas count is GONE: the sheet's numbered rule list 1..N is its
         // own counter, so a badge repeating N duplicated the tab's content — and
         // it undercounted the sheet: 13 lines rendered, 8 counted, because the
         // fail-safe line (45% of decisions) is not a rule. The dot keeps the
         // condition; the list keeps the count.
-        set('statePipeline', 'countPipeline',
+        set('stateTarefas', 'countTarefas',
             invalid ? 'degraded' : (state.policy ? 'alive' : ''), 0);
-        set('stateRoutes', 'countRoutes', routes.length ? 'alive' : '', routes.length);
+        set('stateDecisoes', 'countDecisoes', routes.length ? 'alive' : '', routes.length);
 
         const reach = $('reach');
         // Provenance header: three ages instead of one "checked" clock.
@@ -3347,7 +3373,7 @@
         // the hour that decision happened — the same rule the chain plan already
         // follows (recordedAt beats the browser clock). Everywhere else the
         // subject is the present, so the strip keeps saying now.
-        const replayAt = state.tab === 'routes' && state.replay && state.replay.recordedAt
+        const replayAt = state.tab === 'decisoes' && state.replay && state.replay.recordedAt
           ? state.replay.recordedAt : null;
         const at = replayAt || nowUtc();
         const face = timeFace(at, -at.getTimezoneOffset());
@@ -3429,7 +3455,7 @@
         return Array.isArray(st.error_targets) ? st.error_targets : [];
       }
 
-      // The ONE fix path for a shadowed rule: jump to the Pipeline sheet, mark
+      // The ONE fix path for a shadowed rule: jump to the Tarefas sheet, mark
       // the dead row the way a probe marks its winner, open its inspector.
       // pickBind works from anywhere — the click opens the editor itself, and
       // navigation is not an edit.
@@ -3439,7 +3465,7 @@
         const ruleIndex = Number.isInteger(target.later_index) ? target.later_index : -1;
         if (!laterId || ruleIndex < 0) return;
         state.lintRule = laterId;
-        selectTab('pipeline');
+        selectTab('tarefas');
         pickBind({ id: `rule:${laterId}`, name: laterId, bind: 'rule', ruleIndex });
         // Scroll AFTER the tab is visible and the sheet re-rendered: a hidden
         // panel scrolls nowhere, and pickBind rebuilds the rows it points at.
@@ -3469,7 +3495,7 @@
       // left this case in the server's raw text for exactly this reason).
       function showDefaultPanel() {
         state.lintRule = 'default';
-        selectTab('pipeline');
+        selectTab('tarefas');
         pickBind({ id: 'default', name: 'default', bind: 'default' });
         const row = findRuleRow('__default');
         if (row && typeof row.scrollIntoView === 'function') {
@@ -3858,8 +3884,7 @@
         // 300s" reads as time still owed; "300s left" read as a label.
         banned: 'banido',
         cooldownLeft: 'faltam {N}s',
-        // §4.7: the whole-file editor's warning, the sentence the literal
-        // scan found missing inside the <details>. It names "Ver o que muda"
+        // §4.7: the whole-file editor's warning. It names "Ver o que muda"
         // and "Salvar" — the words in double quotes are the spec's own — so
         // the sentence rides the map like the buttons it quotes.
         textEdit: 'Aqui você edita o arquivo de política inteiro. O que você escrever aqui substitui qualquer coisa que você tenha mexido nos campos das outras abas e ainda não salvo. O caminho de gravação é o mesmo: "Ver o que muda" e depois "Salvar".',
@@ -9983,8 +10008,8 @@
         });
         document.querySelectorAll('.screen')
           .forEach((s) => s.classList.toggle('active', s.id === `panel-${name}`));
-        // The clock strip prices the selected decision's hour ONLY on Routes;
-        // leaving Routes hands the strip back to the present.
+        // The clock strip prices the selected decision's hour ONLY on Decisões;
+        // leaving Decisões hands the strip back to the present.
         renderClock();
       }
 

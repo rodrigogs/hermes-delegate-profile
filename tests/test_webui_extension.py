@@ -172,31 +172,34 @@ def test_wall_clock_is_read_in_exactly_one_place():
     )
 
 
-def test_console_html_declares_its_three_screens_and_their_surfaces():
-    """The console is three screens; each must exist with the hooks its screen
-    needs. Both Pipeline and Routes read as ordered vertical sequences — a policy
-    is a first-match table and a trace is a short path, so neither is a free-form
-    canvas and the operator learns one way of reading this console."""
+def test_console_html_declares_its_six_screens_and_their_surfaces():
+    """The console is six screens; each must exist with the hooks its screen
+    needs. Tarefas, Decisões and the ladder read as ordered vertical sequences —
+    a policy is a first-match table and a trace is a short path, so neither is a
+    free-form canvas and the operator learns one way of reading this console."""
     html = (EXTENSION / "console.html").read_text(encoding="utf-8")
-    for tab in ("health", "pipeline", "routes"):
+    for tab in ("tarefas", "simular", "modelos", "precos", "decisoes", "politica"):
         assert f'data-tab="{tab}"' in html
         assert f'id="panel-{tab}"' in html
-    assert 'id="sheet"' in html, "the Pipeline screen is the ordered decision sheet"
+    assert 'id="sheet"' in html, "the Tarefas screen is the ordered decision sheet"
     assert 'id="probeTask"' in html, "an operator must be able to try a task"
     assert 'id="ladder"' in html, "the capability ladder shows where tasks can land"
     assert 'id="failSafeBox"' in html, "§1.2 item 5: the last resort has its own block on the Modelos tab"
     assert 'id="routesTable"' in html
     assert 'id="replayPath"' in html, "replay lists the steps a real decision took"
-    assert "<svg" not in html, "no canvas survives: both screens are read as lists"
+    assert 'id="policyEditor"' in html, "the whole-file editor is its own tab now"
+    assert "<svg" not in html, "no canvas survives: the screens are read as lists"
 
 
-def test_console_tabs_read_as_tasks_models_decisions():
-    """CA1 of the redesign spec: the three tabs are Tarefas / Modelos / Decisões.
+def test_console_tabs_read_as_tasks_simular_models_prices_decisions_policy():
+    """The approved 2026-08-27 split: six destinations, in the operator's order.
 
     The task list is the axis the whole redesign hangs on, so it is the FIRST
-    tab and the one born selected; ids stay ``tab-pipeline``/``tab-health``/
-    ``tab-routes`` because router-nav.js and the tests match by id. The sidebar
-    mirrors the same three words in the same order — one vocabulary, not two.
+    tab and the one born selected. The simulator leaves Tarefas (it occupied the
+    first viewport and pushed down the sheet that answers the tab's question),
+    the 24-hour band leaves Modelos, and the whole-file editor leaves its
+    <details> — each for a tab of its own. The sidebar mirrors the same six
+    words in the same order — one vocabulary, not two.
     """
     import re
 
@@ -205,33 +208,38 @@ def test_console_tabs_read_as_tasks_models_decisions():
     assert nav, "the console declares its tab list"
 
     order = re.findall(r'id="(tab-\w+)".*?<span class="tab-name">([^<]+)</span>', nav.group(0), re.S)
-    assert [tab for tab, _ in order] == ["tab-pipeline", "tab-health", "tab-routes"], (
-        "Tarefas leads; ids keep their historic names"
-    )
-    assert [label for _, label in order] == ["Tarefas", "Modelos", "Decisões"]
+    assert [tab for tab, _ in order] == [
+        "tab-tarefas", "tab-simular", "tab-modelos", "tab-precos",
+        "tab-decisoes", "tab-politica",
+    ], "Tarefas leads; the six names say what they are"
+    assert [label for _, label in order] == [
+        "Tarefas", "Simular", "Modelos", "Preços", "Decisões", "Política",
+    ]
 
     # Born selected: the markup itself carries the state, not a script pass.
-    first = re.search(r'<button class="tab" id="tab-pipeline"[^>]*>', nav.group(0))
+    first = re.search(r'<button class="tab" id="tab-tarefas"[^>]*>', nav.group(0))
     assert first and 'aria-selected="true"' in first.group(0), "Tarefas is the tab an operator lands on"
-    for other in ("tab-health", "tab-routes"):
+    for other in ("tab-simular", "tab-modelos", "tab-precos", "tab-decisoes", "tab-politica"):
         line = re.search(rf'<button class="tab" id="{other}"[^>]*>', nav.group(0))
         assert line and 'aria-selected="false"' in line.group(0)
 
-    panel = re.search(r'<section class="screen active" id="panel-pipeline"', html)
+    panel = re.search(r'<section class="screen active" id="panel-tarefas"', html)
     assert panel, "the Tarefas panel is born active"
-    assert re.search(r'<section class="screen" id="panel-health"', html), "Modelos starts inactive"
+    assert re.search(r'<section class="screen" id="panel-simular"', html), "Simular starts inactive"
+    assert re.search(r'<section class="screen" id="panel-politica"', html), "Política starts inactive"
 
     # The script state agrees with the markup it is born into.
-    assert re.search(r"tab: 'pipeline',", html), "state.tab starts on Tarefas"
+    assert re.search(r"tab: 'tarefas',", html), "state.tab starts on Tarefas"
 
-    # And the sidebar says the same three words in the same order. The source
+    # And the sidebar says the same six words in the same order. The source
     # escapes non-ASCII, so compare the escaped spellings it actually ships.
     nav_js = (EXTENSION / "router-nav.js").read_text(encoding="utf-8")
-    sections = re.search(r"for \(const \[tab, label\] of \[\[(.*?)\]\]\)", nav_js, re.S)
+    sections = re.search(r"for \(const \[tab, label\] of \[([\s\S]*?)\]\)", nav_js, re.S)
     assert sections, "the sidebar declares its section list"
     pairs = re.findall(r"\['(\w+)', '([^']+)'\]", sections.group(0))
     assert pairs == [
-        ("pipeline", "Tarefas"), ("health", "Modelos"), ("routes", "Decis\\u00f5es"),
+        ("tarefas", "Tarefas"), ("simular", "Simular"), ("modelos", "Modelos"),
+        ("precos", "Pre\\u00e7os"), ("decisoes", "Decis\\u00f5es"), ("politica", "Pol\\u00edtica"),
     ], "the sidebar mirrors the tabs: same words, same order"
 
 
@@ -727,16 +735,18 @@ def test_console_text_editor_warning_is_present_once_from_the_map():
     """§4.7: the whole-file editor's warning is present, once, from the map.
 
     The literal scan (comment #92) found the sentence missing from the
-    ``<details>`` entirely. It quotes "Ver o que muda" and "Salvar", so it
+    editor's ``<details>`` entirely. It quotes "Ver o que muda" and "Salvar", so it
     cannot re-spell them: the sentence lives in the WRITE map and boot stamps
     the empty ``#jsonNote`` paragraph, exactly like the three write buttons.
     The script therefore carries exactly one copy of the sentence (the map),
-    and the markup carries none outside it.
+    and the markup carries none outside it. Since the 2026-08-27 split the
+    editor is its own tab — the tab IS the disclosure — so the paragraph's
+    home is the Política panel.
     """
 
     html = (EXTENSION / "console.html").read_text(encoding="utf-8")
-    details = html.split("<summary>Editar como texto</summary>", 1)[1].split("</details>", 1)[0]
-    assert 'id="jsonNote"' in details, "the warning's paragraph lives inside the <details>"
+    politica = _panel(html, "politica")
+    assert 'id="jsonNote"' in politica, "the warning's paragraph lives on the Política tab"
     strings = _console_ui_strings()
     sent = [(w, ln, t) for w, ln, t in strings if "Aqui você edita o arquivo de política inteiro" in t]
     assert len(sent) == 1, (
@@ -2138,25 +2148,33 @@ def test_console_reads_in_the_order_the_spec_fixes():
       below the rule list, which put "which models exist and in what order each group
       tries them" as a second subject under "where does a task land". CA4 is verified by
       opening Modelos, so the placement is part of the criterion and not decoration.
-    * **On Tarefas the list comes before the probe.** With the probe first the screen
-      opened with an empty box above the answer, which reads as "type something to see
-      anything" — and the list is what the tab is for.
+    * **The simulator is its own tab, not the first thing on Tarefas.** It occupied the
+      first viewport of the rules tab and pushed down the list that answers the tab's
+      question — a list answers by reading, a simulation is verification, which you
+      seek when you want it (2026-08-27 split). The 24-hour band moves with it out of
+      Modelos.
     """
     html = (EXTENSION / "console.html").read_text(encoding="utf-8")
-    health = _panel(html, "health")
-    pipeline = _panel(html, "pipeline")
+    modelos = _panel(html, "modelos")
+    tarefas = _panel(html, "tarefas")
+    simular = _panel(html, "simular")
+    precos = _panel(html, "precos")
 
-    assert 'id="ladder"' in health, "the groups of models are read on Modelos"
-    assert 'id="ladder"' not in pipeline, "and are not a second subject under the rule list"
-    assert 'id="presetBox"' in health, "the presets are the first control on Modelos"
-    assert health.index('id="presetBox"') < health.index('id="ladder"'), (
+    assert 'id="ladder"' in modelos, "the groups of models are read on Modelos"
+    assert 'id="ladder"' not in tarefas, "and are not a second subject under the rule list"
+    assert 'id="presetBox"' in modelos, "the presets are the first control on Modelos"
+    assert modelos.index('id="presetBox"') < modelos.index('id="ladder"'), (
         "choose the strategy, then read what it produced"
     )
 
-    assert 'id="sheet"' in pipeline
-    assert pipeline.index('id="sheet"') < pipeline.index('id="probeForm"'), (
-        "the ordered list of task types is the answer; the probe checks one case against it"
+    assert 'id="sheet"' in tarefas
+    assert 'id="probeForm"' not in tarefas, "the simulator left the rules tab"
+    assert 'id="probeForm"' in simular, "and has a tab of its own"
+    assert simular.index('id="probeForm"') < simular.index('id="probeResult"'), (
+        "the task first, then what the probe found"
     )
+    assert 'id="priceStrip"' in precos, "the 24-hour band is read on Preços"
+    assert 'id="priceStrip"' not in modelos, "and is not a second subject on Modelos"
 
     # The ids themselves are the contract router-nav.js and the JS suite match on, so
     # a move must never be a rename.

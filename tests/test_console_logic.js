@@ -57,6 +57,7 @@ function fakeDom() {
       getBoundingClientRect() { return { width: 900, height: 300, top: 0, left: 0, right: 900 }; },
       clientWidth: 900,
       scrollIntoView(opts) { node._scrolledTo = opts || null; },
+      focus() {},
     };
     Object.defineProperty(node, 'firstChild', { get: () => node.children[0] || null });
     return node;
@@ -78,12 +79,16 @@ function fakeDom() {
   };
 }
 
-function loadConsole({ width = 1440, embedded = false, csrfToken, fetch: fetchStub } = {}) {
+function loadConsole({ width = 1440, embedded = false, csrfToken, fetch: fetchStub, dom: domIn, keepWire = false } = {}) {
   const html = fs.readFileSync(sourcePath, 'utf8');
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1]
     // Skip the init calls that need a live browser; keep everything else intact.
-    .replace(/\n      wire\(\);[\s\S]*?load\(\);\n/, '\n');
-  const dom = fakeDom();
+    // keepWire leaves wire() in place — the arrow-key test needs the handlers it
+    // registers — and strips only the layout/clock/load tail.
+    .replace(keepWire
+      ? /\n      applyLayout\(\);[\s\S]*?load\(\);\n/
+      : /\n      wire\(\);[\s\S]*?load\(\);\n/, '\n');
+  const dom = domIn || fakeDom();
   const top = {};
   const win = { innerWidth: width, addEventListener() {}, top };
   win.self = embedded ? win : top;
@@ -365,16 +370,16 @@ test('the rail carries each destination\'s live state', () => {
   api.state.liveness = { models: [{ state: 'alive' }, { state: 'degraded' }] };
   api.renderRail();
 
-  // The Pipeline count is GONE: the sheet's numbered rule list is its own counter.
-  assert.equal(dom.get('countPipeline').hidden, true,
-    'pipeline shows no count — the numbered list is the counter');
-  assert.equal(dom.get('countRoutes').textContent, '2', 'routes counts recorded decisions');
-  // The Health badge counts EXCEPTIONS, not elos: two models with no bans or
+  // The Tarefas count is GONE: the sheet's numbered rule list is its own counter.
+  assert.equal(dom.get('countTarefas').hidden, true,
+    'tarefas shows no count — the numbered list is the counter');
+  assert.equal(dom.get('countDecisoes').textContent, '2', 'decisões counts recorded decisions');
+  // The Modelos badge counts EXCEPTIONS, not elos: two models with no bans or
   // breaker cooldowns show nothing, not "2".
-  assert.equal(dom.get('countHealth').hidden, true,
-    'no exceptions → no health count, however many elos');
+  assert.equal(dom.get('countModelos').hidden, true,
+    'no exceptions → no modelos count, however many elos');
   // One degraded target must surface, not be averaged into "fine".
-  assert.match(dom.get('stateHealth').className, /is-degraded/);
+  assert.match(dom.get('stateModelos').className, /is-degraded/);
 });
 
 test('the health badge counts bans and breaker cooldowns, in amber', () => {
@@ -388,16 +393,16 @@ test('the health badge counts bans and breaker cooldowns, in amber', () => {
   api.renderRail();
   // The badge is bans + breakers, NOT elos — the review's 8→1 was the badge
   // counting inventory and the inventory shrinking at the moment of the problem.
-  assert.equal(dom.get('countHealth').textContent, '2', 'bans + breakers, not elos');
-  assert.equal(dom.get('countHealth').hidden, false);
-  assert.equal(dom.get('countHealth').classList.contains('is-warn'), true,
+  assert.equal(dom.get('countModelos').textContent, '2', 'bans + breakers, not elos');
+  assert.equal(dom.get('countModelos').hidden, false);
+  assert.equal(dom.get('countModelos').classList.contains('is-warn'), true,
     'an exception count wears amber, the attention colour');
 
   // Exceptions cleared → hidden again (zero is not drawn, §2.1).
   api.state.blocklist = { manual_bans: [], breaker_cooldowns: [] };
   api.renderRail();
-  assert.equal(dom.get('countHealth').hidden, true);
-  assert.equal(dom.get('countHealth').classList.contains('is-warn'), false);
+  assert.equal(dom.get('countModelos').hidden, true);
+  assert.equal(dom.get('countModelos').classList.contains('is-warn'), false);
 });
 
 test('the rail survives being rendered before any data arrives', () => {
@@ -405,7 +410,7 @@ test('the rail survives being rendered before any data arrives', () => {
   // The rail is rendered at boot, before the first poll. An unguarded read
   // here kills the whole IIFE and the operator gets a blank page.
   assert.doesNotThrow(() => api.renderRail());
-  assert.equal(dom.get('countPipeline').hidden, true, 'no policy yet → no count shown');
+  assert.equal(dom.get('countTarefas').hidden, true, 'no policy yet → no count shown');
 });
 
 test('the header reports three ages, and a stale sidecar says so', () => {
@@ -570,7 +575,7 @@ test('a write needs no mode: writable() does not check any arming', () => {
 });
 
 test('an open editor does not report the router as degraded', () => {
-  // The Pipeline dot used to go amber whenever the editor was open, so the console
+  // The Tarefas dot used to go amber whenever the editor was open, so the console
   // claimed a machine problem because someone had clicked a button — and amber is
   // the colour that means "this needs your attention".
   const { api, dom } = loadConsole({ csrfToken: 'tok' });
@@ -581,18 +586,18 @@ test('an open editor does not report the router as degraded', () => {
   // renderRail assigns className outright rather than touching classList, so the
   // string is what has to be read — asserting through the stub's classList would
   // silently pass no matter what the console did.
-  const pipelineState = () => dom.get('statePipeline').className;
+  const tarefasState = () => dom.get('stateTarefas').className;
 
   api.renderInspector({ id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 });
   api.renderRail();
-  assert.doesNotMatch(pipelineState(), /is-degraded/,
-    `an open editor is not a degradation, got "${pipelineState()}"`);
-  assert.match(pipelineState(), /is-alive/, 'a valid policy is alive while being edited');
+  assert.doesNotMatch(tarefasState(), /is-degraded/,
+    `an open editor is not a degradation, got "${tarefasState()}"`);
+  assert.match(tarefasState(), /is-alive/, 'a valid policy is alive while being edited');
 
   // A policy the router cannot parse IS one, and must still be reported.
   api.state.status = { validation_errors: ['rule r1: unknown field'] };
   api.renderRail();
-  assert.match(pipelineState(), /is-degraded/, 'an invalid policy must still show amber');
+  assert.match(tarefasState(), /is-degraded/, 'an invalid policy must still show amber');
 });
 
 test('without a session write token, saving is refused with the reason', () => {
@@ -1333,13 +1338,13 @@ test("a decision row's age is priced off the pinned clock, not the machine", () 
     'the age comes from the injected clock — identical text whatever hour the suite runs at');
 });
 
-test('on Routes the price strip shows the selected decision hour, not now', () => {
+test('on Decisões the price strip shows the selected decision hour, not now', () => {
   // The chain plan already prices a replay at recordedAt (planWhen); the strip
   // above the screens kept reporting NOW over a selected decision, so the rails
   // described the wrong hour for the decision being inspected.
   const { api, dom } = loadConsole();
   api.state.clock = PEAK;                  // now is 07:14 UTC, four hours later
-  api.state.tab = 'routes';
+  api.state.tab = 'decisoes';
   api.state.replay = {
     id: 'r1', at: 0, steps: [], plan: null,
     recordedAt: new Date(TRACE_AT * 1000), // 03:20 UTC
@@ -1348,8 +1353,8 @@ test('on Routes the price strip shows the selected decision hour, not now', () =
   assert.equal(dom.get('clockNow').textContent, '03:20 UTC');
   assert.match(dom.get('clockLocal').textContent, /hora da decisão/,
     'the repriced hour is named, with its source');
-  // Leaving Routes hands the strip back to the present.
-  api.state.tab = 'health';
+  // Leaving Decisões hands the strip back to the present.
+  api.state.tab = 'modelos';
   api.renderClock();
   assert.equal(dom.get('clockNow').textContent, '07:14 UTC');
   assert.doesNotMatch(dom.get('clockLocal').textContent, /hora da decisão/);
@@ -3313,13 +3318,14 @@ function inspectorMsg(dom) {
 }
 // wire() is stripped from the harness, so the tab machinery is driven through
 // its named function: give querySelectorAll a real table to act on.
+const TAB_NAMES = ['tarefas', 'simular', 'modelos', 'precos', 'decisoes', 'politica'];
 function tabWire(dom) {
-  const tabs = ['health', 'pipeline', 'routes'].map((name) => {
+  const tabs = TAB_NAMES.map((name) => {
     const t = dom.get(`tab-${name}`);
     t.dataset.tab = name;
     return t;
   });
-  const screens = ['panel-health', 'panel-pipeline', 'panel-routes'].map((name) => dom.get(name));
+  const screens = TAB_NAMES.map((name) => dom.get(`panel-${name}`));
   dom.document.querySelectorAll = (sel) => sel === '.tab' ? tabs : (sel === '.screen' ? screens : []);
   return { tabs, screens };
 }
@@ -3382,11 +3388,108 @@ test('a probe refuses locally when the policy is invalid — no round-trip', asy
 test('selectTab flips the aria state and the visible screen', () => {
   const { api, dom } = loadConsole();
   const { tabs, screens } = tabWire(dom);
-  api.selectTab('pipeline');
+  api.selectTab('simular');
   assert.equal(tabs[1].getAttribute('aria-selected'), 'true');
   assert.equal(tabs[0].getAttribute('aria-selected'), 'false');
   assert.equal(screens[1].classList.contains('active'), true);
   assert.equal(screens[0].classList.contains('active'), false);
+});
+
+test('the six tabs and panels are a bijection, born with exactly one selected', () => {
+  // DESIGN.md §7 invariant: for every data-tab="X" there is an id="panel-X"
+  // and the converse. selectTab builds the panel id from the tab name
+  // (`panel-${name}`), so a tab without a panel, or a panel without a tab, is
+  // a click that lands nowhere. The order is the approved split (2026-08-27).
+  const src = fs.readFileSync(sourcePath, 'utf8');
+  const tabs = [...src.matchAll(/data-tab="([a-z]+)"/g)].map((m) => m[1]);
+  const panels = [...src.matchAll(/id="panel-([a-z]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(tabs,
+    ['tarefas', 'simular', 'modelos', 'precos', 'decisoes', 'politica'],
+    'the six destinations, in the approved order');
+  assert.deepEqual(panels,
+    ['tarefas', 'simular', 'modelos', 'precos', 'decisoes', 'politica'],
+    'every tab has its panel, in the same order — the bijection');
+  // Born state lives in the markup, not in a script pass: exactly one tab is
+  // selected and it is Tarefas, the tab an operator lands on.
+  const selected = [...src.matchAll(/class="tab" id="(tab-[a-z]+)"[^>]*aria-selected="true"/g)].map((m) => m[1]);
+  assert.deepEqual(selected, ['tab-tarefas'], 'exactly one tab is born selected, and it is Tarefas');
+});
+
+test('each block lives inside the panel the approved split names', () => {
+  // The 2026-08-27 split moved blocks between panels. A panel's markup is the
+  // slice between its id and the next panel's id, so a block that drifted to
+  // the wrong tab fails here by index — the same cut the card's grep uses.
+  const src = fs.readFileSync(sourcePath, 'utf8');
+  const order = ['panel-tarefas', 'panel-simular', 'panel-modelos',
+    'panel-precos', 'panel-decisoes', 'panel-politica'];
+  const bounds = order.map((panel, i) => {
+    const start = src.indexOf(`id="${panel}"`);
+    assert.ok(start >= 0, `${panel} must exist`);
+    return {
+      panel, start,
+      end: i + 1 < order.length ? src.indexOf(`id="${order[i + 1]}"`) : src.length,
+    };
+  });
+  const inPanel = {
+    'panel-tarefas': ['sheet', 'inspector', 'windowStale'],
+    'panel-simular': ['probeForm', 'probeTask', 'probeHourBox', 'probeContextBox', 'probeResult', 'chainPlan'],
+    'panel-modelos': ['presetBox', 'ladder', 'failSafeBox', 'compactionBox', 'bans'],
+    'panel-precos': ['priceStrip', 'priceNote'],
+    'panel-decisoes': ['routesTable', 'replayPath', 'replayPlan', 'routesFilter', 'routeScopes'],
+    'panel-politica': ['jsonNote', 'policyEditor', 'jsonActions', 'jsonMsg', 'jsonDiff'],
+  };
+  for (const { panel, start, end } of bounds) {
+    for (const block of inPanel[panel]) {
+      const at = src.indexOf(`id="${block}"`);
+      assert.ok(at >= start && at < end,
+        `${block} must live inside ${panel} (found at ${at}, panel spans [${start}, ${end}))`);
+    }
+  }
+  // The whole-file editor left its <details>: the only <details> left (the
+  // probe's context box) sits on Simular, BEFORE Política — so every <details>
+  // opening precedes the editor, and the editor sits inside its own panel.
+  const editorAt = src.indexOf('id="policyEditor"');
+  const politica = src.indexOf('id="panel-politica"');
+  assert.ok(editorAt > politica && editorAt < src.indexOf('</section>', politica),
+    'policyEditor is inside panel-politica, not under a <details>');
+  assert.ok(src.lastIndexOf('<details') < editorAt,
+    'no <details> wraps the editor — the tab itself is the disclosure');
+});
+
+test('arrows walk the six tabs and wrap; exactly one is selected', () => {
+  // The keydown handler lives in wire(), which the harness normally strips;
+  // keepWire leaves it in and this test drives the REAL registered handlers —
+  // a tab whose handler was never attached would fail at the first press.
+  const dom = fakeDom();
+  const { tabs, screens } = tabWire(dom);
+  loadConsole({ dom, keepWire: true });
+  const selectedCount = () => tabs.filter((t) => t.getAttribute('aria-selected') === 'true').length;
+  const activeCount = () => screens.filter((s) => s.classList.contains('active')).length;
+  const press = (tab, key) => {
+    const fn = tab._listeners && tab._listeners.keydown;
+    assert.ok(fn, 'wire() attached the keydown handler to every tab');
+    fn({ key, preventDefault() {} });
+  };
+
+  // → walks forward; each step leaves exactly one tab selected and one panel up.
+  press(tabs[0], 'ArrowRight');
+  assert.equal(tabs[1].getAttribute('aria-selected'), 'true');
+  assert.equal(screens[1].classList.contains('active'), true);
+  assert.equal(selectedCount(), 1);
+
+  // Five more → returns to the first: the strip is a loop, no dead end at the
+  // sixth. Each press lands on the tab the previous press selected (wire()
+  // focuses it), which is how a real keyboard user walks the strip.
+  for (let i = 2; i <= 5; i += 1) press(tabs[i - 1], 'ArrowRight');
+  press(tabs[5], 'ArrowRight');
+  assert.equal(tabs[0].getAttribute('aria-selected'), 'true', '→ wraps from the sixth back to the first');
+  assert.equal(selectedCount(), 1);
+
+  // ← from the first wraps to the sixth.
+  press(tabs[0], 'ArrowLeft');
+  assert.equal(tabs[5].getAttribute('aria-selected'), 'true', '← wraps from the first to the sixth');
+  assert.equal(selectedCount(), 1);
+  assert.equal(activeCount(), 1, 'exactly one panel is visible at every step');
 });
 
 test('the jump button drives the whole fix path: tab, hit row, inspector, scroll', () => {
@@ -3409,7 +3512,7 @@ test('the jump button drives the whole fix path: tab, hit row, inspector, scroll
   assert.ok(btn, 'the warn-line carries the button');
   btn._listeners.click();
 
-  assert.equal(screens[1].classList.contains('active'), true, 'the Pipeline tab is now visible');
+  assert.equal(screens[0].classList.contains('active'), true, 'the Tarefas tab is now visible');
   assert.equal(api.state.lintRule, 'review-request');
   const row = dom.get('sheet').children.find((c) => c.dataset.ruleId === 'review-request');
   assert.ok(row, 'the dead row exists on the re-rendered sheet');
