@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from router import breaker as breaker_mod
 from router.service import RouterService, resolve_compaction_auxiliary
 
 
@@ -172,6 +173,111 @@ def test_blocklist_and_invalid_config_are_explicit(config_path, tmp_path):
     assert status["valid"] is False
     assert status["enabled"] is False
     assert status["validation_errors"]
+
+
+def test_blocklist_publishes_the_breakers_thresholds_and_its_criterion(config_path):
+    """The half of the breaker a console could not compute for itself.
+
+    ``breaker_cooldowns`` says who is blocked and for how long. It cannot answer
+    the two questions that come next — "how close to tripping is a healthy rail?"
+    and "which errors even count?" — because the threshold and the weight table
+    live in config and in code, and this route published neither. A screen showing
+    ``failure_count: 3`` with no threshold beside it is a number the operator has
+    to read the source to interpret, and a screen that GUESSED the threshold would
+    be a second authority on it (card t_1c6a002d).
+    """
+    policy = RouterService(config_path).blocklist()["breaker_policy"]
+
+    # The thresholds in force. This fixture declares no auto_breaker knobs, so
+    # every value here is a shipped DEFAULT — which is the point: an absent key
+    # does not mean an absent policy, and reporting the raw YAML would have shown
+    # an operator an empty one while a real one runs.
+    assert policy["threshold"] == 5
+    assert policy["window_seconds"] == 600
+    assert policy["base_cooldown_seconds"] == 60
+    assert policy["max_cooldown_seconds"] == 900
+    assert policy["backoff_multiplier"] == 2.0
+
+    # The criterion, read off the same table `record` uses — not a copy that could
+    # drift from it. A quota exhaustion trips on its own (10 >= 5); a nonzero exit
+    # needs five, and those are opposite diagnoses of the same `failure_count`.
+    assert policy["failure_weights"] == dict(breaker_mod.FAILURE_WEIGHTS)
+    assert policy["failure_weights"]["quota_exhausted"] >= policy["threshold"]
+    assert policy["failure_weights"]["nonzero_exit"] < policy["threshold"]
+    assert policy["default_weight"] == breaker_mod.DEFAULT_WEIGHT
+
+    # Reported even though the breaker is OFF here: `breaker_enabled` is the
+    # authority on whether any of it acts, and an operator deciding to turn it on
+    # has to see what they would be turning on.
+    assert RouterService(config_path).blocklist()["breaker_enabled"] is False
+
+    # A COPY, not the module table. Found by mutation: handing out
+    # `FAILURE_WEIGHTS` itself means any consumer that edits the payload edits the
+    # criterion `record` consults — a routing change made by a reader. Same
+    # invariant `capabilities_for` already holds over the registry.
+    before = dict(breaker_mod.FAILURE_WEIGHTS)
+    policy["failure_weights"]["ttfb_stall"] = 999
+    policy["failure_weights"]["invented_kind"] = 7
+    assert breaker_mod.FAILURE_WEIGHTS == before, (
+        "the served weights must not be the table the breaker scores with"
+    )
+    assert RouterService(config_path).blocklist()[
+        "breaker_policy"]["failure_weights"] == before
+
+
+def test_the_breaker_policy_reports_what_the_operator_actually_set(tmp_path):
+    """Declared knobs win over the defaults, and only the declared ones move."""
+    path = tmp_path / "router.yaml"
+    path.write_text(yaml.safe_dump({
+        "enabled": True,
+        "classifier": {"model": "glm-4.6", "provider": "zai"},
+        "fail_safe": {"profile": "coder", "model": "glm-4.6", "provider": "zai"},
+        "blocklist": {
+            "manual_ban": [], "fallback_chain": [],
+            "auto_breaker": {"enabled": True, "threshold": 9,
+                             "window_seconds": 120},
+        },
+        "rules": [],
+        "default": {"profile": "coder", "model": "T1"},
+        "tiers": {name: {"model": "glm-4.6", "provider": "zai"}
+                  for name in ("T1", "T2", "T3", "T4")},
+    }, sort_keys=False), encoding="utf-8")
+
+    served = RouterService(path).blocklist()
+    assert served["breaker_enabled"] is True
+    policy = served["breaker_policy"]
+    assert policy["threshold"] == 9, "the operator's number, not the default 5"
+    assert policy["window_seconds"] == 120
+    # Untouched knobs keep the shipped values rather than becoming absent or zero.
+    assert policy["base_cooldown_seconds"] == 60
+    assert policy["max_cooldown_seconds"] == 900
+
+
+def test_the_breaker_policy_survives_a_malformed_auto_breaker_block(tmp_path):
+    """A non-mapping `auto_breaker` must report the policy that really runs.
+
+    `Blocklist` already refuses to read a scalar as config and falls back to the
+    defaults; the route has to report THOSE, because they are what `record` will
+    use. Reporting nothing here would be the shape of the defect this whole card is
+    about: a surface that goes quiet exactly when the config is wrong.
+    """
+    path = tmp_path / "router.yaml"
+    path.write_text(yaml.safe_dump({
+        "enabled": True,
+        "classifier": {"model": "glm-4.6", "provider": "zai"},
+        "fail_safe": {"profile": "coder", "model": "glm-4.6", "provider": "zai"},
+        "blocklist": {"manual_ban": [], "fallback_chain": [],
+                      "auto_breaker": "sim"},
+        "rules": [],
+        "default": {"profile": "coder", "model": "T1"},
+        "tiers": {name: {"model": "glm-4.6", "provider": "zai"}
+                  for name in ("T1", "T2", "T3", "T4")},
+    }, sort_keys=False), encoding="utf-8")
+
+    served = RouterService(path).blocklist()
+    assert served["breaker_enabled"] is False, "a scalar cannot enable it"
+    assert served["breaker_policy"]["threshold"] == 5
+    assert served["breaker_policy"]["failure_weights"], "the criterion still ships"
 
 
 def test_explain_rejects_empty_or_oversized_tasks(config_path):

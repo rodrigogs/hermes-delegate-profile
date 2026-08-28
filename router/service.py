@@ -1070,7 +1070,16 @@ class RouterService:
         return {name: copy.deepcopy(tier) for name, tier in tiers.items()}
 
     def blocklist(self) -> Dict[str, Any]:
-        """Return manual bans and the real persisted breaker state."""
+        """Return manual bans, the persisted breaker state, and its policy.
+
+        ``breaker_policy`` is the addition a console could not compute for itself.
+        The cooldown list says who is blocked and for how long; it cannot say how
+        close a healthy rail is to tripping, or which errors count at all, because
+        both facts live in configuration and in a weight table this surface never
+        published. A screen showing ``failure_count: 3`` with no threshold beside it
+        is a number the operator has to go read the source to interpret — and a
+        screen that guessed the threshold would be a second authority on it.
+        """
         config, _errors = self._load()
         blocklist = Blocklist(config)
         return {
@@ -1078,6 +1087,7 @@ class RouterService:
             "fallback_chain": blocklist.fallback_chain(),
             "breaker_enabled": blocklist.breaker_enabled(),
             "breaker_cooldowns": blocklist.breaker_status(),
+            "breaker_policy": blocklist.breaker_policy(),
         }
 
     def liveness(self) -> Dict[str, Any]:

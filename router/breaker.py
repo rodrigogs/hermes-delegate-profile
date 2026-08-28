@@ -146,6 +146,38 @@ class BreakerState:
                 })
         return result
 
+    def policy(self) -> Dict[str, Any]:
+        """The thresholds IN FORCE, plus what each failure kind is worth.
+
+        ``blocked_entries`` answers "who is cooling and for how long". It cannot
+        answer the two questions an operator asks next — "how close to tripping is
+        that?" and "which errors even count?" — because a weight without its
+        threshold and without the weight table is an unreadable number:
+        ``failure_count: 3`` is one ttfb_stall away from nothing, or three
+        nonzero_exits, and those are opposite diagnoses.
+
+        EFFECTIVE values, not the raw YAML. A key absent from ``auto_breaker``
+        means the shipped default is what runs, so reporting the raw block would
+        show an operator an empty policy while a real one is in force — the same
+        confusion the profile/root config split already cost this install once.
+
+        Reported whether or not the breaker is enabled: ``breaker_enabled`` is the
+        authority on whether any of it acts, and an operator deciding to turn it on
+        needs to see what they would be turning on.
+        """
+        return {
+            "threshold": self._threshold,
+            "window_seconds": self._window_s,
+            "base_cooldown_seconds": self._base_cooldown_s,
+            "max_cooldown_seconds": self._max_cooldown_s,
+            "backoff_multiplier": self._backoff_mult,
+            # The criterion itself. Read off the module table rather than restated
+            # here: a second copy would drift from the one `record` actually uses,
+            # and this surface exists to be believed.
+            "failure_weights": dict(FAILURE_WEIGHTS),
+            "default_weight": DEFAULT_WEIGHT,
+        }
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize state for persistence."""
         return {
