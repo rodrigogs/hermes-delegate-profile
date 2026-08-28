@@ -1240,9 +1240,13 @@
        chrome, against 120px for the old three-row masthead. */
     @media (max-width: 640px) {
       .view-head { padding: 8px 14px; }
-      /* The tabs scroll rather than wrap: three destinations with live state
+      /* The tabs scroll rather than wrap: six destinations with live state
          dots do not fit 390px, and a wrapped tab strip reads as two
-         navigations. Scroll-snap so a partial swipe settles on a boundary. */
+         navigations. Scroll-snap so a partial swipe settles on a boundary.
+         It said THREE until 2026-08-27, which was true before t_51196512 split
+         Simular, Precos and Politica out — and the fade forty lines above
+         already counted six. A file that disagrees with itself about how many
+         destinations it has cannot be read for the reason it is commented. */
       .tabs {
         padding: 0 14px; overflow-x: auto; scroll-snap-type: x proximity;
         -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; scrollbar-width: none;
