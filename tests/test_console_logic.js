@@ -11891,3 +11891,113 @@ test('doApply sends the DRAFT as the /apply changes, so a null removal actually 
   assert.deepEqual(plain(applyBody.policy), { price_windows: { 'glm-5.3': null } },
     'the removal travels as the CHANGE (null), not as the merged plan.policy — re-merging the merged result would leave the key on disk');
 });
+
+// ── A VALUE THAT OPENS AN EDITOR IS A CONTROL, SO A KEYBOARD REACHES IT ──────
+// The no-mode sheet is the right answer to "the Edit button does nothing", and the
+// dotted underline is a real affordance. What the cells did not have was any way in
+// without a pointer: a <div> carrying a click handler is not in the tab order, Enter and
+// Space do nothing on it, and a screen reader announces it as text. A comp can say where
+// a control sits and how it reads; it cannot ask for a control only a mouse can reach.
+
+// The cells take `is-edit` through classList, which the DOM stub keeps apart from
+// className — so they are found by the contract under test instead: a node carrying
+// role=button inside the sheet.
+function editCells(dom) {
+  const out = [];
+  const walk = (node) => {
+    (node.children || []).forEach((kid) => {
+      if (kid.attrs && kid.attrs.role === 'button') out.push(kid);
+      walk(kid);
+    });
+  };
+  walk(dom.get('sheet'));
+  return out;
+}
+
+function editableSheet(api) {
+  api.state.loading = false;
+  api.state.policy = {
+    rules: [{ id: 'hard-verbs', when: { verb_class: { eq: 'hard' } }, then: { model: 'T4', profile: 'coder' } }],
+    default: { action: 'classify' }, classifier: { model: 'm' },
+    fail_safe: { model: 'm' }, tiers: { T4: { model: 'x', provider: 'p' } },
+  };
+  api.renderSheet();
+}
+
+test('an editable cell is announced and reachable as the control it is', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  editableSheet(api);
+  const cells = editCells(dom);
+  assert.ok(cells.length >= 1, `the sheet draws its editable cells, got ${cells.length}`);
+  cells.forEach((cell) => {
+    assert.equal(cell.getAttribute('role'), 'button',
+      'a div that opens an editor must say it is a button, or it is read as text');
+    assert.equal(cell.tabIndex, 0, 'and it must be in the tab order');
+    assert.ok(cell.title, 'and carry the title the comp gives it');
+    assert.equal(typeof cell._listeners.keydown, 'function', 'and answer a key, not only a click');
+  });
+});
+
+test('Enter and Space open the editor, and Space does not scroll the panel', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  editableSheet(api);
+  const cell = editCells(dom)[0];
+
+  for (const key of ['Enter', ' ']) {
+    api.state.selected = null;
+    let prevented = false;
+    cell._listeners.keydown({ key, preventDefault() { prevented = true; }, stopPropagation() {} });
+    assert.equal(api.state.selected, 'rule:hard-verbs', `${key} opens the row`);
+    // Space scrolls a scroll container by default, and this one is inside the host's
+    // scrolling body: opening a row must not also jump the panel.
+    assert.equal(prevented, true, `${key} is consumed rather than left to the page`);
+  }
+
+  // Anything else is left alone — a keydown handler that swallowed keys would break
+  // tabbing off the cell.
+  api.state.selected = null;
+  cell._listeners.keydown({ key: 'a', preventDefault() {}, stopPropagation() {} });
+  assert.equal(api.state.selected, null, 'an unrelated key does nothing');
+});
+
+test('Escape puts the open row away, and it is wired to the document', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  editableSheet(api);
+  const cell = editCells(dom)[0];
+  cell._listeners.click({ stopPropagation() {} });
+  assert.equal(api.state.selected, 'rule:hard-verbs', 'a row is open');
+
+  api.closeRow();
+  assert.equal(api.state.selected, null, 'Escape closes it');
+  assert.equal(api.state.draft, null, 'and drops the draft with it');
+  // Idempotent, and asserted by its OBSERVABLE effect rather than by not throwing:
+  // without the guard, Escape with nothing open still re-renders the sheet, which
+  // rebuilds every row under a reader who pressed a key for nothing. A marker child
+  // survives only if the render did not happen. (A mutation proved the
+  // `doesNotThrow` form here caught nothing at all.)
+  const marker = { id: 'marker', className: 'marker', children: [] };
+  dom.get('sheet').children.push(marker);
+  api.closeRow();
+  assert.ok(dom.get('sheet').children.includes(marker),
+    'closing what is already closed must not rebuild the sheet');
+
+  const script = fs.readFileSync(sourcePath, 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
+  const wired = script.slice(script.indexOf('function wire()'));
+  assert.match(wired, /event\.key === 'Escape'/, 'the exit is wired, not only exported');
+  assert.match(wired, /closeRow\(\)/);
+});
+
+test("the browser's own surfaces wear the skin, not the engine's defaults", () => {
+  // Text selection, the caret and the scrollbars ship with colours that belong to no
+  // design system: a blue selection inside a gold-on-navy shell, a white caret, a grey
+  // platform scrollbar. Each reads the same host token the rest of the file does.
+  const { style } = consoleStyle();
+  assert.match(style, /::selection \{ background: var\(--accent-bg-strong\); color: var\(--text\); \}/);
+  assert.match(style, /caret-color: var\(--accent\)/);
+  assert.match(style, /scrollbar-color: var\(--line-strong\) transparent/);
+  assert.match(style, /::-webkit-scrollbar-thumb \{[\s\S]*?background-color: var\(--line-strong\)/);
+  // No literal colour sneaks in with them: this file has no palette, and a hex here
+  // would be the one colour that does not repaint with the skin.
+  const surfaces = style.slice(style.indexOf('::selection'), style.indexOf('h1, h2 {'));
+  assert.doesNotMatch(surfaces, /#[0-9a-fA-F]{3}/, 'every value is a host token');
+});

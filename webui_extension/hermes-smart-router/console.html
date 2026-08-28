@@ -208,6 +208,29 @@
     button, input, textarea, select { font: inherit; color: inherit; }
     button { cursor: pointer; }
     :focus-visible { outline: none; box-shadow: var(--focus); }
+
+    /* ── THE BROWSER'S OWN SURFACES ────────────────────────────────────
+       The parts nobody draws still carry the design, and here they were all engine
+       defaults belonging to no design system: a blue text selection inside a
+       gold-on-navy shell, a white caret in every input, and the decision list's
+       scrollbar in the platform's grey. Each one reads the same host token the rest
+       of the file does, so they repaint with the skin like everything else.
+       `scrollbar-gutter` is already reserved on the route list; this is the colour. */
+    ::selection { background: var(--accent-bg-strong); color: var(--text); }
+    input, textarea { caret-color: var(--accent); }
+    .body, .route-list, .code, .editor {
+      scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent;
+    }
+    .body::-webkit-scrollbar, .route-list::-webkit-scrollbar,
+    .code::-webkit-scrollbar, .editor::-webkit-scrollbar { width: 10px; height: 10px; }
+    .body::-webkit-scrollbar-thumb, .route-list::-webkit-scrollbar-thumb,
+    .code::-webkit-scrollbar-thumb, .editor::-webkit-scrollbar-thumb {
+      border: 3px solid transparent; border-radius: var(--radius-pill);
+      background-clip: content-box; background-color: var(--line-strong);
+    }
+    .body::-webkit-scrollbar-track, .route-list::-webkit-scrollbar-track,
+    .code::-webkit-scrollbar-track, .editor::-webkit-scrollbar-track { background: transparent; }
+
     h1, h2 { margin: 0; font-weight: 600; }
     p { margin: 0; }
     [hidden] { display: none !important; }
@@ -623,6 +646,15 @@
     .step-when.is-edit:hover,
     .step-dest.is-edit:hover,
     .step-open-chain.is-edit:hover { color: var(--text); }
+    /* Reachable by keyboard means VISIBLE to a keyboard: the same ring every other
+       focusable thing on this surface uses, inset so it does not overlap the row's
+       hairline. Without it the cells were in the tab order with nothing to see. */
+    .step-when.is-edit:focus-visible,
+    .step-dest.is-edit:focus-visible,
+    .step-open-chain.is-edit:focus-visible {
+      outline: none; box-shadow: var(--focus); border-radius: var(--radius-sm);
+      color: var(--text);
+    }
     /* Destination and hits are columns, not a floating pair: a reader compares
        down a column, so both must land on the same x on every line. Two ways this
        has failed, both measured on the live sheet:
@@ -5364,9 +5396,23 @@
           const editAffordance = (node, title, action) => {
             node.classList.add('is-edit');
             node.title = title;
-            node.addEventListener('click', (event) => {
+            // It IS a button, so it says so and behaves like one: reachable in the tab
+            // order, activated by Enter and Space, announced as a control rather than
+            // as text. The element stays a div because the comp's line is text with a
+            // dotted underline and a <button> would drag its own box model in.
+            node.setAttribute('role', 'button');
+            node.tabIndex = 0;
+            const open = (event) => {
               if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
               action();
+            };
+            node.addEventListener('click', open);
+            node.addEventListener('keydown', (event) => {
+              // Enter and Space are what a role=button owes; Space also scrolls the
+              // panel by default, so it is the one that has to be prevented.
+              if (event.key !== 'Enter' && event.key !== ' ') return;
+              if (typeof event.preventDefault === 'function') event.preventDefault();
+              open(event);
             });
           };
           if (opts.chips && opts.chips.length) {
@@ -7688,6 +7734,17 @@
         }
 
         box.append(group);
+      }
+
+      // Close the open row without writing. It is not a mode being left — nothing is
+      // armed — it is the one editor on screen being put away, which had no exit at all:
+      // `state.selected` was set by a click and never cleared.
+      function closeRow() {
+        if (state.selected == null) return;
+        state.selected = null;
+        state.draft = null;
+        renderSheet();
+        renderInspector(null);
       }
 
       function pickBind(node) {
@@ -10249,6 +10306,13 @@
       }
 
       function wire() {
+        // ESCAPE PUTS THE OPEN ROW AWAY. The sheet has no mode to leave, but it does
+        // have one row open at a time, and until now nothing closed it: a value clicked
+        // by accident stayed open until another one was clicked. Escape is what every
+        // other panel in this shell answers to.
+        document.addEventListener('keydown', (event) => {
+          if (event.key === 'Escape') closeRow();
+        });
         // §4.7: the JSON editor's static buttons get their labels from the map
         // once, at boot — the markup itself carries no write vocabulary.
         stampWriteLabels();
@@ -10339,6 +10403,10 @@
         // and the two payload readers it is built from. The button wiring is
         // exercised by driving showLintTarget, because a test that only counted
         // buttons would pass no matter what the button did.
+        // The sheet's one exit, exported so the refusal and the idempotence are testable
+        // rather than eyeballed: wire() needs a live browser, so the key itself is
+        // checked statically and the behaviour is driven through here.
+        closeRow,
         showLintTarget, selectTab, lintErrors, lintTargets, findRuleRow, shadowTargetFor,
         // The pure shadow detector (the clause that proves a rule never
         // decides) and its two readers: the row's EARLIEST provable shadower
