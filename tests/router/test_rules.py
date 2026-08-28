@@ -3129,8 +3129,16 @@ class TestCheapestNowThroughPlanChain(_NeedsRegistry):
             "gpt-5.6-luna", "deepseek-v4-flash", "gpt-5.6-terra",
         ]
 
-    def test_an_unpriced_plan_model_is_never_treated_as_free(self):
-        """glm-5.3 sorts where a plan model belongs, not where 0.0 would."""
+    def test_a_plan_model_sorts_by_its_rail_and_not_by_its_dollars(self):
+        """glm-5.3 sorts where a plan model belongs, not where its price would.
+
+        This test was written when glm-5.3 published no dollar price at all, and
+        asserted that the absence was not read as 0.0.  The vendor launched its
+        metered API on 2026-08-27 at 1.40/4.40 — the MOST expensive elo in this
+        chain — and the ordering is unchanged, which is the sharper form of the
+        same claim: the plan rail leads on the unit it bills in, whatever number
+        sits beside it.
+        """
         tiers = {"T1": {
             "model": "gpt-5.6-terra", "provider": "openai-codex",
             "fallback_strategy": "cheapest_now", "pin_primary": False,
@@ -3143,7 +3151,10 @@ class TestCheapestNowThroughPlanChain(_NeedsRegistry):
         plan = plan_chain(resolve_tiers({"model": "T1"}, tiers), _mkf(),
                           when=OFF_PEAK)
         assert _models(plan) == ["glm-5.3", "mimo-v2.5", "gpt-5.6-terra"]
-        assert rules_mod._caps.effective_price("glm-5.3", OFF_PEAK) is None
+        # It leads while being the dearest thing here in dollars: 4.40 out
+        # against mimo-v2.5's 0.28.
+        assert rules_mod._caps.effective_price("glm-5.3", OFF_PEAK)[1] == 4.40
+        assert rules_mod._caps.effective_price("mimo-v2.5", OFF_PEAK)[1] == 0.28
 
     def test_pin_primary_applies_cheapest_now_to_the_tail_only(self):
         tiers = {"T1": dict(CHEAPEST_TIER["T1"], pin_primary=True)}
@@ -3929,8 +3940,12 @@ class TestTimeWarnings(_NeedsRegistry):
         assert not any("absent from this tier" in w for w in lint_warnings(config))
 
     def test_cheapest_now_with_no_priced_elo_warns(self):
+        # glm-4.5-flash is the registry's remaining unpriced elo. This used to be
+        # glm-5.3, which published no dollars until 2026-08-27; the advisory is
+        # about a tier that cannot be COMPARED in dollars, so the fixture has to
+        # be an elo without a price, not a particular vendor's flagship.
         config = _cfg({"T2": {
-            "model": "glm-5.3", "provider": "zai",
+            "model": "glm-4.5-flash", "provider": "zai",
             "fallback_strategy": "cheapest_now",
         }})
         assert (
@@ -4013,12 +4028,12 @@ class TestTimeWarnings(_NeedsRegistry):
     def test_a_hop_that_is_not_an_elo_does_not_count_as_priced(self):
         """"No priced elo" is about elos, and 4.7 is not one.
 
-        glm-5.3 bills in plan credits and publishes no dollar price, so the
-        advisory is correct here — and a hop whose id is a float must not be what
-        silences it, because nothing about it can be compared in dollars either.
+        glm-4.5-flash publishes no dollar price, so the advisory is correct here —
+        and a hop whose id is a float must not be what silences it, because
+        nothing about it can be compared in dollars either.
         """
         config = _cfg({"T2": {
-            "model": "glm-5.3", "provider": "zai",
+            "model": "glm-4.5-flash", "provider": "zai",
             "fallback_strategy": "cheapest_now",
             "fallback": [{"model": 4.7, "provider": "deepseek"}],
         }})

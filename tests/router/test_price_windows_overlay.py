@@ -313,9 +313,9 @@ def test_capabilities_reports_origin_and_verified_for_all_three_sources(
 
     # Registry-owned: a model the overlay does not mention keeps the registry's
     # windows, the registry's verified date, and origin=registry.
-    glm = models["glm-4.7"]
+    glm = models["glm-5.3-flash"]
     assert glm["price_windows_origin"] == "registry"
-    assert glm["price_windows_verified"] == "2026-08-26"
+    assert glm["price_windows_verified"] == "2026-08-27"
     assert glm["price_windows"] == [
         {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
     ]

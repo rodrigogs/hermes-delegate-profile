@@ -121,12 +121,12 @@ classifier:
   # (__init__._make_classify_fn, RouterService.status). Keep these two keys
   # byte-equal to chain[0] or the classifier runs on a different rail than the
   # chain declares.
-  model: glm-4.7
+  model: glm-5.3-flash
   provider: zai
   # Declarative today: the flat pair above is what dispatches, and this is the
   # documented second hop for the chain-aware runner.
   chain:
-  - model: glm-4.7
+  - model: glm-5.3-flash
     provider: zai
     billing_mode: plan
   - model: deepseek-v4-flash
@@ -146,7 +146,7 @@ classifier:
 # only checks its shape). Keep it in step with T1 by hand.
 fail_safe:
   profile: coder
-  model: glm-4.7
+  model: glm-5.3-flash
   provider: zai
   billing_mode: plan
   fallback:
@@ -165,7 +165,7 @@ blocklist:
   # failed". Regenerate it whenever `tiers` changes, or a banned model hops to a
   # rail no tier declares.
   fallback_chain:
-  - glm-4.7
+  - glm-5.3-flash
   - gpt-5.6-luna
   - mimo-v2.5
   - glm-5.3
@@ -207,7 +207,7 @@ blocklist:
 #              write is refused. Left out below because the floor is a
 #              workload judgement, not a default.
 #
-# "usar a fila do T1" below resolves to glm-4.7 -> gpt-5.6-luna -> mimo-v2.5
+# "usar a fila do T1" below resolves to glm-5.3-flash -> gpt-5.6-luna -> mimo-v2.5
 # (the tier primary plus its two fallback hops), the same queue T1 routes on.
 compaction:
   provider: zai
@@ -313,6 +313,12 @@ rules:
 # image (T2's primary glm-5.3 has vision False, so a vision request skips it).
 # Do not "fix" this by pointing the row at a vision model directly — that
 # re-hardcodes a model into Table 1.
+# WORTH KNOWING, DELIBERATELY NOT ACTED ON HERE: since 2026-08-27 the plan has a
+# model that can see, glm-5.3-flash, and it sits on T1. So a screenshot routed
+# here still skips the plan primary and bills dollars on gpt-5.6-luna, while a
+# plan-covered vision rail exists one tier down. Changing that is a routing
+# decision about which tier owns vision work — not a typo — so it stays the
+# operator's call and is recorded here rather than made quietly.
 - id: vision-required
   status: stable
   when:
@@ -353,13 +359,28 @@ default:
 #             would be a metered surprise on a plan-only rail.
 #   glm-5.2 — the plan silently auto-routes this id to glm-5.3, so naming it here
 #             only obscures which model actually ran.
+#   glm-4.7, glm-5-turbo — the SAME trap, learned the expensive way. The plan
+#             dropped both from its credit table and now auto-routes them to
+#             glm-5.3-flash. This config named glm-4.7 in four places (T1
+#             primary, the classifier pair, fail_safe, blocklist.fallback_chain)
+#             after that change: every request succeeded, glm-5.3-flash answered,
+#             and the trace, the decision log and the console all said glm-4.7.
+#             A vendor alias is not a rail. Name what runs.
 #   *:free OpenRouter ids — either unfunded (402 on every call) or nonexistent as
 #             a ":free" variant (404). Verify an id exists before hopping to it.
 tiers:
   # T1 — trivial/mechanical. Plan-covered primary, then the cheapest
   # subscription seat, then a metered rail on a third vendor.
+  #
+  # The primary is glm-5.3-flash because that is what the plan runs for this
+  # tier whatever id is written here (it replaced glm-4.7, which used to be
+  # named). It is also the better of the two: 8 output credits against
+  # glm-4.7's old 16, roughly 3x the weekly token allowance, and a strictly
+  # stronger model — the vendor's own DeepSWE line is 63.4 against GLM-5.2's
+  # 46.2, and glm-4.7 is a generation behind GLM-5.2. Trivial work getting a
+  # cheaper AND stronger rail is not a trade; it is the vendor moving.
   T1:
-    model: glm-4.7
+    model: glm-5.3-flash
     provider: zai
     billing_mode: plan
     fallback:
@@ -386,12 +407,12 @@ tiers:
     # A multiplier, not a dollar ceiling, so it survives a list-price change.
     # ON THIS ROSTER IT REMOVES NOTHING AT ANY HOUR (verified over all 168 hours
     # of the week, not sampled), and that is expected: max_multiplier is a DOLLAR
-    # ceiling, so it only evicts metered/subscription elos. glm-4.7 is
+    # ceiling, so it only evicts metered/subscription elos. glm-5.3-flash is
     # plan-covered — its 2.0x doubles a CREDIT draw off an allowance already
     # bought and adds no dollars, so the cap cannot evict it and
     # capabilities.apply_time_cap reports it as cap_exempt instead, while
     # gpt-5.6-luna is flat and mimo-v2.5's only window is a discount. What the
-    # TRACE shows for that is `multipliers: {glm-4.7: 2.0}` — rules.plan_chain
+    # TRACE shows for that is `multipliers: {glm-5.3-flash: 2.0}` — rules.plan_chain
     # does not forward cap_exempt, so do not expect that key in a plan. Keep the
     # cap anyway: it is already in force over both hops that can bill money, and
     # the day a dollar-billed hop with an expensive window lands here it is capped
@@ -402,8 +423,12 @@ tiers:
     time_cap:
       max_multiplier: 1.5
   # T2 — standard work, and the tier that carries the most traffic. glm-5.3 is
-  # plan-only (its metered API has not launched), which is why the two hops
-  # behind it are on other billing rails entirely.
+  # the plan's flagship, and the two hops behind it are on other billing rails
+  # entirely: one vendor's plan quota is one failure domain, so a second zai id
+  # here would buy nothing when zai is the thing that is down.
+  # It is no longer plan-ONLY — the vendor published its metered rate on
+  # 2026-08-27 (1.40 in / 4.40 out), which retires the "no dollar price exists"
+  # half of the pin_primary argument below without touching the other half.
   T2:
     model: glm-5.3
     provider: zai
@@ -432,12 +457,17 @@ tiers:
     # windows. It does not change at the weekend when zai stops peaking, which is
     # how you can see zai was never the cause.
     # pin_primary: true deliberately: glm-5.3 is plan-covered, so while the plan
-    # lasts it is free AT THE MARGIN and no dollar price beats it. It also has no
-    # published per-token price (price_in: None), which cheapest_now ranks by
-    # billing_mode rather than coercing to 0.0 — a plan model is not free, its
-    # cost is denominated in credits. Pinning says that plainly instead of
-    # relying on the rank tie-break, and the TAIL is what gets ordered by what is
-    # genuinely cheapest at the moment of the request.
+    # lasts it is free AT THE MARGIN and no dollar price beats it. That is the
+    # whole reason now. It used to rest on a second one — that glm-5.3 published
+    # no per-token price, so ranking it needed the billing_mode bucket rather
+    # than a number — and 2026-08-27 killed it: the metered rate is 1.40/4.40,
+    # which would put glm-5.3 LAST in a dollar comparison, behind both hops it
+    # should lead. cheapest_now buckets by billing_mode and never by whether a
+    # price happens to be published, so the pin only makes explicit what the
+    # bucket already decides; the day that field is read as dollars anyway, the
+    # pin is what stops the busiest tier from ordering itself upside down.
+    # The TAIL is what gets ordered by what is genuinely cheapest at the moment
+    # of the request.
     # With no clock injected this degrades to sequential, i.e. the order above.
     fallback_strategy: cheapest_now
     pin_primary: true

@@ -1597,7 +1597,8 @@ def time_config_path(tmp_path):
         yaml.safe_dump(
             {
                 "enabled": True,
-                "classifier": {"model": "glm-4.7", "provider": "zai"},
+                # A plan-covered, windowed elo: liveness below asserts its 2.0x.
+                "classifier": {"model": "glm-5.3-flash", "provider": "zai"},
                 "fail_safe": {"profile": "coder", "model": "glm-4.6",
                               "provider": "zai"},
                 "blocklist": {"manual_ban": [], "fallback_chain": [],
@@ -1895,7 +1896,8 @@ def test_explain_weekend_is_off_peak_for_the_plan_rails(tmp_path):
             "rules": [],
             "default": {"profile": "coder", "model": "T1"},
             "tiers": {
-                "T1": {"model": "glm-4.7", "provider": "zai", "billing_mode": "plan",
+                "T1": {"model": "glm-5.3-flash", "provider": "zai",
+                       "billing_mode": "plan",
                        "fallback": [{"model": "glm-4.6", "provider": "zai",
                                      "billing_mode": "metered"}]},
                 "T2": {"model": "glm-4.6", "provider": "zai"},
@@ -1910,8 +1912,8 @@ def test_explain_weekend_is_off_peak_for_the_plan_rails(tmp_path):
     monday = service.explain(_PLAIN_TASK, datetime(2026, 8, 17, 7, tzinfo=timezone.utc))
     saturday = service.explain(_PLAIN_TASK, datetime(2026, 8, 22, 7, tzinfo=timezone.utc))
 
-    assert monday["chain_plan"]["multipliers"]["glm-4.7"] == 2.0
-    assert saturday["chain_plan"]["multipliers"]["glm-4.7"] == 1.0
+    assert monday["chain_plan"]["multipliers"]["glm-5.3-flash"] == 2.0
+    assert saturday["chain_plan"]["multipliers"]["glm-5.3-flash"] == 1.0
     assert saturday["evaluated_at"]["utc_weekday"] == 5
     assert saturday["preview"]["time_relative"] is False
 
@@ -2007,7 +2009,7 @@ def test_liveness_reports_price_window_state_as_extra_fields(
     assert deepseek["next_window_change"] == {
         "hour": 10, "weekday": 0, "hours_ahead": 3, "multiplier": 1.0,
     }
-    assert by_key["glm-4.7@zai"]["price_multiplier"] == 2.0
+    assert by_key["glm-5.3-flash@zai"]["price_multiplier"] == 2.0
 
     # A flat-priced elo is never "in a window", and nothing ever changes for it.
     flat = by_key["glm-4.6@zai"]
@@ -2448,18 +2450,28 @@ def test_capabilities_tells_an_unpublished_price_apart_from_a_price_of_zero(
 ):
     """The distinction the panel exists for: None is not 0.0.
 
-    A plan rail bills in credits off an allowance already bought. Rendered as $0
-    it would look like the cheapest thing on the screen when it is merely the
-    least priced — the opposite of the truth.
+    An unpublished price rendered as $0 would look like the cheapest thing on the
+    screen when it is merely the least KNOWN — the opposite of the truth. It used
+    to be glm-5.3 that carried the case, because a plan rail published no dollars
+    at all; the vendor launched its metered rate on 2026-08-27, so the unpriced
+    case and the plan rail are now two different rows, and both are asserted.
     """
     models = RouterService(capability_config_path).capabilities()["models"]
 
+    unpriced = models["glm-4.5-flash"]
+    assert unpriced["price_in"] is None
+    assert unpriced["price_out"] is None
+    assert unpriced["price_published"] is False
+
+    # The plan rail: priced now, and the dollars are still not what the operator
+    # pays at the margin — that is what `billing_mode` says, and why `cheapest_now`
+    # buckets on it rather than on this number.
     plan_rail = models["glm-5.3"]
     assert plan_rail["billing_mode"] == "plan"
-    assert plan_rail["price_in"] is None
-    assert plan_rail["price_out"] is None
-    assert plan_rail["price_published"] is False
-    # It still declares a window, so "no dollar price" is not "no cost variation".
+    assert (plan_rail["price_in"], plan_rail["price_out"]) == (1.40, 4.40)
+    assert plan_rail["price_published"] is True
+    # It also declares a window, in CREDITS, so a plan rail's cost varies by hour
+    # in a unit the dollar columns beside it cannot express.
     assert plan_rail["price_windows"]
 
     # A genuinely free rail publishes 0.0, which IS a price and survives as one.

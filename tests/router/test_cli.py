@@ -1499,13 +1499,19 @@ class TestCLIChainTimeAgainstTheRealRegistry:
         assert rows["deepseek-v4-pro"]["multiplier"] == 1.0
         assert rows["glm-5.3"]["multiplier"] == 1.0
 
-    def test_the_plan_model_is_never_priced_at_zero(
+    def test_the_plan_model_reports_its_dollars_scaled_by_the_credit_peak(
         self, time_config_file, shuffling_planner, capsys
     ):
+        """It used to report None/None — the vendor published no rate for glm-5.3
+        until 2026-08-27. The row now carries the metered dollars a plan-LESS
+        operator would pay, at the 2.0x this hour, and what keeps the plan rail
+        cheap at the margin is `billing_mode`, never a missing number.
+        """
         self._skip_unless_priced()
         rows = _rows(_chain_json(capsys, time_config_file, "--at", _MON_PEAK))
-        assert rows["glm-5.3"]["price_in"] is None
-        assert rows["glm-5.3"]["price_out"] is None
+        assert rows["glm-5.3"]["price_in"] == pytest.approx(2.80)
+        assert rows["glm-5.3"]["price_out"] == pytest.approx(8.80)
+        assert rows["glm-5.3"]["multiplier"] == 2.0
 
 
 class TestCLIExitCodes:

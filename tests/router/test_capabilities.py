@@ -77,9 +77,9 @@ def test_requirement_keys_is_the_documented_closed_set():
 # ---------------------------------------------------------------------------
 
 def test_capabilities_for_known_model_returns_registry_entry():
-    caps = capabilities_for("glm-4.7")
+    caps = capabilities_for("glm-5.3-flash")
     assert caps["provider"] == "zai"
-    assert caps["context_window"] == 200_000
+    assert caps["context_window"] == 1_000_000
     assert caps["billing_mode"] == "plan"
 
 
@@ -1119,7 +1119,23 @@ def test_zai_peak_is_gated_to_weekdays():
 
 
 def test_every_plan_covered_zai_model_carries_the_weekday_peak():
-    for model in ("glm-5.3", "glm-5-turbo", "glm-4.7", "glm-4.6v"):
+    # The set is DERIVED, not listed by hand. This test used to name four models
+    # and the vendor dropped three of them from the plan's credit table on
+    # 2026-08-27; a hand-written list only fails for the ids it still happens to
+    # name, so it went on asserting a peak on glm-4.7 while saying nothing about
+    # whether the plan roster it claimed to cover was still the plan roster. The
+    # credit peak is a property of PLAN COVERAGE, so the set under test has to be
+    # the plan-covered set.
+    plan_zai = sorted(
+        model
+        for model, entry in MODEL_CAPABILITIES.items()
+        if entry.get("provider") == "zai" and entry.get("billing_mode") == "plan"
+    )
+    assert plan_zai == ["glm-5.3", "glm-5.3-flash"], (
+        "the plan's credit table lists exactly these two (read 2026-08-27); "
+        "re-read the vendor before widening this"
+    )
+    for model in plan_zai:
         assert price_multiplier(model, _at(WED, 7)) == 2.0, model
         assert price_multiplier(model, _at(SAT, 7)) == 1.0, model
 
@@ -1127,6 +1143,44 @@ def test_every_plan_covered_zai_model_carries_the_weekday_peak():
 def test_a_metered_zai_model_has_no_window():
     assert price_multiplier("glm-4.6", _at(WED, 7)) == 1.0
     assert price_multiplier("glm-5.2", _at(WED, 7)) == 1.0
+
+
+def test_the_plan_primary_records_the_vendor_facts_it_was_read_from():
+    """glm-5.3-flash, as published 2026-08-26 and read 2026-08-27.
+
+    Pinned because every one of these decides routing: the window feeds
+    `min_context`, `vision` decides whether a screenshot can stay on the plan
+    rail, and the price is LIST rather than the 50% launch promo (0.075/0.25),
+    which expires 2026-09-09 16:00 UTC — a chain ordered on a discount with an
+    expiry doubles in cost that morning without a config change.
+    """
+    entry = MODEL_CAPABILITIES["glm-5.3-flash"]
+    assert entry["provider"] == "zai"
+    assert entry["billing_mode"] == "plan"
+    assert entry["context_window"] == 1_000_000
+    assert entry["max_output"] == 131_072
+    # The first plan-covered model that can see: text + image + video natively.
+    assert entry["vision"] is True
+    assert entry["tool_calling"] is True
+    assert (entry["price_in"], entry["price_out"]) == (0.15, 0.50)
+    # It is priced AND plan-covered, so it is the live example of the case
+    # `_BILLING_RANK` exists for.
+    assert effective_price("glm-5.3-flash", None) == pytest.approx((0.15, 0.50))
+
+
+def test_the_ids_the_plan_dropped_lost_the_credit_peak_with_it():
+    """peak/off-peak is a plan-CREDIT rule, so leaving the plan leaves the window.
+
+    glm-4.7, glm-5-turbo and glm-4.6v are still purchasable metered at their
+    listed prices, and a metered zai call is billed flat at every hour.  Keeping
+    their 2.0x would price them as if an allowance they no longer draw on were
+    still doubling, on the one rail where the number IS dollars.
+    """
+    for model in ("glm-4.7", "glm-5-turbo", "glm-4.6v"):
+        assert MODEL_CAPABILITIES[model]["billing_mode"] == "metered", model
+        assert "price_windows" not in MODEL_CAPABILITIES[model], model
+        for hour in (7, 15, 23):
+            assert price_multiplier(model, _at(WED, hour)) == 1.0, (model, hour)
 
 
 def test_the_two_primary_rails_peak_at_the_same_hour():
@@ -1309,11 +1363,34 @@ def test_effective_price_scales_the_base_rate_inside_a_discount():
     )
 
 
-def test_effective_price_of_a_plan_model_is_none_not_zero():
-    """glm-5.3 publishes no dollar price. A plan model is NOT free."""
+def test_effective_price_of_a_plan_model_without_dollars_is_none_not_zero():
+    """A plan model is NOT free, and an absent dollar price is not 0.0.
+
+    glm-5.3 used to carry this case: plan-covered and unpriced, so the assertion
+    could read the shipped roster.  The vendor launched its metered API on
+    2026-08-27, and the roster now has no plan-covered elo without a price — so
+    the case is BUILT here rather than dropped, because it is still the case
+    ``effective_price`` has to get right, and the next plan-only launch will land
+    on it again.  A known model with no published price, declared onto the plan
+    rail: known, so the answer cannot come from the unknown-model path.
+    """
+    plan_no_price = {"billing_mode": "plan"}
     for when in (None, _at(WED, 7), _at(SAT, 7)):
-        assert effective_price("glm-5.3", when) is None
-    assert effective_price("glm-5.3", _at(WED, 7)) != (0.0, 0.0)
+        assert effective_price("glm-4.5-flash", when, plan_no_price) is None
+    assert effective_price("glm-4.5-flash", _at(WED, 7), plan_no_price) != (0.0, 0.0)
+
+
+def test_a_plan_model_that_publishes_dollars_still_reports_them():
+    """And the peak scales those dollars, dimensionlessly, like any other price.
+
+    The dollars are what a plan-LESS operator pays for the same id; what makes
+    the rail cheap at the margin is the billing_mode bucket in ``cheapest_now``
+    and never an absent number.  That is exactly why glm-5.3 gaining a price on
+    2026-08-27 reordered nothing.
+    """
+    assert effective_price("glm-5.3", None) == pytest.approx((1.40, 4.40))
+    assert effective_price("glm-5.3", _at(WED, 7)) == pytest.approx((2.80, 8.80))
+    assert effective_price("glm-5.3", _at(SAT, 7)) == pytest.approx((1.40, 4.40))
 
 
 def test_effective_price_of_an_unpriced_metered_model_is_none():
@@ -1342,12 +1419,15 @@ def test_effective_price_with_no_clock_is_the_base_rate():
 
 
 def test_zai_peak_scales_a_plan_model_that_does_publish_dollars():
-    assert effective_price("glm-5-turbo", _at(WED, 7)) == pytest.approx(
-        (2.40, 8.00)
+    assert effective_price("glm-5.3-flash", _at(WED, 7)) == pytest.approx(
+        (0.30, 1.00)
     )
-    assert effective_price("glm-5-turbo", _at(SAT, 7)) == pytest.approx(
-        (1.20, 4.00)
+    assert effective_price("glm-5.3-flash", _at(SAT, 7)) == pytest.approx(
+        (0.15, 0.50)
     )
+    # LIST, not the launch promo: 0.075/0.25 expires 2026-09-09 16:00 UTC, and a
+    # chain ordered on a discount with an expiry silently doubles that morning.
+    assert MODEL_CAPABILITIES["glm-5.3-flash"]["price_out"] == 0.50
 
 
 # ---------------------------------------------------------------------------
@@ -1392,6 +1472,20 @@ DISCOUNT_CAPS = {
     "price_in": 0.14,
     "price_out": 0.28,
     "price_windows": [{"hours_utc": [16, 24], "multiplier": 0.8}],
+}
+
+#: A plan-covered rail that publishes NO dollar price — the case glm-5.3 carried
+#: until the vendor launched its metered API on 2026-08-27. The shipped roster no
+#: longer contains one, and the ordering rules that turn on it (a plan elo is
+#: bucketed by billing_mode, an absent price is never 0.0, and inside a bucket an
+#: unpriced elo sorts behind a priced one) still have to hold — the next plan-only
+#: launch will land on them again. Declared, so the tests keep asserting the
+#: MECHANISM instead of following one vendor's catalogue.
+PLAN_NO_PRICE_RAIL = "plan-no-list-price"
+PLAN_NO_PRICE_CAPS = {
+    "context_window": 200_000,
+    "provider": "synthetic",
+    "billing_mode": "plan",
 }
 
 #: Weekday numbers for the reference week, matching ``datetime.weekday()``.
@@ -1453,7 +1547,7 @@ def test_next_window_change_crosses_the_weekend():
         6, MONDAY, 58, 2.0
     )
     # The defect case: Saturday 07:00 is 47 hours from Monday 06:00, not 23.
-    assert next_window_change("glm-4.7", _at(SAT, 7)) == _change(
+    assert next_window_change("glm-5.3-flash", _at(SAT, 7)) == _change(
         6, MONDAY, 47, 2.0
     )
     assert next_window_change("glm-5.3", _at(SAT, 7)) == _change(
@@ -1467,7 +1561,7 @@ def test_next_window_change_crosses_the_weekend():
 def test_next_window_change_hours_ahead_lands_on_the_hour_it_names():
     """hour/weekday and hours_ahead must describe the SAME instant."""
     for model, when, declared in (
-        ("glm-4.7", _at(SAT, 7), None),
+        ("glm-5.3-flash", _at(SAT, 7), None),
         ("glm-5.3", _at(FRI, 20), None),
         ("deepseek-v4-pro", _at(WED, 10), None),
         (DISCOUNT_RAIL, _at(WED, 20), DISCOUNT_CAPS),
@@ -1573,18 +1667,21 @@ def test_cheapest_now_subscription_versus_metered_flips_with_the_hour():
 def test_cheapest_now_ranks_a_plan_elo_ahead_of_a_subscription_seat():
     """Only the plan rail is spent in credits, so only it leads on billing mode.
 
-    glm-4.7 carries a 2.20 list price and is inside its 2.0x weekday peak here —
-    4.40 against the seat's flat 1.20 — and still leads, because those plan
-    dollars are a metered SKU the operator is not on.
+    glm-5.3 carries a 4.40 list price and is inside its 2.0x weekday peak here —
+    8.80 against the seat's flat 1.20, more than seven times the number — and
+    still leads, because those plan dollars are a metered SKU the operator is not
+    on. The price is what a plan-LESS operator would pay for the same id; it went
+    from absent to published on 2026-08-27 and the ordering did not move, which is
+    the property this test exists to hold.
     """
     chain = [
         {"model": "gpt-5.6-luna", "provider": "openai-codex"},  # sub, 1.20
-        {"model": "glm-4.7", "provider": "zai"},                # plan, 4.40 now
+        {"model": "glm-5.3", "provider": "zai"},                # plan, 8.80 now
     ]
-    assert effective_price("glm-4.7", _at(MON, 7))[1] == 4.4
+    assert effective_price("glm-5.3", _at(MON, 7))[1] == pytest.approx(8.8)
     assert [hop["model"] for hop in order_chain(
         chain, "cheapest_now", pin_primary=False, when=_at(MON, 7))] == [
-        "glm-4.7", "gpt-5.6-luna"]
+        "glm-5.3", "gpt-5.6-luna"]
 
 
 def test_every_billing_mode_has_an_explicit_cheapest_now_rank():
@@ -1658,49 +1755,54 @@ def test_cheapest_now_ties_keep_declared_order_inside_the_plan_bucket():
 def test_cheapest_now_prefers_a_plan_rail_over_a_cheaper_metered_one():
     """The bucket is decided by billing_mode, NOT by the absence of a price.
 
-    glm-4.7 is covered by the z.ai Coding Plan and ALSO carries a 2.20 list
+    glm-5.3-flash is covered by the z.ai Coding Plan and ALSO carries a 0.50 list
     price. Compared in dollars it loses to metered mimo-v2.5 at every hour —
-    4.40 against 0.28 inside zai's weekday peak, 2.20 against 0.28 outside it,
+    1.00 against 0.28 inside zai's weekday peak, 0.50 against 0.28 outside it,
     since xiaomi bills flat — and every one of those dollars is already sunk. An
     hour already bought is the cheapest marginal token there is.
+
+    These two are hops 1 and 3 of the SHIPPED T1 chain, so this is the live
+    ordering, not a constructed one.
     """
     chain = [
-        {"model": "glm-4.7", "provider": "zai"},       # plan, list 2.20 out
-        {"model": "mimo-v2.5", "provider": "xiaomi"},  # metered, 0.28 out
+        {"model": "glm-5.3-flash", "provider": "zai"},  # plan, list 0.50 out
+        {"model": "mimo-v2.5", "provider": "xiaomi"},   # metered, 0.28 out
     ]
-    # Monday 07:00 UTC: glm-4.7 at 2.0x plan credits, mimo at its base rate.
+    # Monday 07:00 UTC: the plan rail at 2.0x CREDITS, mimo at its base rate.
     peak = _at(MON, 7)
-    assert price_multiplier("glm-4.7", peak) == 2.0
-    assert effective_price("glm-4.7", peak)[1] == 4.4
+    assert price_multiplier("glm-5.3-flash", peak) == 2.0
+    assert effective_price("glm-5.3-flash", peak)[1] == pytest.approx(1.0)
     assert effective_price("mimo-v2.5", peak)[1] == 0.28
     assert [hop["model"] for hop in order_chain(
         chain, "cheapest_now", pin_primary=False, when=peak)] == [
-        "glm-4.7", "mimo-v2.5"]
+        "glm-5.3-flash", "mimo-v2.5"]
 
-    # Monday 20:00 UTC: glm-4.7 off its peak, mimo flat as it always is now — the
+    # Monday 20:00 UTC: off its peak, mimo flat as it always is now — the
     # narrowest the dollar gap ever gets, and still not a reason to move.
     off_peak = _at(MON, 20)
-    assert price_multiplier("glm-4.7", off_peak) == 1.0
-    assert effective_price("glm-4.7", off_peak)[1] == 2.2
+    assert price_multiplier("glm-5.3-flash", off_peak) == 1.0
+    assert effective_price("glm-5.3-flash", off_peak)[1] == 0.5
     assert effective_price("mimo-v2.5", off_peak)[1] == pytest.approx(0.28)
     assert [hop["model"] for hop in order_chain(
         chain, "cheapest_now", pin_primary=False, when=off_peak)] == [
-        "glm-4.7", "mimo-v2.5"]
+        "glm-5.3-flash", "mimo-v2.5"]
 
 
 def test_cheapest_now_prefers_a_plan_rail_declared_second():
     """Not an artefact of declared order: the metered rail leads the chain."""
     chain = [
         {"model": "mimo-v2.5", "provider": "xiaomi"},
-        {"model": "glm-4.6v", "provider": "zai"},      # plan, list 0.90 out
-        {"model": "glm-5-turbo", "provider": "zai"},   # plan, list 4.00 out
+        {"model": "glm-5.3-flash", "provider": "zai"},  # plan, list 0.50 out
+        {"model": "glm-5.3", "provider": "zai"},        # plan, list 4.40 out
     ]
     ordered = order_chain(chain, "cheapest_now", pin_primary=False,
                           when=_at(MON, 7))
     # Both plan rails first — cheaper LIST price ordering them inside the
-    # bucket, which is also their plan-credit ordering (2.7 before 21).
+    # bucket, which is also their plan-credit ordering (8 before 24). Note the
+    # dollars being compared are both at 2.0x here (1.00 and 8.80) and mimo's
+    # 0.28 beats both; the bucket is what puts them in front, not the number.
     assert [hop["model"] for hop in ordered] == [
-        "glm-4.6v", "glm-5-turbo", "mimo-v2.5",
+        "glm-5.3-flash", "glm-5.3", "mimo-v2.5",
     ]
 
 
@@ -1727,7 +1829,7 @@ def test_cheapest_now_ranks_every_bucket_in_marginal_cost_order():
     chain = [
         {"model": "mimo-v2.5", "provider": "xiaomi"},            # metered, 0.28
         {"model": "glm-4.7-flash", "provider": "zai"},           # free
-        {"model": "glm-4.7", "provider": "zai"},                 # plan, priced
+        {"model": "glm-5.3-flash", "provider": "zai"},           # plan, priced
         {"model": "glm-4.5-flash", "provider": "zai"},           # metered, no price
         {"model": "gpt-5.6-luna", "provider": "openai-codex"},   # sub, 1.20
         # Known by capability assertion, but nothing describes how it is billed.
@@ -1737,7 +1839,7 @@ def test_cheapest_now_ranks_every_bucket_in_marginal_cost_order():
     ordered = order_chain(chain, "cheapest_now", pin_primary=False,
                           when=_at(MON, 7))
     assert [hop["model"] for hop in ordered] == [
-        "glm-4.7", "glm-4.7-flash", "mimo-v2.5", "gpt-5.6-luna",
+        "glm-5.3-flash", "glm-4.7-flash", "mimo-v2.5", "gpt-5.6-luna",
         "glm-4.5-flash", "house-local-7b",
     ]
 
@@ -1752,48 +1854,54 @@ def test_cheapest_now_never_compares_an_absent_price_numerically():
     half_priced = {"model": "half-priced", "provider": "house",
                    "context_window": 200_000, "billing_mode": "metered",
                    "price_in": 0.10}
+    unpriced_plan = dict(PLAN_NO_PRICE_CAPS, model=PLAN_NO_PRICE_RAIL)
     chain = [
         dict(half_priced),
         {"model": "glm-4.5-flash", "provider": "zai"},   # metered, no price
         {"model": "mimo-v2.5", "provider": "xiaomi"},    # metered, 0.28
-        {"model": "glm-5.3", "provider": "zai"},         # plan, no price
+        dict(unpriced_plan),                             # plan, no price
     ]
     when = _at(WED, 12)
     assert effective_price("half-priced", when, half_priced) is None
     assert effective_price("glm-4.5-flash", when) is None
-    assert effective_price("glm-5.3", when) is None
+    assert effective_price(PLAN_NO_PRICE_RAIL, when, PLAN_NO_PRICE_CAPS) is None
     # Priced dollar rail first, then the two unpriced ones in DECLARED order.
     assert [hop["model"] for hop in order_chain(
         chain, "cheapest_now", pin_primary=False, when=when)] == [
-        "glm-5.3", "mimo-v2.5", "half-priced", "glm-4.5-flash"]
+        PLAN_NO_PRICE_RAIL, "mimo-v2.5", "half-priced", "glm-4.5-flash"]
 
 
 def test_inside_the_plan_bucket_a_priced_elo_leads_an_unpriced_one():
     """No price is not a cheaper price: it is no information, so it sorts last.
 
-    Within zai's plan bucket that also matches the credit ordering — glm-4.7
-    spends 16 output credits, unpriced glm-5.3 spends 24.
+    Both members are plan-covered, so the bucket cannot separate them and the
+    price is all that is left. glm-5.3-flash publishes 0.50; the other publishes
+    nothing, and nothing does not beat a number.
     """
     chain = [
-        {"model": "glm-5.3", "provider": "zai"},   # plan, price None
-        {"model": "glm-4.7", "provider": "zai"},   # plan, list 2.20 out
+        dict(PLAN_NO_PRICE_CAPS, model=PLAN_NO_PRICE_RAIL),  # plan, price None
+        {"model": "glm-5.3-flash", "provider": "zai"},        # plan, 0.50 out
     ]
     ordered = order_chain(chain, "cheapest_now", pin_primary=False,
                           when=_at(MON, 7))
-    assert [hop["model"] for hop in ordered] == ["glm-4.7", "glm-5.3"]
+    assert [hop["model"] for hop in ordered] == [
+        "glm-5.3-flash", PLAN_NO_PRICE_RAIL,
+    ]
 
 
 def test_cheapest_now_places_an_unpriced_plan_model_by_billing_rank():
-    """glm-5.3 has no dollar price. Treated as 0.0 it would merely TIE with the
-    free rail and keep declared order; by billing rank it sorts ahead of it.
+    """A plan rail with no dollar price. Treated as 0.0 it would merely TIE with
+    the free rail and keep declared order; by billing rank it sorts ahead of it.
     """
     chain = [
         {"model": "glm-4.7-flash", "provider": "zai"},  # free, published 0.00
-        {"model": "glm-5.3", "provider": "zai"},        # plan, price None
+        dict(PLAN_NO_PRICE_CAPS, model=PLAN_NO_PRICE_RAIL),  # plan, price None
     ]
     ordered = order_chain(chain, "cheapest_now", pin_primary=False,
                           when=_at(SAT, 7))
-    assert [hop["model"] for hop in ordered] == ["glm-5.3", "glm-4.7-flash"]
+    assert [hop["model"] for hop in ordered] == [
+        PLAN_NO_PRICE_RAIL, "glm-4.7-flash",
+    ]
 
 
 def test_cheapest_now_sorts_an_unpriced_metered_model_last():
@@ -2677,7 +2785,7 @@ def _t1_chain():
     rule, and the tier is here only because it is the shape the rule got wrong.
     """
     return [
-        {"model": "glm-4.7", "provider": "zai", "billing_mode": "plan"},
+        {"model": "glm-5.3-flash", "provider": "zai", "billing_mode": "plan"},
         {"model": "gpt-5.6-luna", "provider": "openai-codex",
          "billing_mode": "subscription"},
         {"model": "mimo-v2.5", "provider": "xiaomi", "billing_mode": "metered"},
@@ -2687,7 +2795,7 @@ def _t1_chain():
 def test_time_cap_does_not_evict_a_plan_credit_rail():
     """T1's shipped shape at 07:00 UTC on a weekday — the case the cap got wrong.
 
-    glm-4.7's 2.0x is a PLAN-CREDIT multiplier: it doubles a draw against an
+    glm-5.3-flash's 2.0x is a PLAN-CREDIT multiplier: it doubles a draw against an
     allowance already bought and adds nothing to any dollar invoice, so
     `max_multiplier: 1.5` — a dollar ceiling — has nothing to say about it.
     Evicting it pushed every trivial mechanical edit in that four-hour block onto
@@ -2696,39 +2804,39 @@ def test_time_cap_does_not_evict_a_plan_credit_rail():
     """
     result = apply_time_cap(_t1_chain(), 1.5, _at(WED, 7))
     assert [hop["model"] for hop in result["chain"]] == [
-        "glm-4.7", "gpt-5.6-luna", "mimo-v2.5",
+        "glm-5.3-flash", "gpt-5.6-luna", "mimo-v2.5",
     ]
     assert result["capped"] == []
     assert result["bypassed"] is False
     # Silence would be the other half of the bug: the exemption is REPORTED, with
     # the multiplier the operator's 1.5 was compared against.
     assert result["cap_exempt"] == [
-        {"model": "glm-4.7", "multiplier": 2.0, "billing_mode": "plan"},
+        {"model": "glm-5.3-flash", "multiplier": 2.0, "billing_mode": "plan"},
     ]
 
 
 def test_the_same_cap_still_removes_a_dollar_rail_beside_the_plan_one():
     """What a `time_cap` still DOES on a plan-primary tier, in one assertion."""
     chain = [
-        {"model": "glm-4.7", "provider": "zai", "billing_mode": "plan"},
+        {"model": "glm-5.3-flash", "provider": "zai", "billing_mode": "plan"},
         {"model": "deepseek-v4-flash", "provider": "deepseek",
          "billing_mode": "metered"},
     ]
     result = apply_time_cap(chain, 1.5, _at(WED, 7))
-    assert [hop["model"] for hop in result["chain"]] == ["glm-4.7"]
+    assert [hop["model"] for hop in result["chain"]] == ["glm-5.3-flash"]
     assert [c["model"] for c in result["capped"]] == ["deepseek-v4-flash"]
-    assert [e["model"] for e in result["cap_exempt"]] == ["glm-4.7"]
+    assert [e["model"] for e in result["cap_exempt"]] == ["glm-5.3-flash"]
     assert result["bypassed"] is False
 
 
 def test_the_shipped_t1_cap_removes_nothing_at_any_hour():
     """`apply_time_cap`'s prediction for T1, pinned so the docstring cannot rot.
 
-    With glm-4.7 exempt on its unit, T1's roster has nothing left that can exceed
-    1.5 at any hour: gpt-5.6-luna is flat and mimo-v2.5's only window is xiaomi's
-    0.8x DISCOUNT. So the cap removes nothing today — it is insurance against a
-    future dollar-priced hop — and the one thing it shows an operator is glm-4.7's
-    weekday credit peak, in `cap_exempt`.
+    With glm-5.3-flash exempt on its unit, T1's roster has nothing left that can
+    exceed 1.5 at any hour: gpt-5.6-luna is flat and mimo-v2.5's only window is
+    xiaomi's 0.8x DISCOUNT. So the cap removes nothing today — it is insurance
+    against a future dollar-priced hop — and the one thing it shows an operator is
+    the plan primary's weekday credit peak, in `cap_exempt`.
     """
     for day in (MON, WED, FRI, SAT, SUN):
         for hour in range(24):
@@ -2741,7 +2849,7 @@ def test_the_shipped_t1_cap_removes_nothing_at_any_hour():
             ], label
             in_zai_peak = day in (MON, WED, FRI) and 6 <= hour < 10
             assert [e["model"] for e in result["cap_exempt"]] == (
-                ["glm-4.7"] if in_zai_peak else []
+                ["glm-5.3-flash"] if in_zai_peak else []
             ), label
 
 
@@ -2787,13 +2895,17 @@ def test_an_all_plan_chain_at_peak_never_needs_the_bypass():
     """Unit-awareness can only ADD survivors, so it makes the bypass rarer."""
     chain = [
         {"model": "glm-5.3", "provider": "zai"},
-        {"model": "glm-4.7", "provider": "zai"},
+        {"model": "glm-5.3-flash", "provider": "zai"},
     ]
     result = apply_time_cap(chain, 1.0, _at(WED, 7))
     assert result["bypassed"] is False
     assert result["capped"] == []
-    assert [hop["model"] for hop in result["chain"]] == ["glm-5.3", "glm-4.7"]
-    assert [e["model"] for e in result["cap_exempt"]] == ["glm-5.3", "glm-4.7"]
+    assert [hop["model"] for hop in result["chain"]] == [
+        "glm-5.3", "glm-5.3-flash",
+    ]
+    assert [e["model"] for e in result["cap_exempt"]] == [
+        "glm-5.3", "glm-5.3-flash",
+    ]
     assert all(e["billing_mode"] == "plan" for e in result["cap_exempt"])
 
 
@@ -3318,11 +3430,11 @@ def test_an_anthropic_elo_sorts_inside_the_dollars_bucket():
     chain = [
         {"model": "claude-haiku-4-5", "provider": "anthropic"},  # metered, 5.00
         {"model": "tencent/hy3:free", "provider": "nous"},       # free
-        {"model": "glm-4.7", "provider": "zai"},                 # plan credits
+        {"model": "glm-5.3-flash", "provider": "zai"},           # plan credits
     ]
     ordered = order_chain(
         chain, "cheapest_now", pin_primary=False, when=_at(WED, 7)
     )
     assert [hop["model"] for hop in ordered] == [
-        "glm-4.7", "tencent/hy3:free", "claude-haiku-4-5",
+        "glm-5.3-flash", "tencent/hy3:free", "claude-haiku-4-5",
     ]
