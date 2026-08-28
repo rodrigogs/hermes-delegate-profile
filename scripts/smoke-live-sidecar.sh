@@ -12,7 +12,14 @@
 # Exits non-zero on the first failed assertion count, so it is CI-usable.
 set -u
 P=/home/rodrigo/.hermes/plugins/hermes-smart-router
-TOK=$(cat ${HERMES_HOME:-$HOME/.hermes}/webui/sidecar-auth/hermes-smart-router.token)
+# O token vive em ~/.hermes/webui (producao), nunca no HERMES_HOME de quem roda o
+# script: um worker do kanban dentro do perfil trama-engineer tem HERMES_HOME
+# apontando para o perfil, e ${HERMES_HOME:-...} leva o cat a um caminho que nao
+# existe -> TOK vazio -> TODA rota autenticada responde 401 com o servico "active"
+# (mesma armadilha documentada no router-deploy.sh). O home de producao deriva do
+# caminho do plugin vivo, que e fixo.
+P_HOME=$(dirname "$(dirname "$P")")
+TOK=$(cat "$P_HOME/webui/sidecar-auth/hermes-smart-router.token")
 H="X-Hermes-Sidecar-Token: $TOK"
 B=http://127.0.0.1:8791
 pass=0; fail=0
@@ -24,10 +31,11 @@ systemctl --user restart hermes-router-sidecar.service; sleep 3
 chk "sidecar active" "$(systemctl --user is-active hermes-router-sidecar.service)" "active"
 chk "/health 200" "$(curl -s -o /dev/null -w %{http_code} --max-time 5 $B/health)" "200"
 chk "/console 200 (served)" "$(curl -s -o /dev/null -w %{http_code} --max-time 5 $B/console)" "200"
-# The console's rail used to be marked class="rail"; the markup now names the
-# three destination tabs by id. Assert on the Health tab — the console's own
-# surface — so a 404/error page still fails the check.
-chk "/console is the command-deck" "$(curl -s --max-time 5 $B/console | grep -c 'id=\"stateHealth\"')" "1"
+# The console's rail became the six tabs (card t_51196512): the old marker
+# id=\"stateHealth\" died there and the smoke started failing against main. Assert
+# on the first tab — the command deck's own surface — so a 404/error page still
+# fails the check.
+chk "/console is the command-deck" "$(curl -s --max-time 5 $B/console | grep -c 'id=\"tab-tarefas\"')" "1"
 chk "/status needs token" "$(curl -s -o /dev/null -w %{http_code} --max-time 5 $B/status)" "401"
 chk "/status 200 w/ token" "$(curl -s -o /dev/null -w %{http_code} --max-time 5 -H "$H" $B/status)" "200"
 PROV=$(curl -s --max-time 5 -H "$H" $B/status)
