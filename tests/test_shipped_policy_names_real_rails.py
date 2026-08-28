@@ -190,6 +190,73 @@ def test_the_blocklist_fallback_chain_is_the_tier_union_in_tier_order():
     assert policy["blocklist"]["fallback_chain"] == derived
 
 
+def test_the_general_purpose_tier_is_cheaper_at_the_margin_than_the_flagship():
+    """T2 carries the most traffic, so its primary is the money decision here.
+
+    The tier's own comment argues the trade on numbers; this pins the half a test
+    can check. Both units, because the install pays in credits and a plan-less one
+    would pay in dollars, and a change that improved one while quietly wrecking the
+    other should fail.
+    """
+    policy = _policy()
+    primary = policy["tiers"]["T2"]["model"]
+    assert primary == "glm-5.3-flash"
+
+    flagship = MODEL_CAPABILITIES["glm-5.3"]
+    chosen = MODEL_CAPABILITIES[primary]
+    assert chosen["billing_mode"] == "plan" == flagship["billing_mode"], (
+        "both are plan rails, so the comparison is like for like"
+    )
+    # Dollars, for whoever is not on the plan: 0.50 against 4.40 out.
+    assert chosen["price_out"] < flagship["price_out"]
+    assert chosen["price_in"] < flagship["price_in"]
+    # Credits are the unit that actually bills here, and they are not a registry
+    # field — the plan's table gives 8 output against 24 — so what is pinned is the
+    # note that records them, next to the price that must not contradict it.
+    assert "2.3/0.56/8 credits" in str(chosen.get("notes") or "")
+    assert "6.9/1.7/24" in str(flagship.get("notes") or "")
+
+
+def test_the_busiest_tier_still_pins_its_plan_primary():
+    """A LITERAL pin, and deliberately so — nothing else can catch its removal.
+
+    `pin_primary: true` on T2 is idle on today's roster: `cheapest_now` buckets by
+    billing_mode, so a plan-covered primary already leads every dollar-priced hop
+    without it (proved over all 168 hours in
+    tests/router/test_capabilities.py::test_the_shipped_t2_pin_is_redundant_today_and_says_what_it_protects).
+    A mutation flipping this line therefore breaks NO behavioural test, which makes
+    it exactly the kind of "does nothing, delete it" line that gets deleted — and
+    the day the roster puts a dollar-priced model in front, the tier that carries
+    the most traffic starts ordering itself by a price the operator does not pay,
+    silently. The declaration is pinned so the deletion has to be deliberate.
+    """
+    tier = _policy()["tiers"]["T2"]
+    assert tier.get("fallback_strategy") == "cheapest_now"
+    assert tier.get("pin_primary") is True
+
+
+def test_an_image_turn_can_stay_on_the_plan_rail():
+    """The `vision-required` row routes to T2, and T2's primary must be able to see.
+
+    While it could not, the capability filter dropped it on every image request and
+    the turn billed dollars on a subscription seat — routing correctly and paying
+    for it. This is the assertion that keeps the row and the roster in agreement:
+    either the primary sees, or the row's destination has to change.
+    """
+    policy = _policy()
+    rows = [rule for rule in policy["rules"] if rule.get("id") == "vision-required"]
+    assert len(rows) == 1, "the row this test is about must still exist"
+    tier_name = rows[0]["then"]["model"]
+    tier = policy["tiers"][tier_name]
+    assert MODEL_CAPABILITIES[tier["model"]]["vision"] is True, (
+        f"{tier_name}'s primary cannot see, so every image turn skips it and "
+        f"bills a paid rail"
+    )
+    assert MODEL_CAPABILITIES[tier["model"]]["billing_mode"] == "plan", (
+        "and it has to be the plan rail, or the row costs money by design"
+    )
+
+
 @pytest.mark.parametrize("surface", ["tiers", "fail_safe", "classifier"])
 def test_the_traversal_reaches_each_surface_it_claims_to_cover(surface):
     """A traversal that silently read nothing would pass every test above."""

@@ -3128,15 +3128,19 @@ def test_the_shipped_t3_policy_reorders_for_15_hours_of_the_week():
 def test_the_shipped_t2_tail_flips_on_deepseeks_window_alone():
     """T2's `cheapest_now` note framed the flip on the deepseek/zai OVERLAP.
 
-    It cannot be that: glm-5.3 is the pinned primary, so zai's window never
-    reaches the ordered tail, and the tail is [flat 1.20 seat, 0.66->1.32 metered
-    rail] whose order depends on deepseek-v4-flash's multiplier and nothing else.
-    The flipped set is therefore BOTH deepseek windows every day — 01:00-04:00 and
-    06:00-10:00, 49 of 168 hours — not the four hours zai overlaps, and it does not
-    thin out at the weekend when zai stops peaking.
+    It cannot be that: the zai plan rail is the pinned primary, so zai's window
+    never reaches the ordered tail, and the tail is [flat 1.20 seat, 0.66->1.32
+    metered rail] whose order depends on deepseek-v4-flash's multiplier and nothing
+    else. The flipped set is therefore BOTH deepseek windows every day — 01:00-04:00
+    and 06:00-10:00, 49 of 168 hours — not the four hours zai overlaps, and it does
+    not thin out at the weekend when zai stops peaking.
+
+    The primary is glm-5.3-flash since 2026-08-27 and the measurement is unchanged,
+    which is the argument's own point: WHICH plan rail is pinned cannot matter to a
+    tail it never enters.
     """
     chain = [
-        {"model": "glm-5.3", "provider": "zai", "billing_mode": "plan"},
+        {"model": "glm-5.3-flash", "provider": "zai", "billing_mode": "plan"},
         {"model": "gpt-5.6-luna", "provider": "openai-codex",
          "billing_mode": "subscription"},
         {"model": "deepseek-v4-flash", "provider": "deepseek",
@@ -3149,7 +3153,7 @@ def test_the_shipped_t2_tail_flips_on_deepseeks_window_alone():
                 chain, "cheapest_now", pin_primary=True, when=when
             )
         ]
-        assert ordered[0] == "glm-5.3", when
+        assert ordered[0] == "glm-5.3-flash", when
         # The order and the price that produced it, asserted together: the tail is
         # ascending effective output price, whichever way round it came out.
         prices = [effective_price(model, when)[1] for model in ordered[1:]]
@@ -3167,6 +3171,52 @@ def test_the_shipped_t2_tail_flips_on_deepseeks_window_alone():
     # Every one of those hours is deepseek's alone; zai's Mon-Fri window overlaps
     # 20 of them and explains none of them.
     assert len([1 for day, hour in flipped if day < 5 and hour in (6, 7, 8, 9)]) == 20
+
+
+def test_the_shipped_t2_pin_is_redundant_today_and_says_what_it_protects():
+    """`pin_primary: true` changes NOTHING on this roster, at any of 168 hours.
+
+    Found by mutation: flipping the shipped `pin_primary` to false broke no test,
+    and the reason is not a missing assertion — it is that the pin is currently
+    doing nothing. `cheapest_now` buckets by billing_mode first, so a plan-covered
+    primary already leads every dollar-priced hop whether or not it is pinned.
+
+    That is worth pinning in both directions. If this test starts failing, the pin
+    has become load-bearing, which is exactly the moment an operator wants to know
+    rather than the moment to delete a line that "does nothing".
+
+    What the pin protects is the OTHER shape: a primary in the dollars bucket, where
+    the tail can genuinely overtake it. Asserted below so the knob's purpose is
+    recorded next to the proof that it is idle.
+    """
+    shipped = [
+        {"model": "glm-5.3-flash", "provider": "zai", "billing_mode": "plan"},
+        {"model": "gpt-5.6-luna", "provider": "openai-codex",
+         "billing_mode": "subscription"},
+        {"model": "deepseek-v4-flash", "provider": "deepseek",
+         "billing_mode": "metered"},
+    ]
+    for when in _week():
+        pinned = [hop["model"] for hop in order_chain(
+            shipped, "cheapest_now", pin_primary=True, when=when)]
+        loose = [hop["model"] for hop in order_chain(
+            shipped, "cheapest_now", pin_primary=False, when=when)]
+        assert pinned == loose, when
+        assert pinned[0] == "glm-5.3-flash", when
+
+    # The shape the pin is for: declare the same primary METERED and its 0.50 out
+    # is suddenly comparable, so mimo-v2.5 at 0.28 overtakes it — unless pinned.
+    dollar_primary = [
+        {"model": "glm-5.3-flash", "provider": "zai", "billing_mode": "metered"},
+        {"model": "mimo-v2.5", "provider": "xiaomi", "billing_mode": "metered"},
+    ]
+    when = _at(SAT, 12)
+    assert [hop["model"] for hop in order_chain(
+        dollar_primary, "cheapest_now", pin_primary=False, when=when)] == [
+        "mimo-v2.5", "glm-5.3-flash"]
+    assert [hop["model"] for hop in order_chain(
+        dollar_primary, "cheapest_now", pin_primary=True, when=when)] == [
+        "glm-5.3-flash", "mimo-v2.5"]
 
 
 def test_peak_priced_names_only_the_providers_avoid_peak_named():

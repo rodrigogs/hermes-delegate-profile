@@ -549,10 +549,18 @@ def test_routes_skips_absent_backup_in_chain(tmp_path, monkeypatch, config_path)
 # (tests/conftest.py) guarantees it exists in a fresh checkout.
 LIVE_POLICY = Path(__file__).resolve().parents[2] / "router.yaml"
 
-# A vision turn: the shipped T2 primary cannot see, so the capability filter
-# promotes a fallback hop and the DECLARED tier primary is not what runs. That
+# A vision turn. While the T2 primary could not see, the capability filter
+# promoted a fallback hop and the DECLARED tier primary was not what ran — that
 # gap is the whole subject of these tests.
+# Since 2026-08-27 the shipped primary is natively multimodal, so on the live
+# policy this turn has no gap left: nothing is filtered and a screenshot stays on
+# the plan rail. Good for the bill, fatal for a test that borrowed the gap from
+# the roster, so the gap is now built by `_vision_gap_policy` below.
 VISION_TASK = "Look at this screenshot and tell me why the layout breaks"
+
+#: The text-only plan model T2 declared until then. A real registry entry with
+#: ``vision: False``, so the filter drops it for an image turn exactly as before.
+VISION_BLIND_PRIMARY = "glm-5.3"
 
 # 07:00 UTC Monday — inside the shipped peak windows, so the time layer is live
 # for these turns rather than a no-op. Injected, never read from the wall clock.
@@ -580,21 +588,42 @@ def _executor_targets(routed):
     return module._routed_targets(routed)
 
 
-def _route_and_list(task, **kwargs):
+def _vision_gap_policy(tmp_path):
+    """The live policy written back out with a T2 primary that cannot see.
+
+    These tests are about the gap between the model a surface DISPLAYS and the
+    model the executor RUNS, and a vision turn against a text-only primary is the
+    shape that guarantees one. The shipped roster stopped supplying it — which is
+    an improvement, not a regression — so it is constructed here rather than
+    borrowed. Written to a file because RouterService reads a path, and the reader
+    under test has to load the same policy the router routed on.
+    """
+    config = yaml.safe_load(LIVE_POLICY.read_text(encoding="utf-8"))
+    config["tiers"]["T2"]["model"] = VISION_BLIND_PRIMARY
+    path = tmp_path / "router-vision-gap.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def _route_and_list(task, *, policy=None, **kwargs):
     """Route ``task`` for real, then read the decision back off routes().
 
     Returns ``(result, entry, listed)`` — the executor's decision, the persisted
     trace entry, and the projection routes() serves for that same decision. The
     autouse ``_isolate_route_trace`` fixture points the trace file at tmp_path, so
     the writer and this reader converge on one temp file.
+
+    ``policy`` defaults to the live file; both sides always read the SAME path, so
+    a caller cannot accidentally route on one policy and list from another.
     """
     from router.durable_decision_log import DurableDecisionLog
     from router.adapter import route as adapter_route
 
-    config = yaml.safe_load(LIVE_POLICY.read_text(encoding="utf-8"))
+    policy = policy or LIVE_POLICY
+    config = yaml.safe_load(policy.read_text(encoding="utf-8"))
     dlog = DurableDecisionLog()
     result = adapter_route(task, config, decision_log=dlog, now=PEAK_CLOCK, **kwargs)
-    listed = RouterService(LIVE_POLICY).routes()["routes"][0]
+    listed = RouterService(policy).routes()["routes"][0]
     return result, dlog.tail(1)[0], listed
 
 
@@ -603,15 +632,17 @@ def test_routes_names_the_elo_that_ran_and_keeps_the_tier_identity(tmp_path):
 
     routes() labelled every decision with ``output.model``, the DECLARED tier
     primary, which after a capability filter, a time cap, a shuffle or a blocklist
-    veto is not the elo the executor dispatches. Measured on the shipped policy at
-    07:00Z: the Decisions tab said the turn below ran ``glm-5.3`` — a model that
+    veto is not the elo the executor dispatches. Measured on the then-shipped policy
+    at 07:00Z: the Decisions tab said the turn below ran ``glm-5.3`` — a model that
     cannot see, and was never attempted — while ``gpt-5.6-luna`` served it. The
     writer side (``output.attempted_model``) was fixed on this branch; this reader
     was not, so the branch is what made the two disagree.
     """
     from router.decision_log import attempted_head_of
 
-    result, entry, listed = _route_and_list(VISION_TASK)
+    result, entry, listed = _route_and_list(
+        VISION_TASK, policy=_vision_gap_policy(tmp_path)
+    )
 
     executor_first = _executor_targets(result)[0]
     # The precondition, asserted so this test can never pass vacuously: if the
