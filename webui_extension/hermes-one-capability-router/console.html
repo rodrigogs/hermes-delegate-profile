@@ -3263,8 +3263,9 @@
         // §4.1: the mode button names what it does NEXT. The resting labels
         // ('Editar', 'Editar a política de roteamento') predate the map; the
         // two words that exist only while armed are new, so they live here.
-        done: 'Concluir',
-        stopEditing: 'Parar de editar',
+        // (`done` and `stopEditing` lived here for the global Editar's two states. The
+        // button is gone and nothing referenced them; a word for a deleted control is
+        // not vocabulary, it is an invitation to rebuild the control.)
         // §3.2: the routing fact — its label and its two words. The value is
         // what an operator reads in the Health column, so 'on'/'off' had to
         // go; 'Roteando…' is the probe verdict while the sidecar answers.
@@ -7342,9 +7343,10 @@
       // This used to refuse when the editor was closed, which added a click to
       // every write path and protected nothing: the sidecar has never heard of the
       // console's mode, and it already requires a per-extension token-v1 secret,
-      // the host's CSRF token, a loopback bind and a matching base_hash. The
-      // compaction action also checks confirm=="COMPACT" server-side. A client-side
+      // the host's CSRF token, a loopback bind and a matching base_hash. A client-side
       // mode was the one gate an attacker could skip and the operator could not.
+      // (The compaction action used to be the second server-side example here; §6.3
+      // took that block off the screen, so the sentence went with it.)
       //
       // Both remaining tests describe an obstacle the operator can DO something
       // about, and each names the fix.

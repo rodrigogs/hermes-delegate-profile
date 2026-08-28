@@ -161,10 +161,16 @@ components:
     rounded: "{rounded.md}"
     padding: "9px 12px"
   editor-box:
-    backgroundColor: "{colors.plane-raised}"
     textColor: "{colors.text}"
     rounded: "0"
     padding: "14px 16px 16px"
+  support-note:
+    backgroundColor: "transparent"
+    textColor: "{colors.muted}"
+    typography: "{typography.label}"
+    rounded: "0"
+    padding: "0"
+    width: "34ch"
   preset-chosen:
     backgroundColor: "{colors.accent-wash}"
     textColor: "{colors.text}"
@@ -193,23 +199,28 @@ operator's verdict was "feio e muito poluído — pouco objetivo". Fewer element
 carrying a fact.
 
 The surface is TWO screens split by what the operator is DOING, not by which noun
-they are looking at. **Configuração** holds everything writable — the ordered rule
-sheet, the probe, the model groups, the last-resort block, the presets, the general
-settings, the file editor — and every change is offered on the row it changes.
-**Operação** holds the runtime: reachable models, out-of-rotation, the decision log
-and its replay, and nothing on it is editable. Three nouns (Tarefas / Modelos /
-Decisões) failed because no noun says where a setting lives: the rule list and the
-file editor sat under one while the presets and the group chains sat under another,
-which is the whole of "I don't know where I can edit the settings". `panel-health`
-is gone; `selectTab('health')` survives as an alias to Operação, because a caller
-asking for the models is still asking for a screen that exists.
+they are looking at. **Configuração** holds the policy — the ordered rule sheet, the
+probe, the model groups, the last-resort block, the presets, the general settings,
+the file editor — and every change is offered on the row it changes. **Operação**
+holds the runtime: reachable models, out-of-rotation, the decision log and its
+replay. Operação is not read-only by decree: it carries exactly one write, the
+`Remover o bloqueio` on a manual ban's own row, because that is state the operator
+put there and only that row can lift it. Nothing else on that screen is writable.
+Three nouns (Tarefas / Modelos / Decisões) failed because no noun says where a
+setting lives: the rule list and the file editor sat under one while the presets and
+the group chains sat under another, which is the whole of "I don't know where I can
+edit the settings". `panel-health` is gone; `selectTab('health')` survives as an
+alias to Operação, because a caller asking for the models is still asking for a
+screen that exists.
 
 **Key Characteristics:**
 - No palette: every colour is the host's, forwarded live; the hexes are fail-safes.
 - The accent marks WHAT YOU PICKED; the semantic four report CONDITION. Never crossed.
 - Hairlines and space instead of cards; one structural primitive, the row.
 - Two type families — sans for prose and labels, mono for what an operator copies.
-- Writing is armed per object, on the row that owns it, in a fixed action slot.
+- Writing is armed per object, on the row that owns it, in a fixed action slot; there
+  is no mode, so a control is drawn whenever its object can carry it.
+- A finding that has a remedy carries the remedy on its own row.
 - No `<svg>` in the document and no markup injection: a control is a word.
 - Two screens, one column, `100dvh`, 44px targets and 16px inputs under a coarse pointer.
 
@@ -221,9 +232,10 @@ colour is allowed to MEAN.
 ### Primary
 - **The Skin's Accent** (`{colors.skin-accent}`, gold in default/dark, purple in
   catppuccin/light): marks WHERE YOU ARE and WHAT YOU PICKED — the selected tab's
-  20px x 2px bar, the focus ring, the open row's 1px rail, the chosen preset and
-  scope, the decision being replayed, the line a probed task matched, the caret, the
-  text selection, and the one committing button. It never reports a condition.
+  20px x 2px bar, the focus ring, the open row's 1px rail, the 3px edge on a row an
+  instruction pointed at, the chosen preset and scope, the decision being replayed,
+  the line a probed task matched, the caret, the text selection, and the one
+  committing button. It never reports a condition.
 - **Accent Foreground** (`{colors.accent-fg}`): the label on the single filled
   button. The host declares its accent foreground only under `:root.dark`, so in
   every light skin this fallback is what lands — and it is near-black, not `#fff`,
@@ -276,15 +288,18 @@ uppercase tracked, the host's own metadata treatment — never in contrast.
 DROPPED heading stay muted (the heading already says they were refused; painting them
 put three reds beside the one real refusal); "goes to the classifier" is a KIND of
 destination and is named once on its stage heading rather than coloured five times.
+An off-catalogue attempt is a finding in a `{colors.warn-text}` note, not a red row:
+the model still runs.
 
 **The Never The Only Channel Rule.** Every dot sits beside its state in words; every
 multiplier is in the text beside its amber. Colour is confirmation, never the fact.
 
 **The Amber Is A Verdict Rule.** Amber means the ROUTER needs attention — an
 exception count, a rule that never fired, an expensive window, a missing billing
-mode. It never marks the operator's own doing (an open editor is not a degradation),
-and a disclosure about the DATA rather than the policy takes the muted dot instead
-(the window-stale line halos on the hairline, precisely so it cannot read as amber).
+mode, an id the catalogue does not know. It never marks the operator's own doing (an
+open editor is not a degradation), and a disclosure about the DATA rather than the
+policy takes the muted dot instead (the window-stale line halos on the hairline,
+precisely so it cannot read as amber).
 
 ## Typography
 
@@ -305,7 +320,9 @@ host chrome.
 - **Body** (400, 14px, 1.5): prose, rule names, section leads, verdicts.
 - **Small** (400, 12px): supporting facts, rails, prices, notes, JSON.
 - **Label** (600, 11px, 0.05em, uppercase): section names, fact labels, stage names,
-  cause words, `editando`, badges. This is the third text step.
+  cause words, `editando`, badges, a chain block's own head. This is the third text
+  step, and it is also the whole treatment of a support note in the header (11px,
+  muted, capped at `34ch`, never pressable-looking).
 - **Mono** (500, 12–14px): model ids, rails, counts, hashes, timestamps, context
   windows — anything an operator copies into a shell.
 
@@ -338,7 +355,9 @@ or a note instead.
 one hairline under it, min-height 41px, padding `8px clamp(14px, 2.4vw, 32px)` — all
 measured off the running shell's `.main-view-header`), then a two-tab strip in the
 host's nav idiom, then a scrolling body that is the host's `.main-view-body`
-(`22px clamp(14px, 2.4vw, 32px) 44px`). The header does not scroll.
+(`22px clamp(14px, 2.4vw, 32px) 44px`). The header does not scroll. Under
+`.is-embedded` the head's actions and notes shrink to 25px of content, because 25 +
+16px of padding is the 41px the shell's own `.panel-head` measures.
 
 **No wordmark.** The host's rail already says which surface you are on. The old
 "ROUTER · HERMES ONE" mark spent 9 characters and a whole type voice the shell never
@@ -357,13 +376,19 @@ margin — the panel's own padding is that space.
 
 **The action slot is a column.** Every list that can be edited reserves a fixed 84px
 right-hand track, so "what can I do with this line" is answered at one x down the
-whole screen. This is a grid on the sheet row, the group head and the settings row
-alike: as flex, the group's control sat at 788px, 787px and 796px on three
-consecutive rows, and a reader hunting for it has to re-find it every time.
+whole screen. This is a grid on the sheet row, the group head, the last-resort block's
+head and the settings row alike: as flex, the group's control sat at 788px, 787px and
+796px on three consecutive rows, and a reader hunting for it has to re-find it every
+time. On Operação the same slot is where a manual ban's `Remover o bloqueio` lands.
 
 **The warnings stack is sticky** at the scrollport top (`z-index: 2`, on the page
 plane). The invalid-policy warning is the only actionable message on the screen and
 it used to disappear the moment the operator scrolled to the rule it named.
+
+**A write's own confirmation lives outside the block it belongs to.** The unban
+message sits after the out-of-rotation group, not inside it: when the last block is
+lifted the group hides, and a confirmation that hides with the thing it confirms has
+not confirmed anything.
 
 **Responsive.** At ≤860px the decision list and its replay stop being side by side;
 everywhere above that they stay side by side even inside the host panel, because
@@ -397,7 +422,8 @@ them makes the reader hunt for the answer.
 **The Unordered Gets No Ordinals Rule.** A `sequential` chain is numbered down the
 spine; a `random` chain is a SET — it loses the ordinals and the spine and wraps
 across the line, keeping only the 26px indent so the eye does not have to re-find the
-model. A numbered random chain is a lie about which elo runs first.
+model. A numbered random chain is a lie about which elo runs first. The substitute
+queue on Operação is drawn in that same unordered form.
 
 **The Compare Down A Column Rule.** Destination and count are fixed tracks
 (`fit-content(34%)` and 52px on the sheet; a 118px cause column on a decision row,
@@ -427,7 +453,9 @@ single left hairline rather than two bordered cards inside a bordered column.
 **The 1px Accent Rail Rule.** Every "you picked this" mark is the same object: an
 inset 1px accent rail on the leading edge, plus the accent wash where a whole row is
 chosen. The open row, the probed rule that matched, the replayed trace step, the
-picked decision — one reading, learned once.
+picked decision — one reading, learned once. Its one louder sibling is the 3px accent
+left edge on a row an instruction just sent the operator to, which is a pointer and
+not a state.
 
 **The Nothing Live Is Dimmed Rule.** No element is faded by opacity while its own
 controls stay pressable. Measured at `.55` on parchment: `Editar` fell to 2.54:1 and
@@ -436,9 +464,11 @@ in the dimmed thing can be pressed — a rule switched off in the file, a trace 
 still ahead of the reader.
 
 **The Render Nothing For Nothing Rule.** No empty card, no dashed placeholder, no row
-that announces its own emptiness. A section with no data is absent (the bans group,
-the compaction group, the clock strip, the count column) or a single muted line. A
-count column with nothing to count disappears rather than filling with em dashes.
+that announces its own emptiness. A section with no data is absent (the
+out-of-rotation group, the substitute queue inside it, the clock strip, the count
+column, the whole last-resort block) or a single muted line. A count column with
+nothing to count is not built at all — not filled with em dashes, and not left with a
+branch that renders a placeholder no reader ever sees.
 
 ## Shapes
 
@@ -451,8 +481,15 @@ spine or the accent rail.
 
 The recurring silhouette is the ROW: a grid of `auto | minmax(0, 1fr) | auto`, 11px
 of vertical padding, one hairline below, no border on the last one. The rule sheet
-row, the model row, the settings row and the decision row are all that primitive with
-different tracks — the third list on a screen must not be a third layout.
+row, the model row, the out-of-rotation row, the settings row and the decision row
+are all that primitive with different tracks — the third list on a screen must not be
+a third layout.
+
+The one deliberately heavier edge in the file is 3px of accent on the left of a row
+an instruction pointed at, with 10px of padding behind it, inside a form. It is used
+for exactly that: the chain row a "swap this for a catalogue model" instruction sent
+the operator to, and the requirement field a warning named. A hairline would not be
+findable in a form of identical rows; a plane or a hue would read as state.
 
 ## Components
 
@@ -463,13 +500,18 @@ different tracks — the third list on a screen must not be a third layout.
   native panel. Left to the inherited 1.5 line-height it came out 32px and the header
   48px: the kind of drift that reads as "not quite ours" without ever being nameable.
 - **Quiet (the row action):** same shape and height, no plane and a transparent
-  border until pointed at, muted label. Ten filled rectangles down a list would
-  out-shout the policy they sit beside. The border is real and transparent, not
-  absent: a control that gains a border on hover shifts the text under it.
+  border until pointed at, muted label. It carries `Editar` on a sheet row, a group
+  head and a settings row, and `Remover o bloqueio` on a manual ban's row. Ten filled
+  rectangles down a list would out-shout the policy they sit beside. The border is
+  real and transparent, not absent: a control that gains a border on hover shifts the
+  text under it.
 - **Commit:** the only FILLED element on a screen, filled with the skin's accent over
   `{colors.accent-fg}` — the host's own primary-button rule.
 - **Destructive:** `{colors.bad-text}` label on the plain face, strong hairline;
   hover adds the 14%-alpha bad wash.
+- **Two full-face buttons inside a finding:** where a warning offers a choice, both
+  choices are ordinary `.btn`s in that note — no quiet variant for the one you are
+  meant to take, no accent on either. Neither writes; one navigates, one dismisses.
 - **Absent, not disabled,** where an action must not be offered: with a lint error the
   save button is DETACHED from the DOM (and re-inserted before "Ver o que muda" when
   the error clears), because a disabled control still reads as "this is the thing to
@@ -477,10 +519,11 @@ different tracks — the third list on a screen must not be a third layout.
 
 ### Chips
 - **Predicate clauses** (one chip per clause, in a real `<ul>`, so two conditions are
-  never announced as one string): shape = pill, transparent, muted, no label; context
-  = raised plane, text colour, the word CONTEXT inside; capability = strong hairline,
-  text colour, the word NEEDS inside. The family is a WORD inside the chip, so it
-  survives being read aloud — which a border colour does not.
+  never announced as one string): shape = pill, transparent, muted; context = raised
+  plane, text colour; capability = strong hairline, text colour. The family is the
+  chip's CLASS and, where the text is a fragment rather than a pt-BR sentence, a real
+  word inside the chip — never a border colour, which does not survive being read
+  aloud.
 - **Tier destination:** a real button in the pill shape that reveals the chain it
   points at, in place, with the same list the groups draw. Expanded takes the accent
   wash, accent text and accent-tinted border: that is a selection, not a condition.
@@ -508,14 +551,22 @@ field's label is 11px tracked uppercase; a field's own answer (how many models c
 serve this group) is a note inside the field, not an error bubble elsewhere. Under a
 coarse pointer every input is ≥16px.
 
+The same field primitive is what an inline remedy is made of. A rule whose
+destination names a group the table does not have carries the ordinary destination
+`<select>` on its own row, labelled `Escolha um destino que exista:` — a field, not a
+special widget, because the remedy for a broken value is the control that sets that
+value. Choosing writes to the DRAFT and opens that rule's editor, where the change is
+visible and only `Salvar` writes it.
+
 ### Navigation
 Two tabs in the host's nav idiom: a quiet 14px/500 muted label that takes
 `{colors.accent-text}` when selected, plus the host's own 20px x 2px accent bar on
 the bottom edge. Each tab carries the live state of what it leads to — a condition
-dot, plus a count only when a count is meaningful. Full `role="tablist"` semantics:
-only the selected tab is in the tab order and arrows/Home/End move between them, and
-one `selectTab` serves the tab clicks, the lint jump and the host sidebar alike.
-Inside the host the strip is undrawn and the shell's sidebar mirrors it.
+dot, plus a count only when a count is meaningful, in `{colors.warn-text}` when the
+count is of exceptions. Full `role="tablist"` semantics: only the selected tab is in
+the tab order and arrows/Home/End move between them, and one `selectTab` serves the
+tab clicks, the lint jump and the host sidebar alike. Inside the host the strip is
+undrawn and the shell's sidebar mirrors it.
 
 ### The In-Row Editor (signature)
 Writing is armed per OBJECT. Every row that can be edited carries its own `Editar` in
@@ -531,10 +582,39 @@ inside the host document, arming it changed the body of the page by exactly 0
 characters (2207 before, 2207 after) — it wrote its one announcing sentence into a
 node the next render overwrote, so the whole visible payload of arming a write was a
 button label flipping. A mode whose scope is invisible is worse than no mode. The
-read-only default it was right about survives, and now comes from the affordance:
-a row with nothing to configure carries no control at all.
+read-only default it was right about survives, and now comes from the affordance: a
+row with nothing to configure carries no control at all.
 
-### The Numbered Sheet, the Clock Strip, the Preset Choice
+The mode's removal is also what makes every control on a row unconditional. Anything
+still gated on `state.mode` after this is a control that will never be drawn again —
+the manual ban's unban button and the broken row's remedy select were both found that
+way, and both are now drawn whenever their object exists. `writable()` and the server
+gate the write; nothing gates the drawing of it.
+
+### The Header Support Note
+One muted 11px line in the header actions, capped at `34ch`, saying that the file may
+be edited and may not be saved yet. It is a note and never looks pressable, because
+the action it describes belongs to the rows. It is toggled off the same error set the
+warning banner reads, so the two cannot disagree about whether the file is blocked.
+Its copy is a known defect and not a pattern to copy: it says "o erro acima" while
+sitting in the header, which is ABOVE the banner it points at.
+
+### Out of Rotation (signature)
+Two kinds of absence in one list, told apart by what a control could honestly do.
+A **manual ban** is a row in the `is-dead` state — raw-hue dot, the elo in mono, the
+reason under it, the word `banido` in the 45%-mixed bad form — with
+`Remover o bloqueio` in the action slot, always. A **breaker cooldown** is a row in
+the `is-degraded` state with the time still owed in mono (`faltam 300s`) and NO
+control at all: it expires on its own, and a button promising to remove what time
+removes would be a false control. The write is the whole `manual_ban` list minus the
+lifted item, because the server replaces lists wholesale; the confirmation appears
+after the group so it survives the group hiding when the last ban goes.
+The **substitute queue** is drawn under both lists, headed
+`Substituto da lista de reserva geral`, in the unordered chain form — and only while
+the block itself is on screen, because with nobody out of rotation there is nothing
+to substitute for.
+
+### The Numbered Sheet, the Clock Strip, the Preset Choice, the Last Resort
 - **Sheet:** an `<ol>` with a 1px spine down the left margin, a stage node on the
   spine, a tick out to each row, ordinals in mono, and destination + count in fixed
   tracks. Precedence is the vertical axis.
@@ -544,13 +624,42 @@ a row with nothing to configure carries no control at all.
 - **Presets:** a real radio group — each row is a `<label>` wrapping a real radio, so
   the whole row is the target and the browser's own arrow keys move between them. The
   chosen row takes the accent wash and the one in force says so in accent 11px.
+- **Last resort:** a group with the same head, the same 84px slot and the same
+  `Editar`, whose note comes before its chain in the order every other block reads
+  in. Its `Editar` JUMPS: it opens the sheet's last step and scrolls it into view
+  rather than opening a second form, because that block and that row are two views of
+  ONE object. With no last resort configured there is no block at all, only the one
+  muted line saying so.
 
 ### Named Rules
-**The One Write Vocabulary Rule.** Every word a write can say lives in one `WRITE`
-map — plan, save, saving, revert, cancel, conflict, no-op, in-flight, lint error,
-missing action, no credential. Static markup carries no write vocabulary; boot stamps
-the three text-editor buttons from the map, and the draft hint names the buttons by
-the map's own labels so it cannot drift from them.
+**The One Write Vocabulary Rule.** One `WRITE` map owns every phrase the screen says
+— not just the write verbs (plan, save, saving, revert, cancel, conflict, no-op,
+in-flight, lint error, missing action, no credential) but `loading`,
+`refresh`/`refreshing`, `routing`/`routingOn`/`routingOff`, `banned`, `cooldownLeft`,
+`classifier`, `textEdit`, and the named gesture `remove`/`removing`. Static markup
+carries none of it: one pass at boot stamps the file editor's three buttons, the
+reload button and the file editor's own note from the map, and the draft hint quotes
+the buttons by the map's labels. The defect it prevents is a phrase existing twice in
+the file — a test counts each literal — and the reason a gesture is named twice
+(resting and in flight) is so a refusal reads "não é possível remover o bloqueio",
+never a generic "salvar" that does not match the button that was pressed.
+
+**The Control Only For What A Control Can Do Rule.** A row gets a button only where
+pressing it changes the thing named. A manual ban gets `Remover o bloqueio`; a
+breaker cooldown gets nothing, because it lapses on its own. Offering to remove what
+time removes is a lie the surface tells once and the operator remembers.
+
+**The Remedy On The Row Rule.** A finding that has a remedy carries the remedy where
+the finding is. A destination naming a group that does not exist carries the
+destination select. An attempt the catalogue does not know names the id and offers the
+two things that exist: swap it for a catalogue model — which opens that group's chain
+editor with THAT attempt's row marked, so nobody counts rows — or leave it, which
+writes nothing and hides the note until the next read. Two remedies, both real; a
+warning with no way out is a dead end, and this console was rebuilt to remove them.
+
+**The One Attach Point Rule.** The editor is a singleton. Where one object is shown
+in two places, the second place links to the first and never opens a second form:
+two attach points for one form mean it lands in whichever renderer ran last.
 
 **The Ranked, Not Recited Rule.** Where a thing has five knobs and four are the
 engine's default, the DECLARED ones are the line and the defaults collapse into one
@@ -559,10 +668,12 @@ control that says how many there are. Recited inline they read "na ordem escrita
 170 characters in which the same parenthesis appears three times and one knob is news.
 
 **The Count, Not A Sentence Rule.** A count column holds a count ("26×", "nunca") and
-disappears when there is nothing to count. The period it covers is stated once — by
-the section note or by the stale disclosure above the list — never per row: the
+its cell is NOT BUILT when the log does not cover the policy — the track collapses and
+the reason is stated once, by the disclosure above the list. Never per row: the
 sentence form put the same 60 characters on ten consecutive rows in the widest column
-and overflowed the host panel by 236px with the third column clipped.
+and overflowed the host panel by 236px with the third column clipped. Because the
+cell is absent in that case, a "stale" branch inside the cell is unreachable by
+construction and does not exist.
 
 **The Editor Node Is Fetched, Never Held Rule.** The form is a singleton moved next
 to whatever is being edited, so it becomes a child of a row that the next render
@@ -587,7 +698,12 @@ and a platform-grey scrollbar belong to no design system.
   more space above a heading than below it.
 - **Do** put every editable object's own control in the fixed 84px action slot, and
   open its form inside the row it changes.
-- **Do** keep the write vocabulary in the `WRITE` map and take button labels from it.
+- **Do** draw a control whenever its object exists — nothing on this surface is gated
+  on a mode, because there is no mode left to arm.
+- **Do** give a finding its remedy on its own row, and mark the row an instruction
+  sent the operator to with the 3px accent edge.
+- **Do** keep every phrase the screen says in the `WRITE` map, and stamp static
+  labels from it at boot.
 - **Do** cap prose at `74ch` with `text-wrap: balance`, attached to the kind of
   content rather than to a class, and leave data uncapped.
 - **Do** draw an ordered sequence numbered down one 1px spine, and an unordered one
@@ -610,7 +726,15 @@ and a platform-grey scrollbar belong to no design system.
   Amber is a verdict about the router; a disclosure about the DATA takes the muted dot.
 - **Don't** add a global mode, or any control whose scope is not the thing you can
   see. Arming the old one changed the page by 0 characters.
-- **Don't** disable a control that must not be pressed if it can be absent instead.
+- **Don't** offer a control for something that resolves itself — a breaker cooldown
+  gets a countdown, never a button.
+- **Don't** open a second editor for an object that already has one; link to it.
+- **Don't** disable a control that must not be pressed if it can be absent instead,
+  and don't build a cell only to fill it with em dashes or a branch nobody reaches.
+- **Don't** put a write's confirmation inside a block that hides when the write
+  succeeds.
+- **Don't** let a phrase exist twice in the file, or let static markup own a word the
+  `WRITE` map should.
 - **Don't** use `<svg>` or an icon font in this document, and never `innerHTML` /
   `insertAdjacentHTML` / `outerHTML` / `document.write` — decision traces carry
   attacker-influenceable task text, so all text goes through `textContent`. A control

@@ -6860,8 +6860,11 @@ test('the §4.7 write literals are exact, and each lives in exactly one place: t
     `'${api.WRITE.httpError}'`, `'${api.WRITE.invalid}'`,
     'Não é possível {action} com esta tela aberta fora do Hermes One: o navegador não manda a credencial da sessão. Abra o Hermes One e volte aqui pelo menu lateral.',
     // This card's additions — every new surface word lives in the map, once.
-    `'${api.WRITE.refresh}'`, `'${api.WRITE.refreshing}'`, `'${api.WRITE.done}'`,
-    `'${api.WRITE.stopEditing}'`, `'${api.WRITE.routing}'`, `'${api.WRITE.routingOn}'`,
+    // `done` and `stopEditing` left the map with the global Editar they named: §4.7 keeps
+    // every phrase the SCREEN SAYS in one place, and a phrase for a deleted control is
+    // not one of those.
+    `'${api.WRITE.refresh}'`, `'${api.WRITE.refreshing}'`,
+    `'${api.WRITE.routing}'`, `'${api.WRITE.routingOn}'`,
     `'${api.WRITE.routingOff}'`, `'${api.WRITE.routingVerdict}'`, `'${api.WRITE.banned}'`,
     `'${api.WRITE.cooldownLeft}'`, `'${api.WRITE.textEdit}'`, `'${api.WRITE.loading}'`,
   ];
