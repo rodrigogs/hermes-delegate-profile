@@ -876,10 +876,10 @@ def _route_task(
 _SHADOW_MAX_FALLTHROUGH_RATE = 0.20
 
 try:
-    from .router.durable_decision_log import DurableDecisionLog, read_entries
+    from .router.durable_decision_log import DurableDecisionLog, attempts_path, read_entries
     from .router.decision_log import DecisionLog, plan_head_of
 except ImportError:  # pragma: no cover - flat layout used by the test harness
-    from router.durable_decision_log import DurableDecisionLog, read_entries
+    from router.durable_decision_log import DurableDecisionLog, attempts_path, read_entries
     from router.decision_log import DecisionLog, plan_head_of
 
 
@@ -913,10 +913,14 @@ class _KanbanShadowLog(DurableDecisionLog):
         allowed_profile: Optional[str] = None,
         *,
         live: bool = False,
+        task_id: str = "",
+        run_id: Optional[int] = None,
     ) -> None:
         super().__init__()
         self._allowed_profile = allowed_profile
         self._live = live
+        self._task_id = task_id
+        self._run_id = run_id
 
     def record(
         self,
@@ -938,6 +942,10 @@ class _KanbanShadowLog(DurableDecisionLog):
         )
         entry = self._entries[-1]
         entry["shadow"] = not self._live
+        if self._task_id:
+            entry["task_id"] = self._task_id
+        if self._run_id is not None:
+            entry["run_id"] = self._run_id
         self._persist(entry)
 
 
@@ -1095,7 +1103,14 @@ def _on_pre_kanban_dispatch(
             from router.blocklist import Blocklist
 
         blocklist = Blocklist(config)
-        log = _KanbanShadowLog(allowed_profile=assignee, live=live)
+        # The worker has profile-scoped HERMES_HOME and does not load this
+        # plugin. Publish our canonical file path through the dispatcher env
+        # before it spawns, so core's executor journal and this durable reader
+        # converge without core importing plugin code.
+        os.environ["HERMES_ROUTE_ATTEMPTS_FILE"] = str(attempts_path())
+        log = _KanbanShadowLog(
+            allowed_profile=assignee, live=live, task_id=task_id, run_id=run_id,
+        )
         decision = route(
             task=goal,
             config=config,

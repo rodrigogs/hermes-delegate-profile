@@ -100,6 +100,56 @@ VALID_CAUSES: set[str] = {
 # rotated, so one pathological chain must not evict everybody else's traces.
 MAX_REJECTED_ENTRIES = 8
 
+# Executor outcome records are a separate append-only journal joined to a
+# decision by durable_decision_log. ``attempts`` is OPTIONAL on a decision:
+# absent means it predates executor instrumentation — a reader must say "não
+# instrumentado", never invent "zero tentativas". An explicit [] is different:
+# the current executor was present and walked no backend.
+_ATTEMPT_OUTCOMES = frozenset({"served", "failed", "skipped"})
+
+
+def attempts_of(entry: Any) -> Optional[List[Dict[str, Any]]]:
+    """Validated attempt records, [] for an instrumented empty run, or None old.
+
+    A bad individual journal row cannot hide the valid rows around it: skip only
+    that row. ``served``/``failed``/``skipped`` have mutually exclusive error
+    contracts, so consumers never infer a failure from a stray error payload.
+    """
+    if not isinstance(entry, dict) or "attempts" not in entry:
+        return None
+    raw = entry.get("attempts")
+    if not isinstance(raw, list):
+        return None
+    valid: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        n = item.get("n")
+        duration = item.get("duration_ms")
+        started = item.get("started_at")
+        outcome = item.get("outcome")
+        if (
+            not isinstance(n, int) or isinstance(n, bool) or n < 1
+            or not isinstance(duration, int) or isinstance(duration, bool) or duration < 0
+            or not isinstance(started, (int, float)) or isinstance(started, bool)
+            or not isinstance(item.get("model"), str) or not isinstance(item.get("provider"), str)
+            or outcome not in _ATTEMPT_OUTCOMES
+        ):
+            continue
+        record = {
+            "n": n, "model": item["model"], "provider": item["provider"],
+            "started_at": float(started), "duration_ms": duration, "outcome": outcome,
+        }
+        error = item.get("error")
+        if outcome == "failed":
+            if not isinstance(error, dict) or not isinstance(error.get("code"), str) or not isinstance(error.get("message"), str):
+                continue
+            record["error"] = {"code": error["code"], "message": error["message"]}
+        elif error is not None:
+            continue
+        valid.append(record)
+    return sorted(valid, key=lambda record: record["n"])
+
 # The persisted chain-plan keys: rules.plan_chain()'s return shape plus the
 # truncation counter added here. Built by a factory, never a shared constant —
 # the values are mutable and callers are free to mutate what they get back.

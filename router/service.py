@@ -2340,7 +2340,11 @@ class RouterService:
                     file_entries.append(obj)
             # Prepend older files so the combined list stays oldest→newest.
             collected = file_entries + collected
-        return collected
+        try:
+            from .durable_decision_log import merge_attempts
+        except ImportError:  # pragma: no cover - flat layout used by test harness
+            from router.durable_decision_log import merge_attempts
+        return merge_attempts(collected)
 
     def routes(self, limit: int = 50) -> Dict[str, Any]:
         """Return a compact list of recent routes, most recent first.

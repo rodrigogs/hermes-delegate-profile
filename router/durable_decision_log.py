@@ -42,7 +42,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .decision_log import DecisionLog, chain_plan_of
+from .decision_log import DecisionLog, attempts_of, chain_plan_of
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,50 @@ def routes_path() -> Path:
     if home.parent.name == "profiles":
         home = home.parent.parent
     return home / "hermes-smart-router" / "state" / "routes.jsonl"
+
+
+def attempts_path() -> Path:
+    """Executor journal beside the route trace; one state authority per run."""
+    return routes_path().with_name("attempts.jsonl")
+
+
+def merge_attempts(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return copies of decision entries joined with executor outcomes.
+
+    Old decisions remain key-absent. A journal row must match both ``task_id``
+    and the dispatch run where that id is available: task ids are reused when a
+    card is re-run, and attaching a prior retry's failure to today's decision
+    is a more dangerous lie than showing it as not instrumented.
+    """
+    try:
+        raw = attempts_path().read_bytes().splitlines()
+    except OSError:
+        return [dict(entry) for entry in entries]
+    by_key: Dict[tuple[str, object], List[Dict[str, Any]]] = {}
+    for line in raw:
+        try:
+            row = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(row, dict) or row.get("schema") != "route-attempts/1":
+            continue
+        task_id = row.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            continue
+        by_key.setdefault((task_id, row.get("run_id")), []).append(row)
+    merged: List[Dict[str, Any]] = []
+    for entry in entries:
+        copy = dict(entry)
+        task_id = copy.get("task_id")
+        run_id = copy.get("run_id")
+        if isinstance(task_id, str) and task_id:
+            records = by_key.get((task_id, run_id), [])
+            if records:
+                copy["attempts"] = records
+                # Normalize at the boundary, not in every surface.
+                copy["attempts"] = attempts_of(copy) or []
+        merged.append(copy)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +196,7 @@ def read_entries(limit: Optional[int] = None) -> List[Dict[str, Any]]:
                 file_entries.append(obj)
         # Older files come first so the combined list stays oldest→newest.
         collected = file_entries + collected
+    collected = merge_attempts(collected)
     if limit is not None:
         try:
             n = int(limit)
