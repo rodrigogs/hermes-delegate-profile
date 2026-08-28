@@ -12533,3 +12533,158 @@ test('doApply sends the DRAFT as the /apply changes, so a null removal actually 
   assert.deepEqual(plain(applyBody.policy), { price_windows: { 'glm-5.3': null } },
     'the removal travels as the CHANGE (null), not as the merged plan.policy — re-merging the merged result would leave the key on disk');
 });
+
+// ── the breaker's numbers, on the row they explain (card t_376a14ac) ─────────
+// `GET /blocklist` publishes `auto_breaker`: the threshold, the sliding window and
+// what each failure kind weighs. Without them a cooldown row's `failure_count: 3`
+// is a number the operator has to read the source to interpret — 3 is one
+// ttfb_stall (weight 3) away from tripping, or three nonzero_exits (weight 1) that
+// would need five. Opposite diagnoses, same digit on screen.
+
+test('a cooldown row says how it opened, against the threshold that opened it', () => {
+  const { api } = loadConsole();
+  const policy = {
+    threshold: 5, window_seconds: 600,
+    failure_weights: { ttfb_stall: 3, nonzero_exit: 1 },
+  };
+  const notes = plain(api.breakerNotes(
+    { model_key: 'deepseek-v4-pro', failure_count: 3, last_failure_kind: 'ttfb_stall' },
+    policy,
+  ));
+  assert.deepEqual(notes, ['3 de 5 em 10 min', 'ttfb_stall pesa 3']);
+});
+
+test('the failure kind is named ONCE — with its weight, or bare, never twice', () => {
+  const { api } = loadConsole();
+  // §2, one authority per fact. The kind used to be this row's only note; it now
+  // carries the weight beside it, and a second note repeating the kind would be
+  // the same fact from two places.
+  const withWeight = plain(api.breakerNotes(
+    { failure_count: 2, last_failure_kind: 'idle_stall' },
+    { threshold: 5, window_seconds: 600, failure_weights: { idle_stall: 2 } },
+  ));
+  assert.deepEqual(withWeight, ['2 de 5 em 10 min', 'idle_stall pesa 2']);
+  assert.equal(withWeight.filter((n) => n.includes('idle_stall')).length, 1);
+
+  // A kind the served table does not price: the kind still shows, bare. Inventing
+  // a weight here would be inventing the criterion.
+  const unknownKind = plain(api.breakerNotes(
+    { failure_count: 2, last_failure_kind: 'kind_nobody_declared' },
+    { threshold: 5, window_seconds: 600, failure_weights: { idle_stall: 2 } },
+  ));
+  assert.deepEqual(unknownKind, ['2 de 5 em 10 min', 'kind_nobody_declared']);
+});
+
+test('an older sidecar that serves no policy still renders the row it always did', () => {
+  const { api } = loadConsole();
+  // The route gained `auto_breaker` on this branch. A console pointed at a sidecar
+  // without it must not go blank and must not print "undefined de undefined": the
+  // pre-existing note (the bare kind) is what it always showed.
+  assert.deepEqual(plain(api.breakerNotes(
+    { failure_count: 3, last_failure_kind: 'ttfb_stall' }, {})),
+    ['ttfb_stall']);
+  assert.deepEqual(plain(api.breakerNotes(
+    { failure_count: 3, last_failure_kind: 'ttfb_stall' }, null)),
+    ['ttfb_stall']);
+  // And with neither policy nor kind there is nothing to say — no line, per
+  // DESIGN.md rule 1, rather than an empty phrase.
+  assert.deepEqual(plain(api.breakerNotes({}, {})), []);
+  assert.deepEqual(plain(api.breakerNotes(null, null)), []);
+});
+
+test('the score needs all three numbers, or it is not said at all', () => {
+  const { api } = loadConsole();
+  // "3 de 5" with no window is a rate with no period, and a period the route did
+  // not serve must not be guessed. Each of the three missing in turn.
+  const base = { failure_count: 3, last_failure_kind: 'crash' };
+  const full = { threshold: 5, window_seconds: 600, failure_weights: { crash: 1 } };
+  assert.match(plain(api.breakerNotes(base, full))[0], /^3 de 5 em/);
+  for (const missing of ['threshold', 'window_seconds']) {
+    const partial = Object.assign({}, full);
+    delete partial[missing];
+    const notes = plain(api.breakerNotes(base, partial));
+    assert.equal(notes.length, 1, `sem ${missing} a frase do placar não sai`);
+    assert.doesNotMatch(notes[0], /de 5/);
+  }
+  // No count on the entry: same refusal, from the other side.
+  const noCount = plain(api.breakerNotes({ last_failure_kind: 'crash' }, full));
+  assert.deepEqual(noCount, ['crash pesa 1']);
+});
+
+test('the window is said in minutes only when it really is whole minutes', () => {
+  const { api } = loadConsole();
+  assert.equal(api.breakerWindowWords(600), '10 min');
+  assert.equal(api.breakerWindowWords(120), '2 min');
+  assert.equal(api.breakerWindowWords(60), '1 min');
+  // 90s is not "1min30": that is a unit nobody configured, and the seconds are
+  // what the operator typed.
+  assert.equal(api.breakerWindowWords(90), '90s');
+  assert.equal(api.breakerWindowWords(45), '45s');
+  // Nothing to say beats a wrong period.
+  for (const bad of [0, -60, null, undefined, 'dez', NaN]) {
+    assert.equal(api.breakerWindowWords(bad), null, String(bad));
+  }
+});
+
+test('the numbers reach the cooldown row the sheet really draws', () => {
+  const { api, dom } = loadConsole();
+  // Through renderBans, not through the pure function: a helper nothing calls is
+  // the shape this card is about.
+  api.state.blocklist = {
+    manual_bans: [],
+    fallback_chain: [],
+    breaker_cooldowns: [{
+      model_key: 'deepseek-v4-pro', cooldown_remaining_s: 300,
+      failure_count: 4, last_failure_kind: 'ttfb_stall',
+    }],
+    auto_breaker: {
+      threshold: 5, window_seconds: 600,
+      failure_weights: { ttfb_stall: 3 },
+    },
+  };
+  // Driven through renderHealth, which is what calls renderBans in production: a
+  // helper reached only by a test is the shape this card is about.
+  api.state.policy = { rules: [], tiers: {} };
+  api.state.liveness = { models: [] };
+  api.renderHealth();
+  const text = findAll(dom.get('bans'), 'row-note').map((n) => n.textContent);
+  assert.ok(text.includes('4 de 5 em 10 min'), `o placar está na linha: ${text}`);
+  assert.ok(text.includes('ttfb_stall pesa 3'), `o peso está na linha: ${text}`);
+  // The row still says the time it always said.
+  const values = findAll(dom.get('bans'), 'row-value').map((n) => n.textContent);
+  assert.ok(values.includes('faltam 300s'), values.join(' | '));
+});
+
+test('every phrase these notes say lives in the WRITE map, once', () => {
+  // §4.7: the map is the single copy of every phrase the screen says. Two of them
+  // are new; a literal built inline here is how one drifts from the other.
+  const source = fs.readFileSync(sourcePath, 'utf8');
+  for (const phrase of ['{N} de {MAX} em {WIN}', '{KIND} pesa {W}']) {
+    const hits = source.split(phrase).length - 1;
+    assert.equal(hits, 1, `${phrase} deve aparecer exatamente uma vez, no mapa`);
+  }
+  // ...and it has to be USED from the map. Counting the literal alone was not
+  // enough: a mutation that inlined `${count} de ${max} em ${win}` left the map
+  // entry sitting there dead, the literal still appearing exactly once, and this
+  // test green. What forbids the second copy is the REFERENCE.
+  for (const key of ['WRITE.breakerScore', 'WRITE.breakerWeight']) {
+    assert.ok(source.includes(`fill(${key}`),
+      `${key} deve ser lido do mapa por fill(), não recopiado inline`);
+  }
+});
+
+test('no two functions in this file share a name', () => {
+  // Found the hard way on this card: a new `windowWords(seconds)` silently
+  // overwrote the pricing `windowWords(windows, when)` — same scope, later
+  // declaration wins, no error anywhere. Three pricing tests failed and named a
+  // price phrase, which points at the wrong file. Nothing here forbade it, so
+  // this does.
+  const script = fs.readFileSync(sourcePath, 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
+  const names = [...script.matchAll(/^\s*function ([A-Za-z_$][\w$]*)\s*\(/gm)]
+    .map((m) => m[1]);
+  const seen = new Map();
+  names.forEach((n) => seen.set(n, (seen.get(n) || 0) + 1));
+  const dupes = [...seen.entries()].filter(([, n]) => n > 1);
+  assert.deepEqual(dupes, [], `nomes declarados duas vezes: ${JSON.stringify(dupes)}`);
+  assert.ok(names.length > 50, `o scanner precisa achar as funções, achou ${names.length}`);
+});

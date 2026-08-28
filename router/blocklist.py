@@ -193,6 +193,16 @@ class Blocklist:
             return []
         return self._breaker.blocked_entries(time.time())
 
+    def breaker_policy(self) -> Dict[str, Any]:
+        """The breaker's effective thresholds and failure weights.
+
+        Delegated rather than assembled here: the numbers in force live on the
+        BreakerState that `record` consults, and `_load_state` REBUILDS that object
+        from the persisted file — so reading them off anything else would be reading
+        a copy that a state load can silently replace.
+        """
+        return self._breaker.policy()
+
     def breaker_state_dict(self) -> Dict[str, Any]:
         """Return full breaker state dict (for serialization)."""
         return self._breaker.to_dict()
