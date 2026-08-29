@@ -95,6 +95,14 @@ function fakeDom() {
       select() {},
       setSelectionRange(a, b) { node.selectionStart = a; node.selectionEnd = b; },
     };
+    Object.defineProperty(node, 'id', {
+      get: () => id,
+      set(next) {
+        nodes.delete(id);
+        id = String(next);
+        nodes.set(id, node);
+      },
+    });
     Object.defineProperty(node, 'firstChild', { get: () => node.children[0] || null });
     Object.defineProperty(node, 'outerHTML', { get: () => outerHtml(node) });
     return node;
@@ -123,7 +131,7 @@ function fakeDom() {
   };
 }
 
-function loadConsole({ width = 1440, embedded = false, csrfToken, fetch: fetchStub, dom: domIn, keepWire = false, navigator: navIn } = {}) {
+function loadConsole({ width = 1440, embedded = false, csrfToken, fetch: fetchStub, dom: domIn, keepWire = false, navigator: navIn, timers } = {}) {
   const html = fs.readFileSync(sourcePath, 'utf8');
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1]
     // Skip the init calls that need a live browser; keep everything else intact.
@@ -140,7 +148,10 @@ function loadConsole({ width = 1440, embedded = false, csrfToken, fetch: fetchSt
   const context = {
     console, window: win, document: dom.document, globalThis: {},
     fetch: fetchStub || (() => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') })),
-    setTimeout() {}, Math, JSON, Number, Object, Array, String, Set, Map, Date, encodeURIComponent,
+    setTimeout() {},
+    setInterval: timers ? timers.setInterval : undefined,
+    clearInterval: timers ? timers.clearInterval : undefined,
+    Math, JSON, Number, Object, Array, String, Set, Map, Date, encodeURIComponent,
     // Card t_3ba979a1: Copiar reads navigator.clipboard. The default stub has
     // no clipboard, so the fallback path is what runs; a test injects a
     // clipboard stub to pin the happy path.
@@ -419,15 +430,17 @@ test('the rail carries each destination\'s live state', () => {
   api.renderRail();
 
   // The Tarefas count is GONE: the sheet's numbered rule list is its own counter.
-  assert.equal(dom.get('countTarefas').hidden, true,
-    'tarefas shows no count — the numbered list is the counter');
-  assert.equal(dom.get('countDecisoes').textContent, '2', 'decisões counts recorded decisions');
+  assert.equal(dom.get('stateTarefas').children.length, 1,
+    'tarefas keeps only its meaningful policy state');
+  assert.equal(dom.get('stateTarefas').children[0].children.length, 1,
+    'tarefas draws a dot but no duplicate count');
+  assert.equal(dom.get('stateDecisoes').children[0].children[0].textContent, '2', 'decisões counts recorded decisions');
   // The Modelos badge counts EXCEPTIONS, not elos: two models with no bans or
-  // breaker cooldowns show nothing, not "2".
-  assert.equal(dom.get('countModelos').hidden, true,
+  // breaker cooldowns show only the degraded state, not "2".
+  assert.equal(dom.get('stateModelos').children[0].children.length, 1,
     'no exceptions → no modelos count, however many elos');
   // One degraded target must surface, not be averaged into "fine".
-  assert.match(dom.get('stateModelos').className, /is-degraded/);
+  assert.match(dom.get('stateModelos').children[0].className, /is-degraded/);
 });
 
 test('the health badge counts bans and breaker cooldowns, in amber', () => {
@@ -439,18 +452,16 @@ test('the health badge counts bans and breaker cooldowns, in amber', () => {
     breaker_cooldowns: [{ model_key: 'deepseek-v4-pro', cooldown_remaining_s: 300 }],
   };
   api.renderRail();
-  // The badge is bans + breakers, NOT elos — the review's 8→1 was the badge
-  // counting inventory and the inventory shrinking at the moment of the problem.
-  assert.equal(dom.get('countModelos').textContent, '2', 'bans + breakers, not elos');
-  assert.equal(dom.get('countModelos').hidden, false);
-  assert.equal(dom.get('countModelos').classList.contains('is-warn'), true,
+  const warningCount = dom.get('stateModelos').children[0].children[0];
+  assert.equal(warningCount.textContent, '2', 'bans + breakers, not elos');
+  assert.match(warningCount.className, /is-warn/,
     'an exception count wears amber, the attention colour');
 
-  // Exceptions cleared → hidden again (zero is not drawn, §2.1).
+  // Exceptions cleared → the count node is removed entirely (zero is not drawn, §2.1).
   api.state.blocklist = { manual_bans: [], breaker_cooldowns: [] };
   api.renderRail();
-  assert.equal(dom.get('countModelos').hidden, true);
-  assert.equal(dom.get('countModelos').classList.contains('is-warn'), false);
+  assert.equal(dom.get('stateModelos').children[0].children.length, 1);
+  assert.equal(dom.get('stateModelos').children[0].children[0].className, 'dot');
 });
 
 test('the rail survives being rendered before any data arrives', () => {
@@ -458,7 +469,7 @@ test('the rail survives being rendered before any data arrives', () => {
   // The rail is rendered at boot, before the first poll. An unguarded read
   // here kills the whole IIFE and the operator gets a blank page.
   assert.doesNotThrow(() => api.renderRail());
-  assert.equal(dom.get('countTarefas').hidden, true, 'no policy yet → no count shown');
+  assert.equal(dom.get('stateTarefas').children.length, 0, 'no policy yet → no state node is drawn');
 });
 
 test('the header reports three ages, and a stale sidecar says so', () => {
@@ -631,10 +642,9 @@ test('an open editor does not report the router as degraded', () => {
   api.state.policy = { rules: [{ id: 'r1' }] };
   api.state.status = { validation_errors: [] };
 
-  // renderRail assigns className outright rather than touching classList, so the
-  // string is what has to be read — asserting through the stub's classList would
-  // silently pass no matter what the console did.
-  const tarefasState = () => dom.get('stateTarefas').className;
+  // The generated state node is absent when there is nothing to say; its class
+  // is the observable condition when policy data exists.
+  const tarefasState = () => dom.get('stateTarefas').children[0]?.className || '';
 
   api.renderInspector({ id: 'rule:r1', name: 'r1', bind: 'rule', ruleIndex: 0 });
   api.renderRail();
@@ -1401,26 +1411,25 @@ test("a decision row's age is priced off the pinned clock, not the machine", () 
     'the age comes from the injected clock — identical text whatever hour the suite runs at');
 });
 
-test('on Decisões the price strip shows the selected decision hour, not now', () => {
-  // The chain plan already prices a replay at recordedAt (planWhen); the strip
-  // above the screens kept reporting NOW over a selected decision, so the rails
-  // described the wrong hour for the decision being inspected.
+test('Decisões keeps a selected decision hour in its own replay, not in the global clock', () => {
+  // A replay is historical. The global price band is deliberately absent here so
+  // it cannot claim a current cost alongside the decision's recorded instant.
   const { api, dom } = loadConsole();
-  api.state.clock = PEAK;                  // now is 07:14 UTC, four hours later
+  api.state.clock = PEAK;
   api.state.tab = 'decisoes';
   api.state.replay = {
     id: 'r1', at: 0, steps: [], plan: null,
-    recordedAt: new Date(TRACE_AT * 1000), // 03:20 UTC
+    recordedAt: new Date(TRACE_AT * 1000),
   };
   api.renderClock();
-  assert.equal(dom.get('clockNow').textContent, '03:20 UTC');
-  assert.match(dom.get('clockLocal').textContent, /hora da decisão/,
-    'the repriced hour is named, with its source');
-  // Leaving Decisões hands the strip back to the present.
+  assert.equal(dom.get('clockbar').hidden, true);
+  assert.equal(dom.get('clockNow').textContent, '');
+
+  // Moving back to a time-aware screen restores the live present clock.
   api.state.tab = 'modelos';
   api.renderClock();
+  assert.equal(dom.get('clockbar').hidden, false);
   assert.equal(dom.get('clockNow').textContent, '07:14 UTC');
-  assert.doesNotMatch(dom.get('clockLocal').textContent, /hora da decisão/);
 });
 
 test('a model the current policy cannot dispatch is marked, naming the source', () => {
@@ -5701,6 +5710,71 @@ test('the pricing clock names the hour in both zones and the rails in a window',
   const xiaomi = night.find((row) => /xiaomi/.test(flat(row)));
   assert.match(flat(xiaomi), /0\.8× em hora barata/);
   assert.doesNotMatch(xiaomi.className, /peak/);
+});
+
+test('the pricing clock exists only on tabs whose visible fact changes with time', () => {
+  const { api, dom } = loadConsole();
+  api.state.clock = PEAK;
+  const shown = ['tarefas', 'simular', 'modelos', 'precos'];
+  const hidden = ['politica', 'decisoes'];
+
+  for (const tab of shown) {
+    api.state.tab = tab;
+    api.renderClock();
+    assert.equal(dom.get('clockbar').hidden, false, `${tab} needs the current price fact`);
+  }
+  for (const tab of hidden) {
+    api.state.tab = tab;
+    api.renderClock();
+    assert.equal(dom.get('clockbar').hidden, true, `${tab} must not repeat a fact it does not use`);
+  }
+});
+
+test('leaving a time-aware tab stops the pricing-clock timer and a stale tick cannot repaint it', () => {
+  const scheduled = [];
+  const cleared = [];
+  const timers = {
+    setInterval(fn, ms) { scheduled.push({ fn, ms }); return scheduled.length; },
+    clearInterval(id) { cleared.push(id); },
+  };
+  const dom = fakeDom();
+  tabWire(dom);
+  const { api } = loadConsole({ dom, keepWire: true, timers });
+  api.state.clock = PEAK;
+  api.selectTab('tarefas');
+  assert.equal(scheduled.filter(({ ms }) => ms === 60000).length, 2,
+    'one minute timer updates the clock and one separately watches status');
+
+  api.selectTab('politica');
+  assert.deepEqual(cleared, [1], 'only the clock timer stops; the status watcher remains alive');
+  dom.get('clockNow').textContent = 'não repintar';
+  scheduled[0].fn();
+  assert.equal(dom.get('clockNow').textContent, 'não repintar',
+    'a queued tick after the tab switch cannot redraw an absent clock');
+});
+
+test('tab state is rendered only when the tab has a state, in a fixed reservation beside its label', () => {
+  const { api, dom } = loadConsole();
+  api.state.policy = { rules: [], default: {}, tiers: {} };
+  api.renderRail();
+
+  assert.equal(dom.get('stateSimular').children.length, 0);
+  assert.equal(dom.get('statePrecos').children.length, 0);
+  assert.equal(dom.get('statePolitica').children.length, 0);
+  assert.equal(dom.get('stateTarefas').children[0].className, 'tab-state is-alive');
+
+  const src = fs.readFileSync(sourcePath, 'utf8');
+  assert.match(src, /\.tab-state-slot \{[^}]*width: 32px/, 'the fixed slot reserves the label width');
+  assert.doesNotMatch(src, /<span class="tab-state"/, 'an empty tab never ships a muted dot in its DOM');
+});
+
+test('the first panel group uses the same 34px step on every tab', () => {
+  const src = fs.readFileSync(sourcePath, 'utf8');
+  assert.match(src, /\.clockbar \{[^}]*margin-bottom: 16px/, 'the existing clock-to-panel step remains 30–38px');
+  assert.match(src, /#panel-politica > \.group:first-child \{ margin-top: 0; \}/,
+    'the policy editor does not add its own group margin after the clock slot disappears');
+  assert.match(src, /\.price-section \{ margin-top: 0; \}/,
+    'prices does not add 18px to the shared top step');
 });
 
 test('the tier chains show a cheapest_now order as time-relative, with the prices', () => {

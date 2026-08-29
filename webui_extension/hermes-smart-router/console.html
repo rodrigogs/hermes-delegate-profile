@@ -288,6 +288,7 @@
       content: ""; position: absolute; bottom: -1px; left: 50%; transform: translateX(-50%);
       width: 20px; height: 2px; border-radius: 2px 2px 0 0; background: var(--accent);
     }
+    .tab-state-slot { display: inline-flex; align-items: center; justify-content: flex-end; width: 32px; }
     .tab-state { display: inline-flex; align-items: center; gap: 6px; }
     .count { color: var(--muted); font: 500 var(--t-label) var(--mono); }
     /* A count that names an EXCEPTION wears amber — the condition colour that
@@ -1550,7 +1551,8 @@
        the invariant list forbids the svg element, and a 24-cell strip is a
        grid, not a chart. The type voice is the contract's own scale
        (--t-micro/--t-meta/--t-name), declared in :root beside the host ladder. */
-    .price-section { margin-top: 18px; }
+    .price-section { margin-top: 0; }
+    #panel-politica > .group:first-child { margin-top: 0; }
     .price-box { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 15px; }
     .price-group { padding: 9px 0; border-bottom: 1px solid var(--line); }
     .price-group:first-child { padding-top: 0; }
@@ -1701,27 +1703,27 @@
   <nav class="tabs" role="tablist" aria-label="Seções da tela">
     <button class="tab" id="tab-tarefas" role="tab" aria-selected="true" aria-controls="panel-tarefas" data-tab="tarefas" type="button">
       <span class="tab-name">Tarefas</span>
-      <span class="tab-state" id="stateTarefas"><span class="count" id="countTarefas" hidden></span><span class="dot"></span></span>
+      <span class="tab-state-slot" id="stateTarefas"></span>
     </button>
     <button class="tab" id="tab-simular" role="tab" aria-selected="false" aria-controls="panel-simular" data-tab="simular" type="button">
       <span class="tab-name">Simular</span>
-      <span class="tab-state" id="stateSimular"><span class="count" id="countSimular" hidden></span><span class="dot"></span></span>
+      <span class="tab-state-slot" id="stateSimular"></span>
     </button>
     <button class="tab" id="tab-modelos" role="tab" aria-selected="false" aria-controls="panel-modelos" data-tab="modelos" type="button">
       <span class="tab-name">Modelos</span>
-      <span class="tab-state" id="stateModelos"><span class="count" id="countModelos" hidden></span><span class="dot"></span></span>
+      <span class="tab-state-slot" id="stateModelos"></span>
     </button>
     <button class="tab" id="tab-precos" role="tab" aria-selected="false" aria-controls="panel-precos" data-tab="precos" type="button">
       <span class="tab-name">Preços</span>
-      <span class="tab-state" id="statePrecos"><span class="count" id="countPrecos" hidden></span><span class="dot"></span></span>
+      <span class="tab-state-slot" id="statePrecos"></span>
     </button>
     <button class="tab" id="tab-decisoes" role="tab" aria-selected="false" aria-controls="panel-decisoes" data-tab="decisoes" type="button">
       <span class="tab-name">Decisões</span>
-      <span class="tab-state" id="stateDecisoes"><span class="count" id="countDecisoes" hidden></span><span class="dot"></span></span>
+      <span class="tab-state-slot" id="stateDecisoes"></span>
     </button>
     <button class="tab" id="tab-politica" role="tab" aria-selected="false" aria-controls="panel-politica" data-tab="politica" type="button">
       <span class="tab-name">Política</span>
-      <span class="tab-state" id="statePolitica"><span class="count" id="countPolitica" hidden></span><span class="dot"></span></span>
+      <span class="tab-state-slot" id="statePolitica"></span>
     </button>
   </nav>
 
@@ -3557,18 +3559,17 @@
 
         const set = (wrapId, countId, cls, count, warn = false) => {
           const wrap = $(wrapId);
-          if (wrap) wrap.className = `tab-state${cls ? ` is-${cls}` : ''}`;
-          const badge = $(countId);
-          if (badge) {
-            badge.textContent = String(count);
-            badge.hidden = !count;
-            // A count that names an EXCEPTION wears amber (the .is-warn rule in
-            // the style block); a count that merely counts stays muted. Amber
-            // tracks the exceptions themselves: when they clear, the class goes
-            // with them, so a hidden badge never carries a stale attention hue.
-            if (warn && count) badge.classList.add('is-warn');
-            else badge.classList.remove('is-warn');
+          if (!wrap) return;
+          clear(wrap);
+          if (!cls && !count) return;
+          const stateMark = el('span', `tab-state${cls ? ` is-${cls}` : ''}`);
+          if (count) {
+            const badge = el('span', `count${warn ? ' is-warn' : ''}`, String(count));
+            badge.id = countId;
+            stateMark.append(badge);
           }
+          if (cls) stateMark.append(el('span', 'dot'));
+          wrap.append(stateMark);
         };
         const cannotRead = state.unreachable || Object.keys(state.readFailures).length > 0;
         const health = cannotRead ? 'dead' : (models.length ? worstOf(models) : '');
@@ -3723,14 +3724,29 @@
       }
 
       // ── the pricing clock ───────────────────────────────────────────
-      // One persistent line, on every screen: what hour it is and which rails are
-      // expensive at it. It is persistent because the hour is not a screen's
-      // subject — it changes what every screen means, and an operator who opens
-      // the console at 06:30 UTC to ask why a task went to the subscription rail
-      // has to be able to see the answer without probing anything.
+      // A wall-clock fact earns space only where it changes the selected screen's
+      // answer. Política edits the file and Decisões reads recorded history, so
+      // either copy would create a second authority for a fact those screens do
+      // not use.
+      function clockVisibleForTab(tab) {
+        return tab === 'tarefas' || tab === 'simular' || tab === 'modelos' || tab === 'precos';
+      }
+      let clockTimer = null;
+      function syncClockTimer() {
+        if (clockVisibleForTab(state.tab)) {
+          if (clockTimer === null && typeof setInterval === 'function') clockTimer = setInterval(renderClock, 60000);
+          return;
+        }
+        if (clockTimer !== null && typeof clearInterval === 'function') clearInterval(clockTimer);
+        clockTimer = null;
+      }
       function renderClock() {
         const bar = $('clockbar');
         if (!bar) return;
+        if (!clockVisibleForTab(state.tab)) {
+          bar.hidden = true;
+          return;
+        }
         // On Routes a SELECTED decision is the subject, and the strip must price
         // the hour that decision happened — the same rule the chain plan already
         // follows (recordedAt beats the browser clock). Everywhere else the
@@ -11434,8 +11450,9 @@
         });
         document.querySelectorAll('.screen')
           .forEach((s) => s.classList.toggle('active', s.id === `panel-${name}`));
-        // The clock strip prices the selected decision's hour ONLY on Decisões;
-        // leaving Decisões hands the strip back to the present.
+        // The pricing clock exists only where the selected answer changes with
+        // the current hour; switching away tears down its minute repaint.
+        syncClockTimer();
         renderClock();
       }
 
@@ -11581,12 +11598,9 @@
         const setScope = (scope) => { state.scope = scope; renderRoutes(); };
         $('scopeAll').addEventListener('click', () => setScope('all'));
         $('scopeOffRule').addEventListener('click', () => setScope('off-rule'));
-        // The clock line has to stay true without a refresh: a window that opened
-        // five minutes ago while the console sat open is exactly the case it exists
-        // for. One minute is fine — every boundary it reports is on the hour — and
-        // it repaints two spans and three list items, nothing else. Guarded because
-        // a headless harness need not provide timers.
-        if (typeof setInterval === 'function') setInterval(renderClock, 60000);
+        // The price fact is live only while the selected screen uses it. The
+        // timer is created and torn down by syncClockTimer on every tab switch.
+        syncClockTimer();
         // ── the quiet /status cycle ─────────────────────────────────────
         // One quiet read per minute keeps the restart banner honest on a
         // panel left open for hours — the case this card exists for. Same
@@ -11627,6 +11641,7 @@
         // rather than eyeballed: wire() needs a live browser, so the key itself is
         // checked statically and the behaviour is driven through here.
         closeRow,
+        clockVisibleForTab, syncClockTimer, renderClock,
         showLintTarget, selectTab, lintErrors, lintTargets, findRuleRow, shadowTargetFor,
         // The pure shadow detector (the clause that proves a rule never
         // decides) and its two readers: the row's EARLIEST provable shadower
