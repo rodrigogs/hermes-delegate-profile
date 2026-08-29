@@ -21,12 +21,43 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 const sourcePath = 'webui_extension/hermes-smart-router/console.html';
 
+function escapedHtml(value, attribute = false) {
+  const text = String(value);
+  return text.replace(attribute ? /[&"<]/g : /[&<>]/g, (char) => ({
+    '&': '&amp;', '"': '&quot;', '<': '&lt;', '>': '&gt;',
+  }[char]));
+}
+
+function outerHtml(node) {
+  const tag = node.tagName || 'div';
+  const classes = [...new Set([
+    ...String(node.className || '').split(/\s+/).filter(Boolean),
+    ...node.classList._set,
+  ])];
+  const attrs = [];
+  if (node._realId) attrs.push(`id="${escapedHtml(node.id, true)}"`);
+  if (classes.length) attrs.push(`class="${escapedHtml(classes.join(' '), true)}"`);
+  if (node.hidden) attrs.push('hidden');
+  if (node.title) attrs.push(`title="${escapedHtml(node.title, true)}"`);
+  ['type', 'tabIndex', 'htmlFor'].forEach((key) => {
+    if (node[key] !== undefined && node[key] !== '') {
+      attrs.push(`${key === 'tabIndex' ? 'tabindex' : key === 'htmlFor' ? 'for' : key}="${escapedHtml(node[key], true)}"`);
+    }
+  });
+  Object.entries(node.dataset).forEach(([key, value]) => {
+    attrs.push(`data-${key.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}="${escapedHtml(value, true)}"`);
+  });
+  Object.entries(node.attrs).forEach(([key, value]) => attrs.push(`${key}="${escapedHtml(value, true)}"`));
+  const body = `${escapedHtml(node.textContent || '')}${node.children.map(outerHtml).join('')}`;
+  return `<${tag}${attrs.length ? ` ${attrs.join(' ')}` : ''}>${body}</${tag}>`;
+}
+
 // A DOM stub good enough for the console's init path.
 function fakeDom() {
   const nodes = new Map();
   const make = (id) => {
     const node = {
-      id, className: '', textContent: '', value: '', title: '',
+      id, _realId: false, className: '', textContent: '', value: '', title: '',
       hidden: false, readOnly: false, max: '0',
       style: {}, dataset: {}, attrs: {}, children: [],
       // Listeners are recorded so a test can dispatch the exact click a user
@@ -65,9 +96,17 @@ function fakeDom() {
       setSelectionRange(a, b) { node.selectionStart = a; node.selectionEnd = b; },
     };
     Object.defineProperty(node, 'firstChild', { get: () => node.children[0] || null });
+    Object.defineProperty(node, 'outerHTML', { get: () => outerHtml(node) });
     return node;
   };
-  const get = (id) => { if (!nodes.has(id)) nodes.set(id, make(id)); return nodes.get(id); };
+  const get = (id) => {
+    if (!nodes.has(id)) {
+      const node = make(id);
+      node._realId = true;
+      nodes.set(id, node);
+    }
+    return nodes.get(id);
+  };
   return {
     nodes,
     get,
@@ -4192,6 +4231,18 @@ test('the list keeps the write surface: the band hour-click, at the hour on scre
   adds[2]._listeners.click();
   const area2 = box.children[box.children.length - 1];
   assert.match(flat(area2), /passa a custar 0,8×/, 'adding names the new price');
+});
+
+test('renderSheet keeps the #sheet outerHTML fixture byte-for-byte', () => {
+  const { api, dom } = loadConsole({ width: 851 });
+  api.state.loading = false;
+  api.state.policy = reorderPolicy();
+  const sheet = dom.get('sheet');
+  sheet.tagName = 'ol';
+  sheet.className = 'sheet';
+  api.renderSheet();
+  const expected = fs.readFileSync('tests/fixtures/render_sheet.outer.html', 'utf8');
+  assert.equal(sheet.outerHTML, expected);
 });
 
 test('ruleMode decides the sheet draw: cards at 360, grid at 851', () => {

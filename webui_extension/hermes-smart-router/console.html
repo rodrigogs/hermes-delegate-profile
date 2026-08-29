@@ -5482,6 +5482,584 @@
         // cleared per-row by the next render, so a missed one cannot persist.
       }
 
+      // The edit affordance shared by the conditions and destination cells: a
+      // value that opens an editor looks editable (dotted line, pointer) and a
+      // click opens it. It IS a button, so it says so and behaves like one:
+      // reachable in the tab order, activated by Enter and Space, announced as a
+      // control rather than as text. The element stays a div because the comp's
+      // line is text with a dotted underline and a <button> would drag its own
+      // box model in.
+      function editAffordance(node, title, action) {
+        node.classList.add('is-edit');
+        node.title = title;
+        node.setAttribute('role', 'button');
+        node.tabIndex = 0;
+        const open = (event) => {
+          if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+          action();
+        };
+        node.addEventListener('click', open);
+        node.addEventListener('keydown', (event) => {
+          // Enter and Space are what a role=button owes; Space also scrolls the
+          // panel by default, so it is the one that has to be prevented.
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          if (typeof event.preventDefault === 'function') event.preventDefault();
+          open(event);
+        });
+      }
+
+      // The row's one affordance of the no-mode sheet: a value that opens an
+      // editor looks editable (dotted line, pointer) and a click opens it —
+      // nothing on a row asks the operator to arm a mode first. The row click
+      // itself still opens the queue (comp-tarefas "Clique na linha para abrir
+      // a fila inteira"); these cells stop their own propagation on top of that.
+      const rowConditions = (what, opts, edit) => {
+        const name = el('div', 'step-name', opts.titleText || opts.id);
+        if (opts.off) name.append(el('span', 'step-off', ' (desligada)'));
+        what.append(name);
+        if (opts.chips && opts.chips.length) {
+          // Conditions are TEXT on the line now (comp-tarefas): the sheet
+          // stopped using the chip list, so one clause is never announced as
+          // a separate bullet from its neighbours — the " · " joins the
+          // sentences of ONE rule, and the row reads as a sentence.
+          const whenLine = el('div', 'step-when', opts.chips.map((chip) => chip.text).join(' · '));
+          if (opts.onPick) edit(whenLine, opts.editTitle || 'Abrir a edição desta linha', opts.onPick);
+          what.append(whenLine);
+        } else if (opts.when) {
+          const whenLine = el('div', 'step-when', opts.when);
+          if (opts.onPick) edit(whenLine, opts.editTitle || 'Abrir a edição desta linha', opts.onPick);
+          what.append(whenLine);
+        }
+        // Per-rule footnotes (§4.4): injected clock fields and unknown
+        // condition names say their consequence on the row itself.
+        (opts.notes || []).forEach((note) => what.append(el('div', 'step-when', note)));
+      };
+
+      // The destination cell (comp-tarefas "Vai para"): the bare tier chip, or
+      // the arrow + target, and the missing-group fix select. Returns the
+      // `step-to` cell and — separately, because it is appended AFTER the count
+      // column in the DOM order — the chain expansion node a tier chip reveals.
+      const rowDestination = (opts, ctx, edit) => {
+        const to = el('div', 'step-to');
+        const dest = el('div', 'step-dest');
+        let expansion = null;
+        // Hoisted out of the target branch: the first-attempt cell and the
+        // open block read the same queue the destination chip reveals.
+        const tier = opts.tierDest && ctx.tierIndex[opts.tierDest] ? ctx.tierIndex[opts.tierDest] : null;
+        const hops = tier ? tierChain(tier) : [];
+        if (opts.target) {
+          if (tier && hops.length) {
+            // The comp's tier cell is the bare "T1 · Trivial" — NO arrow
+            // (the "Vai para" head already says where it goes, and the 128px
+            // column cannot hold the arrow + gap + the chip's full label:
+            // measured 130px needed with the arrow at 14px mono).
+            const chip = el('button', 'step-target step-tier', opts.target);
+            chip.type = 'button';
+            chip.setAttribute('aria-expanded', 'false');
+            chip.title = hops.map((h) => h.model).join(' · ');
+            expansion = el('div', 'step-chain');
+            expansion.hidden = true;
+            let open = false;
+            chip.addEventListener('click', (event) => {
+              if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+              open = !open;
+              chip.setAttribute('aria-expanded', String(open));
+              if (open) {
+                clear(expansion);
+                const strategy = strategyWords(tier.fallback_strategy,
+                  { pinPrimary: declaredPin(tier.pin_primary), when: ctx.chainWhen });
+                const how = el('div', 'step-chain-note',
+                  hops.length > 1 ? strategy.label : 'uma tentativa só, nada a escolher');
+                if (strategy.note) how.append(el('span', '', ` — ${strategy.note}`));
+                expansion.append(how);
+                expansion.append(chainList(hops, {
+                  strategy, registry: ctx.state.capabilities, billing: ctx.chainBilling,
+                  when: ctx.chainWhen, live: ctx.chainLive,
+                  showPrice: strategy.timeRelative,
+                }));
+              }
+              expansion.hidden = !open;
+            });
+            dest.append(chip);
+          } else {
+            dest.append(el('span', 'step-arrow', '→'));
+            const t = el('span', 'step-target', opts.target);
+            if (opts.targetColor) t.style.color = opts.targetColor;
+            dest.append(t);
+          }
+        }
+        to.append(dest);
+        // The destination cell is the sheet's "clicar num grupo" target: a
+        // click anywhere in "Vai para" opens the rule's editor with the
+        // destination control first. The tier chip inside stops its own
+        // propagation, so expanding the chain it reveals is still its own
+        // gesture, not an edit.
+        if (opts.onPick) edit(dest, opts.editTitle || 'Abrir a edição desta linha', opts.onPick);
+        // §3.4(a): a destination naming a group the table does not have is
+        // the one row that carries its own remedy — the SAME §2.2 select,
+        // prefixed by what the operator is choosing. Choosing writes the
+        // three keys to the DRAFT (never to the read view's policy: the
+        // staleness guard in plan() compares the file against state.policy,
+        // so a mutation there would read as an external edit and refuse
+        // every save) and opens the rule's editor, where the change is
+        // visible and Salvar writes it through the normal path.
+        if (opts.destFix) {
+          const fixWrap = el('div', 'field step-dest-fix');
+          const fixSelect = destSelect(opts.destFix.then, ctx.tierIndex);
+          const fixId = fieldId();
+          fixSelect.id = fixId;
+          const fixLabel = el('label', '', 'Escolha um destino que exista:');
+          fixLabel.htmlFor = fixId;
+          fixWrap.append(fixLabel);
+          fixSelect.addEventListener('change', () => {
+            ctx.state.rowDestFix = { ruleIndex: opts.destFix.ruleIndex, value: fixSelect.value };
+            pickBind({ id: `rule:${opts.destFix.id}`, name: String(opts.destFix.id), bind: 'rule', ruleIndex: opts.destFix.ruleIndex });
+          });
+          // Opening the select must not trip the row click (the queue
+          // toggle): the row's own gesture is the line, this control is a
+          // value in it.
+          fixWrap.addEventListener('click', (event) => {
+            if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+          });
+          fixWrap.append(fixSelect);
+          to.append(fixWrap);
+        }
+        return { to, expansion, tier, hops };
+      };
+
+      // The first attempt (comp-tarefas "Primeira tentativa", 196px): the
+      // head of the queue the destination points at. A tier shows its first
+      // elo with how it is billed and on whose rail; the classifier says the
+      // decision is the call; a fixed model names itself.
+      const rowFirst = (opts, ctx, tier, hops) => {
+        const first = el('div', 'step-first');
+        if (tier && hops.length) {
+          const head = hops[0];
+          const caps = hopCaps(head, ctx.state.capabilities).caps;
+          const bill = billingBadge(head.billing_mode !== undefined ? head.billing_mode
+            : (caps.billing_mode !== undefined ? caps.billing_mode : ctx.chainBilling[String(head.model)]));
+          first.append(el('b', '', String(head.model || '—')));
+          const rail = String(caps.provider || head.provider || '');
+          first.append(el('span', '', ` ${bill.word}${rail ? ` · ${rail}` : ''}`));
+        } else if (opts.destKind === 'classify') {
+          first.append(el('b', '', 'decide na hora'));
+          first.append(el('span', 'first-note', 'custa 1 chamada extra'));
+        } else if (opts.destKind === 'fixed') {
+          first.append(el('b', '', String(opts.targetModel || '—')));
+          if (opts.targetRail) first.append(el('span', '', ` · ${opts.targetRail}`));
+        } else {
+          first.append(el('b', '', '—'));
+        }
+        return first;
+      };
+
+      // The count lives in its own column now (comp-tarefas "Uso 8d", 62px):
+      // the NUMBER, with the finding it is a verdict about in the title and in
+      // the row's open block — a zero is a FINDING only when the rule could
+      // have fired in the counted window, and a stale sheet demotes every count
+      // to a muted disclosure about the DATA. Returns the span and the words
+      // the open block reuses, so the number and the sentence agree.
+      const rowCount = (opts, period) => {
+        if (opts.hits === undefined) return { h: null, hitWords: '' };
+        const cls = opts.stale ? ' empty' : (opts.hits === 0 ? ' zero' : '');
+        const since = period ? ` ${period}` : '';
+        const hitWords = opts.stale
+          ? 'sem histórico: o registro de decisões não cobre este período'
+          : (opts.hits === 0 ? `nunca disparou${since}` : `disparou ${opts.hits}×${since}`);
+        const h = el('span', `step-hits${cls}`, opts.stale ? 'sem dados' : String(opts.hits));
+        h.title = hitWords;
+        return { h, hitWords };
+      };
+
+      // The row opened by a click (comp-tarefas: "Clique na linha para abrir a
+      // fila inteira"): the whole queue, the role the rule fixed and the rule's
+      // id. The row click owns the queue; the condition, the destination cell
+      // and the queue's own capsules stop their propagation on top of this and
+      // open the editor of the value they name.
+      const rowOpen = (item, opts, ctx, edit, tier, hops, hitWords) => {
+        const openBox = el('div', 'step-open');
+        openBox.hidden = true;
+        let open = false;
+        item.addEventListener('click', (event) => {
+          if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+          open = !open;
+          if (open) {
+            clear(openBox);
+            // fila — the whole queue, or the sentence for a destination
+            // with no queue (a refusal has nothing to try).
+            const fila = el('div', 'step-open-row');
+            fila.append(el('span', 'step-open-k', 'fila'));
+            if (tier && hops.length) {
+              const strategy = strategyWords(tier.fallback_strategy,
+                { pinPrimary: declaredPin(tier.pin_primary), when: ctx.chainWhen });
+              const body = el('div', 'step-open-chain');
+              body.append(chainList(hops, {
+                strategy, registry: ctx.state.capabilities, billing: ctx.chainBilling,
+                when: ctx.chainWhen, live: ctx.chainLive, showPrice: strategy.timeRelative,
+              }));
+              // The comp's capsule: "clique numa cápsula da fila para
+              // trocar". The hop pills are drawn by the shared chain
+              // renderer, so the click target is the chain line as a
+              // whole — the gesture opens the group's queue editor, where
+              // that hop is one ↑/↓/Remover away.
+              if (opts.tierDest) {
+                edit(body,
+                  'Clique numa cápsula para trocar essa opção da fila',
+                  () => pickBind({ id: `tier:${opts.tierDest}`, name: String(opts.tierDest), bind: 'tier', tier: opts.tierDest }));
+              }
+              fila.append(body);
+            } else {
+              fila.append(el('div', 'step-open-val', opts.queueWords || opts.target || '—'));
+            }
+            openBox.append(fila);
+            // papel — the rule's declared role; informative in this path,
+            // because the card creator picks the role at dispatch.
+            const papel = el('div', 'step-open-row');
+            papel.append(el('span', 'step-open-k', 'papel'));
+            const pval = el('div', 'step-open-val');
+            pval.append(el('span', '', opts.role || '—'));
+            pval.append(el('span', 'step-open-note', ' — informativo neste caminho: quem cria o card escolhe o papel'));
+            papel.append(pval);
+            openBox.append(papel);
+            // regra — the id, and the count column 6 summarised.
+            const regra = el('div', 'step-open-row');
+            regra.append(el('span', 'step-open-k', 'regra'));
+            regra.append(el('div', 'step-open-id', `${opts.id}${hitWords ? ` · ${hitWords}` : ''}`));
+            openBox.append(regra);
+          }
+          openBox.hidden = !open;
+        });
+        return openBox;
+      };
+
+      // The shadowed-rule fix path (§3.3): the finding names the earlier row
+      // that swallows this one, and the ONE move that resolves the class
+      // without touching `when` — jump and open its editor. The warning says
+      // WHY (the clause that proves the overlap) and offers BOTH rows as
+      // destinations under the single jump label this screen uses.
+      const rowShadow = (item, opts, rules) => {
+        if (!opts.shadow) return;
+        // A classe existe para o CSS de aviso ter em quem pegar: sem ela as três
+        // regras de `.step.shadowed` são folclore.
+        item.classList.add('shadowed');
+        const warn = el('div', 'step-when');
+        warn.append(el('span', '', shadowReasonWords(opts.shadow, rules)));
+        const own = el('button', 'btn', `Ir para a regra ${opts.shadow.later_index + 1}`);
+        own.type = 'button';
+        own.addEventListener('click', (event) => {
+          if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+          showLintTarget(opts.shadow);
+        });
+        const shadower = el('button', 'btn', `Ir para a regra ${opts.shadow.earlier_index + 1}`);
+        shadower.type = 'button';
+        shadower.addEventListener('click', (event) => {
+          if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+          // The SAME navigation, with the shadower as the target: the
+          // finding's later_* fields carry the shadower's coordinates
+          // here, so showLintTarget needs no second path.
+          showLintTarget({ later_index: opts.shadow.earlier_index, later_id: opts.shadow.earlier_id });
+        });
+        warn.append(own, shadower);
+        item.append(warn);
+      };
+
+      // The reorder handle (card: reordenar pelo punho). A real, editable
+      // rule row only — the synthetic rows (bans, default, fail-safe) are
+      // not in `rules`, so there is no index to move and no list to write.
+      // The grip is a BUTTON: focusable, labelled, and ArrowUp/ArrowDown
+      // move the row when it holds focus — the keyboard path is the same
+      // write as the drag, not a lesser parallel. The two arrow buttons
+      // beside the glyph are the touch path (CSS shows them on coarse
+      // pointers); each is 22×22 inside the row's 44px handle track.
+      const rowGrip = (item, opts, ctx) => {
+        if (!(opts.editable && !opts.synthetic && Number.isInteger(opts.ruleIndex))) return;
+        const grip = el('button', 'step-grip');
+        grip.type = 'button';
+        grip.setAttribute('aria-label', `Mover a regra ${opts.ord} (${opts.titleText || opts.id})`);
+        grip.title = 'Arraste, ou use as setas do teclado, para mudar a ordem';
+        const glyph = el('span', 'grip-glyph', '⠿');
+        grip.append(glyph);
+        const step = (delta) => {
+          const to = opts.ruleIndex + delta;
+          const list = (ctx.state.policy && Array.isArray(ctx.state.policy.rules)) ? ctx.state.policy.rules : [];
+          if (to < 0 || to >= list.length) return;
+          void moveRule(opts.ruleIndex, to);
+        };
+        grip.addEventListener('keydown', (event) => {
+          if (event.key === 'ArrowUp') { event.preventDefault(); step(-1); }
+          else if (event.key === 'ArrowDown') { event.preventDefault(); step(1); }
+        });
+        const up = el('button', 'grip-arrow', '↑');
+        up.type = 'button';
+        up.setAttribute('aria-label', `Mover a regra ${opts.ord} para cima`);
+        up.title = 'Mover esta regra para cima';
+        up.addEventListener('click', (event) => {
+          if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+          step(-1);
+        });
+        const down = el('button', 'grip-arrow', '↓');
+        down.type = 'button';
+        down.setAttribute('aria-label', `Mover a regra ${opts.ord} para baixo`);
+        down.title = 'Mover esta regra para baixo';
+        down.addEventListener('click', (event) => {
+          if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+          step(1);
+        });
+        grip.append(up, down);
+        // HTML5 DnD, no library (the card's constraint): the grip is the
+        // drag source, the ROW is what visually moves, and the drop
+        // target is any editable row's top or bottom half. setDragImage
+        // keeps the whole row as the ghost — dragging the 44px grip but
+        // seeing only the grip move would read as moving nothing.
+        grip.setAttribute('draggable', 'true');
+        grip.addEventListener('dragstart', (event) => {
+          if (!event || typeof event.dataTransfer.setData !== 'function') return;
+          ctx.state.dragRule = opts.ruleIndex;
+          try {
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', String(opts.ruleIndex));
+            if (typeof event.dataTransfer.setDragImage === 'function' && typeof item.getBoundingClientRect === 'function') {
+              event.dataTransfer.setDragImage(item, 10, 12);
+            }
+          } catch (_) { /* the stub test DOM has no real DnD payload */ }
+          item.classList.add('dragging');
+        });
+        grip.addEventListener('dragend', () => {
+          ctx.state.dragRule = null;
+          clearDropMarks();
+        });
+        item.append(grip);
+        item.addEventListener('dragover', (event) => {
+          if (ctx.state.dragRule === null || ctx.state.dragRule === undefined) return;
+          if (typeof event.preventDefault === 'function') event.preventDefault();
+          if (typeof event.dataTransfer === 'object' && event.dataTransfer) {
+            try { event.dataTransfer.dropEffect = 'move'; } catch (_) { /* stub */ }
+          }
+          markDrop(item, event);
+        });
+        item.addEventListener('drop', (event) => {
+          if (ctx.state.dragRule === null || ctx.state.dragRule === undefined) return;
+          if (typeof event.preventDefault === 'function') event.preventDefault();
+          const from = ctx.state.dragRule;
+          ctx.state.dragRule = null;
+          clearDropMarks();
+          const to = dropTargetIndex(opts.ruleIndex, item, event);
+          if (to === null) return;
+          void moveRule(from, to);
+        });
+      };
+
+      // A rule row (§1.3). `ctx` carries what a row reads and renderSheet
+      // already computed once per render — the tier table, the chain context,
+      // the rules array the shadow reason quotes, and state — so a row is a
+      // pure assembly of its inputs rather than a closure over the render.
+      const row = (opts, ctx) => {
+        const item = el('li', `step${opts.editable ? ' editable' : ''}${opts.off ? ' off' : ''}`);
+        if (opts.id && !opts.synthetic
+            && (String(opts.id) === ctx.state.probeRule || String(opts.id) === ctx.state.lintRule)) {
+          item.classList.add('hit');
+          item.setAttribute('aria-current', 'true');
+        }
+        // Real rule ids are matched against String(matched_rule_id); synthetic
+        // rows share the id namespace, so they carry the marker prefix that a
+        // policy id cannot start with (see findRuleRow).
+        if (opts.id) {
+          item.dataset.ruleId = opts.synthetic ? `__${opts.id}` : String(opts.id);
+          // The id leaves the line's TEXT for the row's title attribute
+          // (comp-tarefas: "o id no title do <li>", em TODA linha de regra).
+          // The operator reads the name and the conditions; the id is the
+          // handle for the YAML, and a handle belongs in the title — hover,
+          // not prose. Synthetic rows (bans, default, fail-safe) keep their
+          // own name as the title; a real rule always carries its id.
+          item.title = opts.synthetic
+            ? (opts.title || opts.titleText || String(opts.id))
+            : String(opts.id);
+        }
+        rowGrip(item, opts, ctx);
+        item.append(el('span', 'step-ord', opts.ord || ''));
+        const what = el('div', 'step-what');
+        rowConditions(what, opts, editAffordance);
+        item.append(what);
+        const { to, expansion, tier, hops } = rowDestination(opts, ctx, editAffordance);
+        item.append(to);
+        item.append(rowFirst(opts, ctx, tier, hops));
+        const { h, hitWords } = rowCount(opts, hitsWindow());
+        if (h) item.append(h);
+        if (expansion) item.append(expansion);
+        // The row's DOM order is the comp's order (punho · número · Quando ·
+        // Vai para · Primeira tentativa · Uso 8d), so the reading order of a
+        // screen reader is the same sentence the eye reads across the line.
+        // The CSS pins each cell to its track (see .step-ord / .step-to /
+        // .step-first / .step-hits above), so a reader down a column sees
+        // the same thing on every line.
+        if (!opts.synthetic && opts.id) item.append(rowOpen(item, opts, ctx, editAffordance, tier, hops, hitWords));
+        rowShadow(item, opts, ctx.rules);
+        return item;
+      };
+
+      // One line at the top of the Tarefas tab that names why the per-rule
+      // counts below are missing. logFreshness already decided the REASON and
+      // the age; this only translates the reason into the phrase the operator
+      // reads. `newest` is epoch SECONDS, fmtAge reads Date/ms — the * 1000
+      // is the same unit boundary the utcClock helper draws.
+      const sheetBanner = (box, fresh, stale, span) => {
+        box.classList.toggle('stale', stale);
+        const windowBanner = $('windowStale');
+        if (!windowBanner) return;
+        if (!stale) {
+          windowBanner.hidden = true;
+          return;
+        }
+        windowBanner.hidden = false;
+        clear(windowBanner);
+        if (fresh.reason === 'empty') {
+          windowBanner.append(
+            el('strong', '', 'Nenhuma decisão registrada ainda.'),
+            el('span', '', 'Não há janela a contar — as contagens por regra ficam sem dados até a primeira decisão.'));
+        } else if (fresh.reason === 'config') {
+          // One authority per fact: logFreshness decided WHY the window
+          // cannot describe the current policy; this branch only translates
+          // it. It used to tell the AGE story for every stale window — and
+          // round hours up: Math.round(0.25) = 0, then Math.max(1, …) = 1, so
+          // a decision six hours old read as "Nenhuma decisão há 1 dia" (the
+          // incident this card fixes: router.yaml edited at ~14:5x, last
+          // decision 16:19 UTC).
+          windowBanner.append(
+            el('strong', '', `A política mudou depois da última decisão (há ${fmtAge(fresh.newest * 1000)}).`),
+            el('span', '', 'Contar as decisões antigas contra as regras novas seria mentira — as contagens ficam sem dados até a próxima decisão.'));
+        } else {
+          windowBanner.append(
+            el('strong', '', `Nenhuma decisão há ${fmtAge(fresh.newest * 1000)}.`),
+            el('span', '', `Estas contagens descrevem ${span}, não o presente.`));
+        }
+      };
+
+      // The §1.3 list: manual bans (only when they exist), then every rule in
+      // file order, then the catch-all rows (default, fail-safe) under the
+      // tail's own label. Order IS the semantics — first match wins — so the
+      // ordinals are the reading, and the catch-all rows carry the comp's "—".
+      // Ends with the phrase-answer above the list (§1.2): how many task types,
+      // and whether any of them is without effect.
+      const sheetList = (box, tailList, tailBox, ctx, policy, rules, findings, byRule, byCause, stale) => {
+        const manualBans = (policy.blocklist && Array.isArray(policy.blocklist.manual_ban))
+          ? policy.blocklist.manual_ban : [];
+        let ord = 0;
+        // 1 · Bloqueios manuais — a synthetic row that exists only when the
+        // list does (§1.3). Render nothing for nothing (DESIGN.md §2.1): an
+        // empty ban list drawn as a numbered row would read as a policy step.
+        if (manualBans.length) {
+          ord += 1;
+          box.append(row({
+            ord: `${ord}`, id: 'blocklist', synthetic: true,
+            titleText: 'Bloqueios manuais',
+            when: 'o modelo pedido está bloqueado ou em cooldown',
+            target: 'Recusar a tarefa', targetColor: 'var(--bad-text)',
+            hits: byCause.blocklist_veto || 0,
+            stale,
+            editable: false,
+            title: 'blocklist.manual_ban',
+          }, ctx));
+        }
+        rules.forEach((r, i) => {
+          const then = r.then || {};
+          const dest = destWords(then, ctx.tierIndex);
+          ord += 1;
+          box.append(row({
+            ord: `${ord}`,
+            ruleIndex: i,
+            id: r.id != null ? String(r.id) : `regra ${i + 1}`,
+            titleText: ruleTitle(r.when),
+            chips: predicateChips(r.when),
+            when: phraseWhen(r.when),
+            notes: condNotes(r.when),
+            target: dest.text,
+            tierDest: dest.kind === 'tier' ? ctx.tierDestOf(then.model) : null,
+            targetColor: dest.kind === 'refuse' || dest.kind === 'missing' ? 'var(--bad-text)' : '',
+            destKind: dest.kind,
+            // The role the rule fixed on the `then` half (adapter.py keeps it
+            // as `profile`) — shown in the row's open block, informative in
+            // this path: the card creator picks the role at dispatch.
+            role: then.profile != null ? String(then.profile) : '',
+            targetModel: dest.kind === 'fixed' ? then.model : '',
+            targetRail: dest.kind === 'fixed' ? then.provider : '',
+            queueWords: dest.kind === 'classify'
+              ? 'a decisão é do classificador, na hora — custa 1 chamada extra'
+              : (dest.kind === 'refuse' ? 'a tarefa é recusada — não entra em fila' : dest.text),
+            // §3.4(a): the missing-group row carries the one control that
+            // resolves the class — always, because there is no mode to arm:
+            // the row's own select is the banner jump with the choice made.
+            destFix: dest.kind === 'missing'
+              ? { ruleIndex: i, id: r.id != null ? String(r.id) : `regra ${i + 1}`, then } : null,
+            hits: byRule[r.id] || 0,
+            stale,
+            editable: true,
+            off: r.enabled === false,
+            shadow: shadowPairFor(i, findings),
+            editTitle: 'Mudar as condições desta regra',
+            onPick: () => pickBind({ id: `rule:${r.id}`, name: String(r.id), bind: 'rule', ruleIndex: i }),
+          }, ctx));
+        });
+        const def = policy.default || {};
+        ord += 1;
+        const defDest = destWords(def, ctx.tierIndex);
+        // The catch-all rows (default, fail-safe) leave the numbered list
+        // (comp-tarefas "se nada acima casou"): the ordinals above ARE the
+        // semantics of first-match, and these two rows are what happens when
+        // nothing matched — so they carry the comp's "—" and live under the
+        // tail's own label. The count is the closed-set cause the engine
+        // records for the fall-through (decision_log VALID_CAUSES).
+        (tailList || box).append(row({
+          ord: '—', id: 'default', synthetic: true,
+          titleText: 'Quando nenhuma regra casa',
+          target: defDest.text,
+          tierDest: defDest.kind === 'tier' ? ctx.tierDestOf(def.model) : null,
+          targetColor: defDest.kind === 'refuse' || defDest.kind === 'missing' ? 'var(--bad-text)' : '',
+          destKind: defDest.kind,
+          notes: ['Esta é a única rota que gasta uma chamada de modelo a mais.'],
+          hits: byCause.default_fallthrough || 0,
+          stale,
+          editable: true,
+          editTitle: 'Mudar o destino padrão',
+          onPick: () => pickBind({ id: 'default', name: 'default', bind: 'default' }),
+        }, ctx));
+        const fs = policy.fail_safe || {};
+        ord += 1;
+        const fsDest = destWords(fs, ctx.tierIndex);
+        const fsHits = byCause.fail_safe_strong || 0;
+        (tailList || box).append(row({
+          ord: '—', id: 'fail_safe', synthetic: true,
+          titleText: 'Quando tudo falha',
+          when: fs.model ? null : 'Não há último recurso configurado. Se todas as filas falharem, a tarefa falha.',
+          notes: fs.model
+            ? ['Esta fila não passa pelos grupos. É a última coisa que o roteador tenta.'] : [],
+          target: fs.model ? fsDest.text : null,
+          tierDest: null,
+          targetColor: '',
+          destKind: fs.model ? 'fixed' : '',
+          targetModel: fs.model,
+          targetRail: fs.provider,
+          hits: fsHits,
+          stale,
+          editable: true,
+          editTitle: 'Mudar o último recurso',
+          onPick: () => pickBind({ id: 'fail_safe', name: 'fail_safe', bind: 'fail_safe' }),
+        }, ctx));
+        if (tailBox) tailBox.hidden = false;
+
+        // The phrase-answer above the list (§1.2): how many task types, and
+        // whether any of them is without effect. One rule counted once — two
+        // shadowers of the same row are one dead rule, not two.
+        const shadowCount = new Set(findings.map((f) => f.later_index)).size;
+        const note = $('pipelineNote');
+        if (note) {
+          note.textContent = ctx.state.readFailures['/policy']
+            ? readFailureWords(ctx.state.readFailures['/policy'])
+            : rules.length
+            ? `${rules.length} tipos de tarefa, em ordem. A primeira que casar decide.${shadowCount ? ` ${shadowCount} ${shadowCount === 1 ? 'está' : 'estão'} sem efeito.` : ' Todas valem.'}`
+            : 'Nenhuma regra de roteamento no arquivo. Toda tarefa cai no último recurso.';
+        }
+      };
+
       function renderSheet() {
         const box = $('sheet');
         clear(box);
@@ -5538,547 +6116,15 @@
         const fresh = logFreshness();
         const stale = fresh.stale;
         const span = windowSpan(state.routes);
-        box.classList.toggle('stale', stale);
-        const windowBanner = $('windowStale');
-        if (windowBanner) {
-          if (stale) {
-            windowBanner.hidden = false;
-            clear(windowBanner);
-            if (fresh.reason === 'empty') {
-              windowBanner.append(
-                el('strong', '', 'Nenhuma decisão registrada ainda.'),
-                el('span', '', 'Não há janela a contar — as contagens por regra ficam sem dados até a primeira decisão.'));
-            } else if (fresh.reason === 'config') {
-              // One authority per fact: logFreshness decided WHY the window
-              // cannot describe the current policy; this branch only
-              // translates it. It used to tell the AGE story for every stale
-              // window — and round hours up: Math.round(0.25) = 0, then
-              // Math.max(1, …) = 1, so a decision six hours old read as
-              // "Nenhuma decisão há 1 dia" (the incident this card fixes:
-              // router.yaml edited at ~14:5x, last decision 16:19 UTC).
-              // `newest` is epoch SECONDS, fmtAge reads Date/ms — the * 1000
-              // is the same unit boundary the utcClock helper draws.
-              windowBanner.append(
-                el('strong', '', `A política mudou depois da última decisão (há ${fmtAge(fresh.newest * 1000)}).`),
-                el('span', '', 'Contar as decisões antigas contra as regras novas seria mentira — as contagens ficam sem dados até a próxima decisão.'));
-            } else {
-              windowBanner.append(
-                el('strong', '', `Nenhuma decisão há ${fmtAge(fresh.newest * 1000)}.`),
-                el('span', '', `Estas contagens descrevem ${span}, não o presente.`));
-            }
-          } else {
-            windowBanner.hidden = true;
-          }
-        }
+        sheetBanner(box, fresh, stale, span);
 
-        // The §1.3 list: manual bans (only when they exist), then every rule in
-        // file order. Order IS the semantics — first match wins — so the
-        // ordinals are the reading. The catch-all rows (default, fail-safe)
-        // render below in their own block (§5), not here.
-        const row = (opts) => {
-          const item = el('li', `step${opts.editable ? ' editable' : ''}${opts.off ? ' off' : ''}`);
-          if (opts.id && !opts.synthetic
-              && (String(opts.id) === state.probeRule || String(opts.id) === state.lintRule)) {
-            item.classList.add('hit');
-            item.setAttribute('aria-current', 'true');
-          }
-          // Real rule ids are matched against String(matched_rule_id); synthetic
-          // rows share the id namespace, so they carry the marker prefix that a
-          // policy id cannot start with (see findRuleRow).
-          if (opts.id) {
-            item.dataset.ruleId = opts.synthetic ? `__${opts.id}` : String(opts.id);
-            // The id leaves the line's TEXT for the row's title attribute
-            // (comp-tarefas: "o id no title do <li>", em TODA linha de regra).
-            // The operator reads the name and the conditions; the id is the
-            // handle for the YAML, and a handle belongs in the title — hover,
-            // not prose. Synthetic rows (bans, default, fail-safe) keep their
-            // own name as the title; a real rule always carries its id.
-            item.title = opts.synthetic
-              ? (opts.title || opts.titleText || String(opts.id))
-              : String(opts.id);
-          }
-          // The reorder handle (card: reordenar pelo punho). A real, editable
-          // rule row only — the synthetic rows (bans, default, fail-safe) are
-          // not in `rules`, so there is no index to move and no list to write.
-          // The grip is a BUTTON: focusable, labelled, and ArrowUp/ArrowDown
-          // move the row when it holds focus — the keyboard path is the same
-          // write as the drag, not a lesser parallel. The two arrow buttons
-          // beside the glyph are the touch path (CSS shows them on coarse
-          // pointers); each is 22×22 inside the row's 44px handle track.
-          if (opts.editable && !opts.synthetic && Number.isInteger(opts.ruleIndex)) {
-            const grip = el('button', 'step-grip');
-            grip.type = 'button';
-            grip.setAttribute('aria-label', `Mover a regra ${opts.ord} (${opts.titleText || opts.id})`);
-            grip.title = 'Arraste, ou use as setas do teclado, para mudar a ordem';
-            const glyph = el('span', 'grip-glyph', '⠿');
-            grip.append(glyph);
-            const step = (delta) => {
-              const to = opts.ruleIndex + delta;
-              const list = (state.policy && Array.isArray(state.policy.rules)) ? state.policy.rules : [];
-              if (to < 0 || to >= list.length) return;
-              void moveRule(opts.ruleIndex, to);
-            };
-            grip.addEventListener('keydown', (event) => {
-              if (event.key === 'ArrowUp') { event.preventDefault(); step(-1); }
-              else if (event.key === 'ArrowDown') { event.preventDefault(); step(1); }
-            });
-            const up = el('button', 'grip-arrow', '↑');
-            up.type = 'button';
-            up.setAttribute('aria-label', `Mover a regra ${opts.ord} para cima`);
-            up.title = 'Mover esta regra para cima';
-            up.addEventListener('click', (event) => {
-              if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-              step(-1);
-            });
-            const down = el('button', 'grip-arrow', '↓');
-            down.type = 'button';
-            down.setAttribute('aria-label', `Mover a regra ${opts.ord} para baixo`);
-            down.title = 'Mover esta regra para baixo';
-            down.addEventListener('click', (event) => {
-              if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-              step(1);
-            });
-            grip.append(up, down);
-            // HTML5 DnD, no library (the card's constraint): the grip is the
-            // drag source, the ROW is what visually moves, and the drop
-            // target is any editable row's top or bottom half. setDragImage
-            // keeps the whole row as the ghost — dragging the 44px grip but
-            // seeing only the grip move would read as moving nothing.
-            grip.setAttribute('draggable', 'true');
-            grip.addEventListener('dragstart', (event) => {
-              if (!event || typeof event.dataTransfer.setData !== 'function') return;
-              state.dragRule = opts.ruleIndex;
-              try {
-                event.dataTransfer.effectAllowed = 'move';
-                event.dataTransfer.setData('text/plain', String(opts.ruleIndex));
-                if (typeof event.dataTransfer.setDragImage === 'function' && typeof item.getBoundingClientRect === 'function') {
-                  event.dataTransfer.setDragImage(item, 10, 12);
-                }
-              } catch (_) { /* the stub test DOM has no real DnD payload */ }
-              item.classList.add('dragging');
-            });
-            grip.addEventListener('dragend', () => {
-              state.dragRule = null;
-              clearDropMarks();
-            });
-            item.append(grip);
-            item.addEventListener('dragover', (event) => {
-              if (state.dragRule === null || state.dragRule === undefined) return;
-              if (typeof event.preventDefault === 'function') event.preventDefault();
-              if (typeof event.dataTransfer === 'object' && event.dataTransfer) {
-                try { event.dataTransfer.dropEffect = 'move'; } catch (_) { /* stub */ }
-              }
-              markDrop(item, event);
-            });
-            item.addEventListener('drop', (event) => {
-              if (state.dragRule === null || state.dragRule === undefined) return;
-              if (typeof event.preventDefault === 'function') event.preventDefault();
-              const from = state.dragRule;
-              state.dragRule = null;
-              clearDropMarks();
-              const to = dropTargetIndex(opts.ruleIndex, item, event);
-              if (to === null) return;
-              void moveRule(from, to);
-            });
-          }
-          item.append(el('span', 'step-ord', opts.ord || ''));
-          const what = el('div', 'step-what');
-          const name = el('div', 'step-name', opts.titleText || opts.id);
-          if (opts.off) name.append(el('span', 'step-off', ' (desligada)'));
-          what.append(name);
-          // The one affordance of the no-mode sheet: a value that opens an
-          // editor looks editable (dotted line, pointer) and a click opens it
-          // — nothing on a row asks the operator to arm a mode first. The row
-          // click itself still opens the queue (comp-tarefas "Clique na linha
-          // para abrir a fila inteira"); these cells stop their own
-          // propagation on top of that.
-          const editAffordance = (node, title, action) => {
-            node.classList.add('is-edit');
-            node.title = title;
-            // It IS a button, so it says so and behaves like one: reachable in the tab
-            // order, activated by Enter and Space, announced as a control rather than
-            // as text. The element stays a div because the comp's line is text with a
-            // dotted underline and a <button> would drag its own box model in.
-            node.setAttribute('role', 'button');
-            node.tabIndex = 0;
-            const open = (event) => {
-              if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-              action();
-            };
-            node.addEventListener('click', open);
-            node.addEventListener('keydown', (event) => {
-              // Enter and Space are what a role=button owes; Space also scrolls the
-              // panel by default, so it is the one that has to be prevented.
-              if (event.key !== 'Enter' && event.key !== ' ') return;
-              if (typeof event.preventDefault === 'function') event.preventDefault();
-              open(event);
-            });
-          };
-          if (opts.chips && opts.chips.length) {
-            // Conditions are TEXT on the line now (comp-tarefas): the sheet
-            // stopped using the chip list, so one clause is never announced as
-            // a separate bullet from its neighbours — the " · " joins the
-            // sentences of ONE rule, and the row reads as a sentence.
-            const whenLine = el('div', 'step-when', opts.chips.map((chip) => chip.text).join(' · '));
-            if (opts.onPick) editAffordance(whenLine, opts.editTitle || 'Abrir a edição desta linha', opts.onPick);
-            what.append(whenLine);
-          } else if (opts.when) {
-            const whenLine = el('div', 'step-when', opts.when);
-            if (opts.onPick) editAffordance(whenLine, opts.editTitle || 'Abrir a edição desta linha', opts.onPick);
-            what.append(whenLine);
-          }
-          // Per-rule footnotes (§4.4): injected clock fields and unknown
-          // condition names say their consequence on the row itself.
-          (opts.notes || []).forEach((note) => what.append(el('div', 'step-when', note)));
-          item.append(what);
-          const to = el('div', 'step-to');
-          const dest = el('div', 'step-dest');
-          let expansion = null;
-          // Hoisted out of the target branch: the first-attempt cell and the
-          // open block read the same queue the destination chip reveals.
-          const tier = opts.tierDest && tierIndex[opts.tierDest] ? tierIndex[opts.tierDest] : null;
-          const hops = tier ? tierChain(tier) : [];
-          if (opts.target) {
-            if (tier && hops.length) {
-              // The comp's tier cell is the bare "T1 · Trivial" — NO arrow
-              // (the "Vai para" head already says where it goes, and the 128px
-              // column cannot hold the arrow + gap + the chip's full label:
-              // measured 130px needed with the arrow at 14px mono).
-              const chip = el('button', 'step-target step-tier', opts.target);
-              chip.type = 'button';
-              chip.setAttribute('aria-expanded', 'false');
-              chip.title = hops.map((h) => h.model).join(' · ');
-              expansion = el('div', 'step-chain');
-              expansion.hidden = true;
-              let open = false;
-              chip.addEventListener('click', (event) => {
-                if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-                open = !open;
-                chip.setAttribute('aria-expanded', String(open));
-                if (open) {
-                  clear(expansion);
-                  const strategy = strategyWords(tier.fallback_strategy,
-                    { pinPrimary: declaredPin(tier.pin_primary), when: chainWhen });
-                  const how = el('div', 'step-chain-note',
-                    hops.length > 1 ? strategy.label : 'uma tentativa só, nada a escolher');
-                  if (strategy.note) how.append(el('span', '', ` — ${strategy.note}`));
-                  expansion.append(how);
-                  expansion.append(chainList(hops, {
-                    strategy, registry: state.capabilities, billing: chainBilling,
-                    when: chainWhen, live: chainLive,
-                    showPrice: strategy.timeRelative,
-                  }));
-                }
-                expansion.hidden = !open;
-              });
-              dest.append(chip);
-            } else {
-              dest.append(el('span', 'step-arrow', '→'));
-              const t = el('span', 'step-target', opts.target);
-              if (opts.targetColor) t.style.color = opts.targetColor;
-              dest.append(t);
-            }
-          }
-          to.append(dest);
-          // The destination cell is the sheet's "clicar num grupo" target: a
-          // click anywhere in "Vai para" opens the rule's editor with the
-          // destination control first. The tier chip inside stops its own
-          // propagation, so expanding the chain it reveals is still its own
-          // gesture, not an edit.
-          if (opts.onPick) editAffordance(dest, opts.editTitle || 'Abrir a edição desta linha', opts.onPick);
-          // The first attempt (comp-tarefas "Primeira tentativa", 196px): the
-          // head of the queue the destination points at. A tier shows its
-          // first elo with how it is billed and on whose rail; the classifier
-          // says the decision is the call; a fixed model names itself.
-          const first = el('div', 'step-first');
-          if (tier && hops.length) {
-            const head = hops[0];
-            const caps = hopCaps(head, state.capabilities).caps;
-            const bill = billingBadge(head.billing_mode !== undefined ? head.billing_mode
-              : (caps.billing_mode !== undefined ? caps.billing_mode : chainBilling[String(head.model)]));
-            first.append(el('b', '', String(head.model || '—')));
-            const rail = String(caps.provider || head.provider || '');
-            first.append(el('span', '', ` ${bill.word}${rail ? ` · ${rail}` : ''}`));
-          } else if (opts.destKind === 'classify') {
-            first.append(el('b', '', 'decide na hora'));
-            first.append(el('span', 'first-note', 'custa 1 chamada extra'));
-          } else if (opts.destKind === 'fixed') {
-            first.append(el('b', '', String(opts.targetModel || '—')));
-            if (opts.targetRail) first.append(el('span', '', ` · ${opts.targetRail}`));
-          } else {
-            first.append(el('b', '', '—'));
-          }
-          // §3.4(a): a destination naming a group the table does not have is
-          // the one row that carries its own remedy — the SAME §2.2 select,
-          // prefixed by what the operator is choosing. Choosing writes the
-          // three keys to the DRAFT (never to the read view's policy: the
-          // staleness guard in plan() compares the file against state.policy,
-          // so a mutation there would read as an external edit and refuse
-          // every save) and opens the rule's editor, where the change is
-          // visible and Salvar writes it through the normal path.
-          if (opts.destFix) {
-            const fixWrap = el('div', 'field step-dest-fix');
-            const fixSelect = destSelect(opts.destFix.then, tierIndex);
-            const fixId = fieldId();
-            fixSelect.id = fixId;
-            const fixLabel = el('label', '', 'Escolha um destino que exista:');
-            fixLabel.htmlFor = fixId;
-            fixWrap.append(fixLabel);
-            fixSelect.addEventListener('change', () => {
-              state.rowDestFix = { ruleIndex: opts.destFix.ruleIndex, value: fixSelect.value };
-              pickBind({ id: `rule:${opts.destFix.id}`, name: String(opts.destFix.id), bind: 'rule', ruleIndex: opts.destFix.ruleIndex });
-            });
-            // Opening the select must not trip the row click (the queue
-            // toggle): the row's own gesture is the line, this control is a
-            // value in it.
-            fixWrap.addEventListener('click', (event) => {
-              if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-            });
-            fixWrap.append(fixSelect);
-            to.append(fixWrap);
-          }
-          // The count lives in its own column now (comp-tarefas "Uso 8d",
-          // 62px): the NUMBER, with the finding it is a verdict about in the
-          // title and in the row's open block — a zero is a FINDING only when
-          // the rule could have fired in the counted window, and a stale sheet
-          // demotes every count to a muted disclosure about the DATA.
-          let hitWords = '';
-          let h = null;
-          if (opts.hits !== undefined) {
-            const cls = opts.stale ? ' empty' : (opts.hits === 0 ? ' zero' : '');
-            const period = hitsWindow();
-            const since = period ? ` ${period}` : '';
-            hitWords = opts.stale
-              ? 'sem histórico: o registro de decisões não cobre este período'
-              : (opts.hits === 0 ? `nunca disparou${since}` : `disparou ${opts.hits}×${since}`);
-            h = el('span', `step-hits${cls}`, opts.stale ? 'sem dados' : String(opts.hits));
-            h.title = hitWords;
-          }
-          // The row's DOM order is the comp's order (punho · número · Quando ·
-          // Vai para · Primeira tentativa · Uso 8d), so the reading order of a
-          // screen reader is the same sentence the eye reads across the line.
-          // The CSS pins each cell to its track (see .step-ord / .step-to /
-          // .step-first / .step-hits above), so a reader down a column sees
-          // the same thing on every line.
-          item.append(to);
-          item.append(first);
-          if (h) item.append(h);
-          if (expansion) item.append(expansion);
-          // The row opened by a click (comp-tarefas: "Clique na linha para
-          // abrir a fila inteira"): the whole queue, the role the rule fixed
-          // and the rule's id. The row click owns the queue; the condition,
-          // the destination cell and the queue's own capsules stop their
-          // propagation on top of this and open the editor of the value they
-          // name.
-          if (!opts.synthetic && opts.id) {
-            const openBox = el('div', 'step-open');
-            openBox.hidden = true;
-            let open = false;
-            item.addEventListener('click', (event) => {
-              if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-              open = !open;
-              if (open) {
-                clear(openBox);
-                // fila — the whole queue, or the sentence for a destination
-                // with no queue (a refusal has nothing to try).
-                const fila = el('div', 'step-open-row');
-                fila.append(el('span', 'step-open-k', 'fila'));
-                if (tier && hops.length) {
-                  const strategy = strategyWords(tier.fallback_strategy,
-                    { pinPrimary: declaredPin(tier.pin_primary), when: chainWhen });
-                  const body = el('div', 'step-open-chain');
-                  body.append(chainList(hops, {
-                    strategy, registry: state.capabilities, billing: chainBilling,
-                    when: chainWhen, live: chainLive, showPrice: strategy.timeRelative,
-                  }));
-                  // The comp's capsule: "clique numa cápsula da fila para
-                  // trocar". The hop pills are drawn by the shared chain
-                  // renderer, so the click target is the chain line as a
-                  // whole — the gesture opens the group's queue editor, where
-                  // that hop is one ↑/↓/Remover away.
-                  if (opts.tierDest) {
-                    editAffordance(body,
-                      'Clique numa cápsula para trocar essa opção da fila',
-                      () => pickBind({ id: `tier:${opts.tierDest}`, name: String(opts.tierDest), bind: 'tier', tier: opts.tierDest }));
-                  }
-                  fila.append(body);
-                } else {
-                  fila.append(el('div', 'step-open-val', opts.queueWords || opts.target || '—'));
-                }
-                openBox.append(fila);
-                // papel — the rule's declared role; informative in this path,
-                // because the card creator picks the role at dispatch.
-                const papel = el('div', 'step-open-row');
-                papel.append(el('span', 'step-open-k', 'papel'));
-                const pval = el('div', 'step-open-val');
-                pval.append(el('span', '', opts.role || '—'));
-                pval.append(el('span', 'step-open-note', ' — informativo neste caminho: quem cria o card escolhe o papel'));
-                papel.append(pval);
-                openBox.append(papel);
-                // regra — the id, and the count column 6 summarised.
-                const regra = el('div', 'step-open-row');
-                regra.append(el('span', 'step-open-k', 'regra'));
-                regra.append(el('div', 'step-open-id', `${opts.id}${hitWords ? ` · ${hitWords}` : ''}`));
-                openBox.append(regra);
-              }
-              openBox.hidden = !open;
-            });
-            item.append(openBox);
-          }
-          // The shadowed-rule fix path (§3.3): the finding names the earlier
-          // row that swallows this one, and the ONE move that resolves the
-          // class without touching `when` — jump and open its editor. The
-          // warning says WHY (the clause that proves the overlap) and offers
-          // BOTH rows as destinations under the single jump label this
-          // screen uses: the dead rule's own editor (where the move button
-          // lives) and the shadower's.
-          if (opts.shadow) {
-            // A classe existe para o CSS de aviso ter em quem pegar: sem ela as três
-            // regras de `.step.shadowed` são folclore.
-            item.classList.add('shadowed');
-            const warn = el('div', 'step-when');
-            warn.append(el('span', '', shadowReasonWords(opts.shadow, rules)));
-            const own = el('button', 'btn', `Ir para a regra ${opts.shadow.later_index + 1}`);
-            own.type = 'button';
-            own.addEventListener('click', (event) => {
-              if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-              showLintTarget(opts.shadow);
-            });
-            const shadower = el('button', 'btn', `Ir para a regra ${opts.shadow.earlier_index + 1}`);
-            shadower.type = 'button';
-            shadower.addEventListener('click', (event) => {
-              if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-              // The SAME navigation, with the shadower as the target: the
-              // finding's later_* fields carry the shadower's coordinates
-              // here, so showLintTarget needs no second path.
-              showLintTarget({ later_index: opts.shadow.earlier_index, later_id: opts.shadow.earlier_id });
-            });
-            warn.append(own, shadower);
-            item.append(warn);
-          }
-          return item;
+        // The context the rows share — computed once here, read by every row.
+        const ctx = {
+          state, rules, tierIndex, tierDestOf, chainWhen, chainLive, chainBilling,
         };
 
-        const manualBans = (policy.blocklist && Array.isArray(policy.blocklist.manual_ban))
-          ? policy.blocklist.manual_ban : [];
-        let ord = 0;
-        // 1 · Bloqueios manuais — a synthetic row that exists only when the
-        // list does (§1.3). Render nothing for nothing (DESIGN.md §2.1): an
-        // empty ban list drawn as a numbered row would read as a policy step.
-        if (manualBans.length) {
-          ord += 1;
-          box.append(row({
-            ord: `${ord}`, id: 'blocklist', synthetic: true,
-            titleText: 'Bloqueios manuais',
-            when: 'o modelo pedido está bloqueado ou em cooldown',
-            target: 'Recusar a tarefa', targetColor: 'var(--bad-text)',
-            hits: byCause.blocklist_veto || 0,
-            stale,
-            editable: false,
-            title: 'blocklist.manual_ban',
-          }));
-        }
-        rules.forEach((r, i) => {
-          const then = r.then || {};
-          const dest = destWords(then, tierIndex);
-          ord += 1;
-          box.append(row({
-            ord: `${ord}`,
-            ruleIndex: i,
-            id: r.id != null ? String(r.id) : `regra ${i + 1}`,
-            titleText: ruleTitle(r.when),
-            chips: predicateChips(r.when),
-            when: phraseWhen(r.when),
-            notes: condNotes(r.when),
-            target: dest.text,
-            tierDest: dest.kind === 'tier' ? tierDestOf(then.model) : null,
-            targetColor: dest.kind === 'refuse' || dest.kind === 'missing' ? 'var(--bad-text)' : '',
-            destKind: dest.kind,
-            // The role the rule fixed on the `then` half (adapter.py keeps it
-            // as `profile`) — shown in the row's open block, informative in
-            // this path: the card creator picks the role at dispatch.
-            role: then.profile != null ? String(then.profile) : '',
-            targetModel: dest.kind === 'fixed' ? then.model : '',
-            targetRail: dest.kind === 'fixed' ? then.provider : '',
-            queueWords: dest.kind === 'classify'
-              ? 'a decisão é do classificador, na hora — custa 1 chamada extra'
-              : (dest.kind === 'refuse' ? 'a tarefa é recusada — não entra em fila' : dest.text),
-            // §3.4(a): the missing-group row carries the one control that
-            // resolves the class — always, because there is no mode to arm:
-            // the row's own select is the banner jump with the choice made,
-            // and the write still lands through the editor's Salvar.
-            destFix: dest.kind === 'missing'
-              ? { ruleIndex: i, id: r.id != null ? String(r.id) : `regra ${i + 1}`, then } : null,
-            hits: byRule[r.id] || 0,
-            stale,
-            editable: true,
-            off: r.enabled === false,
-            shadow: shadowPairFor(i, findings),
-            editTitle: 'Mudar as condições desta regra',
-            onPick: () => pickBind({ id: `rule:${r.id}`, name: String(r.id), bind: 'rule', ruleIndex: i }),
-          }));
-        });
-        const def = policy.default || {};
-        ord += 1;
-        const defDest = destWords(def, tierIndex);
-        // The catch-all rows (default, fail-safe) leave the numbered list
-        // (comp-tarefas "se nada acima casou"): the ordinals above ARE the
-        // semantics of first-match, and these two rows are what happens when
-        // nothing matched — so they carry the comp's "—" and live under the
-        // tail's own label. The count is the closed-set cause the engine
-        // records for the fall-through (decision_log VALID_CAUSES).
-        (tailList || box).append(row({
-          ord: '—', id: 'default', synthetic: true,
-          titleText: 'Quando nenhuma regra casa',
-          target: defDest.text,
-          tierDest: defDest.kind === 'tier' ? tierDestOf(def.model) : null,
-          targetColor: defDest.kind === 'refuse' || defDest.kind === 'missing' ? 'var(--bad-text)' : '',
-          destKind: defDest.kind,
-          notes: ['Esta é a única rota que gasta uma chamada de modelo a mais.'],
-          hits: byCause.default_fallthrough || 0,
-          stale,
-          editable: true,
-          editTitle: 'Mudar o destino padrão',
-          onPick: () => pickBind({ id: 'default', name: 'default', bind: 'default' }),
-        }));
-        const fs = policy.fail_safe || {};
-        ord += 1;
-        const fsDest = destWords(fs, tierIndex);
-        const fsHits = byCause.fail_safe_strong || 0;
-        (tailList || box).append(row({
-          ord: '—', id: 'fail_safe', synthetic: true,
-          titleText: 'Quando tudo falha',
-          when: fs.model ? null : 'Não há último recurso configurado. Se todas as filas falharem, a tarefa falha.',
-          notes: fs.model
-            ? ['Esta fila não passa pelos grupos. É a última coisa que o roteador tenta.'] : [],
-          target: fs.model ? fsDest.text : null,
-          tierDest: null,
-          targetColor: '',
-          destKind: fs.model ? 'fixed' : '',
-          targetModel: fs.model,
-          targetRail: fs.provider,
-          hits: fsHits,
-          stale,
-          editable: true,
-          editTitle: 'Mudar o último recurso',
-          onPick: () => pickBind({ id: 'fail_safe', name: 'fail_safe', bind: 'fail_safe' }),
-        }));
-        if (tailBox) tailBox.hidden = false;
-
-        // The phrase-answer above the list (§1.2): how many task types, and
-        // whether any of them is without effect. One rule counted once — two
-        // shadowers of the same row are one dead rule, not two.
-        const shadowCount = new Set(findings.map((f) => f.later_index)).size;
-        const note = $('pipelineNote');
-        if (note) {
-          note.textContent = state.readFailures['/policy']
-            ? readFailureWords(state.readFailures['/policy'])
-            : rules.length
-            ? `${rules.length} tipos de tarefa, em ordem. A primeira que casar decide.${shadowCount ? ` ${shadowCount} ${shadowCount === 1 ? 'está' : 'estão'} sem efeito.` : ' Todas valem.'}`
-            : 'Nenhuma regra de roteamento no arquivo. Toda tarefa cai no último recurso.';
-        }
+        sheetList(box, tailList, tailBox, ctx, policy, rules, findings, byRule, byCause, stale);
       }
-
       // The elos a tier declares, primary first — the same assembly
       // rules._build_chain performs, so the console shows the chain the router
       // will actually walk rather than a prettier one.
