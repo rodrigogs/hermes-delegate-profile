@@ -7804,9 +7804,24 @@
       // decision at this morning's multipliers is the same class of lie as reading
       // the clock inside a rule, so a recorded plan never falls back to the browser's
       // hour: it uses its own, then the trace's, then none.
+      // Keep the public renderer as the two-surface seam: callers decide where and
+      // when the plan is read, while the body only receives that explicit context.
+      // This preserves #chainPlan and #replayPlan as load-bearing ids and avoids a
+      // second renderer whose output could drift from the same persisted plan.
       function renderChainPlan(plan, opts) {
         const o = opts || {};
-        const box = o.box || $('chainPlan');
+        return renderChainPlanBody(plan, {
+          box: o.box || $('chainPlan'),
+          recorded: o.recorded === true,
+          at: o.at,
+          state,
+        });
+      }
+
+      function renderChainPlanBody(plan, options) {
+        const o = options || {};
+        const { state: renderState } = o;
+        const box = o.box;
         // A recorded decision, whose hour the clock line at the top cannot name.
         const past = o.recorded === true;
         clear(box);
@@ -7837,9 +7852,9 @@
         // hour carries the CURRENT WEEKDAY — the operator asks "how would this
         // look at 03:00?" about today, and a weekday-gated window (zai's Mon-Fri
         // peak) would otherwise go silent at every chosen hour.
-        const chosen = (!past && Number.isInteger(state.testHour)
-          && state.testHour >= 0 && state.testHour <= 23 && plan.strategy_degraded !== true)
-          ? { hour: state.testHour, weekday: consoleWhen ? consoleWhen.weekday : null }
+        const chosen = (!past && Number.isInteger(renderState.testHour)
+          && renderState.testHour >= 0 && renderState.testHour <= 23 && plan.strategy_degraded !== true)
+          ? { hour: renderState.testHour, weekday: consoleWhen ? consoleWhen.weekday : null }
           : null;
         // `plan.strategy` is the strategy that RAN, and it is the one that decides
         // whether the chain below gets ordinals — so it is the one asked here. It
@@ -7885,8 +7900,8 @@
         const hourNote = !elsewhere ? ''
           : clock.source === 'plan' ? `planejado às ${hourLabel((clock.when || when).hour)}`
           : `preço às ${hourLabel(when.hour)}, a hora em que esta decisão foi gravada`;
-        const registry = state.capabilities;
-        const billing = billingIndex(state.policy);
+        const registry = renderState.capabilities;
+        const billing = billingIndex(renderState.policy);
         const flags = timeFlagIndex(plan);
         // The plan's multipliers describe the hour the engine planned at, so a
         // chosen hour must NOT read them — eloRow then falls back to the elo's
@@ -7899,7 +7914,7 @@
         // the plan's own number, and never at all under a REPLAY: a liveness read
         // taken after the decision is a measurement of now, and the same hour a week
         // later is a different request's price.
-        const live = past ? {} : liveMultipliers(state.liveness, when);
+        const live = past ? {} : liveMultipliers(renderState.liveness, when);
         const cap = timeCapOf(plan);
         // The per-attempt marks compare against a LEGIBLE ceiling only: the
         // documented {max_multiplier} mapping, never the bare-number form the
@@ -7907,210 +7922,79 @@
         const capMark = legibleCap(plan.time_cap);
         const outcome = droppedElos(plan);
 
-        // THE REQUIREMENT BEFORE THE ROSTER. This line is the CAUSE of the bypass
-        // below whenever both fire, and cause-first is the order an operator
-        // diagnosing reads in: "no elo can meet these requirements" over three
-        // context_too_small rows left the operator to reconstruct that the request
-        // itself was pathological. It takes the amber line rather than the red one
-        // because nothing was refused — the router kept routing, and the red line
-        // below is the one that reports a control giving way (DESIGN.md §3).
         const impossible = unsatisfiableWords(plan, registry);
-        if (impossible) {
-          const line = el('div', 'warn-line');
-          line.append(el('strong', '', impossible.title), el('span', '', impossible.said));
-          box.append(line);
-        }
-        // BYPASSED, and as loud as this console gets. It means the filter
-        // disqualified every elo and was overridden to keep routing alive: the task
-        // will run on a model that cannot meet its stated requirements.
-        if (outcome.filterBypassed) {
-          const line = el('div', 'warn-line bad');
-          line.append(el('strong', '', 'Filtro de capacidade ignorado.'),
-                      // With an unmeetable requirement named above, the cause and the
-                      // fix belong to THAT line: repeating "no elo can meet these
-                      // requirements" would be the same fact twice, and "add an elo
-                      // that qualifies" would be advice nobody can take, because
-                      // nothing could qualify.
-                      el('span', '', impossible
-                        ? 'Toda tentativa foi desqualificada, então o roteador vai tentar todas mesmo assim em vez de recusar a tarefa — qualquer uma que ele escolher não atende à exigência acima.'
-                        : 'Nenhuma tentativa desta fila atende a estas exigências, então o roteador vai tentar todas mesmo assim em vez de recusar a tarefa. '
-                          + 'Acrescente uma tentativa que atenda, ou baixe as exigências do grupo.'));
-          box.append(line);
-        }
-        // The time cap bypassing is the same class of event and gets the same
-        // volume: a cost control was DROPPED, deliberately, because enforcing it
-        // would have left the task with no route. The request pays peak price, and
-        // an operator who finds that out from an invoice instead of this line has
-        // been failed by the console.
-        if (outcome.capBypassed) {
-          const line = el('div', 'warn-line bad');
-          line.append(el('strong', '', 'Teto de preço ignorado.'),
-                      el('span', '', `Toda tentativa passou do teto de preço do grupo${cap !== null ? ` de ${times(cap)}` : ''} às ${when ? hourLabel(when.hour) : 'esta hora'}, então o teto foi desligado em vez de deixar a tarefa sem nenhum provedor. `
-                                   + 'Este pedido paga preço de pico. Acrescente um provedor que esteja fora do pico nesta hora, aumente o teto, ou passe o trabalho para uma hora fora do pico.'));
-          box.append(line);
-        }
-        // WHAT IS BILLING DOUBLE, which is a different question from what moved. The
-        // chain above already carries each elo's own multiplier and effective prices,
-        // but not the fact that the tier's `avoid_peak` MATCHED these elos and how far
-        // the reorder got — and on the shipped T3/T4 chain the reorder got nowhere,
-        // which has to read as "these bill double and this chain cannot step around
-        // them" rather than as a policy that failed to fire.
         const peak = peakPriceWords(plan, when);
-        if (peak) {
-          const line = el('div', 'warn-line');
-          line.append(el('strong', '', peak.title), el('span', '', peak.said));
-          box.append(line);
-        }
-        // A strategy that did not run is not a strategy — and the two words are BOTH
-        // in the plan: `strategy_declared` is what the tier asked for and `strategy`
-        // is what ran. This line used to read the effective one, so after a degrade
-        // it rendered "The tier declares “sequential”, but it did not run" — a
-        // sentence that contradicts itself, about the one field that was correct.
-        //
-        // The REASON is the router's too. rules._effective_strategy computes it on the
-        // same conditions order_chain degrades on and reports it as
-        // `strategy_degraded_reason` ("no rng was injected, so the tail was not
-        // shuffled"), which beats a guess at which input the caller forgot. The guess
-        // is kept only for a plan that reports no reason at all, and it is derived
-        // from the DECLARED word rather than from the effective one — asking
-        // strategyWords about "sequential" is what returned an empty note and made the
-        // guess unconditional.
-        if (plan.strategy_degraded === true) {
-          const declaredWord = String(plan.strategy_declared == null ? '' : plan.strategy_declared).trim();
-          const reported = String(plan.strategy_degraded_reason == null ? '' : plan.strategy_degraded_reason).trim();
-          const guess = declaredWord && declaredWord !== strategy.key
-            ? strategyWords(declaredWord, { pinPrimary: plan.pin_primary, when, degraded: true }).note
-            : '';
-          const why = reported || guess || 'quem chamou não informou nem hora nem fonte de sorteio';
-          const line = el('div', 'warn-line');
-          line.append(el('strong', '', 'A ordem de reserva não foi a declarada.'),
-                      // A declared word the plan did not report is not invented: the
-                      // degrade is still stated, without naming a strategy nobody sent.
-                      el('span', '', (declaredWord && declaredWord !== strategy.key
-                                        ? `O grupo declara “${declaredWord}”, e não foi isso que rodou: ${why}. `
-                                        : `A ordem de reserva declarada não foi a que rodou: ${why}. `)
-                                   + `A fila abaixo é a ordem que de fato rodou — ${strategy.label}.`));
-          box.append(line);
-        }
-
-        const group = el('div', 'group');
-        const head = el('div', 'group-head');
-        head.append(el('h2', '', 'Plano da fila'));
-        // The degradation already has a line of its own above, and it says more
-        // than this note can; repeating it here would be the same fact twice in one
-        // viewport, which is what the head note is not for (DESIGN.md §2.2).
-        const note = plan.strategy_degraded === true ? '' : strategy.note;
-        head.append(el('span', 'screen-note',
-                       `${strategy.label}${note ? ` — ${note}` : ''}`
-                       + (hourNote ? ` · ${hourNote}` : '')
-                       + (chosenMark ? ` · ${chosenMark}` : '')));
-        group.append(head);
-        // Card t_eed59abb: the auto-shutdown is said where it happens. The loud
-        // warn-line above reports the EVENT (the cap gave way, and what the
-        // operator can do); this line says the MECHANISM on the group whose
-        // queue was restored — and only when the plan's own flag says it
-        // happened. A false bypass never earns the sentence (DESIGN.md §2 rule 2).
-        if (outcome.capBypassed) {
-          group.append(el('div', 'tier-note',
-            'o teto se desligou nesta decisão: aplicá-lo deixaria a fila vazia'));
-        }
-
-        if (chips.length) group.append(chipList(chips));
-        else group.append(el('p', 'nothing', 'Nenhuma exigência de capacidade foi derivada, então toda tentativa da fila atende.'));
-
-        // A bypass with no per-elo reasons is the one empty state this panel cannot
-        // fill in for itself: the filter dropped every elo and then reported which
-        // ones as an empty list, so the reasons exist nowhere. Saying that is the
-        // honest answer — an absent Dropped section beside "bypassed" otherwise
-        // reads as "nothing was dropped", which is the opposite of what happened.
-        if (outcome.filterBypassed && !rejected.length) {
-          group.append(el('div', 'tier-note',
-            'O roteador não informou motivo por tentativa para esta exceção, então compare você mesmo as exigências acima com cada tentativa abaixo.'));
-        }
-
-        if (chain.length) {
-          // A chosen hour reorders the DISPLAYED queue for cheapest_now — that is
-          // what the field's note promises and what the mark labels. The engine's
-          // own order (plan.chain) stays the one the verdict above reads.
-          const drawnChain = chosenInEffect
-            ? displayOrder(chain, strategy.key, chosen, {
-                pinPrimary: plan.pin_primary, registry, billing,
-              })
-            : chain;
-          group.append(chainList(drawnChain, {
-            strategy, registry, billing, when, flags, multipliers, live, cap: capMark,
-            // The Explain panel is where the cost comparison is audited, so every
-            // eligible elo shows the prices it was compared on — not only the ones
-            // that happen to be inside a window.
-            showPrice: true,
-          }));
-          const rails = independentRails(drawnChain);
-          group.append(el('div', `tier-fact rails${rails < 2 ? ' thin' : ''}`,
-                          `${rails} provedor${rails === 1 ? '' : 'es'} independente${rails === 1 ? '' : 's'} em ${chain.length} tentativa${chain.length === 1 ? '' : 's'} elegíve${chain.length === 1 ? 'l' : 'is'}`));
-          // A chain that filtering collapsed onto ONE upstream has no fallback at
-          // all, and it does not look any different from a healthy three-hop tier
-          // unless the console says so. The declared chain still lists three hops,
-          // so this is invisible in router.yaml — it is a property of THIS task.
-          if (rails < 2) {
-            group.append(el('div', 'tier-note',
-              `Sem reserva para esta tarefa: toda tentativa elegível cai em ${upstreamGroup(drawnChain[0] && drawnChain[0].provider) || 'um provedor só'}. `
-              + 'Uma queda ali e a tarefa não tem para onde ir — a fila declarada é mais larga, mas as exigências desta tarefa descartaram o resto.'));
-          }
-        } else {
-          group.append(el('p', 'nothing', 'Nenhuma tentativa passou pelo filtro — veja as recusas abaixo.'));
-        }
-
-        // Unverified elos run UNCHECKED: the filter neither cleared nor rejected
-        // them, so their eligibility is an assumption.
-        if (unknown.length) {
-          group.append(el('div', 'tier-note',
-            `Sem verificação, então elegíveis por suposição: ${unknown.join(', ')}. `
-            + 'Nada publicou as capacidades delas — declare a janela e as marcas da tentativa no router.yaml para que sejam conferidas.'));
-        }
-
-        // Elos that are OUT: a capability rejection and a cost refusal answer the
-        // same question — "why is it not in the chain?" — so they share one list and
-        // an operator does not have to know which subsystem said no in order to find
-        // the elo. Every entry here is genuinely absent from the chain above; the ones
-        // a bypass put back are below, under their own heading, because a heading that
-        // said "Dropped" over an elo still in the chain was the console contradicting
-        // itself half a screen apart.
-        const rows = (list) => list.forEach((hop) => group.append(rejectRow(hop, {
-          registry,
-          needed: req.min_context,
-          when,
-          cap,
-          flags: flags[String(hop && hop.model || '')],
-          multiplier: multipliers ? multipliers[String(hop && hop.model || '')] : undefined,
-          live: live[String(hop && hop.model || '')],
-        })));
-        if (outcome.dropped.length) {
-          const rejectHead = el('div', 'group-head later');
-          rejectHead.append(el('h2', '', `Tirados da fila (${outcome.dropped.length})`));
-          rejectHead.append(el('span', 'screen-note', 'Não elegível para esta tarefa — não está bloqueada nem fora do ar.'));
-          group.append(rejectHead);
-          rows(outcome.dropped);
-        }
-        // The bypass's retained diagnostics. NOTHING HERE WAS DROPPED — the control
-        // gave way rather than leave the task with no route, so each of these elos is
-        // one of the numbered hops above and will be tried. The reasons are still
-        // worth the space: "nothing can meet this requirement" is only actionable
-        // beside WHICH requirement each elo failed.
-        if (outcome.retained.length) {
-          const keptHead = el('div', 'group-head later');
-          keptHead.append(el('h2', '', `Continuam na fila (${outcome.retained.length})`));
-          // ONE sentence, carrying the three facts the heading cannot imply: that
-          // nothing was dropped, WHICH control gave way, and that a reason here is not
-          // an exclusion. What the router will do about it and what the operator can
-          // do are already said, once, in the bypass line at the top of the panel —
-          // repeating either here would be the same fact twice (DESIGN.md §2.3).
-          keptHead.append(el('span', 'screen-note',
-                             `Nada foi tirado — o ${outcome.gaveWay || 'controle'} cedeu, então estas são objeções, não exclusões.`));
-          group.append(keptHead);
-          rows(outcome.retained);
-        }
+        renderChainPlanWarnings(box, { plan, strategy, when, cap, impossible, outcome, peak });
+        const group = renderChainPlanHeader({ plan, strategy, hourNote, chosenMark, outcome, chips, rejected });
+        renderChainPlanHops(group, { chain, unknown, chosenInEffect, chosen, strategy, plan, registry, billing,
+          when, flags, multipliers, live, capMark });
+        renderChainPlanRejections(group, { outcome, registry, needed: req.min_context, when, cap, flags, multipliers, live });
 
         box.append(group);
+      }
+
+      function renderChainPlanWarnings(box, { plan, strategy, when, cap, impossible, outcome, peak }) {
+        const add = (className, title, said) => {
+          const line = el('div', className);
+          line.append(el('strong', '', title), el('span', '', said));
+          box.append(line);
+        };
+        if (impossible) add('warn-line', impossible.title, impossible.said);
+        if (outcome.filterBypassed) add('warn-line bad', 'Filtro de capacidade ignorado.', impossible
+          ? 'Toda tentativa foi desqualificada, então o roteador vai tentar todas mesmo assim em vez de recusar a tarefa — qualquer uma que ele escolher não atende à exigência acima.'
+          : 'Nenhuma tentativa desta fila atende a estas exigências, então o roteador vai tentar todas mesmo assim em vez de recusar a tarefa. Acrescente uma tentativa que atenda, ou baixe as exigências do grupo.');
+        if (outcome.capBypassed) add('warn-line bad', 'Teto de preço ignorado.', `Toda tentativa passou do teto de preço do grupo${cap !== null ? ` de ${times(cap)}` : ''} às ${when ? hourLabel(when.hour) : 'esta hora'}, então o teto foi desligado em vez de deixar a tarefa sem nenhum provedor. Este pedido paga preço de pico. Acrescente um provedor que esteja fora do pico nesta hora, aumente o teto, ou passe o trabalho para uma hora fora do pico.`);
+        if (peak) add('warn-line', peak.title, peak.said);
+        if (plan.strategy_degraded !== true) return;
+        const declaredWord = String(plan.strategy_declared == null ? '' : plan.strategy_declared).trim();
+        const reported = String(plan.strategy_degraded_reason == null ? '' : plan.strategy_degraded_reason).trim();
+        const guess = declaredWord && declaredWord !== strategy.key
+          ? strategyWords(declaredWord, { pinPrimary: plan.pin_primary, when, degraded: true }).note : '';
+        const why = reported || guess || 'quem chamou não informou nem hora nem fonte de sorteio';
+        add('warn-line', 'A ordem de reserva não foi a declarada.', (declaredWord && declaredWord !== strategy.key
+          ? `O grupo declara “${declaredWord}”, e não foi isso que rodou: ${why}. `
+          : `A ordem de reserva declarada não foi a que rodou: ${why}. `) + `A fila abaixo é a ordem que de fato rodou — ${strategy.label}.`);
+      }
+
+      function renderChainPlanHeader({ plan, strategy, hourNote, chosenMark, outcome, chips, rejected }) {
+        const group = el('div', 'group');
+        const head = el('div', 'group-head');
+        const note = plan.strategy_degraded === true ? '' : strategy.note;
+        head.append(el('h2', '', 'Plano da fila'), el('span', 'screen-note', `${strategy.label}${note ? ` — ${note}` : ''}` + (hourNote ? ` · ${hourNote}` : '') + (chosenMark ? ` · ${chosenMark}` : '')));
+        group.append(head);
+        if (outcome.capBypassed) group.append(el('div', 'tier-note', 'o teto se desligou nesta decisão: aplicá-lo deixaria a fila vazia'));
+        if (chips.length) group.append(chipList(chips));
+        else group.append(el('p', 'nothing', 'Nenhuma exigência de capacidade foi derivada, então toda tentativa da fila atende.'));
+        if (outcome.filterBypassed && !rejected.length) group.append(el('div', 'tier-note', 'O roteador não informou motivo por tentativa para esta exceção, então compare você mesmo as exigências acima com cada tentativa abaixo.'));
+        return group;
+      }
+
+      function renderChainPlanHops(group, context) {
+        const { chain, unknown, chosenInEffect, chosen, strategy, plan, registry, billing, when, flags, multipliers, live, capMark } = context;
+        if (chain.length) {
+          const drawnChain = chosenInEffect ? displayOrder(chain, strategy.key, chosen, { pinPrimary: plan.pin_primary, registry, billing }) : chain;
+          group.append(chainList(drawnChain, { strategy, registry, billing, when, flags, multipliers, live, cap: capMark, showPrice: true }));
+          const rails = independentRails(drawnChain);
+          group.append(el('div', `tier-fact rails${rails < 2 ? ' thin' : ''}`, `${rails} provedor${rails === 1 ? '' : 'es'} independente${rails === 1 ? '' : 's'} em ${chain.length} tentativa${chain.length === 1 ? '' : 's'} elegíve${chain.length === 1 ? 'l' : 'is'}`));
+          if (rails < 2) group.append(el('div', 'tier-note', `Sem reserva para esta tarefa: toda tentativa elegível cai em ${upstreamGroup(drawnChain[0] && drawnChain[0].provider) || 'um provedor só'}. Uma queda ali e a tarefa não tem para onde ir — a fila declarada é mais larga, mas as exigências desta tarefa descartaram o resto.`));
+        } else group.append(el('p', 'nothing', 'Nenhuma tentativa passou pelo filtro — veja as recusas abaixo.'));
+        if (unknown.length) group.append(el('div', 'tier-note', `Sem verificação, então elegíveis por suposição: ${unknown.join(', ')}. Nada publicou as capacidades delas — declare a janela e as marcas da tentativa no router.yaml para que sejam conferidas.`));
+      }
+
+      function renderChainPlanRejections(group, { outcome, registry, needed, when, cap, flags, multipliers, live }) {
+        const rows = (list) => list.forEach((hop) => group.append(rejectRow(hop, { registry, needed, when, cap,
+          flags: flags[String(hop && hop.model || '')], multiplier: multipliers ? multipliers[String(hop && hop.model || '')] : undefined,
+          live: live[String(hop && hop.model || '')], })));
+        if (outcome.dropped.length) {
+          const head = el('div', 'group-head later');
+          head.append(el('h2', '', `Tirados da fila (${outcome.dropped.length})`), el('span', 'screen-note', 'Não elegível para esta tarefa — não está bloqueada nem fora do ar.'));
+          group.append(head); rows(outcome.dropped);
+        }
+        if (outcome.retained.length) {
+          const head = el('div', 'group-head later');
+          head.append(el('h2', '', `Continuam na fila (${outcome.retained.length})`), el('span', 'screen-note', `Nada foi tirado — o ${outcome.gaveWay || 'controle'} cedeu, então estas são objeções, não exclusões.`));
+          group.append(head); rows(outcome.retained);
+        }
       }
 
       // Close the open row without writing. It is not a mode being left — nothing is
@@ -9048,7 +8932,15 @@
       // `fallback: []` — an empty list is a declaration, an absent key is
       // another thing. Numbering (1ª/2ª/3ª) stays the ladder's job (§2.3):
       // editing shows list order, one authority for the queue.
+      // The inspector keeps this narrow public seam: the caller owns its draft,
+      // touched keys and feedback node; the editor receives only those values and
+      // never reads the inspector's selection or policy snapshot by itself.
       function editTierChain(box, t, touched, msg, tierName) {
+        return renderTierChainEditor({ box, tier: t, touched, msg, tierName, state });
+      }
+
+      function renderTierChainEditor(context) {
+        const { box, tier: t, touched, msg, tierName, state: editorState } = context;
         // The floor is a STABLE object for the whole panel: every model picker
         // and the floor field below share THIS reference, so an edit in one is
         // read by the others (the live count answers the draft, not the value
@@ -9165,8 +9057,8 @@
           // attempt by index; the editor marks that row so the operator lands
           // on the selector they asked for — never a silent jump to the top
           // of the chain.
-          if (state.tierFix && state.tierFix.tier === tierName
-              && state.tierFix.attempt === rowIndex) {
+          if (editorState.tierFix && editorState.tierFix.tier === tierName
+              && editorState.tierFix.attempt === rowIndex) {
             row.classList.add('chain-target');
           }
           row.append(el('div', 'chain-head', heading));
@@ -9346,7 +9238,7 @@
         // Personalizado" is never a post-save discovery.
         const presetNote = el('p', 'field-note');
         const renderPresetNote = () => {
-          const preset = tierPresetOf(t, tierName, state.draft);
+          const preset = tierPresetOf(t, tierName, editorState.draft);
           presetNote.textContent = preset
             ? `Este grupo casa com o preset ${preset.label}.`
             : 'Com esses valores, este grupo não casa com nenhum preset — ele é Personalizado.';
