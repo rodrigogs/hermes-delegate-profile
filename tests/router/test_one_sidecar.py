@@ -5,6 +5,7 @@ fast no-socket cases: token gate outcomes, route dispatch and token precedence.
 """
 from __future__ import annotations
 
+import gzip
 import json
 import re
 from datetime import datetime, timezone
@@ -15,6 +16,7 @@ import yaml
 import router.one_sidecar as sidecar_mod
 from router.one_sidecar import (
     SidecarApp,
+    _accepts_gzip,
     _default_restart_runner,
     parse_json_body,
     read_expected_token,
@@ -68,6 +70,16 @@ def _app(tmp_path, token: Optional[str] = _TOKEN):
 
 def _auth():
     return {"X-Hermes-Sidecar-Token": _TOKEN}
+
+
+def test_accept_encoding_only_allows_gzip_when_it_is_permitted():
+    assert _accepts_gzip(None) is False
+    assert _accepts_gzip("br, identity") is False
+    assert _accepts_gzip("GZip") is True
+    assert _accepts_gzip("gzip; level=1") is True
+    assert _accepts_gzip("gzip; q=0") is False
+    assert _accepts_gzip("gzip; q=invalid") is False
+    assert _accepts_gzip("br; q=1, gzip; q=0.5") is True
 
 
 def test_health_is_open_and_mutating_methods_are_refused(tmp_path):
@@ -288,9 +300,12 @@ def test_console_missing_file_degrades_to_404_json(tmp_path):
         token_path=lambda: tmp_path / "token",
         console_path=tmp_path / "absent.html",
     )
-    status, _body, content_type = app.render_console()
+    status, body, content_type = app.render_console()
     assert status == 404
     assert content_type == "application/json"
+    encoded, headers = app.encode_response(body, "gzip", is_console=True)
+    assert headers == {"Vary": "Accept-Encoding", "Content-Encoding": "gzip"}
+    assert gzip.decompress(encoded) == body
 
 
 def test_write_routes_require_token(tmp_path):

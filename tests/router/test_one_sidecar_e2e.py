@@ -7,6 +7,7 @@ SidecarApp.dispatch() unit test cannot reach.
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import threading
@@ -17,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+import router.one_sidecar as sidecar_mod
 from router.one_sidecar import (
     EXTENSION_ID,
     TOKEN_HEADER,
@@ -293,6 +295,89 @@ def test_console_served_over_http_tokenless(running_sidecar):
         body = resp.read()
         assert int(resp.headers.get("Content-Length", "0")) == len(body)
         assert body[:9].lower() == b"<!doctype"
+
+
+def test_sidecar_negotiates_gzip_for_console_and_json(running_sidecar):
+    """Compression is opt-in, so the deployment byte comparison stays valid.
+
+    The proxy enforces its response ceiling on the encoded body, while the browser
+    must receive the exact console source after decoding. Test the wire bytes and
+    source bytes separately: comparing the compressed bytes to the file would
+    repeat the encoder rather than prove the consumer contract.
+    """
+    base, _token = running_sidecar
+    source = (ROOT / "webui_extension" / EXTENSION_ID / "console.html").read_bytes()
+
+    def response(path: str, headers: dict[str, str] | None = None):
+        request = urllib.request.Request(f"{base}{path}")
+        for name, value in (headers or {}).items():
+            request.add_header(name, value)
+        with urllib.request.urlopen(request, timeout=5) as resp:
+            return resp.status, {key.lower(): value for key, value in resp.headers.items()}, resp.read()
+
+    status, headers, encoded = response("/console", {"Accept-Encoding": "gzip"})
+    assert status == 200
+    assert headers.get("content-encoding") == "gzip"
+    assert headers.get("vary") == "Accept-Encoding"
+    assert int(headers["content-length"]) == len(encoded)
+    assert gzip.decompress(encoded) == source
+
+    status, headers, raw = response("/console")
+    assert status == 200
+    assert "content-encoding" not in headers
+    assert headers.get("vary") == "Accept-Encoding"
+    assert int(headers["content-length"]) == len(raw)
+    assert raw == source
+
+    status, headers, encoded_json = response(
+        "/status", {TOKEN_HEADER: "s3cret-token", "Accept-Encoding": "br, gzip"}
+    )
+    assert status == 200
+    assert headers.get("content-encoding") == "gzip"
+    assert headers.get("vary") == "Accept-Encoding"
+    assert int(headers["content-length"]) == len(encoded_json)
+    assert json.loads(gzip.decompress(encoded_json)) is not None
+
+
+def test_console_gzip_is_cached_by_file_version(tmp_path, monkeypatch):
+    """Two reads share one gzip result; a new mtime creates exactly one new one."""
+    console = tmp_path / "console.html"
+    console.write_bytes(b"<!doctype html><title>cached</title>")
+    token = tmp_path / "token"
+    token.write_text("test-token", encoding="utf-8")
+    app = SidecarApp(
+        RouterService(ROOT / "router.yaml"), token_path=lambda: token, console_path=console
+    )
+    calls = 0
+    original_compress = gzip.compress
+
+    def count_compress(body: bytes) -> bytes:
+        nonlocal calls
+        calls += 1
+        return original_compress(body)
+
+    monkeypatch.setattr(sidecar_mod.gzip, "compress", count_compress)
+    server, thread = _boot_test_server(app)
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        for _ in range(2):
+            request = urllib.request.Request(f"{base}/console")
+            request.add_header("Accept-Encoding", "gzip")
+            with urllib.request.urlopen(request, timeout=5) as response:
+                assert gzip.decompress(response.read()) == console.read_bytes()
+        assert calls == 1
+
+        stat = console.stat()
+        os.utime(console, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))
+        request = urllib.request.Request(f"{base}/console")
+        request.add_header("Accept-Encoding", "gzip")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            assert gzip.decompress(response.read()) == console.read_bytes()
+        assert calls == 2
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_plan_route_happy_path_over_http(running_sidecar):

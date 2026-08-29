@@ -9,6 +9,7 @@ router policy; it cannot edit rules, change providers, or mutate breaker state.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hmac
 import json
 import os
@@ -206,6 +207,29 @@ def _error(status: int, message: str) -> Tuple[int, Dict[str, Any]]:
     return status, {"error": message}
 
 
+def _accepts_gzip(value: Optional[str]) -> bool:
+    """Return whether an Accept-Encoding field permits gzip.
+
+    The WebUI proxy forwards this field unchanged. Honour a client explicitly
+    refusing gzip with ``q=0`` rather than treating a token substring as consent.
+    """
+    if value is None:
+        return False
+    for coding in value.split(","):
+        parts = [part.strip() for part in coding.split(";")]
+        if not parts or parts[0].lower() != "gzip":
+            continue
+        for parameter in parts[1:]:
+            name, separator, raw_value = parameter.partition("=")
+            if separator and name.strip().lower() == "q":
+                try:
+                    return float(raw_value.strip()) > 0
+                except ValueError:
+                    return False
+        return True
+    return False
+
+
 def _omitted_as_text(value: Any) -> Any:
     """Read an absent or null JSON field as the empty string, nothing else.
 
@@ -264,6 +288,9 @@ class SidecarApp:
         self._restart_runner = restart_runner
         self._model_windows = model_windows or dict(MODEL_WINDOWS)
         self._summarizer_window = summarizer_window
+        # Console gzip is expensive enough to hit the proxy ceiling first; cache
+        # by the deployed file's version so reopening the panel does not recompress.
+        self._console_gzip_cache: Optional[Tuple[int, int, bytes]] = None
         # Inject provenance into the service so /status can report it
         if process_started_at is not None:
             service._process_started_at = process_started_at
@@ -281,6 +308,30 @@ class SidecarApp:
             return 200, self._console_path.read_bytes(), "text/html; charset=utf-8"
         except OSError:
             return 404, b'{"error":"console not found"}', "application/json"
+
+    def _gzip_console(self, body: bytes) -> bytes:
+        """Return the cached gzip body for the current on-disk console version."""
+        try:
+            stat = self._console_path.stat()
+        except OSError:
+            return gzip.compress(body)
+        version = (stat.st_mtime_ns, stat.st_size)
+        cached = self._console_gzip_cache
+        if cached is not None and cached[:2] == version:
+            return cached[2]
+        compressed = gzip.compress(body)
+        self._console_gzip_cache = (*version, compressed)
+        return compressed
+
+    def encode_response(
+        self, body: bytes, accept_encoding: Optional[str], is_console: bool = False
+    ) -> Tuple[bytes, Dict[str, str]]:
+        """Negotiate an HTTP response body without changing its decoded contract."""
+        headers = {"Vary": "Accept-Encoding"}
+        if not _accepts_gzip(accept_encoding):
+            return body, headers
+        encoded = self._gzip_console(body) if is_console else gzip.compress(body)
+        return encoded, {**headers, "Content-Encoding": "gzip"}
 
     def _expected_token(self) -> TokenState:
         try:
@@ -640,10 +691,17 @@ def _make_handler(app: SidecarApp) -> type[BaseHTTPRequestHandler]:
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             return
 
-        def _write(self, status: int, body: bytes, content_type: str) -> None:
+        def _write(
+            self, status: int, body: bytes, content_type: str, is_console: bool = False
+        ) -> None:
+            encoded, response_headers = app.encode_response(
+                body, self.headers.get("Accept-Encoding"), is_console
+            )
             self.send_response(status)
             self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
+            for name, value in response_headers.items():
+                self.send_header(name, value)
+            self.send_header("Content-Length", str(len(encoded)))
             # NADA daqui pode ser cacheado, e este é o único ponto por onde toda
             # resposta passa — console e rotas JSON.
             #
@@ -657,14 +715,14 @@ def _make_handler(app: SidecarApp) -> type[BaseHTTPRequestHandler]:
             # tela (um número velho apresentado como agora).
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(body)
+            self.wfile.write(encoded)
 
         def _serve(self, method: str, body: Optional[Dict[str, Any]] = None) -> None:
             parts = urlsplit(self.path)
             # The console is a static HTML shell, served outside the JSON path.
             if method == "GET" and parts.path == "/console":
                 status, html, content_type = app.render_console()
-                self._write(status, html, content_type)
+                self._write(status, html, content_type, is_console=True)
                 return
             status, payload = app.dispatch(
                 method,
