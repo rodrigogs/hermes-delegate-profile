@@ -2293,6 +2293,13 @@
         if (reason.includes('token not provisioned')) {
           return 'Não consegui ler o roteador: o proxy não encontrou o token que o WebUI escreveu.';
         }
+        if (failure && failure.malformed) {
+          const raw = String(failure.data && failure.data.raw || '').replace(/\s+/g, ' ').trim();
+          const excerpt = raw.length > 160 ? `${raw.slice(0, 160)}…` : raw;
+          const route = failure.path ? ` em ${failure.path}` : '';
+          const status = Number.isFinite(failure.status) ? ` (HTTP ${failure.status})` : '';
+          return `Não consegui ler o roteador${route}${status}: a resposta não é JSON${excerpt ? ` — ${excerpt}` : ''}.`;
+        }
         return 'Não consegui ler o roteador. Tente novamente quando o proxy responder.';
       };
       const absence = (empty, path) => state.loading ? WRITE.loading
@@ -2329,16 +2336,25 @@
             credentials: 'same-origin',
           });
           const raw = await res.text();
+          const route = path.replace(/\?.*$/, '');
           let data = {};
-          try { data = raw ? JSON.parse(raw) : {}; } catch (_) { data = { raw }; }
+          try { data = raw ? JSON.parse(raw) : {}; } catch (_) {
+            const failure = {
+              error: true, status: res.status, path: route, malformed: true,
+              data: { raw: raw.slice(0, 240) },
+            };
+            state.pending.delete(key);
+            state.readFailures[route] = failure;
+            return failure;
+          }
           if (res.status === 404) { state.pending.add(key); return { missing: true, data }; }
           state.pending.delete(key);
           if (!res.ok) {
             const failure = { error: true, status: res.status, data };
-            state.readFailures[path.replace(/\?.*$/, '')] = failure;
+            state.readFailures[route] = failure;
             return failure;
           }
-          delete state.readFailures[path.replace(/\?.*$/, '')];
+          delete state.readFailures[route];
           return { data, status: res.status };
         } catch (error) {
           state.unreachable = true;
@@ -11317,18 +11333,21 @@
           }
         }
         const foot = $('jsonFoot');
+        const policyFailure = state.readFailures['/policy'];
         if (foot) {
-          foot.className = 'editor-foot' + (erro ? ' bad' : ' ok');
-          if (erro) {
+          foot.className = 'editor-foot' + (erro || (policyFailure && text === '') ? ' bad' : ' ok');
+          if (policyFailure && text === '') {
+            foot.textContent = readFailureWords(policyFailure);
+          } else if (erro) {
             foot.textContent = jsonFootPhrase(erro);
           } else {
             foot.textContent = doc === null ? 'JSON válido' : jsonOkPhrase(text, doc);
           }
         }
-        // Salvar is armed only while the text parses: a button that exists
-        // solely to refuse the click must not be armed.
+        // Salvar is armed only while the text parses and its source was read: a
+        // button that exists solely to refuse the click must not be armed.
         const apply = $('jsonApply');
-        if (apply) apply.disabled = Boolean(erro);
+        if (apply) apply.disabled = Boolean(erro) || Boolean(policyFailure && text === '');
         // The right half of the footer, the fold button's label and the
         // search counter all follow the same text — one render, one source.
         updateJsonPath();
@@ -11404,14 +11423,14 @@
           // stated absence rather than breaking the panel.
           call('/compaction'),
         ]);
-        state.health = health.error ? null : (health.data || null);
-        state.status = status.error ? null : (status.data || null);
-        state.policy = policy.error ? null : (policy.data || null);
-        state.blocklist = blocklist.error ? null : (blocklist.data || null);
-        state.liveness = liveness.error ? null : (liveness.data || null);
-        state.capabilities = capabilityRegistry(capabilities);
-        state.compaction = compaction.error ? null : (compaction.data || null);
-        state.routes = routes.error ? [] : ((routes.data && Array.isArray(routes.data.routes)) ? routes.data.routes : []);
+        state.health = health.error ? state.health : (health.data || null);
+        state.status = status.error ? state.status : (status.data || null);
+        state.policy = policy.error ? state.policy : (policy.data || null);
+        state.blocklist = blocklist.error ? state.blocklist : (blocklist.data || null);
+        state.liveness = liveness.error ? state.liveness : (liveness.data || null);
+        if (!capabilities.error) state.capabilities = capabilityRegistry(capabilities);
+        state.compaction = compaction.error ? state.compaction : (compaction.data || null);
+        if (!routes.error) state.routes = (routes.data && Array.isArray(routes.data.routes)) ? routes.data.routes : [];
         // The envelope reports how many decisions EXIST; we were discarding it and
         // then presenting the page we happened to receive as the whole record.
         // Measured: the console asked for the default 50 while 71 were recorded, so
@@ -11420,7 +11439,7 @@
         // have rendered "never fired" — a false negative on the exact question the
         // sheet exists to answer. Truncation drops the OLDEST rows, so this gets
         // worse as the log grows; raising the limit alone would only move the cliff.
-        state.routesTotal = routes.error ? 0 : (Number(routes.data && routes.data.count) || state.routes.length);
+        if (!routes.error) state.routesTotal = Number(routes.data && routes.data.count) || state.routes.length;
         // Where fetchAll lands its /status read: the birthmark is noted on
         // every read the console itself makes, so the first full read of a
         // fresh document marks it and any later read (the quiet cycle, the
@@ -11762,7 +11781,7 @@
         // elo could ever meet, and what is billing at peak as distinct from what
         // actually moved.
         contextCeiling, unsatisfiableWords, peakPricing, peakPriceWords, nameList,
-        say, ago, fmt, isNarrow, csrf, writable, call, load, absence, matchesQuery,
+        say, ago, fmt, isNarrow, csrf, writable, call, load, fetchAll, absence, matchesQuery,
         utcClock, syncKeyboard,
         // The phone/desktop draw pair (card t_16e0c261): the pure width
         // deciders with their exact boundaries, and the two syncs that keep

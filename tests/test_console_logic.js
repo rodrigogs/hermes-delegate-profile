@@ -723,6 +723,66 @@ test('a failed reading is not rendered as an empty result for its consumer', asy
     'a failure in one reading must not erase a genuinely empty other reading');
 });
 
+test('a non-JSON 200 policy body is a failed read, not a synthetic policy document', async () => {
+  const html = '<!DOCTYPE html><html><body>sidecar failed</body></html>';
+  const { api, dom } = loadConsole({
+    fetch: (url) => Promise.resolve({
+      ok: true, status: 200,
+      headers: { get: () => url.endsWith('/policy') ? 'text/html' : 'application/json' },
+      text: () => Promise.resolve(url.endsWith('/policy') ? html : '{}'),
+    }),
+  });
+
+  await api.fetchAll();
+
+  assert.equal(api.state.policy, null, 'the policy slot remains untouched when no policy was read');
+  assert.equal(api.state.readFailures['/policy'].status, 200);
+  assert.equal(api.state.readFailures['/policy'].malformed, true);
+  assert.equal(dom.get('policyEditor').value, '', 'an error page never reaches the editor');
+  assert.match(dom.get('jsonFoot').textContent, /\/policy.*HTTP 200.*não é JSON/);
+  assert.doesNotMatch(dom.get('jsonFoot').textContent, /JSON válido/);
+});
+
+test('a proxy HTML 502 preserves the prior policy and keeps only a bounded diagnostic', async () => {
+  const html = `<!DOCTYPE html><html><body>${'x'.repeat(500)}DONT_LEAK</body></html>`;
+  const before = { rules: [{ id: 'still-here' }] };
+  const { api } = loadConsole({
+    fetch: (url) => Promise.resolve({
+      ok: !url.endsWith('/policy'), status: url.endsWith('/policy') ? 502 : 200,
+      headers: { get: () => url.endsWith('/policy') ? 'text/html' : 'application/json' },
+      text: () => Promise.resolve(url.endsWith('/policy') ? html : '{}'),
+    }),
+  });
+  api.state.policy = before;
+
+  await api.fetchAll();
+
+  const failure = api.state.readFailures['/policy'];
+  const words = api.absence('empty', '/policy');
+  assert.equal(api.state.policy, before, 'a failed refresh must not erase the policy already on screen');
+  assert.equal(failure.status, 502);
+  assert.match(words, /\/policy.*HTTP 502.*não é JSON/);
+  assert.ok(words.length < html.length, 'the diagnostic must not carry the whole proxy document');
+  assert.doesNotMatch(words, /DONT_LEAK/);
+});
+
+test('a JSON policy still fills the editor and keeps its document counts', async () => {
+  const policy = { rules: [{ id: 'r1' }], tiers: { T1: { model: 'm', provider: 'p' } } };
+  const { api, dom } = loadConsole({
+    fetch: (url) => Promise.resolve({
+      ok: true, status: 200,
+      headers: { get: () => 'application/json' },
+      text: () => Promise.resolve(JSON.stringify(url.endsWith('/policy') ? policy : {})),
+    }),
+  });
+
+  await api.fetchAll();
+
+  assert.deepEqual(api.state.policy, policy);
+  assert.match(dom.get('policyEditor').value, /"r1"/);
+  assert.match(dom.get('jsonFoot').textContent, /JSON válido.*1 regra, 1 grupo/);
+});
+
 test('a failed policy reading makes every policy absence claim actionable', () => {
   const { api, dom } = loadConsole();
   api.state.loading = false;
