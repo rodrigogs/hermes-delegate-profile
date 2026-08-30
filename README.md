@@ -186,7 +186,7 @@ router** that picks the best profile + model for the task:
   code presence, keyword patterns) against user-defined rules in
   `router.yaml`. Fast, cheap, no LLM call.
 - **Stage 1 — LLM classifier:** fires only when rules can't decide (rules
-  with `action: classify`). Uses a pinned model (glm-5.2/zai, temp=0,
+  with `action: classify`). Uses a pinned model (glm-5.3-flash/zai, temp=0,
   token-capped) to classify task difficulty.
 - **Fail-safe:** if the classifier is unavailable, falls back to a trusted
   strong model from `router.yaml`.
@@ -198,7 +198,7 @@ Example routing behavior with the default config:
 
 | Task | Router picks |
 |------|-------------|
-| `"Rename getCwd in utils.py"` | `coder` + `glm-5.2-fast` (T1) |
+| `"Rename getCwd in utils.py"` | `coder` + `glm-5.3-flash` (T1) |
 | `"Debug race condition in pool"` | `coder` + `claude-opus` (T4) |
 | `"Review PR for security"` | `reviewer` + classify (→ fail_safe if no LLM) |
 

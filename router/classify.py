@@ -2,7 +2,7 @@
 
 Stage 1: fires ONLY on uncertainty (when Stage 0 falls through to
 action:classify). Fresh temp-0, token-capped, hard-timeout one-shot
-on a trusted-streaming provider (glm-5.2/zai).
+on a trusted-streaming provider (glm-5.3-flash/zai).
 
 v1: the classifer interface. The actual model call is injected by the
 adapter (the only Hermes-coupled code). Pure core tests inject a mock.
@@ -52,7 +52,7 @@ class Classifier:
         anchors: Optional[List[Dict[str, Any]]] = None,
     ):
         cls_conf = config.get("classifier", {})
-        self.model: str = cls_conf.get("model", "glm-5.2")
+        self.model: str = cls_conf.get("model", "glm-5.3-flash")
         self.provider: str = cls_conf.get("provider", "zai")
         self.temperature: float = float(cls_conf.get("temperature", 0))
         self.max_tokens: int = int(cls_conf.get("max_tokens", 128))

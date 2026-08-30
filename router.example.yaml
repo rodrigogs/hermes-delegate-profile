@@ -171,7 +171,6 @@ blocklist:
   - deepseek-v4-flash
   - gpt-5.6-terra
   - deepseek-v4-pro
-  - glm-5.3
   - gpt-5.5
   # Trips a rail out of rotation after repeated failures, with exponential
   # backoff between retries. Defaults are conservative; keep the keys even if you
@@ -442,7 +441,7 @@ tiers:
   # automation rows, at a third of the credits. For "single file, standard
   # pattern" work — what the T2 anchor in router/fixtures/anchors.yaml actually
   # describes — that is the right side of the trade. The flagship's clear win is
-  # HLE-with-tools and long trajectories, which is T3/T4 work, and glm-5.3 is
+  # HLE-with-tools and long trajectories, which is T3/T4 work, and glm-5.3-flash is
   # still the third hop of both. Nothing lost it, it moved up the ladder.
   #
   # AND IT CAN SEE. The `vision-required` row above routes here, and until this
@@ -525,7 +524,7 @@ tiers:
     - model: deepseek-v4-pro
       provider: deepseek
       billing_mode: metered
-    - model: glm-5.3
+    - model: glm-5.3-flash
       provider: zai
       billing_mode: plan
     fallback_strategy: sequential
@@ -541,7 +540,7 @@ tiers:
     # WHAT IT DOES, over ALL 168 HOURS of the week — the three cases partition it:
     #   119h (70.8%)  nothing matches -> declared order, both lists empty.
     #    29h (17.3%)  deepseek peaks ALONE, so the pair separates: the chain
-    #                 becomes [gpt-5.6-terra, glm-5.3, deepseek-v4-pro] with
+    #                 becomes [gpt-5.6-terra, glm-5.3-flash, deepseek-v4-pro] with
     #                 `demoted: [deepseek-v4-pro]`. That is 01:00-04:00 UTC daily
     #                 plus 06:00-10:00 UTC at the WEEKEND, when zai's weekday-only
     #                 window is shut. The second hop of every hard task changes
@@ -550,7 +549,7 @@ tiers:
     #                 permutation is the IDENTITY, because demotion preserves
     #                 relative order and both named providers already occupy the
     #                 trailing two slots. `demoted: []` with
-    #                 `peak_priced: [deepseek-v4-pro, glm-5.3]`.
+    #                 `peak_priced: [deepseek-v4-pro, glm-5.3-flash]`.
     # Read `peak_priced` as the cost signal and `demoted` as the order signal.
     # Verify any claim like this by sweeping the week, never at one hour: an
     # earlier version of this comment said the shape "REORDERS NOTHING" on the
@@ -580,7 +579,7 @@ tiers:
     - model: deepseek-v4-pro
       provider: deepseek
       billing_mode: metered
-    - model: glm-5.3
+    - model: glm-5.3-flash
       provider: zai
       billing_mode: plan
     # Same policy as T3, same reason, and — because the chain shape below the

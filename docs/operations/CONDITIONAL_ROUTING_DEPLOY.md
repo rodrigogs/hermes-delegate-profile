@@ -224,8 +224,8 @@ Step 3 must produce **three different plans**, and each one checks a different t
 
 | Hour | Expected | What it proves |
 |---|---|---|
-| `02:00Z` | chain `gpt-5.6-terra, glm-5.3, deepseek-v4-pro`; `demoted: deepseek-v4-pro`; `peak_priced: deepseek-v4-pro` | deepseek peaks and zai does not, so `avoid_peak` really reorders — the second hop changes rail |
-| `07:00Z` | chain `gpt-5.6-terra, deepseek-v4-pro, glm-5.3`; `demoted` **empty**; `peak_priced: deepseek-v4-pro, glm-5.3` | both peak, so the permutation is the identity and the trace says "nothing moved" instead of claiming a reorder |
+| `02:00Z` | chain `gpt-5.6-terra, glm-5.3-flash, deepseek-v4-pro`; `demoted: deepseek-v4-pro`; `peak_priced: deepseek-v4-pro` | deepseek peaks and zai does not, so `avoid_peak` really reorders — the second hop changes rail |
+| `07:00Z` | chain `gpt-5.6-terra, deepseek-v4-pro, glm-5.3-flash`; `demoted` **empty**; `peak_priced: deepseek-v4-pro, glm-5.3-flash` | both peak, so the permutation is the identity and the trace says "nothing moved" instead of claiming a reorder |
 | `15:00Z` | declared order, both lists empty, every multiplier `x1.0` | outside every window the clock changes nothing |
 
 If all three are identical, the clock is not reaching the decision. Against the **old** policy they will be
@@ -263,7 +263,7 @@ change that invalidates the table fails the suite instead of quietly outdating t
   nothing … neither tier holds a dollar-billed elo that peaks", and both halves are wrong: metered
   `deepseek-v4-pro` is dollar-billed and peaks 2.0x at 01:00-04:00 and 06:00-10:00 UTC daily, and the
   policy reorders the chain for 29 of the week's 168 hours (see §6b). It changes which model serves the
-  second hop of every hard and adversarial task, from metered `deepseek-v4-pro` to plan-billed `glm-5.3`.
+  second hop of every hard and adversarial task, from metered `deepseek-v4-pro` to plan-billed `glm-5.3-flash`.
   Treat it as live behaviour, not as a dormant knob.
 - `unsatisfiable` and `peak_priced` **do** render on human-facing surfaces — an earlier version of this
   bullet said nothing did. Both are rendered by the router console
@@ -303,7 +303,7 @@ change that invalidates the table fails the suite instead of quietly outdating t
   Terminal-Bench 2.1 (84.3 vs 88.2) and DeepSWE v1.1 (63.4 vs 66.9), further behind on HLE-with-tools
   (55.3 vs 62.5), and AHEAD on Toolathlon Verified (78.4 vs 73.0), AutomationBench and GDPval-AA.
   Single-file standard-pattern work is the tool-use end of that, and the flagship's clear win — long
-  trajectories and hard reasoning — is T3/T4 work, where `glm-5.3` is still the third hop.
+  trajectories and hard reasoning — is T3/T4 work, where `glm-5.3-flash` is still the third hop.
   Two consequences worth knowing: **T1 and T2 now share a primary** (there is exactly one plan rail below
   the flagship), so the tiers are separated by their fallback economics and time policy rather than by the
   primary — T1 refuses a peak-rate dollar and falls to `mimo-v2.5` at $0.28, T2 reorders by the hour and
