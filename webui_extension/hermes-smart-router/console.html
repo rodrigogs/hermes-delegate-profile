@@ -1611,7 +1611,7 @@
     .pwin-name small { display: block; font: var(--t-micro) var(--sans); color: var(--muted); font-weight: 400; letter-spacing: 0; overflow-wrap: anywhere; }
     .pwin-now { font: var(--t-meta) var(--mono); color: var(--ok-text); white-space: nowrap; }
     .pwin-now.up { color: var(--bad-text); }
-    .pwin-windows { margin: 0; padding: 8px 12px 10px; list-style: none; border-top: 1px solid var(--soft); }
+    .pwin-windows { margin: 0; padding: 8px 12px 10px; list-style: none; border-top: 1px solid var(--line); }
     .pwin-window { display: grid; grid-template-columns: 74px minmax(0, 1fr) auto; gap: 9px; align-items: baseline; min-height: 32px; font: var(--t-meta) var(--mono); font-variant-numeric: tabular-nums; }
     .pwin-when { color: var(--text); }
     .pwin-days { color: var(--muted); font-family: var(--sans); font-size: var(--t-micro); overflow-wrap: anywhere; }
@@ -1621,7 +1621,7 @@
     /* The write surface of the list form: the band's hour-click, offered at
        the hour the operator is looking at (the "agora" the head names).
        44px because a phone thumb is the audience of this form (§7). */
-    .pwin-add { width: 100%; min-height: 44px; background: none; border: 0; border-top: 1px solid var(--soft); color: var(--info-text); font: var(--t-meta) var(--sans); cursor: pointer; }
+    .pwin-add { width: 100%; min-height: 44px; background: none; border: 0; border-top: 1px solid var(--line); color: var(--info-text); font: var(--t-meta) var(--sans); cursor: pointer; }
 
     /* The peak-policy selector: a real <select> disabled for now, so the one
        gesture that will eventually write is visible where it will live. The
@@ -1670,7 +1670,7 @@
       font: var(--t-micro) var(--mono); color: var(--muted); background: var(--surface-raised);
       border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; cursor: pointer;
     }
-    .compaction-chips .chip.marcado { color: var(--text); border-color: var(--accent); background: var(--soft); }
+    .compaction-chips .chip.marcado { color: var(--accent-text); border-color: var(--accent-bg-strong); background: var(--accent-bg); }
 
 </style>
 </head>

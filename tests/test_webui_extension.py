@@ -795,6 +795,77 @@ def test_extension_css_only_dresses_the_nav_button():
         assert shared not in css, f"{shared} belongs to hermes-panel.css, not here"
 
 
+def test_every_css_token_the_console_uses_resolves_to_something():
+    """A `var()` on an undefined token is not a fallback — it kills the declaration.
+
+    Same defect class the nav-button test above already guards, which had gone
+    unguarded inside the console: `var(--soft)` was used three times and defined
+    nowhere. CSS treats a shorthand carrying an unresolvable `var()` as INVALID AT
+    COMPUTED-VALUE TIME, so the property takes its initial value rather than
+    ignoring the one component — `border-top: 1px solid var(--soft)` computed to
+    `none` and `background: var(--soft)` to `transparent`. Two panel dividers did
+    not render at all, and the marked compaction chip had no fill, distinguishable
+    only by its border.
+
+    The contract, stated as the three legitimate cases:
+
+      * defined in this file's own `<style>` — the normal case;
+      * a `--host-*` bridge input, which the host may or may not set, so it MUST
+        carry a fallback (this file's fallback values are its no-theme design);
+      * set at runtime from JS via `setProperty`, which likewise must carry a
+        fallback for the frames before the script runs.
+
+    Anything else is a token that resolves to nothing.
+    """
+    import re
+
+    html = (EXTENSION / "console.html").read_text(encoding="utf-8")
+    styles = re.findall(r"<style>(.*?)</style>", html, re.S)
+    assert len(styles) == 1, f"expected one inline <style>, found {len(styles)}"
+    style = styles[0]
+
+    defined = set(re.findall(r"(--[a-z0-9-]+)\s*:", style))
+    js_set = set(re.findall(r"setProperty\(\s*['\"](--[a-z0-9-]+)['\"]", html))
+
+    # Every use, split by whether it named a fallback.
+    with_fallback = set(re.findall(r"var\(\s*(--[a-z0-9-]+)\s*,", style))
+    bare = set(re.findall(r"var\(\s*(--[a-z0-9-]+)\s*\)", style))
+
+    unresolvable = sorted(
+        token for token in bare
+        if token not in defined and not token.startswith("--host-")
+    )
+    assert not unresolvable, (
+        f"used with no fallback and never defined, so the whole declaration is "
+        f"dropped: {unresolvable}"
+    )
+
+    # A bridge input or a JS-driven token must never be used bare: the host may not
+    # set it, and the script has not run for the first paint.
+    needs_fallback = sorted(
+        token for token in bare
+        if token.startswith("--host-") or token in js_set
+    )
+    assert not needs_fallback, (
+        f"these are set from outside the stylesheet and must carry a fallback: "
+        f"{needs_fallback}"
+    )
+
+    # And a token used only WITH a fallback still has to come from somewhere, or
+    # the fallback is the only value that will ever apply — which is a defect
+    # dressed as a default.
+    orphans = sorted(
+        token for token in with_fallback
+        if token not in defined
+        and not token.startswith("--host-")
+        and token not in js_set
+    )
+    assert not orphans, (
+        f"no definition and no setProperty, so only the fallback can ever apply: "
+        f"{orphans}"
+    )
+
+
 def test_embedded_console_hides_its_own_title_and_tabs():
     """Inside the Hermes One panel the shell already names the surface twice —
     the rail label and the sidebar's panel head — so the console's own masthead
