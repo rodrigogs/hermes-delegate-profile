@@ -481,23 +481,30 @@ def test_decision_without_model_passes_through_unvetted():
 
 
 def test_blocklist_chain_fully_blocked_denies():
-    """When every candidate in the fallback chain is blocked, deny — don't dispatch."""
+    """When there is no clean rail ANYWHERE, deny — don't dispatch.
+
+    Banning only the flat ``fallback_chain`` is no longer enough to reach this
+    branch, and it never should have been: the veto searches the plan and the
+    tier's own declared hops first, so a config that left those clean had a route
+    and this test was asserting a denial the operator did not ask for. The ban is
+    therefore derived from the policy (:func:`_ban_every_declared_elo`) so the
+    docstring above is true by construction.
+    """
     from router.adapter import route
     from router.blocklist import Blocklist
 
-    # First discover what the router picks for this task, then ban the whole
-    # chain INCLUDING the chosen model so no reachable replacement remains.
     cfg = copy.deepcopy(_live_config())
     task = "rename a variable in utils.py"
     chosen = route(task, cfg).get("model")
     assert chosen, "the live config must route this task somewhere"
 
-    chain = [chosen, "fallback-a", "fallback-b"]
-    cfg["blocklist"]["fallback_chain"] = chain
-    cfg["blocklist"]["manual_ban"] = [
-        {"model": m, "provider": "", "reason": "test-ban"} for m in chain
-    ]
+    cfg["blocklist"]["fallback_chain"] = [chosen, "fallback-a", "fallback-b"]
+    _ban_every_declared_elo(cfg)
     bl = Blocklist(cfg)
+    # Non-vacuous by construction: the model this turn routes to really is banned,
+    # and so is every rail the veto could escape to.
+    assert bl.is_blocked(chosen, "") is True
+
     out = route(task, cfg, blocklist=bl)
     assert out.get("deny") is True
     assert out.get("cause") == "blocklist_veto"
@@ -541,7 +548,12 @@ def test_a_guard_firing_model_the_router_chose_is_not_dispatched():
 
 
 def test_guard_firing_primary_with_no_clean_fallback_denies_with_cause():
-    """Guard fires on the primary AND every fallback link -> deny, cause=selection_vetoed."""
+    """Guard fires on EVERY declared rail -> deny, cause=selection_vetoed.
+
+    Same correction as :func:`test_blocklist_chain_fully_blocked_denies`: the
+    guard has to fire on every elo the policy names, not just on the flat
+    fallback chain, or the veto legitimately finds a clean rail in the plan.
+    """
     from router.decision_log import DecisionLog
 
     cfg = copy.deepcopy(_live_config())
@@ -549,12 +561,10 @@ def test_guard_firing_primary_with_no_clean_fallback_denies_with_cause():
     chosen = route(task, cfg).get("model")
     assert chosen
 
-    # No clean rail anywhere: the guard fires on the primary and the whole
-    # fallback chain (blocklist fallback_chain is flat model ids).
-    chain = [chosen, "fallback-a", "fallback-b"]
-    cfg["blocklist"]["fallback_chain"] = chain
+    cfg["blocklist"]["fallback_chain"] = [chosen, "fallback-a", "fallback-b"]
     log = DecisionLog()
-    out = route(task, cfg, warn_fn=_firing_guard(set(chain)), decision_log=log)
+    out = route(task, cfg, warn_fn=_firing_guard(_every_declared_elo(cfg)),
+                decision_log=log)
     assert out.get("deny") is True
     assert out.get("cause") == "selection_vetoed"
     assert out.get("blocked_model") == chosen
@@ -1441,6 +1451,58 @@ def _declared_rails(cfg):
     return rails
 
 
+def _every_declared_elo(cfg):
+    """Every model id the policy names ANYWHERE, as a set.
+
+    Tier primaries, tier fallback hops, ``blocklist.fallback_chain`` and
+    ``fail_safe`` — i.e. every source :func:`adapter._reachable_replacement`
+    searches, plus the one the executor falls back to.
+
+    Derived rather than hand-listed on purpose. "No clean rail anywhere" is a
+    PROPERTY of the policy, and a test that spelled the set out would keep passing
+    for the wrong reason the moment a tier gained a hop — which is exactly how the
+    deny tests below came to construct a config that still had clean rails in it
+    while their docstrings claimed it did not. Defensive about shape because these
+    fixtures deliberately include half-edited tiers (a scalar ``fallback:``).
+    """
+    elos = set()
+
+    def add(hop):
+        if isinstance(hop, dict) and hop.get("model"):
+            elos.add(str(hop["model"]))
+
+    for tier in (cfg.get("tiers") or {}).values():
+        if not isinstance(tier, dict):
+            continue
+        add(tier)
+        hops = tier.get("fallback")
+        if isinstance(hops, list):
+            for hop in hops:
+                add(hop)
+        elif isinstance(hops, str) and hops:
+            elos.add(hops)
+    add(cfg.get("fail_safe"))
+    add(cfg.get("default"))
+    chain = (cfg.get("blocklist") or {}).get("fallback_chain")
+    if isinstance(chain, list):
+        elos.update(str(m) for m in chain if m)
+    return elos
+
+
+def _ban_every_declared_elo(cfg):
+    """``cfg`` with a provider-wide manual ban on every elo it names.
+
+    Leaves nothing attemptable, which is what the "…still denies" tests mean and
+    what they have to construct now that the veto searches the plan and the
+    declared chain before the flat ``fallback_chain``.
+    """
+    cfg["blocklist"]["manual_ban"] = [
+        {"model": model, "provider": "", "reason": "test-ban"}
+        for model in sorted(_every_declared_elo(cfg))
+    ]
+    return cfg
+
+
 # The degradation shapes the veto has to survive: one per branch it can take, and
 # reached through BOTH halves of Blocklist.is_blocked (config deny rows and
 # persisted cooldowns), because the veto must not depend on which one fired. Each
@@ -1607,6 +1669,109 @@ class TestTheVetoBindsWhatRuns:
         assert not any(bl.is_blocked(model, provider or "")
                        for model, provider in targets)
 
+    def test_a_banned_primary_missing_from_fallback_chain_still_routes(self):
+        """A tier primary absent from ``fallback_chain`` must not deny the turn.
+
+        ``blocklist.fallback_chain`` is documented as the union of every tier member
+        and has to be REGENERATED BY HAND when ``tiers`` changes; nothing lints that
+        and the console's tier editor does not do it. So "primary that is not in the
+        flat list" is a state one field edit reaches — and while the veto searched
+        only that list, ``fallback_for`` had no position to walk from and a single
+        ban refused the whole turn with the tier's own fallback sitting there clean.
+
+        This is the shape commit bdb92f6 produced for real: it retired glm-5.3 from
+        the tier table, correctly dropped it from ``fallback_chain``, and every
+        policy still naming glm-5.3 as a primary became un-substitutable.
+        """
+        cfg = _banned_live_config(
+            VISION_BLIND_PRIMARY, base=_vision_gap_config())
+        assert VISION_BLIND_PRIMARY not in cfg["blocklist"]["fallback_chain"], (
+            "this test is about a primary the flat chain does not list — if the "
+            "shipped chain lists it again, the premise is gone"
+        )
+        bl = Blocklist(cfg)
+
+        result = route(SHIPPED_VISION_TASK, cfg, blocklist=bl, now=PEAK_CLOCK)
+
+        assert result.get("deny") is not True, (
+            "the flat chain could not answer, but the tier's own declared "
+            "fallback could"
+        )
+        assert result["blocked_model"] == VISION_BLIND_PRIMARY
+        assert result["model"] != VISION_BLIND_PRIMARY
+        assert not bl.is_blocked(result["model"], result.get("provider") or "")
+
+    def test_a_substitution_for_a_vision_turn_can_still_see(self):
+        """The substitute is capability-aware because it comes from the PLAN.
+
+        ``blocklist.fallback_chain`` is a flat list of model ids with no
+        capabilities attached, so a substitution taken from it can hand a VISION
+        turn a text-only model. Measured on the shipped policy: with the T2 primary
+        banned the flat chain offered deepseek-v4-flash, which cannot see, while the
+        planned chain was holding a sighted hop the whole time.
+
+        The plan is the capability-filtered order, so asking it first is what makes
+        this hold — asserted as the PROPERTY (every attempted elo can see) rather
+        than as a fixed model id, so it survives a roster change.
+        """
+        from router.capabilities import capabilities_for
+
+        cfg = _banned_live_config(
+            VISION_BLIND_PRIMARY, base=_vision_gap_config())
+        bl = Blocklist(cfg)
+
+        result = route(SHIPPED_VISION_TASK, cfg, blocklist=bl, now=PEAK_CLOCK)
+
+        targets = _targets(result)
+        assert targets, "a vision turn must still have something to attempt"
+        blind = [
+            model for model, _p in targets
+            if capabilities_for(model).get("vision") is False
+        ]
+        assert not blind, f"a vision turn was handed elos that cannot see: {blind}"
+
+    def test_a_substitution_that_escapes_to_another_tier_keeps_that_tiers_rail(
+        self, tmp_path, monkeypatch,
+    ):
+        """The cross-tier walk recovers the rail from the tier that declares it.
+
+        The one job left to ``blocklist.fallback_chain``: leaving the tier when
+        every rail this tier declares is refused. The entry it hands back is a bare
+        model id, so its rail has to come from the tier table — and here it is
+        another tier's PRIMARY, which is the row a fallback-hops-only scan would
+        miss. A substitution with no rail is not cosmetic: ``is_blocked(model, "")``
+        cannot see a cooldown keyed ``model@provider``, so the next turn re-offers
+        the elo that just failed.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg = copy.deepcopy(_live_config())
+        task = "rename a variable in utils.py"
+        chosen = route(task, cfg, now=PEAK_CLOCK)["model"]
+
+        # Ban everything the winning tier declares, so only the cross-tier walk is
+        # left, and aim the walk at a model no tier lists as a fallback hop.
+        escape = "gpt-5.6-terra"
+        rails = _declared_rails(cfg)
+        primaries = {
+            str(t.get("model")) for t in cfg["tiers"].values() if t.get("model")
+        }
+        assert escape in primaries, "the escape target must be a tier PRIMARY"
+        banned = _every_declared_elo(cfg) - {escape}
+        cfg["blocklist"]["manual_ban"] = [
+            {"model": model, "provider": "", "reason": "test-ban"}
+            for model in sorted(banned)
+        ]
+        cfg["blocklist"]["fallback_chain"] = [chosen, escape]
+        bl = Blocklist(cfg)
+
+        result = route(task, cfg, blocklist=bl, now=PEAK_CLOCK)
+
+        assert result.get("deny") is not True
+        # The rail is read off the OPERATOR'S table, not resolved with the code
+        # under test — otherwise this checks the scan against itself.
+        assert (result["model"], result["provider"]) == (escape, rails[escape])
+        assert _targets(result)[0] == (escape, rails[escape])
+
     def test_the_first_attempt_is_never_a_breaker_open_elo(
         self, tmp_path, monkeypatch,
     ):
@@ -1767,18 +1932,15 @@ class TestTheVetoBindsWhatRuns:
     def test_a_fully_blocked_fallback_chain_still_denies_and_records_the_denial(self):
         """The pre-existing denial survives, and now reaches the trace.
 
-        An operator who bans the primary AND every link of its escape hatch meant
+        An operator who bans the primary AND every rail it could escape to meant
         to refuse the turn. What is new is that the recorded entry is the DENIAL
         rather than the decision that would have run.
         """
         cfg = copy.deepcopy(_live_config())
         task = "rename a variable in utils.py"
         chosen = route(task, cfg, now=PEAK_CLOCK)["model"]
-        chain = [chosen, "fallback-a", "fallback-b"]
-        cfg["blocklist"]["fallback_chain"] = chain
-        cfg["blocklist"]["manual_ban"] = [
-            {"model": model, "provider": "", "reason": "test-ban"} for model in chain
-        ]
+        cfg["blocklist"]["fallback_chain"] = [chosen, "fallback-a", "fallback-b"]
+        _ban_every_declared_elo(cfg)
         bl = Blocklist(cfg)
 
         dlog = DecisionLog()
@@ -1789,8 +1951,8 @@ class TestTheVetoBindsWhatRuns:
             "blocked_model": chosen,
             "cause": "blocklist_veto",
             "reason": (
-                f"routed model {chosen!r} is blocked and the fallback chain "
-                "offers no reachable replacement"
+                f"routed model {chosen!r} is blocked and no clean rail remains "
+                "in the plan, the declared chain or the fallback chain"
             ),
         }
         entry = dlog.tail(1)[0]
@@ -1997,9 +2159,17 @@ class TestTheVetoUnderAHalfEditedPolicy:
         would hand this substitution back with no rail. That is not a cosmetic
         loss: `is_blocked(model, "")` cannot see a cooldown keyed
         ``model@provider``, so the next turn would re-offer the same elo.
+
+        Reaching the scan at all requires the CROSS-TIER source to be the one that
+        answers, so T1's own declared fallback is banned as well: the veto searches
+        the plan and the declared chain first, and both carry their rail already.
+        ``blocklist.fallback_chain`` is the only source that needs a rail recovered,
+        which is precisely why it is the source this test drives.
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cfg = copy.deepcopy(_MID_EDIT_TIERS_CONFIG)
+        cfg["blocklist"]["manual_ban"].append(
+            {"model": "gpt-5.6-luna", "provider": "", "reason": "test-ban"})
         bl = Blocklist(cfg)
         dlog = DecisionLog()
         result = route("Rename getCwd in src/utils.py", cfg, blocklist=bl,
@@ -2018,7 +2188,7 @@ class TestTheVetoUnderAHalfEditedPolicy:
         assert _targets(result)[0] == (result["model"], result["provider"])
         assert _hops(plan["chain"])[0] == (result["model"], result["provider"])
         refused = {hop["model"] for hop in plan["blocked"]}
-        assert refused == {"glm-4.7"}
+        assert refused == {"glm-4.7", "gpt-5.6-luna"}
         assert refused.isdisjoint(model for model, _p in _targets(result))
         assert plan["blocklist_bypassed"] is False
 
@@ -2147,17 +2317,15 @@ class TestAnOutOfStepPlanner:
     ):
         """A rules.py behind this file routes pre-capability — it does not un-veto.
 
-        With no planner there is no chain to vet, so the veto has only the
-        DECLARED primary to work with; when the whole fallback_chain is banned too
-        the turn must still be refused rather than dispatched to a target known to
-        be down. And the denial must reach the trace, which records no plan rather
-        than inventing an empty one.
+        With no planner there is no chain to vet, so the veto has only the DECLARED
+        chain and the flat fallback_chain to work with; when every elo in both is
+        banned the turn must still be refused rather than dispatched to a target
+        known to be down. And the denial must reach the trace, which records no plan
+        rather than inventing an empty one.
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(adapter, "plan_chain", None)
-        cfg = copy.deepcopy(_MID_EDIT_TIERS_CONFIG)
-        cfg["blocklist"]["manual_ban"].append(
-            {"model": "mimo-v2.5", "provider": "", "reason": "test-ban"})
+        cfg = _ban_every_declared_elo(copy.deepcopy(_MID_EDIT_TIERS_CONFIG))
         bl = Blocklist(cfg)
         dlog = DecisionLog()
         result = route("Rename getCwd in src/utils.py", cfg, blocklist=bl,
@@ -2167,8 +2335,9 @@ class TestAnOutOfStepPlanner:
             "deny": True,
             "blocked_model": "glm-4.7",
             "cause": "blocklist_veto",
-            "reason": ("routed model 'glm-4.7' is blocked and the fallback chain "
-                       "offers no reachable replacement"),
+            "reason": ("routed model 'glm-4.7' is blocked and no clean rail "
+                       "remains in the plan, the declared chain or the fallback "
+                       "chain"),
         }
         entry = dlog.tail(1)[0]
         assert entry["output"]["deny"] is True
@@ -2188,6 +2357,11 @@ class TestAnOutOfStepPlanner:
         untouched — there are no hops in it to remove — while the DECLARED primary
         is substituted as usual, because that is what the executor attempts when
         the plan gives it no order to follow.
+
+        The substitute is T1's own declared fallback rather than the flat chain's
+        ``mimo-v2.5``: with no planned chain to search, the veto's second source is
+        the declared chain, and a tier's own escape hatch outranks the cross-tier
+        list. That hop also arrives with its rail already attached, so no scan runs.
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(
@@ -2200,7 +2374,9 @@ class TestAnOutOfStepPlanner:
         result = route("Rename getCwd in src/utils.py", cfg, blocklist=bl,
                        decision_log=dlog, now=FIXED_CLOCK)
 
-        assert (result["model"], result["provider"]) == ("mimo-v2.5", "xiaomi")
+        assert (result["model"], result["provider"]) == (
+            "gpt-5.6-luna", cfg["tiers"]["T1"]["fallback"][0]["provider"],
+        )
         assert result["blocked_model"] == "glm-4.7"
         assert "chain" not in result, "a chain-less plan leaves the declared order"
         assert not any(bl.is_blocked(model, provider or "")

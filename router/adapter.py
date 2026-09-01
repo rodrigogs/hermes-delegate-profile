@@ -674,14 +674,13 @@ def _veto_blocked(
 
       1. ``output["model"]`` — the declared tier primary. It is what the executor
          attempts when there is no plan, and what every display surface calls
-         "the model". A refused primary is substituted from
-         ``blocklist.fallback_chain``; when that chain offers no reachable
-         replacement the decision is DENIED rather than dispatched to a target
-         known to be down (an operator who bans the primary and every link of
-         its escape hatch meant to refuse the turn). A candidate is vetted on the
-         RAIL it would be dispatched on and that rail travels back paired with
-         it — see :func:`_reachable_replacement`, which is where vetting the
-         model alone left a hole in the invariant below.
+         "the model". A refused primary is substituted by
+         :func:`_reachable_replacement`, which searches the PLAN first, then the
+         declared chain, then ``blocklist.fallback_chain``; the decision is
+         DENIED only when all three offer no clean rail, i.e. when there is
+         genuinely nothing to attempt. A candidate is vetted on the RAIL it
+         would be dispatched on and that rail travels back paired with it —
+         vetting the model alone left a hole in the invariant below.
       2. ``plan["chain"]`` — the hops the executor iterates. Refused hops are
          dropped.
 
@@ -734,7 +733,9 @@ def _veto_blocked(
         return output, _vet_plan_chain(plan, output, bl, head=None, warn_fn=warn), cause
 
     selection_vetoed = _selection_vetoes(warn, chosen, chosen_provider)
-    replacement = _reachable_replacement(chosen, bl, output, tiers, warn_fn=warn)
+    replacement = _reachable_replacement(
+        chosen, bl, output, tiers, warn_fn=warn, plan=plan,
+    )
     if replacement is None:
         if selection_vetoed:
             denied = {
@@ -743,7 +744,8 @@ def _veto_blocked(
                 "cause": "selection_vetoed",
                 "reason": (
                     f"routed model {chosen!r} fired the selection guard and "
-                    "the fallback chain offers no clean rail"
+                    "no clean rail remains in the plan, the declared chain or "
+                    "the fallback chain"
                 ),
             }
             return (
@@ -756,19 +758,21 @@ def _veto_blocked(
             "blocked_model": chosen,
             "cause": "blocklist_veto",
             "reason": (
-                f"routed model {chosen!r} is blocked and the fallback chain "
-                "offers no reachable replacement"
+                f"routed model {chosen!r} is blocked and no clean rail remains "
+                "in the plan, the declared chain or the fallback chain"
             ),
         }
         return denied, _plan_with_no_attempt(plan, chosen), "blocklist_veto"
 
-    # NOTE, deliberately not changed here: the replacement comes from the flat
-    # ``blocklist.fallback_chain``, which is capability-blind. With glm-5.3 banned
-    # the shipped chain hands back deepseek-v4-flash — which cannot see — for a
-    # VISION turn, while the plan had gpt-5.6-luna (which can) sitting in its
-    # chain. Substituting from the vetted plan head instead would be strictly
-    # better, but it also changes when a fully-banned fallback_chain still denies,
-    # so it is reported rather than smuggled in with this fix.
+    # The substitution now comes from the PLAN first (see
+    # :func:`_reachable_replacement`), which is what closes the capability-blind
+    # hole this comment used to only report. Measured on the shipped policy with
+    # glm-5.3 banned on a VISION turn: the flat ``blocklist.fallback_chain`` handed
+    # back deepseek-v4-flash, which cannot see, while the plan was holding
+    # gpt-5.6-luna, which can. The plan is capability-filtered, cost-ordered and
+    # already provider-paired, so preferring it is strictly better on both axes —
+    # and it is the order the executor iterates anyway, so the vetted head and
+    # chain[0] now agree structurally instead of by coincidence.
     sub_model, sub_provider = replacement
     vetted = dict(output)
     vetted["model"] = sub_model
@@ -802,14 +806,55 @@ def _reachable_replacement(
     output: Dict[str, Any],
     tiers: Optional[Dict[str, Any]],
     warn_fn: Optional[Callable[..., List[Any]]] = None,
+    plan: Optional[Dict[str, Any]] = None,
 ) -> Optional[Tuple[str, str]]:
-    """Walk ``blocklist.fallback_chain`` to the first CLEAN (model, rail).
+    """The first CLEAN (model, rail) that could replace a refused primary.
 
-    A replacement that is itself blocked — by the blocklist OR by the
-    selection guard (``warn_fn``) — is no replacement, so the walk continues
-    rather than swapping one dead target for another. ``seen`` guards a
-    fallback_chain an operator made cyclic. None means "no reachable
-    replacement", which is the caller's cue to deny.
+    Three sources are searched IN ORDER, and the order is the design:
+
+      1. ``plan["chain"]`` — the planner's own attempt order. It is
+         capability-filtered, cost-ordered and every hop already carries the rail
+         it would be dispatched on, so it needs no rail recovery and cannot hand
+         back an elo the capability filter already refused. It is also the order
+         the executor iterates, so a head taken from here agrees with ``chain[0]``
+         structurally rather than by coincidence.
+      2. ``_declared_chain(output)`` — the tier's declared hops, including the ones
+         the planner dropped (capability-rejected or cost-capped). Reached only
+         when every planned hop is refused: a cost control must never cause an
+         outage, the same reading ``apply_time_cap`` uses for its own bypass.
+      3. ``blocklist.fallback_chain`` — the operator's flat CROSS-TIER escape
+         hatch. It is the only source that can leave this tier, which is why it is
+         kept, and the only one that needs :func:`_dispatch_provider` to recover a
+         rail (it is bare model ids).
+
+    Searching only source 3 was a hole with two separate consequences, both
+    measured on the shipped policy:
+
+      * CAPABILITY-BLINDNESS. With glm-5.3 banned on a vision turn the flat chain
+        handed back deepseek-v4-flash, which cannot see, while the plan was
+        holding gpt-5.6-luna, which can.
+      * A TOTAL REFUSAL AN OPERATOR CAN REACH BY EDITING ONE FIELD.
+        ``fallback_chain`` is documented as the union of every tier member and has
+        to be REGENERATED by hand when ``tiers`` changes; nothing lints that. Point
+        a tier's primary at a model absent from the list — which the console's tier
+        editor permits — and ``fallback_for`` has no position to walk from, so a
+        single ban denied the whole turn while that tier's own declared fallback
+        was sitting there clean. That is what
+        ``test_the_first_attempt_is_never_a_manually_banned_elo`` caught after
+        commit bdb92f6 retired glm-5.3 from the tier table.
+
+    A candidate that is itself refused — by the blocklist OR by the selection
+    guard (``warn_fn``) — is no replacement, so the search continues rather than
+    swapping one dead target for another. None means nothing anywhere is clean,
+    which is the caller's cue to deny.
+
+    Each candidate is vetted AT MOST ONCE across all three sources
+    (``checked``). That is not just an optimisation: ``Blocklist.is_blocked``
+    transitions an expired-OPEN breaker to HALF_OPEN and CONSUMES its single probe
+    slot, so re-vetting the same elo would burn a second slot for one decision.
+    ``walked`` stays a separate set from ``checked`` because source 3 needs a
+    genuine cycle guard for a ``fallback_chain`` an operator made cyclic — a
+    candidate already vetted above must be SKIPPED without stopping the walk.
 
     Each candidate is vetted WITH THE PROVIDER IT WOULD BE DISPATCHED ON,
     resolved by :func:`_dispatch_provider`, and that provider is returned paired
@@ -830,17 +875,67 @@ def _reachable_replacement(
     empty provider as "banned on every rail"), so ORing the two would refuse a
     model on rails the operator never named.
     """
+    checked = {chosen}
+
+    # Sources 1 and 2 are hop lists that already name their own rail; only fall
+    # back to the policy scan for a hop that declares none.
+    for hop in _planned_hops(plan) + _declared_chain(output):
+        candidate = str(hop.get("model") or "")
+        if not candidate or candidate in checked:
+            continue
+        checked.add(candidate)
+        provider = str(hop.get("provider") or "") or _dispatch_provider(
+            candidate, output, tiers,
+        )
+        if _is_clean(bl, warn_fn, candidate, provider):
+            return candidate, provider
+
+    # Source 3: the flat cross-tier list. Bare model ids, so the rail comes from
+    # the policy scan.
+    walked = {chosen}
     replacement = bl.fallback_for(chosen)
-    seen = {chosen}
-    while replacement and replacement not in seen:
-        provider = _dispatch_provider(replacement, output, tiers)
-        if not bl.is_blocked(replacement, provider) and not _selection_vetoes(
-            warn_fn, replacement, provider,
-        ):
-            return replacement, provider
-        seen.add(replacement)
+    while replacement and replacement not in walked:
+        walked.add(replacement)
+        if replacement not in checked:
+            checked.add(replacement)
+            provider = _dispatch_provider(replacement, output, tiers)
+            if _is_clean(bl, warn_fn, replacement, provider):
+                return replacement, provider
         replacement = bl.fallback_for(replacement)
     return None
+
+
+def _planned_hops(plan: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The planner's attempt order as named hops, or [] when there is no plan.
+
+    A plan is optional on this path (a caller may route with no capability layer
+    at all), and an unattributable hop is not a candidate — the same reading
+    :func:`_has_named_hop` uses.
+    """
+    if not isinstance(plan, dict):
+        return []
+    chain = plan.get("chain")
+    if not isinstance(chain, list):
+        return []
+    return [hop for hop in chain if isinstance(hop, dict) and hop.get("model")]
+
+
+def _is_clean(
+    bl: Blocklist,
+    warn_fn: Optional[Callable[..., List[Any]]],
+    model: str,
+    provider: str,
+) -> bool:
+    """True when ``model@provider`` is refused by neither veto.
+
+    The two refusals are deliberately NOT distinguished here — a caller that needs
+    to name which one fired (``reject_reason`` on a rejected hop) asks the two
+    predicates separately. This helper exists for the callers that only need
+    "is this rail attemptable", so the pair cannot drift between them.
+    """
+    return not bl.is_blocked(model, provider) and not _selection_vetoes(
+        warn_fn, model, provider,
+    )
 
 
 def _dispatch_provider(
@@ -855,13 +950,21 @@ def _dispatch_provider(
     a breaker cooldown is keyed ``model@provider`` and half of that key cannot be
     guessed at lookup time.
 
-    This decision's OWN declared hops are consulted first: the tier that won this
-    turn has already paired that elo with a rail, and it is the rail the executor
-    would use for it. Then the tier table — primaries before per-tier ``fallback``
-    hops — which is what makes the answer total on the shipped policy, since
-    router.yaml regenerates ``fallback_chain`` from the tier members. (The
-    executor's ``_provider_of_declared_model`` scans the same two places for the
-    same reason: it is filling in the other half of the same key.)
+    The scan is the tier table: primaries before per-tier ``fallback`` hops, which
+    is what makes the answer total on the shipped policy, since router.yaml
+    regenerates ``fallback_chain`` from the tier members. (The executor's
+    ``_provider_of_declared_model`` scans the same places for the same reason: it
+    is filling in the other half of the same key.)
+
+    This decision's OWN declared hops used to be consulted first, and that loop is
+    gone rather than left as belt-and-braces: it is now PROVABLY dead. Both callers
+    live in :func:`_reachable_replacement`, which searches the planned and declared
+    chains BEFORE the flat list and takes each hop's own ``provider`` from the hop
+    itself — so by the time this function is asked anything, either the model is not
+    in the declared chain at all (the cross-tier walk), or the hop naming it
+    declared no rail, in which case that loop could not have answered either. A
+    branch no caller can reach is not defence in depth; it is a line that reads as
+    covering a case nobody can produce.
 
     A row that names no provider is not an answer, only the absence of one, so the
     scan keeps going rather than letting a half-edited tier shadow the row that
@@ -870,9 +973,6 @@ def _dispatch_provider(
     skipped. "" means no rail is declared anywhere, which is also what the
     dispatch will then carry.
     """
-    for hop in _declared_chain(output):
-        if hop.get("model") == model and hop.get("provider"):
-            return str(hop["provider"])
     if not isinstance(tiers, dict):
         return ""
     rows = [cfg for cfg in tiers.values() if isinstance(cfg, dict)]
@@ -994,9 +1094,8 @@ def _vet_plan_chain(
     # there would name a model on no rail at all.
     widened = [
         dict(hop) for hop in _declared_chain(output)
-        if not bl.is_blocked(str(hop.get("model")), str(hop.get("provider") or ""))
-        and not _selection_vetoes(
-            warn_fn, str(hop.get("model")), str(hop.get("provider") or ""),
+        if _is_clean(
+            bl, warn_fn, str(hop.get("model")), str(hop.get("provider") or ""),
         )
     ]
     if _has_named_hop(widened):

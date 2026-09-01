@@ -78,10 +78,17 @@ def test_status_and_policy_are_read_only_snapshots(config_path):
     # `warnings` and the provenance fields are purely ADDITIVE: pulling them out
     # must leave the exact prior response. These tier models are unknown to the
     # capability registry, which is advisory only — note `valid` stays True below.
+    #
+    # Asserted as "the registry finding is IN there", not as "every warning is that
+    # finding": lint_warnings is an advisory channel designed to grow, so an `all()`
+    # over it makes any new advisory rule fail this test, which is about read-only
+    # snapshots and additivity rather than about the warning set. (It did exactly
+    # that when the fallback_chain drift warning was added — this fixture's chain
+    # lists one of its five tier members.)
     warnings = status.pop("warnings")
-    assert warnings and all(
+    assert any(
         "unknown to the capability registry" in warning for warning in warnings
-    )
+    ), warnings
 
     # Provenance: a standalone RouterService reports config_mtime — the config is
     # re-read per request, so its age is knowable here. process_started_at and
