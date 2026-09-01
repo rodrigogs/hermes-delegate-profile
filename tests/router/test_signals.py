@@ -67,6 +67,32 @@ KeyError: 'user:123'"""
         assert fv["keywords"] == ["review"]
         assert fv["has_code"] is True  # "pr" keyword
 
+    def test_every_exported_review_keyword_can_actually_be_extracted(self):
+        """The vocabulary the constant advertises must be the one that fires.
+
+        ``_keyword_hits`` carried its own inline copy of the word set, missing
+        ``evaluate``, so ``_REVIEW_KEYWORDS`` promised a word the extractor could
+        never produce: a rule written ``keywords: {contains: evaluate}`` linted
+        clean and was dead on arrival. Asserted over the whole exported set rather
+        than for the one word that was missing, so a future addition to the
+        constant cannot re-open the gap.
+        """
+        from router.signals import _REVIEW_KEYWORDS
+
+        for word in sorted(_REVIEW_KEYWORDS):
+            assert extract(f"Please {word} this change")["keywords"] == [word], word
+
+    def test_keyword_hits_are_sorted_so_two_processes_agree(self):
+        """The field is persisted in the trace, and its source is a set.
+
+        Set iteration order varies per process, so two processes recording the same
+        turn produced traces differing only in the order of this list — enough to
+        defeat a byte comparison between them.
+        """
+        hits = extract("review and audit and inspect this")["keywords"]
+        assert hits == sorted(hits)
+        assert hits == ["audit", "inspect", "review"]
+
     def test_requirements_counting(self):
         task = """Tasks:
 - Add user model

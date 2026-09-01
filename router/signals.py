@@ -404,9 +404,21 @@ def _detect_language(lower: str) -> str:
 
 
 def _keyword_hits(lower: str) -> List[str]:
-    review_words = {"review", "audit", "inspect", "check", "assess"}
-    hits = [w for w in review_words if w in lower]
-    return hits
+    """The review-intent words present in the turn, sorted.
+
+    Reads :data:`_REVIEW_KEYWORDS` rather than an inline copy. The copy that used
+    to live here was missing ``evaluate``, so the constant advertised a vocabulary
+    the extractor could not produce and a rule written ``keywords: {contains:
+    evaluate}`` linted clean and could never fire. No shipped rule keys on that
+    word (they use ``audit`` and ``review``), so wiring it up changes no shipped
+    routing — it only makes the exported vocabulary true.
+
+    SORTED because the source is a set: iteration order varies per process, and
+    this list is persisted in the decision trace. Two processes recording the same
+    turn produced traces that differed only in the order of this field, which is
+    enough to defeat a byte comparison between them.
+    """
+    return sorted(word for word in _REVIEW_KEYWORDS if word in lower)
 
 
 def _estimate_input_tokens(char_len: int, num_files: int, lower: str) -> int:

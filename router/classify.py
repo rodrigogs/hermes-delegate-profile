@@ -34,6 +34,38 @@ TIER_ANCHORS = {
 # adapter materialises no model, and the delegation runs under the caller's
 # default instead of a stale lie.
 
+#: Defaults for the ``classifier:`` block — the ONE place they are written.
+#:
+#: They used to be written twice, and the two disagreed on the thing that matters
+#: most: this module defaulted to ``glm-5.3-flash`` while the code that ACTUALLY
+#: DISPATCHES (``_make_classify_fn`` in the plugin) defaulted to ``glm-5.2``.
+#: Commit bdb92f6 ("z.ai sempre glm-5.3-flash — nunca glm-5.2 nem glm-5.3
+#: normal") corrected this module and missed that one, so the golden rule it
+#: established was violated by the only copy that runs.
+#:
+#: That is not a cosmetic mismatch. ``glm-5.2`` is registry-marked "plan
+#: auto-routes this id to glm-5.3": on a Coding Plan key the request SUCCEEDS,
+#: the plan bills the substitute, and every trace, log and console row names the
+#: id nobody ran — the exact defect ``MODEL_CAPABILITIES``' docstring exists to
+#: prevent and that ``tests/test_shipped_policy_names_real_rails.py`` refuses in
+#: the policy. It was reachable whenever ``classifier.model`` was absent from
+#: router.yaml.
+#:
+#: Read through :func:`classifier_defaults` so a caller cannot mutate the table.
+CLASSIFIER_DEFAULTS = {
+    "model": "glm-5.3-flash",
+    "provider": "zai",
+    "temperature": 0,
+    "max_tokens": 128,
+    "timeout_seconds": 8,
+}
+
+
+def classifier_defaults() -> Dict[str, Any]:
+    """A copy of :data:`CLASSIFIER_DEFAULTS`, so no caller can edit the table."""
+    return dict(CLASSIFIER_DEFAULTS)
+
+
 # Upward ratchet: when confidence is low or boundary straddle, bump up
 _UPWARD_RATCHET = {"T1": "T2", "T2": "T3", "T3": "T4", "T4": "T4"}
 
@@ -52,11 +84,14 @@ class Classifier:
         anchors: Optional[List[Dict[str, Any]]] = None,
     ):
         cls_conf = config.get("classifier", {})
-        self.model: str = cls_conf.get("model", "glm-5.3-flash")
-        self.provider: str = cls_conf.get("provider", "zai")
-        self.temperature: float = float(cls_conf.get("temperature", 0))
-        self.max_tokens: int = int(cls_conf.get("max_tokens", 128))
-        self.timeout_seconds: int = int(cls_conf.get("timeout_seconds", 8))
+        d = CLASSIFIER_DEFAULTS
+        self.model: str = cls_conf.get("model", d["model"])
+        self.provider: str = cls_conf.get("provider", d["provider"])
+        self.temperature: float = float(
+            cls_conf.get("temperature", d["temperature"]))
+        self.max_tokens: int = int(cls_conf.get("max_tokens", d["max_tokens"]))
+        self.timeout_seconds: int = int(
+            cls_conf.get("timeout_seconds", d["timeout_seconds"]))
         self._anchors = anchors or []
         # An absent ``tiers`` table degrades to EMPTY (see the DEFAULT_TIERS
         # removal note above) rather than to a hardcoded stale rail set.

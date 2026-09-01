@@ -11,7 +11,9 @@ import copy
 import importlib.util
 import json
 import sys
+import types
 from pathlib import Path
+from unittest import mock
 
 import pytest
 import yaml
@@ -165,6 +167,104 @@ def test_register_schema_accepts_prompt_and_enumerates_profiles(monkeypatch):
     props = ctx.tools[0]["schema"]["parameters"]["properties"]
     assert "prompt" in props and "goal" in props
     assert props["profile"]["enum"] == ["auto", "coder", "default", "reviewer"]
+
+
+def test_the_schema_tells_the_model_the_timeout_default_the_code_uses(monkeypatch):
+    """A number the MODEL reads must not live only in prose.
+
+    The description said "Default: 300 (5 min)" while ``_DEFAULT_TIMEOUT_S`` has
+    been 600, so a caller sizing a task to fit "5 minutes" was budgeting against
+    half the real ceiling. Nothing could catch it: the 300 appeared in no code path,
+    only in a sentence. It is interpolated now, and this asserts the two agree
+    rather than asserting either literal.
+    """
+    monkeypatch.setattr(_dp, "_get_active_profile_name", lambda: "parent")
+
+    class Ctx:
+        def __init__(self):
+            self.tools = []
+
+        def register_tool(self, **kwargs):
+            self.tools.append(kwargs)
+
+        def register_hook(self, *_args, **_kwargs):
+            pass
+
+    ctx = Ctx()
+    _dp.register(ctx)
+    described = ctx.tools[0]["schema"]["parameters"]["properties"]["timeout"][
+        "description"
+    ]
+    assert f"Default: {_dp._DEFAULT_TIMEOUT_S}" in described, described
+    # And the resolver really does hand back that number, so the sentence is not
+    # merely self-consistent with a constant nothing uses.
+    assert _dp._resolve_timeout(None) == _dp._DEFAULT_TIMEOUT_S
+
+
+def test_the_capacity_error_names_the_key_the_reader_reads():
+    """The operator-facing remedy must name a key that exists.
+
+    ``at_capacity`` told whoever hit the concurrency cap to raise
+    ``plugins.entries.delegate-profile.watchdog.max_concurrent`` while
+    ``_watchdog_cfg`` had been reading ``hermes-smart-router`` since the 2026-08-27
+    rename — so following the error message edited a key nothing reads, and the cap
+    never moved. Both sides come from ``_CONFIG_NAMESPACE`` now.
+    """
+    assert _dp._CONFIG_NAMESPACE == "hermes-smart-router"
+    assert _dp._WATCHDOG_CFG_PATH == (
+        f"plugins.entries.{_dp._CONFIG_NAMESPACE}.watchdog"
+    )
+
+    captured = {}
+
+    def _cfg_get(config, *path, default=None):
+        captured["path"] = path
+        return default
+
+    fake = types.ModuleType("hermes_cli.config")
+    fake.cfg_get = _cfg_get
+    fake.load_config_readonly = lambda: {}
+    parent = types.ModuleType("hermes_cli")
+    parent.config = fake
+    with mock.patch.dict(
+        sys.modules, {"hermes_cli": parent, "hermes_cli.config": fake},
+    ):
+        _dp._watchdog_cfg()
+
+    # The reader's actual path, and the message's advertised path, agree.
+    assert captured["path"] == (
+        "plugins", "entries", _dp._CONFIG_NAMESPACE, "watchdog",
+    )
+    assert ".".join(captured["path"][:-1] + ("watchdog",)) == _dp._WATCHDOG_CFG_PATH
+
+
+def test_the_dispatching_classifier_default_is_the_documented_one():
+    """One authority for the pair the classifier runs on.
+
+    ``_make_classify_fn`` is the copy that DISPATCHES, and it defaulted to
+    ``glm-5.2`` while ``router/classify.py`` said ``glm-5.3-flash``. glm-5.2 is
+    registry-marked "plan auto-routes this id to glm-5.3": the call succeeds, the
+    plan bills the substitute, and every trace names an id nobody ran. Reachable
+    whenever ``classifier.model`` was absent from router.yaml.
+    """
+    from router.capabilities import MODEL_CAPABILITIES
+    from router.classify import CLASSIFIER_DEFAULTS, Classifier
+
+    # The plugin's defaults ARE the classifier module's, not a second copy.
+    assert _dp._classifier_defaults() == CLASSIFIER_DEFAULTS
+    # A copy, so no caller can edit the shared table.
+    mutated = _dp._classifier_defaults()
+    mutated["model"] = "tampered"
+    assert CLASSIFIER_DEFAULTS["model"] != "tampered"
+    # Both consumers land on the same pair for a config that names none.
+    assert Classifier({}).model == CLASSIFIER_DEFAULTS["model"]
+    assert Classifier({}).provider == CLASSIFIER_DEFAULTS["provider"]
+    # And that model is not one the vendor silently substitutes.
+    notes = str(MODEL_CAPABILITIES[CLASSIFIER_DEFAULTS["model"]].get("notes", ""))
+    assert "auto-routes this id" not in notes, (
+        f"the classifier default {CLASSIFIER_DEFAULTS['model']!r} is a vendor "
+        f"alias: {notes}"
+    )
 
 
 def test_register_is_idempotent_per_context(monkeypatch):

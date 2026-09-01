@@ -46,13 +46,14 @@ exact "stuck run" failure mode observed in the gateway). This plugin instead:
   orchestrator can decide retry / fallback / give-up.
 
 All thresholds are config-tunable in config.yaml (canonical Hermes plugin
-location ``plugins.entries.delegate-profile.watchdog``), falling back to env
-vars, then to tuned defaults:
+location ``plugins.entries.hermes-smart-router.watchdog`` — see
+:data:`_CONFIG_NAMESPACE`, which is where that string actually comes from),
+falling back to env vars, then to tuned defaults:
 
   config.yaml (preferred — canonical plugin config):
     plugins:
       entries:
-        delegate-profile:
+        hermes-smart-router:
           watchdog:
             hard_seconds: 600       # absolute ceiling
             ttfb_seconds: 120       # time-to-first-byte
@@ -103,6 +104,29 @@ _LOADED_AS_PACKAGE = __name__.startswith("hermes_plugins.")
 # ---------------------------------------------------------------------------
 HERMES_BIN = "hermes"
 
+#: The per-plugin config namespace Hermes keys this plugin's settings under, i.e.
+#: the ``<plugin_id>`` in ``plugins.entries.<plugin_id>``.
+#:
+#: ONE AUTHORITY, because a config key that appears in prose drifts from the code
+#: that reads it. The 2026-08-27 rename moved this key from ``delegate-profile`` to
+#: ``hermes-smart-router`` (along with the plugin directory and the state dir), and
+#: the reader below was updated while FOUR other places were not: this module's
+#: docstring, ``_watchdog_cfg``'s, ``_cfg_value``'s, and — the one that actually
+#: cost something — the operator-facing ``at_capacity`` error, which told whoever
+#: hit the concurrency cap to raise a key nothing reads. Every one of those now
+#: interpolates from here or names this constant, and
+#: ``test_the_capacity_error_names_the_key_the_reader_reads`` holds the message and
+#: the reader to the same string.
+#:
+#: NOT the same thing as ``plugin.yaml``'s ``name:`` (still ``delegate-profile``)
+#: or the tool name (deliberately still ``delegate_profile`` — renaming it breaks
+#: every toolset allowlist). This is only the config namespace, and it is the
+#: spelling verified live on the box.
+_CONFIG_NAMESPACE = "hermes-smart-router"
+
+#: Dotted path to the watchdog block, for docstrings and operator-facing messages.
+_WATCHDOG_CFG_PATH = f"plugins.entries.{_CONFIG_NAMESPACE}.watchdog"
+
 # Result/stderr truncation limits — keep subprocess output from blowing up the
 # parent's context window.
 _MAX_RESULT_CHARS = 8000
@@ -144,18 +168,21 @@ def _env_float(name: str, default: float) -> float:
 def _watchdog_cfg() -> Dict[str, Any]:
     """Return the plugin's ``watchdog:`` config from config.yaml.
 
-    Canonical Hermes location: ``plugins.entries.delegate-profile.watchdog``
-    (see hermes_cli/plugins.py — every plugin reads its per-plugin config from
-    ``plugins.entries.<plugin_id>``). Uses the same loader pattern as the
-    holographic memory plugin: ``load_config_readonly`` + ``cfg_get``. Falls
-    back to ``{}`` when the key is absent or config cannot be loaded — the
-    resolvers then fall through to env vars, then module defaults.
+    Canonical Hermes location: :data:`_WATCHDOG_CFG_PATH` (every plugin reads its
+    per-plugin config from ``plugins.entries.<plugin_id>`` — see
+    hermes_cli/plugins.py). Uses the same loader pattern as the holographic memory
+    plugin: ``load_config_readonly`` + ``cfg_get``. Falls back to ``{}`` when the
+    key is absent or config cannot be loaded — the resolvers then fall through to
+    env vars, then module defaults.
     """
     try:
         from hermes_cli.config import cfg_get, load_config_readonly
 
         all_config = load_config_readonly()
-        return cfg_get(all_config, "plugins", "entries", "hermes-smart-router", "watchdog", default={}) or {}
+        return cfg_get(
+            all_config, "plugins", "entries", _CONFIG_NAMESPACE, "watchdog",
+            default={},
+        ) or {}
     except Exception:
         return {}
 
@@ -163,9 +190,9 @@ def _watchdog_cfg() -> Dict[str, Any]:
 def _cfg_value(key: str, env_name: str, default: float) -> float:
     """Resolve one numeric watchdog param: config.yaml > env var > default.
 
-    ``key`` is the config.yaml key under ``plugins.entries.delegate-profile.watchdog``;
-    ``env_name`` is the legacy env var kept for backward compatibility.
-    Invalid (non-numeric, <= 0) config values fall through to the env/default rung.
+    ``key`` is the config.yaml key under :data:`_WATCHDOG_CFG_PATH`; ``env_name``
+    is the legacy env var kept for backward compatibility. Invalid (non-numeric,
+    <= 0) config values fall through to the env/default rung.
     """
     val = _watchdog_cfg().get(key)
     if isinstance(val, (int, float)) and val > 0:
@@ -602,6 +629,25 @@ def _is_exhaustion(text: str) -> bool:
 _router_guard = threading.local()
 
 
+def _classifier_defaults() -> Dict[str, Any]:
+    """``router.classify.CLASSIFIER_DEFAULTS``, the one place they are written.
+
+    Imported here rather than restated, so the pair this file DISPATCHES on cannot
+    drift from the pair the classifier module documents — they did, and the losing
+    copy was this one.
+
+    Resolved at call time and both import shapes tried, exactly like every other
+    sibling import in this file: the plugin is deployed by copy and must stay
+    importable outside a live Hermes process, where it loads as a bare module
+    rather than as ``hermes_plugins.<slug>``.
+    """
+    if _LOADED_AS_PACKAGE:
+        from .router.classify import classifier_defaults
+    else:  # direct source loading used by the development test harness
+        from router.classify import classifier_defaults
+    return classifier_defaults()
+
+
 def _load_router_config() -> Dict[str, Any]:
     """Load router.yaml from the plugin directory. Returns {} on failure.
 
@@ -635,9 +681,17 @@ def _load_router_config() -> Dict[str, Any]:
 def _make_classify_fn(ctx: Any) -> Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]]:
     """Build a classify_fn that uses the host's LLM for difficulty classification.
 
-    Returns None if the router is disabled or ctx lacks llm. The classifier
-    pins provider=zai + model=glm-5.2 (trusted-streaming, temp=0, token-capped).
+    Returns None if the router is disabled or ctx lacks llm. The classifier runs
+    on the pair ``router.classify.CLASSIFIER_DEFAULTS`` names (trusted-streaming,
+    temp=0, token-capped) unless router.yaml overrides it.
     Requires allow_provider_override + allow_model_override in plugin config.
+
+    The defaults are IMPORTED, never restated: this function used to carry its own
+    copy that defaulted to ``glm-5.2`` while ``classify.py`` said
+    ``glm-5.3-flash``, and since this is the copy that actually dispatches, an
+    absent ``classifier.model`` ran on an id the z.ai plan silently serves with a
+    different model — succeeding, billing the substitute, and naming the wrong id
+    in every trace.
     """
     config = _load_router_config()
     if not config.get("enabled", False):
@@ -646,11 +700,12 @@ def _make_classify_fn(ctx: Any) -> Optional[Callable[[str, Dict[str, Any]], Dict
         return None
 
     cls_conf = config.get("classifier", {})
-    provider = cls_conf.get("provider", "zai")
-    model = cls_conf.get("model", "glm-5.2")
-    temperature = float(cls_conf.get("temperature", 0))
-    max_tokens = int(cls_conf.get("max_tokens", 128))
-    timeout = int(cls_conf.get("timeout_seconds", 8))
+    defaults = _classifier_defaults()
+    provider = cls_conf.get("provider", defaults["provider"])
+    model = cls_conf.get("model", defaults["model"])
+    temperature = float(cls_conf.get("temperature", defaults["temperature"]))
+    max_tokens = int(cls_conf.get("max_tokens", defaults["max_tokens"]))
+    timeout = int(cls_conf.get("timeout_seconds", defaults["timeout_seconds"]))
 
     def classify_fn(task: str, features: Dict[str, Any]) -> Dict[str, Any]:
         """One-shot LLM difficulty classification. Returns {tier, confidence, ...}."""
@@ -1474,7 +1529,7 @@ def _make_handler(
                 "error": (
                     "Too many concurrent delegate_profile subprocesses "
                     f"(cap={pool.capacity}). "
-                    "Retry shortly or raise plugins.entries.delegate-profile.watchdog.max_concurrent."
+                    f"Retry shortly or raise {_WATCHDOG_CFG_PATH}.max_concurrent."
                 ),
             })
 
@@ -1751,10 +1806,17 @@ def register(ctx):
                 "timeout": {
                     "type": "integer",
                     "description": (
+                        # Interpolated, not written: this string is read by the
+                        # MODEL, which budgets its own work against it. It said
+                        # "Default: 300 (5 min)" while the default has been 600 —
+                        # a caller sizing a task to fit "5 minutes" was working
+                        # from half the real ceiling, and no test could catch a
+                        # number that only ever appeared in prose.
                         "Absolute hard-ceiling seconds for the subprocess. "
-                        "Default: 300 (5 min). Independent tighter watchdogs "
-                        "also apply: no-first-output (TTFB) and inter-output "
-                        "idle. Override the ceiling globally with "
+                        f"Default: {_DEFAULT_TIMEOUT_S} "
+                        f"({_DEFAULT_TIMEOUT_S // 60} min). Independent tighter "
+                        "watchdogs also apply: no-first-output (TTFB) and "
+                        "inter-output idle. Override the ceiling globally with "
                         "HERMES_DELEGATE_PROFILE_TIMEOUT; TTFB/idle via "
                         "HERMES_DELEGATE_PROFILE_TTFB / _IDLE."
                     ),
