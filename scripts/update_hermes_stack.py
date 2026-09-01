@@ -48,7 +48,7 @@ import urllib.error
 import urllib.request
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -219,7 +219,7 @@ def _safe_mode(path: Path, mode: int) -> None:
 
 
 def _timestamp_id() -> str:
-    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
 
 
 def _write_json(path: Path, value: dict[str, Any]) -> None:
@@ -295,7 +295,7 @@ def create_snapshot(paths: RuntimePaths, components: Sequence[Component]) -> Pat
 
     metadata: dict[str, Any] = {
         "format": SNAPSHOT_FORMAT,
-        "created_at": datetime.now(UTC).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "components": {},
         "support_paths": {},
     }
@@ -613,7 +613,7 @@ def apply(paths: RuntimePaths, components: Sequence[Component], *, skip_tests: b
         metadata = _load_metadata(snapshot)
         metadata["outcome"] = "committed"
         metadata["changed_components"] = changes
-        metadata["completed_at"] = datetime.now(UTC).isoformat()
+        metadata["completed_at"] = datetime.now(timezone.utc).isoformat()
         _write_json(snapshot / "metadata.json", metadata)
         _print(f"update committed; rollback snapshot: {snapshot}")
         return snapshot
@@ -631,7 +631,7 @@ def apply(paths: RuntimePaths, components: Sequence[Component], *, skip_tests: b
         metadata = _load_metadata(snapshot)
         metadata["outcome"] = "rolled_back"
         metadata["failure"] = str(exc)
-        metadata["completed_at"] = datetime.now(UTC).isoformat()
+        metadata["completed_at"] = datetime.now(timezone.utc).isoformat()
         _write_json(snapshot / "metadata.json", metadata)
         raise UpdateError(f"update rolled back successfully; snapshot retained at {snapshot}: {exc}") from exc
 

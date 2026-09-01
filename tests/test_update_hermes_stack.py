@@ -206,3 +206,43 @@ def test_webui_cache_is_deleted_before_webui_restart(tmp_path: Path, monkeypatch
     updater._restart_and_healthcheck(paths)
 
     assert ("health", ("Hermes One",)) in events
+
+
+def test_no_module_imports_the_3_11_only_UTC_alias():
+    """A single 3.11-only import aborted COLLECTION of the whole suite.
+
+    ``datetime.UTC`` is an alias added in 3.11. ``pyproject.toml`` does declare
+    ``requires-python = ">=3.11"``, so using it was allowed — the defect is the
+    FAILURE MODE, not the version floor. This module is imported at collection
+    time by this very file, so on 3.10 pytest raised during collection and
+    reported ZERO tests instead of failing one file. A contributor whose default
+    interpreter is 3.10 (which is the case on the machine this was found on) saw
+    the entire suite refuse to start, with a traceback pointing at a deployment
+    helper they had not touched.
+
+    ``timezone.utc`` is identical, works everywhere, and is what every other
+    module in the tree already imports — this was the lone outlier. Asserted over
+    the whole tree rather than over the one file that had it, so the next
+    3.11-only alias does not reintroduce the abort somewhere else.
+    """
+    import ast
+
+    root = Path(__file__).resolve().parents[1]
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        if any(part in {".git", ".worktrees", "__pycache__"} for part in path.parts):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - not our files
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "datetime":
+                for alias in node.names:
+                    if alias.name == "UTC":
+                        offenders.append(
+                            f"{path.relative_to(root)}:{node.lineno}")
+    assert not offenders, (
+        "these import the 3.11-only datetime.UTC alias; use timezone.utc so a "
+        f"3.10 interpreter fails a test rather than aborting collection: {offenders}"
+    )
