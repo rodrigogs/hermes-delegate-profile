@@ -101,15 +101,22 @@ _POST_ROUTES = frozenset(
     {"/explain", "/plan", "/apply", "/apply/confirm", "/apply/revert"}
 )
 
-# Context windows used by the existing dynamic-threshold policy. The sidecar
-# only reports the derived values; it does not write these into Hermes config.
-MODEL_WINDOWS = {
-    "glm-4.5-flash": 272_000,
-    "glm-4.7": 200_000,
-    "gpt-5.6-terra": 1_000_000,
-    "deepseek-v4-pro": 128_000,
-}
-SUMMARIZER_WINDOW = 272_000
+# Context windows for the dynamic-threshold curve are NOT declared here. They come
+# from `RouterService.compaction_windows()`, which derives the key set from the live
+# policy's tier members and each window from the capability registry.
+#
+# This module used to carry its own MODEL_WINDOWS dict and a SUMMARIZER_WINDOW
+# constant. Three of its four entries disagreed with the registry — including the
+# shipped `compaction.model`, whose window was 272,000 against the registry's
+# 131,072, so `summarizer_cap` was computed from 2.07x the real window and the
+# RESTART-class apply wrote that into Hermes' own config.yaml. The fourth entry was
+# a vendor alias the plan serves with a different model.
+#
+# Worse than the numbers: the READ path used the module constants while the APPLY
+# path used the injectable instance attributes, so the screen could show thresholds
+# the apply would not write. There is one source now, asked once per request, and
+# `test_the_served_compaction_windows_come_from_the_registry` asserts it against
+# `capabilities.MODEL_CAPABILITIES`.
 
 # The exact phrase an operator must echo to arm the RESTART-class compaction
 # apply, mirrored server-side (the console gates it client-side too).
@@ -276,8 +283,6 @@ class SidecarApp:
         console_path: Path = _CONSOLE_PATH,
         core_config_path: Optional[Callable[[], Path]] = None,
         restart_runner: Callable[[Path], Dict[str, Any]] = _default_restart_runner,
-        model_windows: Optional[Dict[str, int]] = None,
-        summarizer_window: int = SUMMARIZER_WINDOW,
         process_started_at: Optional[str] = _PROCESS_STARTED_AT,
         code_mtime: Optional[str] = _CODE_MTIME,
     ):
@@ -286,8 +291,6 @@ class SidecarApp:
         self._console_path = console_path
         self._core_config_path = core_config_path or resolve_core_config_path
         self._restart_runner = restart_runner
-        self._model_windows = model_windows or dict(MODEL_WINDOWS)
-        self._summarizer_window = summarizer_window
         # Console gzip is expensive enough to hit the proxy ceiling first; cache
         # by the deployed file's version so reopening the panel does not recompress.
         self._console_gzip_cache: Optional[Tuple[int, int, bytes]] = None
@@ -454,8 +457,9 @@ class SidecarApp:
                 return _error(400, "aggr must be an integer between 0 and 100")
             if not 0 <= aggressiveness <= 100:
                 return _error(400, "aggr must be an integer between 0 and 100")
-            threshold_fraction = p_eff(SUMMARIZER_WINDOW, aggressiveness)
-            threshold_tokens = int(SUMMARIZER_WINDOW * threshold_fraction)
+            summarizer_window, model_windows = self._service.compaction_windows()
+            threshold_fraction = p_eff(summarizer_window, aggressiveness)
+            threshold_tokens = int(summarizer_window * threshold_fraction)
             # The RESOLVED compaction choice (model + fallback queue), or None
             # when the policy declares none or the block is refused. Read through
             # the same authority the RESTART-class apply uses, so this screen can
@@ -466,12 +470,12 @@ class SidecarApp:
             return 200, {
                 "aggressiveness": aggressiveness,
                 "model_thresholds": compute_model_thresholds(
-                    MODEL_WINDOWS.items(), aggressiveness
+                    model_windows.items(), aggressiveness
                 ),
-                "summarizer_window": SUMMARIZER_WINDOW,
+                "summarizer_window": summarizer_window,
                 "threshold_fraction": threshold_fraction,
                 "threshold_tokens": threshold_tokens,
-                "warning": threshold_tokens >= SUMMARIZER_WINDOW,
+                "warning": threshold_tokens >= summarizer_window,
                 "compaction": aux if aux else None,
                 "compaction_errors": aux_errors,
             }
@@ -638,8 +642,11 @@ class SidecarApp:
         if not isinstance(current, dict):
             return _error(400, "core config root must be a mapping")
 
+        # The SAME source `/compaction` reads from, so the screen the operator
+        # confirmed cannot show thresholds this write does not produce.
+        summarizer_window, model_windows = self._service.compaction_windows()
         candidate = apply_dynamic_thresholds(
-            current, aggressiveness, self._summarizer_window, self._model_windows
+            current, aggressiveness, summarizer_window, model_windows
         )
         # Resolve the declarative compaction choice (model + fallback queue) from
         # the LIVE router policy and merge it under auxiliary.compression. One

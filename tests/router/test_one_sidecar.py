@@ -61,10 +61,16 @@ def _config_path(tmp_path):
     return path
 
 
-def _app(tmp_path, token: Optional[str] = _TOKEN):
+def _written_token(tmp_path, token: Optional[str] = _TOKEN):
+    """The token file the sidecar reads, written unless ``token`` is None."""
     token_path = tmp_path / "token"
     if token is not None:
         token_path.write_text(token, encoding="utf-8")
+    return token_path
+
+
+def _app(tmp_path, token: Optional[str] = _TOKEN):
+    token_path = _written_token(tmp_path, token)
     return SidecarApp(RouterService(_config_path(tmp_path)), token_path=lambda: token_path)
 
 
@@ -268,7 +274,11 @@ def test_liveness_route_is_authenticated_and_returns_composed_states(tmp_path):
 
 
 def test_compaction_route_reports_thresholds_and_summarizer_budget(tmp_path):
-    status, body = _app(tmp_path).dispatch("GET", "/compaction", _auth(), {"aggr": ["50"]})
+    app = SidecarApp(
+        RouterService(_registry_config_path(tmp_path)),
+        token_path=lambda: _written_token(tmp_path),
+    )
+    status, body = app.dispatch("GET", "/compaction", _auth(), {"aggr": ["50"]})
 
     assert status == 200
     assert body["aggressiveness"] == 50
@@ -278,6 +288,60 @@ def test_compaction_route_reports_thresholds_and_summarizer_budget(tmp_path):
     assert body["threshold_tokens"] == int(body["summarizer_window"] * body["threshold_fraction"])
     assert body["threshold_tokens"] < body["summarizer_window"]
     assert isinstance(body["warning"], bool)
+
+
+def test_the_served_compaction_windows_come_from_the_registry(tmp_path):
+    """The window mirror, asserted equal to its one authority.
+
+    This module used to declare its own MODEL_WINDOWS dict, and three of its four
+    entries disagreed with `capabilities.MODEL_CAPABILITIES` — including the shipped
+    `compaction.model`, whose window was 272,000 against the registry's 131,072, so
+    the summarizer cap the RESTART-class apply wrote into Hermes' config.yaml was
+    computed from 2.07x the real window. The repo's rule is that an unavoidable
+    mirror is asserted equal by a test; the honest fix was to delete the mirror, and
+    this is the test that keeps it deleted.
+
+    Asserted as agreement between two producers rather than against literals, so a
+    registry revision cannot make it pass for the wrong reason.
+    """
+    from router.capabilities import MODEL_CAPABILITIES
+
+    service = RouterService(_registry_config_path(tmp_path))
+    summarizer_window, model_windows = service.compaction_windows()
+
+    # Every served window IS the registry's, for every model the policy can route.
+    assert model_windows == {
+        model: MODEL_CAPABILITIES[model]["context_window"]
+        for model in sorted(set(_REAL_TIER_MODELS.values()) | {_REAL_COMPACTION_MODEL})
+    }
+    # And the summarizer's budget is the window of the model that COMPACTS, not of
+    # whatever the largest rail happens to be.
+    assert summarizer_window == (
+        MODEL_CAPABILITIES[_REAL_COMPACTION_MODEL]["context_window"]
+    )
+    assert summarizer_window != max(model_windows.values()), (
+        "this assertion is only meaningful while the compaction model is not also "
+        "the widest rail — otherwise it cannot tell the two rules apart"
+    )
+
+
+def test_a_policy_of_unknown_elos_serves_no_per_model_thresholds(tmp_path):
+    """The documented degrade: no invented windows.
+
+    A window cannot be guessed — `p_base(0)` is a math-domain error and a fabricated
+    small window compacts far too early — so a policy naming elos the registry
+    cannot describe yields an EMPTY threshold map rather than a wrong one. The route
+    still answers 200: it is a read path the console opens alongside a broken config.
+    """
+    status, body = _app(tmp_path).dispatch(
+        "GET", "/compaction", _auth(), {"aggr": ["50"]},
+    )
+
+    assert status == 200
+    assert body["model_thresholds"] == {}
+    # The curve still needs a window to answer with, and says which one it used.
+    assert body["summarizer_window"] == 128_000
+    assert body["threshold_fraction"] > 0
 
 
 def test_console_is_served_tokenless_as_html(tmp_path):
@@ -365,7 +429,37 @@ def test_apply_missing_plan_is_400(tmp_path):
     assert app.dispatch("POST", "/apply", _auth(), body={"policy": {}})[0] == 400
 
 
-def _compaction_app(tmp_path, runner, core_yaml=None):
+#: Elos the CAPABILITY REGISTRY can describe, for the compaction tests.
+#
+# The default `_config_path` policy names tiny/small/medium/strong, and nothing in
+# the registry knows those — which is fine for every other route but not for the
+# threshold curve: per-model thresholds are now derived from the registry's
+# `context_window`, so a policy of unknown ids legitimately produces an EMPTY map.
+# That degrade has its own test below; these tests are about the curve, so they need
+# a policy whose models exist.
+_REAL_TIER_MODELS = {
+    "T1": "glm-5.3-flash",
+    "T2": "gpt-5.6-luna",
+    "T3": "gpt-5.6-terra",
+    "T4": "gpt-5.5",
+}
+_REAL_COMPACTION_MODEL = "glm-4.5-flash"
+
+
+def _registry_config_path(tmp_path):
+    """``_config_path``'s policy with tier models the registry can describe."""
+    path = _config_path(tmp_path)
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    for tier, model in _REAL_TIER_MODELS.items():
+        config["tiers"][tier]["model"] = model
+    config["compaction"] = {
+        "provider": "zai", "model": _REAL_COMPACTION_MODEL,
+    }
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def _compaction_app(tmp_path, runner, core_yaml=None, config_path=None):
     """A sidecar wired with a stubbed restart runner + a fake core config.yaml
     so the compaction path never actually restarts anything in a test."""
     token_path = tmp_path / "token"
@@ -378,7 +472,7 @@ def _compaction_app(tmp_path, runner, core_yaml=None):
         encoding="utf-8",
     )
     return SidecarApp(
-        RouterService(_config_path(tmp_path)),
+        RouterService(config_path or _config_path(tmp_path)),
         token_path=lambda: token_path,
         core_config_path=lambda: core,
         restart_runner=runner,
@@ -414,7 +508,11 @@ def test_compaction_schedules_restart_with_recomputed_candidate(tmp_path):
         captured["yaml"] = candidate_path.read_text(encoding="utf-8")
         return {"ok": True, "restart": "scheduled"}
 
-    app, _core = _compaction_app(tmp_path, runner)
+    # A policy the registry can describe, or there are no per-model thresholds to
+    # recompute — see test_a_policy_of_unknown_elos_serves_no_per_model_thresholds.
+    app, _core = _compaction_app(
+        tmp_path, runner, config_path=_registry_config_path(tmp_path),
+    )
     status, body = app.dispatch(
         "POST", "/apply", _auth(),
         body={"action": "compaction", "confirm": "COMPACT", "aggressiveness": 100},
@@ -426,6 +524,15 @@ def test_compaction_schedules_restart_with_recomputed_candidate(tmp_path):
     assert reloaded["compression"]["aggressiveness"] == 100
     assert reloaded["compression"]["model_thresholds"]      # recomputed
     assert reloaded["compression"]["threshold_tokens"]      # summarizer cap
+
+    # The candidate the launcher receives carries the thresholds the SCREEN shows.
+    # Read and apply used to take different sources — the module constants and the
+    # injectable instance attributes — so the operator could confirm a number this
+    # write would not produce.
+    _status, shown = app.dispatch(
+        "GET", "/compaction", _auth(), {"aggr": ["100"]},
+    )
+    assert reloaded["compression"]["model_thresholds"] == shown["model_thresholds"]
 
 
 def test_compaction_reports_unreadable_core_config(tmp_path):

@@ -3823,6 +3823,131 @@ def test_compaction_registry_check_degrades_when_registry_raises(monkeypatch):
     assert aux["model"] == "glm-4.5-flash"
 
 
+class TestCompactionWindows:
+    """The threshold curve's inputs, derived rather than restated.
+
+    The numbers these produce are written into Hermes' own ``config.yaml`` by the
+    RESTART-class apply, so every degrade here has to answer rather than raise —
+    and none of them may INVENT a window: ``threshold.p_base(0)`` is a math-domain
+    error and a fabricated small window compacts far too early.
+    """
+
+    def test_a_window_comes_from_the_registry(self):
+        from router.capabilities import MODEL_CAPABILITIES
+        from router.service import _registry_window
+
+        assert _registry_window("glm-4.5-flash") == (
+            MODEL_CAPABILITIES["glm-4.5-flash"]["context_window"]
+        )
+
+    def test_an_unaskable_registry_yields_zero_not_a_guess(self, monkeypatch):
+        import router.service as service_mod
+        from router.service import _registry_window
+
+        class _RaisingCaps:
+            def capabilities_for(self, model):
+                raise TypeError("registry exploded")
+
+        assert _registry_window("") == 0, "no model is not a window"
+        monkeypatch.setattr(service_mod, "_caps", None)
+        assert _registry_window("glm-4.5-flash") == 0
+        monkeypatch.setattr(service_mod, "_caps", _RaisingCaps())
+        assert _registry_window("glm-4.5-flash") == 0
+
+    def test_a_registry_that_answers_with_the_wrong_shape_yields_zero(
+        self, monkeypatch,
+    ):
+        import router.service as service_mod
+        from router.service import _registry_window
+
+        class _OddCaps:
+            def __init__(self, answer):
+                self._answer = answer
+
+            def capabilities_for(self, model):
+                return self._answer
+
+        for answer in (None, "not-a-mapping", {}, {"context_window": "200000"},
+                       {"context_window": 0}, {"context_window": -1}):
+            monkeypatch.setattr(service_mod, "_caps", _OddCaps(answer))
+            assert _registry_window("whatever") == 0, answer
+
+    def test_policy_models_reads_primaries_hops_and_the_compaction_model(self):
+        from router.service import _policy_models
+
+        assert _policy_models({
+            "tiers": {
+                "T1": {"model": "a", "fallback": [{"model": "b"}]},
+                "T2": {"model": "c"},
+            },
+            "compaction": {"model": "d"},
+        }) == {"a", "b", "c", "d"}
+
+    def test_policy_models_skips_every_half_edited_shape(self):
+        """The config is HOT; a threshold map must not raise on a mid-edit file."""
+        from router.service import _policy_models
+
+        assert _policy_models({}) == set()
+        assert _policy_models({"tiers": "still-a-scalar"}) == set()
+        assert _policy_models({"tiers": {"T1": "still-a-scalar"}}) == set()
+        # A tier with no model, a scalar `fallback:`, a non-mapping hop, and a hop
+        # whose model is not a string or is empty.
+        assert _policy_models({"tiers": {
+            "T1": {"provider": "zai"},
+            "T2": {"model": "", "fallback": "deepseek-v4-flash"},
+            "T3": {"model": 7, "fallback": ["bare-string", {"model": 7},
+                                            {"model": ""}, {"provider": "zai"}]},
+        }}) == set()
+        # A compaction block that is not a mapping, names no model, or names a
+        # non-string / empty one.
+        for compaction in ("scalar", None, {}, {"model": 7}, {"model": ""}):
+            assert _policy_models({"compaction": compaction}) == set(), compaction
+
+    def test_the_summarizer_falls_back_to_the_widest_routable_window(
+        self, tmp_path,
+    ):
+        """No describable compaction model still has to answer.
+
+        The block itself is REFUSED by resolve_compaction in that case, so this only
+        keeps the READ path serving — the widest routable window is the least-wrong
+        stand-in, and it is a real published number rather than an invented one.
+        """
+        from router.capabilities import MODEL_CAPABILITIES
+
+        path = tmp_path / "router.yaml"
+        path.write_text(yaml.safe_dump({
+            "enabled": True,
+            "rules": [],
+            "default": {"action": "classify"},
+            "tiers": {
+                "T1": {"model": "glm-4.5-flash", "provider": "zai"},
+                "T2": {"model": "gpt-5.6-terra", "provider": "openai-codex"},
+            },
+            "compaction": {"provider": "zai", "model": "no-such-model-anywhere"},
+        }), encoding="utf-8")
+
+        summarizer, windows = RouterService(path).compaction_windows()
+        assert summarizer == MODEL_CAPABILITIES["gpt-5.6-terra"]["context_window"]
+        assert summarizer == max(windows.values())
+
+    def test_no_registry_at_all_serves_no_windows_and_the_base_reference(
+        self, tmp_path, monkeypatch,
+    ):
+        """128,000 is ``p_base``'s own reference point, not a guessed window."""
+        import router.service as service_mod
+
+        path = tmp_path / "router.yaml"
+        path.write_text(yaml.safe_dump({
+            "enabled": True, "rules": [], "default": {"action": "classify"},
+            "tiers": {"T1": {"model": "glm-4.5-flash", "provider": "zai"}},
+        }), encoding="utf-8")
+
+        monkeypatch.setattr(service_mod, "_caps", None)
+        summarizer, windows = RouterService(path).compaction_windows()
+        assert windows == {}
+        assert summarizer == 128_000
+
+
 def test_compaction_without_fallback_mode_writes_no_chain():
     aux, errors = resolve_compaction_auxiliary(
         {"provider": "zai", "model": "glm-4.5-flash"}, _TIERS

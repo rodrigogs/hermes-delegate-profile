@@ -81,7 +81,7 @@ import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import yaml
 
@@ -615,6 +615,63 @@ def _compaction_registry_verdict(model: str) -> Tuple[bool, Optional[Dict[str, A
     return True, caps
 
 
+# The compaction curve needs SOME window to answer with when the registry cannot
+# be asked and the policy names no describable compaction model. 128,000 is
+# `threshold.p_base`'s own reference point (its log2 is taken against 128000), so
+# it is the one value that makes the curve return its unadjusted base rather than
+# a number derived from a window nobody published.
+_FALLBACK_SUMMARIZER_WINDOW = 128_000
+
+
+def _registry_window(model: str) -> int:
+    """``model``'s advertised context window per the registry, or 0.
+
+    0 means "the registry cannot tell us", never "small": every caller treats it
+    as absent rather than feeding it to the threshold curve, because
+    ``p_base(0)`` is a math-domain error and a fabricated small window would
+    compact far too early.
+    """
+    if not model or _caps is None:
+        return 0
+    try:
+        caps = _caps.capabilities_for(model)
+    except (AttributeError, TypeError, ValueError):
+        return 0
+    if not isinstance(caps, dict):
+        return 0
+    window = caps.get("context_window")
+    return window if isinstance(window, int) and window > 0 else 0
+
+
+def _policy_models(config: Dict[str, Any]) -> Set[str]:
+    """Every model id ``config``'s tier table names, plus the compaction model.
+
+    The set of models whose conversations this install can actually produce, which
+    is the honest key set for a per-model threshold map. Defensive about shape
+    throughout: the config is HOT and may be mid-edit, and a threshold map is not
+    the surface that should raise over it.
+    """
+    models: Set[str] = set()
+    tiers = config.get("tiers")
+    if isinstance(tiers, dict):
+        for tier in tiers.values():
+            if not isinstance(tier, dict):
+                continue
+            if isinstance(tier.get("model"), str) and tier["model"]:
+                models.add(tier["model"])
+            hops = tier.get("fallback")
+            if isinstance(hops, list):
+                for hop in hops:
+                    if (isinstance(hop, dict) and isinstance(hop.get("model"), str)
+                            and hop["model"]):
+                        models.add(hop["model"])
+    compaction = config.get("compaction")
+    if isinstance(compaction, dict) and isinstance(compaction.get("model"), str):
+        if compaction["model"]:
+            models.add(compaction["model"])
+    return models
+
+
 def _resolve_standalone_fallback(
     block: Dict[str, Any],
 ) -> Tuple[Optional[List[Dict[str, str]]], List[str]]:
@@ -982,6 +1039,67 @@ class RouterService:
         return resolve_compaction_auxiliary(
             config.get("compaction"), config.get("tiers")
         )
+
+    def compaction_windows(self) -> Tuple[int, Dict[str, int]]:
+        """``(summarizer_window, model_windows)`` for the compaction threshold curve.
+
+        ONE AUTHORITY PER FACT, and this one was a mirror that had already drifted.
+        ``one_sidecar`` used to carry its own four-entry ``MODEL_WINDOWS`` dict plus a
+        ``SUMMARIZER_WINDOW`` constant, restating context windows the capability
+        registry already owns — and three of the four disagreed with it:
+
+          * ``glm-4.5-flash`` 272,000 vs the registry's 131,072. That one is the
+            SHIPPED ``compaction.model``, so ``summarizer_cap`` was computed from a
+            window 2.07x the real one and the RESTART-class apply wrote the result
+            into Hermes' own ``config.yaml`` — i.e. the conversation was allowed to
+            grow past what the summarizer could actually carry, which fails exactly
+            when compaction is the thing that was supposed to save it.
+          * ``deepseek-v4-pro`` 128,000 vs 1,048,576 (8x low).
+          * ``gpt-5.6-terra`` 1,000,000 vs 1,050,000.
+
+        And a fourth entry, ``glm-4.7``, is registry-marked as a vendor alias the
+        plan silently serves with another model, so its threshold was tuned for an
+        id nothing runs — the same defect
+        ``tests/test_shipped_policy_names_real_rails.py`` refuses in the policy.
+
+        So both halves are derived now:
+
+          * The KEY SET is the models this policy can actually route to (every tier
+            member) plus the compaction model itself. Hand-listed keys go stale
+            silently the moment a tier is edited; a derived set cannot.
+          * Each WINDOW is the registry's ``context_window``, which is the number
+            first-party pricing pages were read for.
+
+        ``summarizer_window`` is the window of the model that actually does the
+        compacting (``compaction.model``), not a constant: the summarizer's budget
+        is a property of the summarizer. It falls back to the largest routable
+        window when the policy names no compaction model, because the curve needs
+        SOME window and the alternative is refusing a read.
+
+        Fail-safe like every other read: an unimportable or older registry yields
+        the empty map and :data:`_FALLBACK_SUMMARIZER_WINDOW`, so ``/compaction``
+        degrades to "no per-model thresholds" rather than raising.
+        """
+        config, _errors = self._load()
+        windows: Dict[str, int] = {}
+        if _caps is not None:
+            for model in sorted(_policy_models(config)):
+                window = _registry_window(model)
+                if window:
+                    windows[model] = window
+
+        compaction = config.get("compaction")
+        summarizer = 0
+        if isinstance(compaction, dict):
+            summarizer = _registry_window(str(compaction.get("model") or ""))
+        if not summarizer:
+            # No compaction model, or one the registry cannot describe. The block
+            # itself is REFUSED by resolve_compaction in that case, so this only
+            # has to keep the read path answering.
+            summarizer = max(windows.values()) if windows else (
+                _FALLBACK_SUMMARIZER_WINDOW
+            )
+        return summarizer, windows
 
     @staticmethod
     def _warnings(config: Dict[str, Any]) -> List[str]:
