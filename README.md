@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/rodrigogs/hermes-smart-router/actions/workflows/ci.yml/badge.svg)](https://github.com/rodrigogs/hermes-smart-router/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/badge/branch%20coverage-100%25-brightgreen)](https://github.com/rodrigogs/hermes-smart-router/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-428%20passed-brightgreen)](https://github.com/rodrigogs/hermes-smart-router/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-1959%20passed-brightgreen)](https://github.com/rodrigogs/hermes-smart-router/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://www.python.org/)
 [![Version](https://img.shields.io/badge/version-0.3.0-informational)](https://github.com/rodrigogs/hermes-smart-router)
 [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/rodrigogs/hermes-smart-router/blob/main/LICENSE)
@@ -116,7 +116,7 @@ delegate_profile(
 | `profile`  | string  | no       | `auto`  | Target Hermes profile name (schema enum: known profiles plus `default`/`auto`). Must exist (`hermes profile list`). If omitted or `auto`, the capability router picks the best profile + model based on task difficulty. If it matches the active profile, routes to in-process `delegate_task`. |
 | `context`  | string  | no       | —       | Background info: file paths, error messages, project structure, constraints. |
 | `model`    | string  | no       | profile default | Model override passed as `-m` to the child. |
-| `timeout`  | integer | no       | `300`   | Max seconds to wait for the subprocess. Override globally via `HERMES_DELEGATE_PROFILE_TIMEOUT`. |
+| `timeout`  | integer | no       | `600`   | Absolute hard-ceiling seconds for the subprocess. Tighter independent watchdogs also apply (no-first-output 120 s, inter-output idle 300 s). Override via `plugins.entries.hermes-smart-router.watchdog` in `config.yaml`, or `HERMES_DELEGATE_PROFILE_TIMEOUT`. |
 
 ### Result format
 
@@ -137,19 +137,48 @@ On failure (non-zero exit, timeout, or missing binary):
 ```json
 {
   "success": false,
+  "failure_kind": "nonzero_exit",
+  "retryable": false,
   "subagent_id": "dp_a1b2c3d4e5f6",
   "profile": "reviewer",
+  "model": "glm-5.3-flash",
   "error": "Subprocess exited with code 1",
   "stderr": "<last 2000 chars of stderr>",
   "elapsed_s": 12.1
 }
 ```
 
+`failure_kind` and `retryable` are the point of the envelope — they are what let
+an orchestrator choose retry / fallback / give-up without parsing prose.
+
+| `failure_kind` | `retryable` | meaning |
+|---|---|---|
+| `bad_args`         | —     | `prompt` or `profile` missing. |
+| `unknown_profile`  | —     | no such profile; the envelope lists the real ones. |
+| `binary_not_found` | —     | the `hermes` binary is not on `PATH`. |
+| `nonzero_exit`     | false | the child exited non-zero — an app-level error a retry repeats. |
+| `spawn_error`      | true  | the spawn itself failed. |
+| `ttfb_stall`       | true  | no first byte of output — startup wedged. |
+| `idle_stall`       | true  | no NEW output for the idle window — mid-run stall. |
+| `hard_timeout`     | true  | the absolute ceiling was hit. |
+| `crash` / `crash_or_oom` | true | the child died on a signal. |
+| `quota_exhausted`  | true  | the rail is out of quota — overrides the kind above it. |
+| `agent_error`      | true  | the child reported a failure in its own output. |
+| `inline_error`     | true  | the same-profile in-process path raised. |
+| `at_capacity`      | true  | no concurrency slot within the queue wait. |
+
+Only `retryable` drives the loop: the executor advances to the next
+(model, provider) target while it is true, and stops on the first false — so
+`nonzero_exit` (and the three arg/environment failures, which never reach the
+loop) end the turn, while every stall or quota failure fails over to the next
+rail.
+
 For a missing or non-existent profile:
 
 ```json
 {
   "success": false,
+  "failure_kind": "unknown_profile",
   "error": "Profile 'reviwer' does not exist. Create it with: hermes profile create reviwer",
   "profile": "reviwer",
   "available_profiles": ["coder", "reviewer", "tester"],
@@ -157,8 +186,9 @@ For a missing or non-existent profile:
 }
 ```
 
-For missing required args, returns `{"error": "prompt is required"}` or
-`{"error": "profile is required"}`.
+For missing required args, returns
+`{"error": "prompt is required", "failure_kind": "bad_args"}` or
+`{"error": "profile is required", "failure_kind": "bad_args"}`.
 
 ## How it works
 
@@ -188,8 +218,11 @@ router** that picks the best profile + model for the task:
 - **Stage 1 — LLM classifier:** fires only when rules can't decide (rules
   with `action: classify`). Uses a pinned model (glm-5.3-flash/zai, temp=0,
   token-capped) to classify task difficulty.
-- **Fail-safe:** if the classifier is unavailable, falls back to a trusted
-  strong model from `router.yaml`.
+- **Fail-safe:** if the classifier is unavailable, falls back to the
+  `fail_safe` block in `router.yaml`. Note it is the CHEAPEST plan rail, not a
+  strong model: shipped it is `glm-5.3-flash @ zai` with the same fallback
+  queue as T1, duplicated on purpose so it stays readable by a caller that has
+  no tier table. Keep it in step with T1 by hand.
 - **Blocklist:** manual bans + auto-breaker with exponential backoff
   cooldowns for models that stall repeatedly.
 - **Decision log:** every routing decision is recorded for observability.
@@ -199,7 +232,7 @@ Example routing behavior with the default config:
 | Task | Router picks |
 |------|-------------|
 | `"Rename getCwd in utils.py"` | `coder` + `glm-5.3-flash` (T1) |
-| `"Debug race condition in pool"` | `coder` + `claude-opus` (T4) |
+| `"Debug race condition in pool"` | `coder` + `gpt-5.5` @ `openai-codex` (T4) |
 | `"Review PR for security"` | `reviewer` + classify (→ fail_safe if no LLM) |
 
 Configure via `router.yaml` — rules, tiers, blocklist, classifier model,
@@ -281,14 +314,14 @@ variables:
 
 ```bash
 git clone https://github.com/rodrigogs/hermes-smart-router.git
-cd hermes-delegate-profile
+cd hermes-smart-router
 pip install -e ".[dev]"
 ```
 
 Project layout:
 
 ```
-hermes-delegate-profile/
+hermes-smart-router/
 ├── plugin.yaml          # manifest (name, version, provides_tools, provides_hooks)
 ├── __init__.py          # register() — registers the tool + post_tool_call hook
 ├── router.example.yaml  # shipped default policy (tracked)
@@ -303,18 +336,25 @@ hermes-delegate-profile/
 │   ├── classify.py      # LLM difficulty classifier
 │   ├── blocklist.py     # manual ban + auto-breaker state machine
 │   ├── breaker.py       # circuit breaker state
-│   ├── cache.py         # exact-hash classifier cache
-│   ├── decision_log.py  # JSONL decision recorder
+│   ├── cache.py         # exact-hash cache + session model-floor pin
+│   ├── capabilities.py  # model/price registry, chain shaping, price windows
+│   ├── decision_log.py  # in-memory decision recorder (closed cause set)
+│   ├── durable_decision_log.py  # routes.jsonl append + rotation
+│   ├── threshold.py     # compaction-threshold curve
+│   ├── price_watch.py   # supplier pricing-page change detector
+│   ├── price_watch_runner.py    # its cron edge (the only network call)
+│   ├── fixtures/        # classifier tier anchors
 │   ├── service.py       # shared read-only policy view for web surfaces
 │   ├── one_sidecar.py   # Hermes One loopback token-v1 sidecar
-│   └── cli.py           # CLI: explain, lint, blocklist, log
+│   └── cli.py           # CLI: explain, chain, lint, blocklist, log
 ├── dashboard/           # Hermes Dashboard panel (React + Plugin SDK)
 │   ├── manifest.json
 │   ├── plugin_api.py    # FastAPI routes
 │   └── dist/index.js    # bundled panel code
 ├── webui_extension/     # Hermes One assets (manifest + panel JS/CSS)
-├── scripts/             # idempotent Hermes One installer
-├── systemd/             # loopback sidecar service template
+├── scripts/             # installers, transactional stack updater, stale-check poller, smoke
+├── docs/                # ARCHITECTURE.md, design specs, operations runbooks
+├── systemd/             # sidecar unit + stale-check service/timer templates
 ├── PRODUCT.md           # durable product record
 └── tests/
     ├── test_delegate_profile.py
