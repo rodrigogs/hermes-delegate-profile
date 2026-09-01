@@ -623,6 +623,40 @@ def _compaction_registry_verdict(model: str) -> Tuple[bool, Optional[Dict[str, A
 _FALLBACK_SUMMARIZER_WINDOW = 128_000
 
 
+def _policy_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
+    """One Table-1 row, projected for the console.
+
+    ``enabled`` is the field the ENGINE honours — ``rules.match`` skips a row on
+    ``enabled is False`` (``rules.py:226``), ``lint`` requires it to be boolean, and
+    shadow containment reads it. It was missing from this projection while
+    ``status`` — which nothing in ``rules.py`` reads at all — was served with a
+    fabricated ``"stable"`` default. The console's per-row switch writes
+    ``r.enabled`` and its ``off`` badge tests ``r.enabled === false``, so a rule the
+    operator disabled was persisted correctly by the write path and then read back
+    as ENABLED: the switch flipped itself on again on the next load, and the badge
+    never appeared.
+
+    Both fields are now served ONLY WHEN PRESENT. Absent ``enabled`` means enabled,
+    and defaulting it here would flatten the three-valued read the console does. The
+    ``"stable"`` default was worse than absent for the same reason in reverse: it
+    asserted a status the operator never wrote.
+
+    ``status`` stays because it is operator annotation an operator may want to read
+    back, not because anything acts on it — it carries NO engine meaning, and a
+    caller looking for "is this row live" must read ``enabled``.
+    """
+    projected: Dict[str, Any] = {
+        "id": rule.get("id"),
+        "when": rule.get("when", {}),
+        "then": rule.get("then", {}),
+    }
+    if "status" in rule:
+        projected["status"] = rule["status"]
+    if "enabled" in rule:
+        projected["enabled"] = rule["enabled"]
+    return projected
+
+
 def _registry_window(model: str) -> int:
     """``model``'s advertised context window per the registry, or 0.
 
@@ -1002,16 +1036,7 @@ class RouterService:
         config, _errors = self._load()
         rules = _as_list(config.get("rules"))
         return {
-            "rules": [
-                {
-                    "id": rule.get("id"),
-                    "status": rule.get("status", "stable"),
-                    "when": rule.get("when", {}),
-                    "then": rule.get("then", {}),
-                }
-                for rule in rules
-                if isinstance(rule, dict)
-            ],
+            "rules": [_policy_rule(rule) for rule in rules if isinstance(rule, dict)],
             "default": config.get("default", {}),
             "tiers": self._policy_tiers(config.get("tiers")),
             "fail_safe": config.get("fail_safe", {}),

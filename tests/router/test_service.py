@@ -4008,6 +4008,73 @@ def test_plan_accepts_a_valid_compaction_block_and_apply_round_trips(config_path
     assert reloaded["compaction"]["model"] == "glm-4.5-flash"
 
 
+def test_a_disabled_rule_survives_the_round_trip_the_console_makes(config_path):
+    """Disable a rule the way the console does, and read it back the same way.
+
+    The console's per-row switch sets ``r.enabled = false`` on the draft and posts
+    it through plan/apply; its ``off`` badge and its shadow suppression then test
+    ``r.enabled === false`` on what ``policy()`` returns. That projection was
+    dropping ``enabled``, so the write landed in router.yaml correctly and the
+    screen read it back as ENABLED — the switch turned itself on again on reload.
+
+    Asserted as agreement between the two sides of one round trip (what the write
+    path persisted, and what the read path serves) rather than on either alone.
+    """
+    service = RouterService(config_path)
+
+    before = service.policy()["rules"]
+    assert "enabled" not in before[0], "absent means enabled — nothing to default"
+
+    draft = service.policy()
+    rules = [dict(rule) for rule in draft["rules"]]
+    rules[0]["enabled"] = False
+    plan = service.plan({"rules": rules})
+    assert plan["valid"] is True, plan["errors"]
+    assert service.apply(plan["base_hash"], plan["policy"])["ok"] is True
+
+    # The file has it...
+    persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert persisted["rules"][0]["enabled"] is False
+    # ...and so does the surface the console reads.
+    assert service.policy()["rules"][0]["enabled"] is False
+    # And the engine agrees the row is off, so the flag is not merely cosmetic:
+    # match() returns (output, matched_rule_id), and the disabled row is skipped.
+    import router.rules as rules_mod
+
+    _output, matched = rules_mod.match(
+        {"verb_class": "hard"},
+        False,
+        persisted["rules"],
+        persisted.get("default", {}),
+        persisted.get("tiers", {}),
+    )
+    assert matched != persisted["rules"][0]["id"]
+
+
+def test_the_rule_projection_invents_neither_status_nor_enabled(config_path):
+    """``status`` used to be served as ``"stable"`` for a row that never said so.
+
+    A projection that defaults a field asserts a fact the operator did not write.
+    Both fields are operator-declared and both are omitted when absent — which is
+    also what lets the console tell "disabled" from "not specified".
+    """
+    path = config_path.parent / "bare.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["rules"] = [{
+        "id": "bare-row",
+        "when": {"verb_class": {"eq": "hard"}},
+        "then": {"profile": "coder", "model": "T4"},
+    }]
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    row = RouterService(path).policy()["rules"][0]
+    assert row == {
+        "id": "bare-row",
+        "when": {"verb_class": {"eq": "hard"}},
+        "then": {"profile": "coder", "model": "T4"},
+    }
+
+
 def test_plan_refuses_an_unknown_compaction_model(config_path):
     service = RouterService(config_path)
     plan = service.plan(
