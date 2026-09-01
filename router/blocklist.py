@@ -120,7 +120,19 @@ class Blocklist:
         # Check breaker cooldowns
         if self._breaker_enabled:
             key = f"{model}@{provider}" if provider else model
-            if self._breaker.is_blocked(key, time.time()):
+            with _state_lock(_state_path()):
+                # ``is_blocked`` is not a pure read: an expired OPEN breaker
+                # transitions to HALF_OPEN and consumes the single probe slot.
+                # ``delegate_profile`` constructs a fresh Blocklist for each
+                # call, so the transition must be serialized and persisted here
+                # or every concurrent/fresh caller reloads OPEN-expired and all
+                # of them get through as probes.
+                self._load_state()
+                before = self._breaker.to_dict()
+                blocked = self._breaker.is_blocked(key, time.time())
+                if self._breaker.to_dict() != before:
+                    self._save_state()
+            if blocked:
                 return True
 
         return False

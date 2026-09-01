@@ -146,6 +146,19 @@ class TestBreakerOpenHalfOpen:
         # Back to OPEN with extended cooldown (120s now)
         assert bs.is_blocked("model@prov", 220.0)
 
+    def test_half_open_allows_exactly_one_probe_until_outcome(self):
+        """Cooldown expiry opens one probe slot, not a stampede of callers."""
+        bs = BreakerState(BREAKER_CONFIG)
+        bs.record("model@prov", "ttfb_stall", 100.0)
+        bs.record("model@prov", "ttfb_stall", 110.0)
+
+        assert bs.is_blocked("model@prov", 120.0)
+        assert not bs.is_blocked("model@prov", 200.0)
+        assert bs.is_blocked("model@prov", 201.0)
+
+        bs.record_success("model@prov", 210.0)
+        assert not bs.is_blocked("model@prov", 220.0)
+
     def test_exponential_backoff(self):
         bs = BreakerState(BREAKER_CONFIG)
         # First trip at t=110 (base 60s, until 170)
@@ -321,6 +334,32 @@ class TestBlocklistWithBreaker:
         tripped = bl.record_failure(model, provider, "ttfb_stall")
         assert tripped
         assert bl.is_blocked(model, provider) is True
+
+    def test_expired_cooldown_allows_one_probe_across_fresh_blocklists(self, monkeypatch):
+        """Fresh Blocklist instances must not all reopen the same expired breaker.
+
+        ``delegate_profile`` constructs Blocklist per call. When an OPEN breaker
+        expires, the first caller gets the HALF_OPEN probe and the consumed probe
+        state must be saved before another caller reloads the file.
+        """
+        import router.blocklist as blocklist_mod
+
+        model, provider = "flaky-probe", "prov"
+        key = f"{model}@{provider}"
+        clock = {"now": 100.0}
+        monkeypatch.setattr(blocklist_mod.time, "time", lambda: clock["now"])
+        bl = Blocklist(BLOCKLIST_CONFIG)
+        bl.record_failure(model, provider, "ttfb_stall")
+        clock["now"] = 110.0
+        bl.record_failure(model, provider, "ttfb_stall")
+
+        clock["now"] = 200.0
+        assert Blocklist(BLOCKLIST_CONFIG).is_blocked(model, provider) is False
+        assert Blocklist(BLOCKLIST_CONFIG).is_blocked(model, provider) is True
+
+        data = json.loads(_state_path().read_text(encoding="utf-8"))
+        assert data["entries"][key]["state"] == "HALF_OPEN"
+        assert data["entries"][key]["probe_allowed"] is False
 
     def test_config_ban_fires_with_breaker_cooldown(self):
         bl = Blocklist(BLOCKLIST_CONFIG)

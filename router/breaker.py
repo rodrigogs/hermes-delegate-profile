@@ -119,14 +119,21 @@ class BreakerState:
 
         if entry.state == "OPEN":
             if timestamp >= entry.cooldown_until:
-                # Cooldown expired — allow one probe
+                # Cooldown expired — allow exactly one probe and consume that
+                # slot immediately. Until the probe records success/failure,
+                # every other caller stays blocked instead of stampeding the
+                # recovering rail.
                 entry.state = "HALF_OPEN"
-                entry.probe_allowed = True
+                entry.probe_allowed = False
                 return False  # not blocked during HALF_OPEN
             return True  # still in cooldown
 
-        # HALF_OPEN: not blocked (probe was already allowed)
-        return False
+        # HALF_OPEN: a probe is already in flight unless this entry came from an
+        # older persisted state that still had an unconsumed probe_allowed flag.
+        if entry.probe_allowed:
+            entry.probe_allowed = False
+            return False
+        return True
 
     def blocked_entries(self, timestamp: float) -> List[Dict[str, Any]]:
         """Return currently-blocked entries for CLI display."""
@@ -314,6 +321,7 @@ class _Entry:
             "cooldown_until": self.cooldown_until,
             "backoff_seconds": self.backoff_seconds,
             "last_failure_kind": self.last_failure_kind,
+            "probe_allowed": self.probe_allowed,
         }
 
     @classmethod
@@ -331,4 +339,5 @@ class _Entry:
         entry.cooldown_until = float(data.get("cooldown_until", 0.0))
         entry.backoff_seconds = float(data.get("backoff_seconds", 0.0))
         entry.last_failure_kind = str(data.get("last_failure_kind", ""))
+        entry.probe_allowed = bool(data.get("probe_allowed", False))
         return entry

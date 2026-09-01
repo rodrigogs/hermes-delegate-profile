@@ -397,7 +397,9 @@ def test_breaker_malformed_state_entries_are_ignored():
     assert breaker.is_blocked("m@p", 2)
     assert breaker.record("m@p", "crash", 3) is False
     breaker._entries["m@p"].state = "HALF_OPEN"
+    breaker._entries["m@p"].probe_allowed = True
     assert breaker.is_blocked("m@p", 3) is False
+    breaker.record_success("m@p", 3)
     assert breaker.blocked_entries(3) == []
     restored = BreakerState.from_dict({"version": 1, "entries": {"bad": None}}, config)
     assert restored.to_dict() == {"version": 1, "entries": {}}
