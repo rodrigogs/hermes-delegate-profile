@@ -336,9 +336,12 @@ def cmd_explain(args: argparse.Namespace) -> None:
     features.update(_time_features(when))
     blocklist = Blocklist(config)
 
-    # Check if a model override is in the task
+    # Check if a model override is in the task. `would_block`, not `is_blocked`:
+    # this command only EXPLAINS, and the mutating form burns the breaker's
+    # single probe slot for an expired-OPEN rail — asking why a turn routed
+    # somewhere must not take a rail out of rotation.
     requested_model = args.model or ""
-    blocked = blocklist.is_blocked(requested_model, "")
+    blocked = blocklist.would_block(requested_model, "")
     if blocked:
         print(json.dumps({
             "cause": "blocklist_veto",
@@ -397,7 +400,9 @@ def cmd_chain(args: argparse.Namespace) -> None:
     features.update(_time_features(when))
 
     requested_model = getattr(args, "model", "") or ""
-    blocked = Blocklist(config).is_blocked(requested_model, "")
+    # Read-only, like `explain` above: a plan preview consumes no capacity and
+    # must consume no probe slot.
+    blocked = Blocklist(config).would_block(requested_model, "")
 
     result, explain_time_aware = _call_explain(task, features, blocked, config, when)
     output = result.get("output", {}) if isinstance(result, dict) else {}

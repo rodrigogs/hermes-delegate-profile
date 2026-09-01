@@ -520,3 +520,167 @@ class TestEntry:
     def test_from_dict_invalid(self):
         assert _Entry.from_dict(None) is None  # type: ignore
         assert _Entry.from_dict("garbage") is None  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# Looking is not using — a status read must not consume the probe slot
+# ---------------------------------------------------------------------------
+
+class TestObservingDoesNotStrandARail:
+    """``is_blocked`` is not a query, and three reporting surfaces used it as one.
+
+    An expired OPEN entry transitions to HALF_OPEN on the first ``is_blocked`` and
+    BURNS the single probe slot. HALF_OPEN is left only by a RECORDED success or
+    failure — so when the caller was merely LOOKING (``router.cli blocklist``,
+    ``RouterService.liveness``, ``blocked_entries`` itself), nothing was ever
+    dispatched to the rail and it stayed excluded permanently, reporting
+    ``cooldown_remaining_s: 0.0`` forever.
+    """
+
+    @staticmethod
+    def _expired_open(cooldown_at=1000.0):
+        """A breaker with one entry OPEN and its cooldown already in the past."""
+        b = BreakerState({"enabled": True, "threshold": 2, "window_seconds": 600,
+                          "base_cooldown_seconds": 60})
+        b.record("rail", "ttfb_stall", cooldown_at)
+        b.record("rail", "ttfb_stall", cooldown_at)
+        assert b._entries["rail"].state == "OPEN", "the setup must actually trip it"
+        return b
+
+    def test_would_block_agrees_with_is_blocked_on_every_state(self):
+        """The two must give the same ANSWER and differ only in their effect.
+
+        Asserted per state against a fresh breaker each time, because
+        ``is_blocked`` moves the state it is asked about — comparing them on one
+        instance would only ever measure the first call.
+        """
+        later = 1000.0 + 10_000  # well past the cooldown
+
+        # CLOSED, and an entry that does not exist at all.
+        fresh = BreakerState({"enabled": True})
+        assert fresh.would_block("nope", later) is fresh.is_blocked("nope", later)
+
+        # OPEN, still cooling.
+        assert (self._expired_open().would_block("rail", 1000.0)
+                is self._expired_open().is_blocked("rail", 1000.0) is True)
+
+        # OPEN, cooldown expired — both say "not blocked" (a probe is due).
+        assert (self._expired_open().would_block("rail", later)
+                is self._expired_open().is_blocked("rail", later) is False)
+
+        # HALF_OPEN with the slot already consumed — both say blocked.
+        consumed = self._expired_open()
+        assert consumed.is_blocked("rail", later) is False   # consumes it
+        assert consumed._entries["rail"].state == "HALF_OPEN"
+        assert consumed.would_block("rail", later) is consumed.is_blocked(
+            "rail", later) is True
+
+    def test_would_block_leaves_the_state_untouched(self):
+        b = self._expired_open()
+        later = 1000.0 + 10_000
+        before = b.to_dict()
+
+        for _ in range(5):
+            assert b.would_block("rail", later) is False
+
+        assert b.to_dict() == before, "a query moved the state"
+        # And the slot is still there for the call that actually dispatches.
+        assert b.is_blocked("rail", later) is False
+        assert b._entries["rail"].state == "HALF_OPEN"
+
+    def test_listing_the_blocklist_does_not_burn_the_probe(self):
+        """``blocked_entries`` is a DISPLAY. It used to consume every slot it drew."""
+        b = self._expired_open()
+        later = 1000.0 + 10_000
+
+        rows = b.blocked_entries(later)
+        assert [row["model_key"] for row in rows] == ["rail"]
+        # Reported honestly as OPEN-with-nothing-left, not as the HALF_OPEN the
+        # display itself used to cause.
+        assert rows[0]["state"] == "OPEN"
+        assert rows[0]["cooldown_remaining_s"] == 0.0
+        assert b._entries["rail"].state == "OPEN", "drawing the row moved the state"
+
+        # Drawing it a hundred times still leaves the rail probeable.
+        for _ in range(100):
+            b.blocked_entries(later)
+        assert b.is_blocked("rail", later) is False, (
+            "the probe slot was consumed by observation, so the rail could never "
+            "be retried"
+        )
+
+    def test_the_blocklist_wrapper_is_read_only_on_disk_too(
+        self, tmp_path, monkeypatch,
+    ):
+        """``Blocklist.would_block`` reads the freshest state but writes nothing."""
+        config = {
+            "blocklist": {
+                "manual_ban": [{"model": "banned", "provider": "", "reason": "t"}],
+                "fallback_chain": [],
+                "auto_breaker": {"enabled": True, "threshold": 2,
+                                 "window_seconds": 600,
+                                 "base_cooldown_seconds": 0},
+            }
+        }
+        bl = Blocklist(config)
+        bl.record_failure("rail", "prov", "ttfb_stall")
+        bl.record_failure("rail", "prov", "ttfb_stall")
+        state = _state_path()
+        assert state.exists()
+
+        # A manual ban needs no state at all.
+        assert bl.would_block("banned", "") is True
+
+        before = state.read_bytes()
+        mtime = state.stat().st_mtime_ns
+        # base_cooldown_seconds=0, so the cooldown is already expired: this is
+        # exactly the shape where the mutating form would transition and PERSIST.
+        for _ in range(5):
+            bl.would_block("rail", "prov")
+        assert state.read_bytes() == before, "a read path rewrote the state file"
+        assert state.stat().st_mtime_ns == mtime
+
+        # The real decision path still gets its one probe.
+        assert bl.is_blocked("rail", "prov") is False
+        assert state.read_bytes() != before, "the consuming call must persist"
+
+    def test_would_block_reports_a_cooldown_that_is_still_running(self):
+        """The breaker half of the answer, on the shape that IS blocked.
+
+        Distinct from the expired-cooldown case above: here ``would_block`` must
+        say True, and must say it without touching the entry — a rail mid-cooldown
+        has no probe slot to burn yet, and a status read must not create one.
+        """
+        config = {
+            "blocklist": {
+                "manual_ban": [],
+                "fallback_chain": [],
+                "auto_breaker": {"enabled": True, "threshold": 2,
+                                 "window_seconds": 600,
+                                 "base_cooldown_seconds": 3600},
+            }
+        }
+        bl = Blocklist(config)
+        bl.record_failure("rail", "prov", "ttfb_stall")
+        bl.record_failure("rail", "prov", "ttfb_stall")
+
+        before = _state_path().read_bytes()
+        assert bl.would_block("rail", "prov") is True
+        assert bl.would_block("rail", "prov") is True
+        assert _state_path().read_bytes() == before
+
+    def test_would_block_skips_the_breaker_entirely_when_it_is_disabled(self):
+        """With the breaker off, only manual bans can answer — and no lock is taken."""
+        config = {
+            "blocklist": {
+                "manual_ban": [{"model": "banned", "provider": "", "reason": "t"}],
+                "fallback_chain": [],
+                "auto_breaker": {"enabled": False},
+            }
+        }
+        bl = Blocklist(config)
+        assert bl.breaker_enabled() is False
+        assert bl.would_block("banned", "") is True
+        assert bl.would_block("anything-else", "prov") is False
+        # No state file is created by a read path on a breaker-less config.
+        assert not _state_path().exists()

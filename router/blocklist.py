@@ -137,6 +137,37 @@ class Blocklist:
 
         return False
 
+    def would_block(self, model: Optional[str], provider: Optional[str]) -> bool:
+        """:meth:`is_blocked`'s answer, WITHOUT consuming a breaker probe slot.
+
+        For diagnostics and status surfaces. ``router explain`` and ``router chain``
+        answer "why did this route there" — asking that question must not remove
+        capacity, and it did: :meth:`is_blocked` transitions an expired OPEN entry
+        to HALF_OPEN and burns the single probe, and since HALF_OPEN is only left by
+        a recorded outcome, a rail nothing then dispatched to stayed excluded for
+        good. See :meth:`breaker.BreakerState.would_block`.
+
+        Manual bans are checked identically — they carry no state and no slot.
+        Reads the freshest state off disk under the lock so the answer is not the
+        snapshot taken at construction, but never writes.
+        """
+        if not model:
+            return False
+
+        for ban in self._manual_bans:
+            if self._match(ban.get("model", ""), ban.get("provider", ""),
+                           model, provider or ""):
+                return True
+
+        if self._breaker_enabled:
+            key = f"{model}@{provider}" if provider else model
+            with _state_lock(_state_path()):
+                self._load_state()
+                if self._breaker.would_block(key, time.time()):
+                    return True
+
+        return False
+
     def fallback_for(self, model: str) -> Optional[str]:
         """Return the next model in the fallback chain, or None."""
         try:

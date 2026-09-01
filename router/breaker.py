@@ -105,10 +105,48 @@ class BreakerState:
         # In CLOSED, success doesn't reset counter — only window expiry does.
         # In OPEN, success can't happen (calls are blocked).
 
-    def is_blocked(self, model_key: str, timestamp: float) -> bool:
-        """Check if model is currently blocked (OPEN and within cooldown).
+    def would_block(self, model_key: str, timestamp: float) -> bool:
+        """The same answer :meth:`is_blocked` gives, with NO state change.
 
-        Side effect: if cooldown has expired, transitions OPEN → HALF_OPEN.
+        For every caller that is only LOOKING: a CLI listing, ``/liveness``, a
+        status panel. Those consume no capacity and must therefore consume no
+        probe slot.
+
+        They used to call :meth:`is_blocked`, which is not a query — it
+        transitions an expired OPEN entry to HALF_OPEN and BURNS the single probe
+        slot. Three reporting surfaces did it (``router.cli blocklist``,
+        ``RouterService.liveness``, and ``blocked_entries`` itself, whose comment
+        said the mutation was the point), and nothing was dispatched to the rail
+        afterwards. Since HALF_OPEN is only left by a RECORDED success or failure,
+        a rail whose cooldown had expired was moved into "a probe is in flight"
+        by an observer, and then stayed there — permanently excluded, reporting
+        ``cooldown_remaining_s: 0.0`` forever, which the CLI renders as "expiring
+        now". Merely watching the breaker removed capacity for good.
+
+        The predicate is deliberately written to mirror :meth:`is_blocked`'s
+        branches one-for-one rather than sharing a helper: the two must agree, and
+        ``test_would_block_agrees_with_is_blocked_on_every_state`` asserts that
+        over every state instead of trusting the shapes to stay parallel.
+        """
+        entry = self._entries.get(model_key)
+        if entry is None:
+            return False
+        if entry.state == "CLOSED":
+            return False
+        if entry.state == "OPEN":
+            # Cooldown expired means "the next real call may probe", not "blocked".
+            return timestamp < entry.cooldown_until
+        return not entry.probe_allowed
+
+    def is_blocked(self, model_key: str, timestamp: float) -> bool:
+        """Check if model is currently blocked, CONSUMING a probe slot if due.
+
+        NOT a query — see :meth:`would_block` for the read-only form, and use that
+        one from any surface that is only reporting.
+
+        Side effect: if cooldown has expired, transitions OPEN → HALF_OPEN and
+        consumes the single probe slot, so exactly one caller is let through to a
+        recovering rail and the rest stay blocked instead of stampeding it.
         """
         entry = self._entries.get(model_key)
         if entry is None:
@@ -136,11 +174,23 @@ class BreakerState:
         return True
 
     def blocked_entries(self, timestamp: float) -> List[Dict[str, Any]]:
-        """Return currently-blocked entries for CLI display."""
+        """Return currently-blocked entries for CLI display. READ-ONLY.
+
+        Uses :meth:`would_block`, never :meth:`is_blocked`. This function used to
+        call the mutating form on every entry with the comment "trigger any pending
+        state transitions" — so rendering the list was what consumed the probe
+        slots, and an expired-OPEN rail was stranded in HALF_OPEN by the act of
+        being displayed. A status read that changes the state it reports is not a
+        status read.
+
+        An OPEN entry whose cooldown has run out therefore now reports
+        ``state: "OPEN"`` with ``cooldown_remaining_s: 0.0`` — "eligible to probe",
+        which is the truth — rather than the ``HALF_OPEN`` the display itself
+        caused.
+        """
         result: List[Dict[str, Any]] = []
         for key, entry in self._entries.items():
-            # Call is_blocked to trigger any pending state transitions
-            blocked = self.is_blocked(key, timestamp)
+            blocked = self.would_block(key, timestamp)
             if entry.state == "OPEN" or blocked:
                 remaining = max(0.0, entry.cooldown_until - timestamp)
                 result.append({
