@@ -450,8 +450,21 @@ def time_config_file(tmp_path):
     """A config whose T2 is a 4-hop random/unpinned tier of time-priced rails.
 
     Four hops so a shuffle is observable, ``pin_primary: false`` so position 0
-    moves too, and the models are the ones with real price windows (deepseek,
-    zai, xiaomi) so the pricing block has something to say.
+    moves too, and the models are the ones with real price windows (deepseek, zai)
+    so the pricing block has something to say.
+
+    ``mimo-v2.5`` carries a DECLARED ``price_windows`` for the discount case. It used
+    to get one from the fake registry, and the real registry publishes no window for
+    any xiaomi elo on purpose — the 0.8x is a prepaid Token Plan credit coefficient
+    and this install bills pay-as-you-go. Declaring it per elo is how a real discount
+    would arrive, and it exercises the same sub-1.0 multiplier path.
+
+    The last hop is ``glm-4.5-flash``, REPLACING a ``kimi-k3`` that was there only to
+    be a fourth hop: it is the one elo the registry really does publish no per-token
+    price for, which is what the "never rendered as zero" case needs — and it has to
+    sit in the tier this task ROUTES to, or it never reaches the pricing rows at all.
+    Replacing rather than appending keeps the hop count at four, which three other
+    tests in this file assert.
     """
     config = {
         "enabled": True,
@@ -470,8 +483,9 @@ def time_config_file(tmp_path):
                 "fallback_strategy": "random", "pin_primary": False,
                 "fallback": [
                     {"model": "glm-5.3", "provider": "zai"},
-                    {"model": "mimo-v2.5", "provider": "xiaomi"},
-                    {"model": "kimi-k3", "provider": "moonshot"},
+                    {"model": "mimo-v2.5", "provider": "xiaomi",
+                     "price_windows": [{"hours_utc": [16, 24], "multiplier": 0.8}]},
+                    {"model": "glm-4.5-flash", "provider": "zai"},
                 ],
             },
             "T3": {"model": "claude-sonnet", "provider": "anthropic"},
@@ -828,12 +842,31 @@ class TestCLIChainPromptText:
 # ---------------------------------------------------------------------------
 
 class _FakeCaps:
-    """Stand-in for the time-layer price API while capabilities.py is mid-write.
+    """Stand-in for the time-layer price API, so CLI RENDERING is testable alone.
 
-    Implements exactly the two documented entry points with the VERIFIED
-    provider windows, so the CLI's rendering is testable independently of which
-    agent has landed the registry half. ``glm-5.3`` has no dollar price and must
-    surface as unpriced, never as 0.0.
+    It exists because this plugin is deployed by copy and ``cli.py`` can land beside
+    a ``capabilities.py`` that predates the time layer — the CLI's own formatting has
+    to be assertable either way.
+
+    IT IS A MIRROR, AND MIRRORS DRIFT. This one had, on FOUR vendor facts, and every
+    one of them was a fact the registry records as a measured money defect:
+
+      * both deepseek entries carried ``weekdays=None`` — every day — while the
+        registry gates both windows MON-FRI. That gate was added after a silent
+        vendor page edit; without it the router prices 14 h/week at 2.0x that the
+        vendor bills at 1.0x.
+      * ``mimo-v2.5`` carried a ``(16, 24) x 0.8`` window that the registry publishes
+        for NO xiaomi elo, deliberately: it is a prepaid Token Plan credit
+        coefficient and this install bills pay-as-you-go, so carrying it says metered
+        cost falls 20% for 8 h/day when real cost is 1.25x the estimate.
+      * ``glm-5.3`` was unpriced; the registry now publishes (1.40, 4.40), so this
+        file asserted "never rendered as zero" about an elo that HAS a price while a
+        sibling test asserted the opposite at the same instant.
+      * ``kimi-k3`` was (0.60, 2.50) against the registry's (3.00, 15.00) — 5x low.
+
+    Re-synced, and pinned: ``test_the_fake_registry_agrees_with_the_real_one``
+    asserts every fact here against ``MODEL_CAPABILITIES``, so this cannot become a
+    place where the suite believes a vendor claim the code refuses.
     """
 
     #: The registry constant the ``unsatisfiable`` headline reads for its
@@ -843,17 +876,17 @@ class _FakeCaps:
 
     #: model -> (windows [start, end), weekdays or None, multiplier)
     _WINDOWS = {
-        "deepseek-v4-pro": ([(1, 4), (6, 10)], None, 2.0),
-        "deepseek-v4-flash": ([(1, 4), (6, 10)], None, 2.0),
+        "deepseek-v4-pro": ([(1, 4), (6, 10)], {0, 1, 2, 3, 4}, 2.0),
+        "deepseek-v4-flash": ([(1, 4), (6, 10)], {0, 1, 2, 3, 4}, 2.0),
         "glm-5.3": ([(6, 10)], {0, 1, 2, 3, 4}, 2.0),
-        "mimo-v2.5": ([(16, 24)], None, 0.8),
     }
     _BASE = {
         "deepseek-v4-pro": (0.66, 1.98),
         "deepseek-v4-flash": (0.22, 0.66),
-        "glm-5.3": None,            # plan credits, no per-token dollar rate
+        "glm-5.3": (1.40, 4.40),
         "mimo-v2.5": (0.14, 0.28),
-        "kimi-k3": (0.60, 2.50),
+        "kimi-k3": (3.00, 15.00),
+        "glm-4.5-flash": None,      # plan credits, no per-token dollar rate
     }
 
     def price_multiplier(self, model, when=None, declared=None):
@@ -904,30 +937,52 @@ class TestCLIChainTime:
         assert rows["glm-5.3"]["multiplier"] == 1.0
         assert rows["deepseek-v4-pro"]["price_in"] == pytest.approx(0.66)
 
-    def test_weekend_0700_is_peak_for_deepseek_only(
+    def test_the_weekend_is_off_peak_on_both_rails(
         self, time_config_file, shuffling_planner, fake_caps, capsys
     ):
-        """The zai peak is Mon-Fri; the deepseek peak is every day."""
+        """Both published windows are gated MON-FRI, so a Saturday is base rate.
+
+        This asserted "the deepseek peak is every day" — the vendor's pre-2026-08-22
+        wording, before it added a weekday restriction in a silent page edit. The
+        registry gained the gate; this test kept the old claim and so kept passing
+        against a fake that also kept it.
+        """
         rows = _rows(_chain_json(capsys, time_config_file, "--at", _SAT_0700))
-        assert rows["deepseek-v4-pro"]["multiplier"] == 2.0
+        assert rows["deepseek-v4-pro"]["multiplier"] == 1.0
         assert rows["glm-5.3"]["multiplier"] == 1.0
 
-    def test_xiaomi_night_window_is_a_discount_not_a_peak(
-        self, time_config_file, shuffling_planner, fake_caps, capsys
+    def test_a_declared_discount_window_is_not_rendered_as_a_peak(
+        self, time_config_file, shuffling_planner, capsys
     ):
+        """The MECHANISM — a sub-1.0 multiplier — through a DECLARED window.
+
+        It used to come from a ``mimo-v2.5`` night window in the fake registry, and
+        the registry publishes that for no xiaomi elo ON PURPOSE: the 0.8x is a
+        prepaid Token Plan credit coefficient and this install bills
+        pay-as-you-go, so carrying it says metered cost falls 20% for 8 h/day when
+        real cost is 1.25x the estimate. So the discount now arrives the way a real
+        one would — declared per elo in the policy — and the rendered numbers are
+        unchanged, which is what makes this a fixture correction rather than a
+        behaviour change.
+        """
         rows = _rows(_chain_json(capsys, time_config_file, "--at", _MON_NIGHT))
         assert rows["mimo-v2.5"]["multiplier"] == 0.8
         assert rows["mimo-v2.5"]["price_out"] == pytest.approx(0.224)
 
     def test_an_unpriced_model_is_never_rendered_as_zero(
-        self, time_config_file, shuffling_planner, fake_caps, capsys
+        self, time_config_file, shuffling_planner, capsys
     ):
         payload = _chain_json(capsys, time_config_file, "--at", _MON_PEAK)
-        row = _rows(payload)["glm-5.3"]
+        # glm-4.5-flash, which the registry really does publish no per-token price
+        # for. This read `glm-5.3` until 2026-09-02 — an elo the registry now prices
+        # at (1.40, 4.40), so this test asserted "unpriced" about a priced model
+        # while a sibling in this same file asserted its multiplier at the same
+        # instant.
+        row = _rows(payload)["glm-4.5-flash"]
         assert row["unpriced"] is True
         assert row["price_in"] is None and row["price_out"] is None
         text = _chain_text(capsys, time_config_file, "--at", _MON_PEAK)
-        assert "glm-5.3 (zai) x2.0 unpriced" in text
+        assert "glm-4.5-flash (zai) x1.0 unpriced" in text
         # No row anywhere renders a zero rate: a plan model is not free.
         assert not re.search(r"=\$0(\.0+)?/1M", text)
 
@@ -2034,16 +2089,20 @@ class _PreDeclaredCaps:
     keyword call raises TypeError and the CLI has to retry positionally — the
     alternative is reporting a whole roster as unpriceable because one keyword
     was added later. ``kimi-k3`` raises from BOTH shapes, standing in for a
-    registry that only half knows the roster.
+    registry that only half knows the roster. It used to stand in with ``kimi-k3``,
+    which the time fixture no longer carries — the model is arbitrary here, what
+    matters is that ONE elo in the chain is unanswerable while the rest price.
     """
 
+    _UNKNOWN = "mimo-v2.5"
+
     def price_multiplier(self, model, when=None):
-        if model == "kimi-k3":
+        if model == self._UNKNOWN:
             raise KeyError(model)
         return 2.0 if when is not None and when.hour == 7 else 1.0
 
     def effective_price(self, model, when=None):
-        if model == "kimi-k3":
+        if model == self._UNKNOWN:
             raise KeyError(model)
         multiplier = self.price_multiplier(model, when)
         return (0.66 * multiplier, 1.98 * multiplier)
@@ -2070,9 +2129,9 @@ class TestCLIPricingAgainstAnOlderRegistry:
 
         Both readings come from the same registry in one run, so the test pins
         that the retry is per CALL and not per registry: deepseek is priced at the
-        07:00 multiplier the older API returns, and kimi-k3 — which that API
-        raises on — is reported as unpriceable instead of taking the rest of the
-        block down with it.
+        07:00 multiplier the older API returns, and the one elo that API raises on
+        is reported as unpriceable instead of taking the rest of the block down
+        with it.
         """
         monkeypatch.setattr(cli, "_caps", _PreDeclaredCaps())
         payload = _chain_json(capsys, time_config_file, "--at", _MON_PEAK)
@@ -2080,11 +2139,12 @@ class TestCLIPricingAgainstAnOlderRegistry:
         assert rows["deepseek-v4-pro"]["multiplier"] == 2.0
         assert rows["deepseek-v4-pro"]["price_in"] == pytest.approx(1.32)
         assert rows["deepseek-v4-pro"]["pricing"] == "priced"
-        assert rows["kimi-k3"]["multiplier"] is None
-        assert rows["kimi-k3"]["price_in"] is None
-        assert rows["kimi-k3"]["pricing"] == "unavailable"
+        unknown = _PreDeclaredCaps._UNKNOWN
+        assert rows[unknown]["multiplier"] is None
+        assert rows[unknown]["price_in"] is None
+        assert rows[unknown]["pricing"] == "unavailable"
         text = _chain_text(capsys, time_config_file, "--at", _MON_PEAK)
-        assert "kimi-k3 (moonshot) x? price=n/a" in text
+        assert f"{unknown} (xiaomi) x? price=n/a" in text
 
     @pytest.mark.parametrize("price", [0.66, (0.66, 1.98, 2.64), ("a", "b")])
     def test_a_price_that_is_not_an_in_out_pair_is_reported_as_unanswerable(
@@ -2412,3 +2472,68 @@ def _ns(command, overrides):
     for k, v in overrides.items():
         setattr(ns, k, v)
     return ns
+
+
+def test_the_fake_registry_agrees_with_the_real_one():
+    """`_FakeCaps` is a hand-typed second copy of the time layer. Pin it.
+
+    It exists for a real reason — this plugin is deployed by COPY, so `cli.py` can
+    land beside a `capabilities.py` that predates the time layer, and the CLI's own
+    formatting has to be assertable either way. But nothing compared the two, and it
+    had drifted on FOUR vendor facts, every one of them a fact the registry records
+    as a MEASURED MONEY DEFECT:
+
+      * both deepseek entries said "every day" where the registry gates Mon-Fri
+        (added after a silent vendor page edit; without it the router prices 14 h/week
+        at 2.0x that the vendor bills at 1.0x);
+      * `mimo-v2.5` carried the 0.8x night window the registry publishes for NO
+        xiaomi elo on purpose (a prepaid Token Plan coefficient against a
+        pay-as-you-go install: real cost was 1.25x the estimate);
+      * `glm-5.3` was unpriced where the registry publishes (1.40, 4.40) — so this
+        file asserted "never rendered as zero" about a PRICED model while a sibling
+        asserted its multiplier at the same instant;
+      * `kimi-k3` was 5x low.
+
+    Compared as FACTS per elo, not as literals in a third place. Only the elos the
+    fake names are checked: it is allowed to know about fewer models than the
+    registry, never to disagree about one.
+    """
+    if cli._caps is None:  # pragma: no cover - the registry always ships
+        pytest.skip("the time layer lives in the capability registry")
+    from router.capabilities import MODEL_CAPABILITIES
+
+    for model, base in _FakeCaps._BASE.items():
+        entry = MODEL_CAPABILITIES.get(model)
+        assert entry is not None, f"{model} is not in the registry at all"
+        real = (entry.get("price_in"), entry.get("price_out"))
+        if base is None:
+            assert real == (None, None), (
+                f"{model} is priced {real} in the registry but unpriced in the fake"
+            )
+        else:
+            assert real == pytest.approx(base), (
+                f"{model}: fake says {base}, registry says {real}"
+            )
+
+    for model, (windows, weekdays, multiplier) in _FakeCaps._WINDOWS.items():
+        published = MODEL_CAPABILITIES.get(model, {}).get("price_windows") or []
+        assert published, (
+            f"the fake gives {model} a price window the registry does not publish — "
+            f"the xiaomi 0.8x discount was exactly this mistake"
+        )
+        assert sorted(tuple(w["hours_utc"]) for w in published) == sorted(
+            tuple(h) for h in windows
+        ), model
+        assert {w["multiplier"] for w in published} == {multiplier}, model
+        real_days = {
+            tuple(w["weekdays"]) if w.get("weekdays") is not None else None
+            for w in published
+        }
+        expected = {tuple(sorted(weekdays)) if weekdays is not None else None}
+        assert real_days == expected, (
+            f"{model}: fake gates {weekdays}, registry gates {real_days}"
+        )
+
+    # And the ceiling the `unsatisfiable` headline renders.
+    from router.capabilities import MAX_REGISTERED_CONTEXT
+    assert _FakeCaps.MAX_REGISTERED_CONTEXT == MAX_REGISTERED_CONTEXT
