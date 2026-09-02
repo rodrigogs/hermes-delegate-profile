@@ -1646,7 +1646,40 @@ def _make_handler(
     optional Stage 1 classifier) to pick the best profile + model.
     """
 
-    classify_fn = _make_classify_fn(ctx) if ctx is not None else None
+    # THE CLASSIFIER IS RESOLVED PER DECISION, NOT ONCE AT REGISTER.
+    #
+    # It used to be `classify_fn = _make_classify_fn(ctx)` right here, which froze
+    # `enabled`, `provider`, `model`, `temperature`, `max_tokens` and `timeout` for
+    # the whole process — while every other consumer re-reads router.yaml per
+    # decision, `enabled` is in `RouterService._HOT_KEYS`, and router.example.yaml
+    # promises "editing router.yaml is live with no restart".
+    #
+    # So flipping `enabled: false -> true` in the console turned routing on and left
+    # `classify_fn is None`, producing `fail_safe_strong / reason: no_classifier` —
+    # the SAME signature as the measured trust-grant incident, and a third
+    # indistinguishable case against a rule the suite pins. Changing
+    # `classifier.model` had no effect until the gateway restarted.
+    #
+    # Only the process-stable half is decided here: whether the host exposes an llm
+    # facade at all. That cannot change without a new ctx, and asking per decision
+    # would cost a `_load_router_config` on every turn that has no classifier.
+    host_can_classify = ctx is not None and hasattr(ctx, "llm")
+
+    def classify_fn(task: str, features: Dict[str, Any]) -> Dict[str, Any]:
+        """Resolve the classifier from the LIVE policy, then call it.
+
+        Built per call, on the classify path only — a minority path that is about
+        to make a network call anyway, so one YAML read is not the cost that
+        matters. Raises when the policy no longer configures a classifier, which is
+        what the adapter's Stage-1 handler already treats as "the classifier could
+        not answer" (it fail-safes), so the shape a caller sees is unchanged.
+        """
+        live = _make_classify_fn(ctx)
+        if live is None:
+            raise RuntimeError(
+                "the router is enabled but router.yaml configures no classifier"
+            )
+        return live(task, features)
 
     def delegate_profile(args: dict, **_kwargs) -> str:
         # `prompt` is the canonical field (delegate_profile contract); `goal`
@@ -1683,9 +1716,10 @@ def _make_handler(
             # With no context the composed prompt IS the goal, so the fourth
             # argument is skipped there: identical routing either way, and the
             # historical 3-argument shape stays what a host-patched seam sees.
+            live_classify = classify_fn if host_can_classify else None
             routed = (
-                _route_task(goal, model, classify_fn, prompt) if context
-                else _route_task(goal, model, classify_fn)
+                _route_task(goal, model, live_classify, prompt) if context
+                else _route_task(goal, model, live_classify)
             )
             if routed is not None:
                 profile = routed.get("profile", "") or profile

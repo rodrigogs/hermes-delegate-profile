@@ -15,6 +15,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, Optional
 from unittest.mock import MagicMock, patch
 
@@ -618,3 +619,130 @@ def test_router_no_fallback_when_primary_succeeds(dp, monkeypatch):
     assert out.get("success") is True
     assert len(calls) == 1, "should not try fallback on primary success"
     assert any("zai" in " ".join(c) for c in calls)
+
+
+class TestTheClassifierFollowsTheLivePolicy:
+    """router.example.yaml promises "editing router.yaml is live with no restart".
+
+    `classify_fn` was built ONCE at register time, closing over `enabled`,
+    `provider`, `model`, `temperature`, `max_tokens` and `timeout` — while every
+    other consumer re-reads the policy per decision and `enabled` is in
+    `RouterService._HOT_KEYS`. So flipping `enabled: false -> true` in the console
+    turned routing on and left `classify_fn is None`, producing
+    `fail_safe_strong / no_classifier`: the same signature as the measured
+    trust-grant incident, and a third indistinguishable case. Changing
+    `classifier.model` did nothing until the gateway restarted.
+    """
+
+    @staticmethod
+    def _dp():
+        import importlib.util
+        from pathlib import Path
+        root = Path(__file__).resolve().parent.parent
+        spec = importlib.util.spec_from_file_location("dp_live_classifier",
+                                                     root / "__init__.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_the_model_the_classifier_dispatches_on_follows_a_hot_edit(
+        self, monkeypatch,
+    ):
+        """Flip `classifier.model` BETWEEN building the handler and calling it."""
+        dp = self._dp()
+        dispatched = []
+
+        class Llm:
+            @staticmethod
+            def complete(**kwargs):
+                dispatched.append(kwargs["model"])
+                return SimpleNamespace(text='{"tier": "T1", "confidence": "high"}')
+
+        ctx = SimpleNamespace(llm=Llm())
+        policy = {
+            "enabled": True,
+            "classifier": {"provider": "zai", "model": "first-model"},
+            "rules": [],
+            "default": {"action": "classify"},
+            "tiers": {f"T{n}": {"model": f"m{n}", "provider": "p"} for n in range(1, 5)},
+            "fail_safe": {"profile": "coder", "model": "fs", "provider": "p"},
+        }
+        monkeypatch.setattr(dp, "_load_router_config", lambda: policy)
+        monkeypatch.setattr(dp, "_profile_exists", lambda _p: True)
+        handler = dp._make_handler("parent", lambda _args: "inline", ctx=ctx)
+
+        # The edit happens AFTER the handler exists — the whole point.
+        policy["classifier"] = {"provider": "zai", "model": "second-model"}
+        monkeypatch.setattr(dp, "_route_task", dp._route_task)  # keep the real seam
+        handler({"prompt": "an entirely ambiguous request", "profile": "auto"})
+
+        assert dispatched, "the classifier never ran"
+        assert dispatched[-1] == "second-model", (
+            f"the classifier dispatched on {dispatched[-1]!r} — a value frozen at "
+            f"register time, not the live policy"
+        )
+
+    def test_a_host_with_no_llm_facade_still_yields_no_classifier(self, monkeypatch):
+        """The one half that IS process-stable, and must stay so.
+
+        Whether the host exposes `ctx.llm` cannot change without a new ctx, and
+        asking per decision would cost a policy read on every turn that has no
+        classifier at all.
+        """
+        dp = self._dp()
+        monkeypatch.setattr(dp, "_profile_exists", lambda _p: True)
+        monkeypatch.setattr(dp, "_load_router_config", lambda: {"enabled": True})
+        seen = []
+
+        def fake_route(goal, requested_model, classify_fn, *rest):
+            seen.append(classify_fn)
+            return None
+
+        monkeypatch.setattr(dp, "_route_task", fake_route)
+        handler = dp._make_handler("parent", lambda _args: "inline",
+                                   ctx=SimpleNamespace())
+        handler({"prompt": "task", "profile": "auto"})
+        assert seen == [None], "a host with no llm facade must pass no classify_fn"
+
+    def test_the_policy_going_off_mid_decision_fail_safes_instead_of_crashing(
+        self, monkeypatch,
+    ):
+        """The race the per-decision resolve introduces, and its guard.
+
+        `enabled` is hot, so it can flip between the moment the router decides to
+        classify and the moment the classifier is resolved. The adapter's Stage-1
+        handler already treats a raising classifier as "could not answer" and
+        fail-safes, so the guard raises rather than returning a shape no caller
+        expects — and the turn still routes.
+        """
+        dp = self._dp()
+        reads = {"n": 0}
+        base = {
+            "enabled": True,
+            "classifier": {"provider": "zai", "model": "m"},
+            "rules": [],
+            "default": {"action": "classify"},
+            "tiers": {f"T{n}": {"model": f"m{n}", "provider": "p"} for n in range(1, 5)},
+            "fail_safe": {"profile": "coder", "model": "fs-model", "provider": "p"},
+        }
+
+        def load():
+            reads["n"] += 1
+            # The FIRST read (the routing decision) sees the router on; the read the
+            # classifier itself makes sees it off.
+            if reads["n"] == 1:
+                return dict(base)
+            return dict(base, enabled=False)
+
+        monkeypatch.setattr(dp, "_load_router_config", load)
+        monkeypatch.setattr(dp, "_profile_exists", lambda _p: True)
+        handler = dp._make_handler(
+            "parent", lambda _args: "inline",
+            ctx=SimpleNamespace(llm=SimpleNamespace(complete=lambda **k: None)),
+        )
+        answer = json.loads(handler({"prompt": "an entirely ambiguous request",
+                                     "profile": "auto"}))
+        # It answered at all — no traceback out of the handler — and the fail-safe
+        # is what served the turn.
+        assert answer.get("failure_kind") != "routing_error", answer
+        assert reads["n"] >= 2, "the classifier must have re-read the live policy"
