@@ -1515,3 +1515,70 @@ class TestARoutingDeclineNamesItsOwnCause:
         assert json.loads(handler({"goal": "task"})) == {
             "error": "profile is required", "failure_kind": "bad_args",
         }
+
+
+class TestAMalformedPolicyRootDoesNotBreakLoading:
+    """`or {}` catches an empty file but not a root that is a list or a scalar.
+
+    `[a, b]` and `off` are both legal YAML, and every caller then calls `.get` on
+    the result. Both sibling loaders in the router package already guarded for
+    this; this one did not, and the consequence was not a degraded route — it was
+    the plugin failing to LOAD, because `_make_classify_fn` is called from
+    `register()` and the AttributeError propagated out of registration BEFORE
+    `_REGISTERED_CTX[ctx_id]` was set, so a retry re-raised identically.
+    """
+
+    @pytest.mark.parametrize("root", [
+        ["not", "a", "mapping"], "off", 7, 1.5, True,
+    ])
+    def test_a_non_mapping_root_yields_an_empty_policy(self, root, tmp_path):
+        assert _dp._as_policy_mapping(root, tmp_path / "router.yaml") == {}
+
+    def test_an_empty_or_mapping_root_is_passed_through(self, tmp_path):
+        assert _dp._as_policy_mapping(None, tmp_path / "r.yaml") == {}
+        policy = {"enabled": True}
+        assert _dp._as_policy_mapping(policy, tmp_path / "r.yaml") is policy
+
+    def test_register_survives_a_list_rooted_policy(self, monkeypatch, tmp_path):
+        """The worst of the three: the plugin did not load at all."""
+        monkeypatch.setattr(
+            _dp, "_load_router_config",
+            lambda: _dp._as_policy_mapping(["nope"], tmp_path / "router.yaml"),
+        )
+        monkeypatch.setattr(_dp, "_get_active_profile_name", lambda: "parent")
+
+        class Ctx:
+            def __init__(self):
+                self.tools = []
+                self.hooks = []
+
+            def register_tool(self, **kwargs):
+                self.tools.append(kwargs)
+
+            def register_hook(self, *args, **kwargs):
+                self.hooks.append(args)
+
+        ctx = Ctx()
+        _dp.register(ctx)          # used to raise AttributeError
+        assert ctx.tools and ctx.hooks, "the tool and hooks must still register"
+
+    def test_the_kanban_hook_keeps_its_returns_none_contract(
+        self, monkeypatch, tmp_path,
+    ):
+        monkeypatch.setattr(
+            _dp, "_load_router_config",
+            lambda: _dp._as_policy_mapping("off", tmp_path / "router.yaml"),
+        )
+        assert _dp._on_pre_kanban_dispatch(
+            task_id="t", profile_name="p", board="b", assignee="coder", run_id=1,
+        ) is None
+
+    def test_the_warning_is_emitted_once_per_message(self, caplog, tmp_path):
+        """A per-decision reload must not flood the log."""
+        _dp._WARNED.clear()
+        caplog.set_level("WARNING")
+        for _ in range(5):
+            _dp._as_policy_mapping(["nope"], tmp_path / "router.yaml")
+        naming = [r for r in caplog.records if "top level" in r.getMessage()]
+        assert len(naming) == 1, [r.getMessage() for r in naming]
+        assert "routing is DISABLED" in naming[0].getMessage()

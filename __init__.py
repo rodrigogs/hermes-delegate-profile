@@ -702,6 +702,39 @@ def _classifier_defaults() -> Dict[str, Any]:
     return classifier_defaults()
 
 
+#: Messages already emitted by :func:`_warn_once`, so a per-decision reload of a
+#: broken policy logs once instead of once per turn.
+_WARNED: set = set()
+_WARNED_LOCK = threading.Lock()
+
+
+def _warn_once(message: str) -> None:
+    """``logger.warning(message)``, at most once per process per distinct message."""
+    with _WARNED_LOCK:
+        if message in _WARNED:
+            return
+        _WARNED.add(message)
+    logger.warning("%s", message)
+
+
+def _as_policy_mapping(parsed: Any, source: Path) -> Dict[str, Any]:
+    """``parsed`` when it is a mapping (or empty), else ``{}`` with one warning.
+
+    ``or {}`` alone accepts a root that parsed into a list or a scalar, which every
+    caller then calls ``.get`` on. See :func:`_load_router_config` for what that
+    cost.
+    """
+    if parsed is None:
+        return {}
+    if isinstance(parsed, dict):
+        return parsed
+    _warn_once(
+        f"hermes-smart-router: {source} must contain a mapping at the top level, "
+        f"got {type(parsed).__name__} — routing is DISABLED until it is fixed"
+    )
+    return {}
+
+
 def _load_router_config() -> Dict[str, Any]:
     """Load router.yaml from the plugin directory. Returns {} on failure.
 
@@ -709,6 +742,27 @@ def _load_router_config() -> Dict[str, Any]:
     that local tuning does not leave the checkout permanently dirty (and does
     not conflict on every pull). On first run it is seeded from the tracked
     router.example.yaml; after that it belongs to the operator.
+
+    ALWAYS A MAPPING. ``or {}`` catches an empty file but NOT a root that parsed
+    into a list or a scalar — `[a, b]` and `off` are both legal YAML — and both
+    sibling loaders in the router package already guard for that while this one did
+    not. The consequence was not a degraded route; it was the plugin failing to
+    LOAD:
+
+      * ``_make_classify_fn`` is called from ``register()``, so the AttributeError
+        propagated out of registration — and out of it BEFORE
+        ``_REGISTERED_CTX[ctx_id]`` is set, so a retry re-raised identically;
+      * ``_on_pre_kanban_dispatch`` raised too, breaking its own documented "every
+        failure path returns None" contract;
+      * and both call sites read ``config.get("enabled", False)`` with no guard.
+
+    Reproduced with a root of ``["not", "a", "mapping"]``: ``register()`` raised
+    ``AttributeError: 'list' object has no attribute 'get'``.
+
+    Logged, not silent. The old bare ``except Exception: return {}`` also said
+    nothing at all, so a malformed policy disabled ALL routing (``enabled``
+    defaults to False) with no line anywhere saying why. Deduped by message so a
+    per-decision reload cannot flood the log.
     """
     try:
         import yaml
@@ -726,9 +780,14 @@ def _load_router_config() -> Dict[str, Any]:
                 )
             except OSError:
                 # Read-only install: fall back to reading the example directly.
-                return yaml.safe_load(example.read_text(encoding="utf-8")) or {}
-        return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    except Exception:
+                return _as_policy_mapping(
+                    yaml.safe_load(example.read_text(encoding="utf-8")), example,
+                )
+        return _as_policy_mapping(
+            yaml.safe_load(config_path.read_text(encoding="utf-8")), config_path,
+        )
+    except Exception as exc:  # noqa: BLE001 - a policy read must not break loading
+        _warn_once(f"hermes-smart-router: could not read router.yaml: {exc}")
         return {}
 
 
