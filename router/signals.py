@@ -359,11 +359,28 @@ def _infer_file_count(turn: str) -> int:
 
 
 def _detect_stacktrace(turn: str) -> bool:
+    """True when the turn carries an error-report marker. Containment, not words.
+
+    ``"runtime error"`` used to be written ``" runtime error"``, with a leading
+    space, and it was the only marker here that had one. Matched by containment, a
+    leading space means the marker CANNOT fire at offset 0 or right after a
+    newline — which is precisely where a pasted stack trace begins. Measured:
+    ``"runtime error in the pool"`` and ``"boom\nruntime error here"`` both
+    answered False while ``"a runtime error in the pool"`` answered True.
+
+    ``has_stacktrace`` reaches the classifier prompt, so this was not inert: the
+    common paste shape scored as having no error report.
+
+    These markers deliberately do NOT go through ``_compile_marker_re``. That
+    helper appends ``s?\b`` for plural tolerance, and ``\b`` after a colon can
+    never match — so ``error:``, ``panic:`` and ``exception:`` would all become
+    dead. Containment is the right matcher for a punctuation-bearing marker.
+    """
     markers = [
         "traceback", "stack trace", "exception:", "error:",
         "panic:", "segfault", "segmentation fault", "null pointer",
         "index out of", "key error", "type error", "attribute error",
-        "syntax error", " runtime error",
+        "syntax error", "runtime error",
     ]
     lower = turn.lower()
     return any(m in lower for m in markers)

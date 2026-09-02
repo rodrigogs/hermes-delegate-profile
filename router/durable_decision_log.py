@@ -88,6 +88,25 @@ def attempts_path() -> Path:
     return routes_path().with_name("attempts.jsonl")
 
 
+def _is_joinable(run_id: Any) -> bool:
+    """Whether ``run_id`` can take part in the ``(task_id, run_id)`` join at all.
+
+    ``attempts.jsonl`` is written by Hermes CORE, outside this checkout, so every
+    field in it is untrusted shape. A list or dict ``run_id`` made the join key
+    unhashable and raised ``TypeError`` out of ``merge_attempts`` — which
+    ``read_entries`` calls, whose docstring promises it never raises, and which
+    ``RouterService.routes()`` calls, so ``/routes`` and ``/route`` dropped the
+    connection instead of degrading.
+
+    Unjoinable means JOINS NOTHING, on both sides. Not "joins under a shared
+    sentinel": two different unhashable ids would then collapse to one key, and the
+    ``run_id`` exists precisely because task ids are reused when a card is re-run —
+    attaching a prior retry's failure to today's decision is, in this function's own
+    words, a more dangerous lie than showing it as not instrumented.
+    """
+    return isinstance(run_id, (str, int, float, bool, type(None)))
+
+
 def merge_attempts(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Return copies of decision entries joined with executor outcomes.
 
@@ -111,13 +130,16 @@ def merge_attempts(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         task_id = row.get("task_id")
         if not isinstance(task_id, str) or not task_id:
             continue
-        by_key.setdefault((task_id, row.get("run_id")), []).append(row)
+        run_id = row.get("run_id")
+        if not _is_joinable(run_id):
+            continue  # a row nothing can be attributed to
+        by_key.setdefault((task_id, run_id), []).append(row)
     merged: List[Dict[str, Any]] = []
     for entry in entries:
         copy = dict(entry)
         task_id = copy.get("task_id")
         run_id = copy.get("run_id")
-        if isinstance(task_id, str) and task_id:
+        if isinstance(task_id, str) and task_id and _is_joinable(run_id):
             records = by_key.get((task_id, run_id), [])
             if records:
                 copy["attempts"] = records

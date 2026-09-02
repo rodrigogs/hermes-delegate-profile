@@ -2104,9 +2104,19 @@ def _matching_clauses(
     as the "because ..." chips, so dropping it meant a two-clause rule explained
     itself with one chip and a blocked_model-only rule gave no reason at all.
     _all_clauses_match evaluates the same operators against the same value, so
-    a chip appears here exactly when that clause held there. They diverged once:
-    the matcher hardcoded `eq` while this function honoured the author's op, so
-    /explain showed a chip for a `{ne: true}` clause the engine had rejected.
+    a chip appears here exactly when that clause held there. They diverged twice:
+
+      * the matcher hardcoded `eq` while this function honoured the author's op, so
+        /explain showed a chip for a `{ne: true}` clause the engine had rejected;
+      * and this function used ANY over the operators on a field while the matcher
+        uses ALL. A single-operator condition cannot tell the two apart, which is
+        why the agreement test did not — but `{utc_hour: {gte: 6, lt: 10}}`, the
+        idiom router.example.yaml teaches, can: measured at hour 5 and hour 14,
+        `_all_clauses_match` said False while this returned the clause as MATCHED.
+        The console renders that as a "because utc_hour ≥ 6 and < 10" chip on a
+        rule that did not fire.
+
+    ALL, therefore, on both sides.
     """
     matched: Dict[str, Any] = {}
     for field, condition in when.items():
@@ -2117,14 +2127,14 @@ def _matching_clauses(
         if not isinstance(condition, dict):
             continue
         if field == "blocked_model":
-            for op, target in condition.items():
-                if _eval_clause(op, blocked_model, target):
-                    matched[field] = condition
+            if all(_eval_clause(op, blocked_model, target)
+                   for op, target in condition.items()):
+                matched[field] = condition
             continue
         if field in features:
-            for op, target in condition.items():
-                if _eval_clause(op, features[field], target):
-                    matched[field] = condition
+            if all(_eval_clause(op, features[field], target)
+                   for op, target in condition.items()):
+                matched[field] = condition
     return matched
 
 

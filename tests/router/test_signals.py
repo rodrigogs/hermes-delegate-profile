@@ -781,3 +781,50 @@ def test_assignee_is_injected_and_never_extracted():
     assert "assignee" not in signals_module.extract(
         "Assign this to the reviewer profile please"
     )
+
+
+def test_a_stack_trace_at_the_start_of_a_turn_is_detected():
+    """`" runtime error"` carried the only leading space in the marker list.
+
+    Matched by containment, a leading space means the marker cannot fire at offset
+    0 or right after a newline — which is exactly where a pasted stack trace
+    begins. Measured before the fix: `"runtime error in the pool"` and
+    `"boom\\nruntime error here"` both answered False while
+    `"a runtime error in the pool"` answered True.
+
+    `has_stacktrace` reaches the classifier prompt, so the common paste shape was
+    scoring as carrying no error report.
+    """
+    for turn in (
+        "runtime error in the pool",
+        "boom\nruntime error here",
+        "a runtime error in the pool",
+        "RUNTIME ERROR: index out of range",
+    ):
+        assert extract(turn)["has_stacktrace"] is True, turn
+
+
+def test_no_stacktrace_marker_depends_on_surrounding_whitespace():
+    """The property, not the one word that broke it.
+
+    Every marker is matched by containment, so any marker with an edge space is
+    unreachable at a line start. Asserted over the whole list so the next one added
+    with a stray space fails here.
+    """
+    from router.signals import _detect_stacktrace
+
+    # Pull the list out of the function's own constant-free body by exercising it:
+    # each marker must fire when it IS the entire turn.
+    markers = [
+        "traceback", "stack trace", "exception:", "error:",
+        "panic:", "segfault", "segmentation fault", "null pointer",
+        "index out of", "key error", "type error", "attribute error",
+        "syntax error", "runtime error",
+    ]
+    for marker in markers:
+        assert marker == marker.strip(), (
+            f"{marker!r} has an edge space; containment cannot match it at a line "
+            f"start"
+        )
+        assert _detect_stacktrace(marker) is True, marker
+        assert _detect_stacktrace(f"prefix\n{marker} and more") is True, marker

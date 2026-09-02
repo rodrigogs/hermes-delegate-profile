@@ -4923,3 +4923,51 @@ def test_a_role_scoped_row_matches_only_when_the_role_is_present():
 
     _out, rid = match({"has_code": True, "assignee": "reviewer"}, False, rows, {}, tiers)
     assert rid == "reviewer-only"
+
+
+class TestTheChipsAgreeWithTheMatcher:
+    """`_matching_clauses` renders the "because ..." chips; it must not over-report.
+
+    It used ANY over the operators on a field while `_all_clauses_match` uses ALL.
+    A single-operator condition cannot tell the two apart, which is why the existing
+    agreement test — parametrised only over single-operator conditions — did not.
+    `{utc_hour: {gte: 6, lt: 10}}`, the two-operator idiom `router.example.yaml`
+    teaches for a time window, can: at hour 5 and hour 14 the matcher said False
+    while the chip reported the clause as MATCHED, so the console explained a rule
+    that had not fired.
+    """
+
+    @pytest.mark.parametrize("hour,matches", [
+        (5, False),    # below the lower bound — `gte` fails, `lt` holds
+        (6, True),
+        (8, True),
+        (9, True),
+        (10, False),   # at the exclusive upper bound — `gte` holds, `lt` fails
+        (14, False),
+    ])
+    def test_a_two_operator_condition_chips_exactly_when_it_matches(
+        self, hour, matches,
+    ):
+        when = {"utc_hour": {"gte": 6, "lt": 10}}
+        features = {"utc_hour": hour}
+        assert rules_mod._all_clauses_match(when, features, False) is matches
+        assert bool(rules_mod._matching_clauses(when, features, False)) is matches
+
+    def test_an_absent_field_chips_nothing_however_many_operators(self):
+        when = {"utc_hour": {"gte": 6, "lt": 10}}
+        assert rules_mod._all_clauses_match(when, {}, False) is False
+        assert rules_mod._matching_clauses(when, {}, False) == {}
+
+    def test_the_injected_blocked_model_field_follows_the_same_rule(self):
+        """`blocked_model` is injected, not extracted, and takes the same quantifier."""
+        when = {"blocked_model": {"eq": True, "ne": False}}
+        for blocked in (True, False):
+            expected = rules_mod._all_clauses_match(when, {}, blocked)
+            assert bool(rules_mod._matching_clauses(when, {}, blocked)) is expected
+
+    def test_a_two_operator_condition_on_a_string_field_agrees_too(self):
+        when = {"lang": {"ne": "python", "in": ["go", "rust"]}}
+        for lang in ("python", "go", "javascript"):
+            features = {"lang": lang}
+            expected = rules_mod._all_clauses_match(when, features, False)
+            assert bool(rules_mod._matching_clauses(when, features, False)) is expected, lang

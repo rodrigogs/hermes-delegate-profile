@@ -400,3 +400,49 @@ def test_read_chain_plans_is_one_plan_per_entry_and_agrees_with_the_accessor(
     assert plans[1]["chain"][0]["model"] == "gpt-5.6-luna"
     assert plans[1]["strategy"] == "cheapest_now"
     assert [p["chain"] for p in ddl.read_chain_plans(1)] == [plans[1]["chain"]]
+
+
+def test_a_non_hashable_run_id_does_not_take_both_trace_readers_down(
+    tmp_path, monkeypatch,
+):
+    """`attempts.jsonl` is written by Hermes CORE, so every field is untrusted.
+
+    The join key is a `(task_id, run_id)` tuple. A list or dict `run_id` made it
+    unhashable and raised `TypeError` out of `merge_attempts` — which is called by
+    `read_entries`, whose docstring promises it never raises, and by
+    `RouterService.routes()`, so `/routes` and `/route` dropped the connection
+    instead of degrading.
+
+    The guard is applied on BOTH sides of the join, so the journal row and the
+    decision agree about what is joinable, and an unjoinable id matches NOTHING
+    rather than matching everything.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Through the resolver, not a hand-built path: the autouse conftest fixture
+    # redirects HERMES_ROUTE_TRACE_FILE, and attempts_path() is derived from
+    # routes_path(), so a literal $HERMES_HOME/... path writes the file where
+    # nothing reads it.
+    journal = ddl.attempts_path()
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    # Journal rows are FLAT — the attempt fields sit on the row itself.
+    valid = {"schema": "route-attempts/1", "n": 1, "model": "m", "provider": "p",
+             "started_at": 1, "duration_ms": 10, "outcome": "served"}
+    journal.write_text("\n".join([
+        json.dumps({**valid, "task_id": "t1", "run_id": ["not", "hashable"]}),
+        json.dumps({**valid, "task_id": "t2", "run_id": {"also": "not"}}),
+        json.dumps({**valid, "task_id": "t3", "run_id": "fine"}),
+    ]) + "\n", encoding="utf-8")
+
+    merged = merge_attempts([
+        {"task_id": "t1", "run_id": ["not", "hashable"], "output": {}},
+        {"task_id": "t2", "run_id": {"also": "not"}, "output": {}},
+        {"task_id": "t3", "run_id": "fine", "output": {}},
+    ])
+
+    # It answered at all — that is the first assertion.
+    assert [entry["task_id"] for entry in merged] == ["t1", "t2", "t3"]
+    # An unjoinable id joins nothing rather than everything.
+    assert "attempts" not in merged[0]
+    assert "attempts" not in merged[1]
+    # And the well-formed row still joins, so the guard did not disable the join.
+    assert [a["model"] for a in merged[2]["attempts"]] == ["m"]
