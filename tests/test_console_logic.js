@@ -5592,16 +5592,19 @@ test('the clock line names every timed rail, expensive ones first', () => {
   // the declared rails still have to be reported, or "no window declared" and
   // "off-peak right now" become indistinguishable on screen.
   const rows = plain(api.railWindowRows(null, { hour: 7, weekday: 0 }));
-  assert.deepEqual(rows.map((r) => r.rail), ['deepseek', 'zai', 'xiaomi'],
-    'the two rails at 2x lead, because they are the ones that change a decision');
+  assert.deepEqual(rows.map((r) => r.rail), ['deepseek', 'zai'],
+    'the two rails the registry actually prices by the hour');
   assert.equal(rows[0].expensive, true);
   assert.equal(rows[0].changesAt, 10);
-  assert.equal(rows[2].multiplier, 1, 'xiaomi is at base rate at 07:00 UTC');
 
-  // Saturday: deepseek alone is expensive, so zai must fall out of the peak group.
+  // Saturday 07:00: NEITHER rail is expensive. Both windows are gated Mon-Fri in
+  // the registry, and this used to assert the opposite — deepseek alone expensive
+  // — from the pre-2026-08-22 vendor wording, before deepseek's weekday gate was
+  // added following a silent vendor edit. The console was pricing deepseek at 2x
+  // for 14 h every weekend that the vendor bills at 1x.
   const weekend = plain(api.railWindowRows(null, { hour: 7, weekday: 5 }));
-  assert.equal(weekend[0].rail, 'deepseek');
-  assert.equal(weekend.filter((r) => r.expensive).length, 1);
+  assert.equal(weekend.filter((r) => r.expensive).length, 0,
+    'both published windows are weekday-only');
 
   // A published window WINS over the built-in table, the same precedence the rest
   // of this console applies to declared capability data.
@@ -5757,19 +5760,26 @@ test('the pricing clock names the hour in both zones and the rails in a window',
   assert.match(local, /UTC[+−]\d\d:\d\d/, 'and names its own offset, in any timezone this runs in');
 
   const rails = dom.get('clockRails').children;
-  assert.equal(rails.length, 3, 'one line per rail that prices by the hour');
+  assert.equal(rails.length, 2, 'one line per rail that prices by the hour');
   const first = flat(rails[0]);
   assert.match(first, /deepseek 2× em hora de pico até 10:00 UTC/, 'real spaces, so it reads aloud');
   assert.match(rails[0].className, /peak/, 'and amber, because paying double needs attention');
-  assert.doesNotMatch(rails[2].className, /peak/, 'a rail at base rate is not a condition');
 
-  // The night discount is not a peak and must not be painted as one.
-  api.state.clock = NIGHT;
+  // Saturday: both published windows are gated Mon-Fri, so no rail is a condition.
+  // This used to assert a xiaomi 0.8x "hora barata" row — a discount the registry
+  // publishes for NO mimo elo, on purpose: it is a prepaid Token Plan credit
+  // coefficient and this install bills pay-as-you-go, so carrying it claimed metered
+  // cost fell 20% for 8 h/day when real cost was 1.25x the estimate there. The
+  // mechanism is still covered, by a DECLARED per-elo window
+  // (`api.eloWindows({price_windows: [...]})` above), which is where a real discount
+  // would come from.
+  api.state.clock = new Date(Date.UTC(2026, 7, 22, 7, 14));  // Saturday
   api.renderClock();
-  const night = findAll(dom.get('clockRails'), 'clock-rail').concat(dom.get('clockRails').children);
-  const xiaomi = night.find((row) => /xiaomi/.test(flat(row)));
-  assert.match(flat(xiaomi), /0\.8× em hora barata/);
-  assert.doesNotMatch(xiaomi.className, /peak/);
+  const weekend = dom.get('clockRails').children;
+  for (const row of weekend) {
+    assert.doesNotMatch(row.className, /peak/,
+      'a weekday-gated window must not paint the weekend amber');
+  }
 });
 
 test('the pricing clock exists only on tabs whose visible fact changes with time', () => {
@@ -11736,10 +11746,12 @@ test('a drag between two editable rows writes the move', async () => {
 // different windows and the aggregation would hide the divergence.
 
 // A registry table with TWO zai models sharing the 06-10 Mon-Fri peak, one
-// deepseek model with its daily 01-04 peak, and one flat openai-codex model.
-// The windows are real registry shapes (capabilities.py carries exactly these
-// hours/multipliers for the zai family), so the strip test prices the same
-// declarations the running path prices.
+// deepseek model with an UNGATED 01-04 peak, and one flat openai-codex model.
+// The zai windows are real registry shapes (capabilities.py carries exactly these
+// hours/multipliers for that family), so the strip prices the same declarations the
+// running path prices. The deepseek entry is deliberately SYNTHETIC: the real
+// registry gates both deepseek windows Mon-Fri, and an ungated window is the other
+// branch of `weekdaySet` — absent means every day — which nothing else here covers.
 function stripRegistry() {
   return {
     'glm-4.7': {
@@ -11806,7 +11818,8 @@ test('peak, cheap and base cells get the three states, and ONLY the current hour
   assert.ok(zaiCells[7].classList.contains('peak'), 'the now cell can also be a peak cell');
   const dsCells = findAll(bands[2], 'h-cell');
   assert.equal(dsCells.filter((c) => c.classList.contains('peak')).length, 3,
-    'deepseek peak is hours 1,2,3 - daily, no weekday gate needed here');
+    'this fixture entry declares no weekdays, so all seven days peak - the real\n'
+    + '     registry gates deepseek Mon-Fri; the ungated branch is what is under test');
   const codexCells = findAll(bands[3], 'h-cell');
   assert.equal(codexCells.filter((c) => c.classList.contains('peak')).length, 0,
     'a model with no declared windows has no peak cells at all');

@@ -1105,3 +1105,74 @@ def test_console_cause_map_covers_the_closed_set_exactly():
         "a rendering point still builds the cause span from the raw value "
         "('cause', String(...)) — both points must go through causeWord"
     )
+
+
+def test_the_rail_window_baseline_matches_the_registry():
+    """`RAIL_WINDOWS` is a transcription, so it must be asserted equal to its source.
+
+    The console needs it: `GET /capabilities` is an OPTIONAL read (DESIGN.md §7)
+    and the clock line has to answer "which rail is expensive now" without it. So
+    the table stays — but nothing compared it to `MODEL_CAPABILITIES`, and it had
+    drifted on both rails, in the two directions that cost most:
+
+      * `xiaomi: [{hours: [16, 24], multiplier: 0.8}]` — the registry publishes NO
+        window for either mimo elo, deliberately. `capabilities.py` records that the
+        0.8x is a prepaid Token Plan credit coefficient while this install bills
+        pay-as-you-go, so carrying it said metered cost fell 20 % for 8 h/day when
+        real cost was 1.25x the estimate there. And `railWindowRows` only overrides a
+        rail the registry prices, so the console announced the discount ALWAYS, on
+        four tabs, even with /capabilities answered.
+      * `deepseek` with no `weekdays` gate — the registry gates both windows Mon-Fri
+        (added after a silent vendor edit), so the console priced deepseek at 2x for
+        14 h every weekend the vendor bills at 1x.
+
+    Compared as SETS OF WINDOWS PER PROVIDER, not as text: the two spellings differ
+    by design (`hours` vs `hours_utc`), and what has to agree is the pricing fact.
+    """
+    from router.capabilities import MODEL_CAPABILITIES
+
+    script = _console_inline_script()
+    # Capture THROUGH the newline before the closing brace, so the last entry
+    # keeps the terminator the per-rail regex below needs. (Without it the final
+    # rail parsed as absent and the comparison passed for the wrong reason —
+    # caught by the non-vacuity assertion below.)
+    block = re.search(r"const RAIL_WINDOWS = \{(.*?\n)\s*\};", script, re.S)
+    assert block, "RAIL_WINDOWS is gone or reformatted — this test cannot see it"
+
+    # Parse the JS object literal into {provider: {(start, end, weekdays, mult)}}.
+    console_windows: dict[str, set] = {}
+    for rail, body in re.findall(r"(\w+):\s*\[(.*?)\],?\n", block.group(1), re.S):
+        entries = set()
+        for entry in re.findall(r"\{([^{}]*)\}", body):
+            hours = re.search(r"hours:\s*\[(\d+),\s*(\d+)\]", entry)
+            mult = re.search(r"multiplier:\s*([\d.]+)", entry)
+            weekdays = re.search(r"weekdays:\s*\[([\d,\s]*)\]", entry)
+            assert hours and mult, f"unparsed RAIL_WINDOWS entry: {entry}"
+            days = (
+                tuple(int(d) for d in weekdays.group(1).replace(" ", "").split(",") if d)
+                if weekdays else None
+            )
+            entries.add((int(hours.group(1)), int(hours.group(2)),
+                         days, float(mult.group(1))))
+        console_windows[rail] = entries
+    declared_rails = re.findall(r"^\s{8}(\w+):", block.group(1), re.M)
+    assert sorted(console_windows) == sorted(declared_rails), (
+        "the RAIL_WINDOWS regex did not match every rail in the table — a partial "
+        f"parse would compare a subset and pass for the wrong reason: {console_windows}"
+    )
+
+    registry_windows: dict[str, set] = {}
+    for entry in MODEL_CAPABILITIES.values():
+        for window in entry.get("price_windows") or []:
+            start, end = window["hours_utc"]
+            days = window.get("weekdays")
+            registry_windows.setdefault(entry["provider"], set()).add(
+                (int(start), int(end),
+                 tuple(days) if days is not None else None,
+                 float(window["multiplier"]))
+            )
+
+    assert console_windows == registry_windows, (
+        "the console's offline price-window baseline disagrees with the capability "
+        f"registry.\n  console:  {console_windows}\n  registry: {registry_windows}"
+    )

@@ -96,7 +96,10 @@ Vendor context that does not fit a registry field, kept here so it is not lost:
     without it the router priced 14 h/week at 2.0x that the vendor bills at 1.0x,
     which never overbills but routes AWAY from deepseek to rivals that are not
     actually cheaper. ``price_in``/``price_out`` hold the OFF-PEAK
-    (base) price and peak is a 2.0x ``price_windows`` entry, EVERY day.
+    (base) price and peak is a 2.0x ``price_windows`` entry, MON-FRI — the same
+    gate the sentence above describes. This line used to end "EVERY day", which is
+    the pre-2026-08-22 wording and the reason four other documents still carried
+    the wrong 168-hour arithmetic.
   xiaomi — the 0.8x night discount (00:00-08:00 UTC+8 == 16:00-00:00 UTC) is NOT
     modelled, and the absence is deliberate. Measured 2026-08-26 on the vendor's
     own docs: the coefficient is scoped to the credit consumption of the PREPAID
@@ -144,9 +147,11 @@ Vendor context that does not fit a registry field, kept here so it is not lost:
   either: it is a calendar promotion, and the same call costs the same at every
   hour of the day it runs.
 
-The 06:00-10:00 UTC window is peak on BOTH primary rails at once (deepseek
-every day, zai on weekdays), which is why the time policy has to be able to
-demote two providers simultaneously without emptying a chain.
+The 06:00-10:00 UTC window is peak on BOTH primary rails at once (deepseek and
+zai, both weekdays-only), which is why the time policy has to be able to demote two
+providers simultaneously without emptying a chain. Swept over all 168 hours of the
+week on the shipped T3/T4 shape: 133 h (79.2%) quiet, 20 h (11.9%) priced with the
+order unchanged, 15 h (8.9%) actually reordered.
 """
 
 from __future__ import annotations
@@ -622,8 +627,12 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "billing_mode": "metered",
         "price_in": 0.22,
         "price_out": 0.66,
-        # Peak is EVERY day, so no `weekdays` gate. Two entries because
-        # 01:00-04:00 and 06:00-10:00 are disjoint, not one wrapping window.
+        # MON-FRI, per the `weekdays` gate on both entries below. The vendor
+        # added the weekday restriction in a silent page edit (absent from the
+        # changelog; Wayback brackets it 21/08 vs 24/08) and this comment kept
+        # saying "Peak is EVERY day, so no `weekdays` gate" for four weeks — three
+        # lines above the gate itself. Two entries because 01:00-04:00 and
+        # 06:00-10:00 are disjoint, not one wrapping window.
         "price_windows": [
             {"hours_utc": [1, 4], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},
             {"hours_utc": [6, 10], "weekdays": [0, 1, 2, 3, 4], "multiplier": 2.0},

@@ -243,15 +243,22 @@ partitions the shipped policy actually produces, measured by running `rules.plan
 | Tier | Behaviour | Hours (of 168) |
 |---|---|---|
 | `T1` | `capped: []`, order unchanged | 168 (100%) — the cap removes nothing at any hour |
-| `T2` | tail `deepseek-v4-flash, gpt-5.6-luna` | 119 (70.8%) |
-| `T2` | tail flips to `gpt-5.6-luna, deepseek-v4-flash` | 49 (29.2%) — deepseek's own two windows, 01:00-04:00 and 06:00-10:00 UTC **daily** |
-| `T3`/`T4` | nothing matches, declared order | 119 (70.8%) |
-| `T3`/`T4` | reorders — `demoted: deepseek-v4-pro` | 29 (17.3%) — 01:00-04:00 UTC daily + 06:00-10:00 UTC at the weekend |
+| `T2` | tail `deepseek-v4-flash, gpt-5.6-luna` | 133 (79.2%) |
+| `T2` | tail flips to `gpt-5.6-luna, deepseek-v4-flash` | 35 (20.8%) — deepseek's own two windows, 01:00-04:00 and 06:00-10:00 UTC, **Mon-Fri** |
+| `T3`/`T4` | nothing matches, declared order | 133 (79.2%) |
+| `T3`/`T4` | reorders — `demoted: deepseek-v4-pro` | 15 (8.9%) — 01:00-04:00 UTC, Mon-Fri only |
 | `T3`/`T4` | identity, `peak_priced` names both | 20 (11.9%) — 06:00-10:00 UTC Mon-Fri |
 
-`tests/router/test_capabilities.py::test_the_shipped_t3_policy_reorders_for_29_hours_of_the_week` and
+`tests/router/test_capabilities.py::test_the_shipped_t3_policy_reorders_for_15_hours_of_the_week` and
 `::test_the_shipped_t2_tail_flips_on_deepseeks_window_alone` pin these numbers, so a registry or window
 change that invalidates the table fails the suite instead of quietly outdating this page.
+
+This table said 119/49/29 with the word **daily** until 2026-09-01. Those were the
+figures before deepseek added a weekday restriction to both windows in a silent
+page edit (absent from its changelog; Wayback brackets it 21/08 vs 24/08). The
+registry gained the `weekdays` gate; four documents and one test citation did not.
+The citation above pointed at a test node id that **does not exist** — `pytest`
+reported "no tests ran" for it, which is how a doc reference rots without failing.
 
 ## 7. Known and deliberate, at time of writing
 
@@ -261,8 +268,8 @@ change that invalidates the table fails the suite instead of quietly outdating t
   which model serves real traffic, so it was left to the operator.
   **`T3`/`T4`'s `avoid_peak` is NOT inert** — an earlier version of this bullet said both knobs "earn
   nothing … neither tier holds a dollar-billed elo that peaks", and both halves are wrong: metered
-  `deepseek-v4-pro` is dollar-billed and peaks 2.0x at 01:00-04:00 and 06:00-10:00 UTC daily, and the
-  policy reorders the chain for 29 of the week's 168 hours (see §6b). It changes which model serves the
+  `deepseek-v4-pro` is dollar-billed and peaks 2.0x at 01:00-04:00 and 06:00-10:00 UTC Mon-Fri, and the
+  policy reorders the chain for 15 of the week's 168 hours (see §6b). It changes which model serves the
   second hop of every hard and adversarial task, from metered `deepseek-v4-pro` to plan-billed `glm-5.3-flash`.
   Treat it as live behaviour, not as a dormant knob.
 - `unsatisfiable` and `peak_priced` **do** render on human-facing surfaces — an earlier version of this

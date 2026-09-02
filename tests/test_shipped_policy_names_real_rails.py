@@ -272,3 +272,74 @@ def test_the_traversal_reaches_each_surface_it_claims_to_cover(surface):
     assert any(model == expected for model, _ in named), (
         f"{surface}'s own model never appeared in the traversal"
     )
+
+
+def test_the_168_hour_arithmetic_in_the_shipped_prose_is_the_swept_truth():
+    """The operator tunes the time knobs from those comments, so they are a contract.
+
+    They were wrong for four weeks. deepseek added a weekday restriction to both
+    its windows in a silent page edit (absent from its changelog; Wayback brackets
+    it 21/08 vs 24/08); the registry gained the `weekdays` gate and the prose did
+    not. `router.example.yaml` claimed T3/T4 split 119h/29h/20h and T2's tail
+    flipped 49/168 (29.17%) "EVERY day", while the suite already asserted 15/20/133
+    and 35 — the two halves of the repo disagreed about the same week, and the
+    operator-facing half was the wrong one.
+
+    So the numbers are re-derived here by SWEEPING all 168 hours and compared to the
+    text, rather than pinned as literals in a second place. A vendor window change
+    now fails this test instead of quietly outdating the page.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from router.capabilities import price_multiplier
+    from router.rules import plan_chain
+
+    monday = datetime(2026, 8, 17, tzinfo=timezone.utc)
+    tiers = _policy()["tiers"]
+
+    # T3's three cases, swept.
+    tier = tiers["T3"]
+    out = {"model": tier["model"], "provider": tier["provider"],
+           "fallback": tier["fallback"]}
+    for key in ("fallback_strategy", "time_cap", "time_policy", "billing_mode"):
+        if key in tier:
+            out[key] = tier[key]
+    quiet = reordered = both = 0
+    for hour in range(168):
+        plan = plan_chain(out, {}, when=monday + timedelta(hours=hour))
+        demoted, priced = plan.get("demoted") or [], plan.get("peak_priced") or []
+        if demoted and priced:
+            reordered += 1
+        elif priced:
+            both += 1
+        elif not demoted:
+            quiet += 1
+    assert (quiet, reordered, both) == (133, 15, 20), (quiet, reordered, both)
+
+    # T2's tail is a function of deepseek-v4-flash's multiplier alone.
+    flips = sum(
+        price_multiplier("deepseek-v4-flash", when=monday + timedelta(hours=h)) > 1.0
+        for h in range(168)
+    )
+    assert flips == 35, flips
+
+    prose = (_ROOT / "router.example.yaml").read_text(encoding="utf-8")
+    # The figures the prose states, read back out of it.
+    assert re.search(rf"{quiet}h \({100 * quiet / 168:.1f}%\)", prose), (
+        "the T3/T4 quiet-hour count in router.example.yaml is not the swept one"
+    )
+    assert re.search(rf"{reordered}h\s+\({100 * reordered / 168:.1f}%\)", prose)
+    assert re.search(rf"{both}h \({100 * both / 168:.1f}%\)", prose)
+    assert f"flipped for {flips} of" in prose, (
+        "the T2 tail flip count in router.example.yaml is not the swept one"
+    )
+    assert f"{quiet}h/{reordered}h/{both}h split" in prose, (
+        "T4's back-reference to T3's split is stale"
+    )
+
+    # And the vendor fact that produced all of it: no surviving "EVERY day" claim
+    # about a window the registry gates.
+    assert "EVERY day" not in prose, (
+        "router.example.yaml still claims a window applies every day; the registry "
+        "gates both deepseek windows Mon-Fri"
+    )

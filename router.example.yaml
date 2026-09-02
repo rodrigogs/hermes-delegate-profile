@@ -47,7 +47,7 @@
 #   * Registry prices are the BASE rate — the rate OUTSIDE every declared window.
 #     Do not "correct" a stored price to its peak number; that double-counts the
 #     multiplier. Declared windows, half-open [start, end):
-#         deepseek  2.0x at 01:00-04:00 and 06:00-10:00 UTC, EVERY day
+#         deepseek  2.0x at 01:00-04:00 and 06:00-10:00 UTC, MON-FRI only
 #         zai       2.0x at 06:00-10:00 UTC, MON-FRI only (weekends off-peak)
 #         xiaomi    NO window: the 0.8x night rate is a prepaid Token Plan credit
 #                   coefficient, and pay-as-you-go bills flat (measured 2026-08-26)
@@ -492,10 +492,14 @@ tiers:
     # multiplier and nothing else:
     #   inside deepseek's peak -> [gpt-5.6-luna $1.20, deepseek-v4-flash $1.32]
     #   outside it             -> [deepseek-v4-flash $0.66, gpt-5.6-luna $1.20]
-    # Verified over ALL 168 HOURS of the week: flipped for 49 of them (29.17%) —
-    # 01:00-04:00 AND 06:00-10:00 UTC, EVERY day, i.e. deepseek's two declared
-    # windows. It does not change at the weekend when zai stops peaking, which is
-    # how you can see zai was never the cause.
+    # Verified over ALL 168 HOURS of the week by sweeping it: flipped for 35 of
+    # them (20.83%) — 01:00-04:00 AND 06:00-10:00 UTC, MON-FRI, i.e. deepseek's two
+    # declared windows. zai is not the cause and cannot be: this tail names no zai
+    # rail at all, so the only multiplier in it is deepseek-v4-flash's.
+    #
+    # It said 49 (29.17%), on all seven days, until 2026-09-01. That was the
+    # vendor's pre-2026-08-22 wording, before deepseek added a weekday restriction
+    # in a silent page edit; the registry gained the gate and this prose did not.
     # pin_primary: true deliberately: glm-5.3-flash is plan-covered, so while the
     # plan lasts it is free AT THE MARGIN and no dollar price beats it. That is
     # the whole reason now. It used to rest on a second one — the primary
@@ -538,22 +542,24 @@ tiers:
     # watching is the traffic paying double on both rails. T3/T4 are the expensive
     # tiers, which is why the knob is here.
     # WHAT IT DOES, over ALL 168 HOURS of the week — the three cases partition it:
-    #   119h (70.8%)  nothing matches -> declared order, both lists empty.
-    #    29h (17.3%)  deepseek peaks ALONE, so the pair separates: the chain
+    #   133h (79.2%)  nothing matches -> declared order, both lists empty.
+    #    15h  (8.9%)  deepseek peaks ALONE, so the pair separates: the chain
     #                 becomes [gpt-5.6-terra, glm-5.3-flash, deepseek-v4-pro] with
-    #                 `demoted: [deepseek-v4-pro]`. That is 01:00-04:00 UTC daily
-    #                 plus 06:00-10:00 UTC at the WEEKEND, when zai's weekday-only
-    #                 window is shut. The second hop of every hard task changes
-    #                 model AND billing rail in those hours.
+    #                 `demoted: [deepseek-v4-pro]`. That is 01:00-04:00 UTC MON-FRI
+    #                 only — 3 h x 5 days. The second hop of every hard task
+    #                 changes model AND billing rail in those hours.
     #    20h (11.9%)  both peak together (06:00-10:00 UTC Mon-Fri) -> the
     #                 permutation is the IDENTITY, because demotion preserves
     #                 relative order and both named providers already occupy the
     #                 trailing two slots. `demoted: []` with
     #                 `peak_priced: [deepseek-v4-pro, glm-5.3-flash]`.
     # Read `peak_priced` as the cost signal and `demoted` as the order signal.
-    # Verify any claim like this by sweeping the week, never at one hour: an
-    # earlier version of this comment said the shape "REORDERS NOTHING" on the
-    # strength of 07:00Z and 15:00Z, and both of those miss all 29 hours.
+    # Verify any claim like this by sweeping the week, never at one hour, and
+    # RE-SWEEP IT when a vendor window changes. Two earlier versions of this comment
+    # were wrong: one said the shape "REORDERS NOTHING" on the strength of 07:00Z
+    # and 15:00Z, and both of those miss all 15 reordering hours; the other said
+    # 119h/29h/20h, which was the split before deepseek's weekday gate existed and
+    # claimed weekend reordering that cannot happen.
     # To make the demotion bite in the remaining 20 hours too, add a hop on a
     # provider with no expensive window (xiaomi's mimo-v2.5-pro is flat apart from
     # a 0.8x discount and clears the 200_000 floor at 1.05M); the pair then
@@ -583,7 +589,7 @@ tiers:
       provider: zai
       billing_mode: plan
     # Same policy as T3, same reason, and — because the chain shape below the
-    # primary is identical — the same measured 119h/29h/20h split, verified the
+    # primary is identical — the same measured 133h/15h/20h split, verified the
     # same way. T4 just costs the most per request, so a 2x here hurts most in
     # absolute terms. Keep the two in step: the chains are intentionally identical
     # below the primary, so a divergence between their time policies is a bug, not

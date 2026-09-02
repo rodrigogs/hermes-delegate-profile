@@ -2852,10 +2852,32 @@
       // OpenAI Batch/Flex and Gemini Batch are 50% off but are separate
       // ENDPOINTS, not hours, and modelling them as windows would misprice every
       // interactive request.
+      // The baseline for the clock line when GET /capabilities has not answered
+      // (an OPTIONAL read, DESIGN.md §7). Transcribed from
+      // MODEL_CAPABILITIES[...]["price_windows"] — the DATA, not from vendor prose
+      // — and asserted window-for-window against it by
+      // test_the_rail_window_baseline_matches_the_registry. Read 2026-09-01.
+      //
+      // It had drifted on both rails that matter, and in the two directions that
+      // cost the most:
+      //
+      //   * xiaomi claimed a 0.8x discount 16:00-24:00. The registry publishes NO
+      //     window for either mimo elo, deliberately: capabilities.py records that
+      //     the 0.8x is a prepaid Token Plan credit coefficient and this install
+      //     bills pay-as-you-go, so carrying it told the router metered cost fell
+      //     20% for 8 h/day when real cost was 1.25x its own estimate there. The
+      //     console was still announcing the discount, on four tabs, ALWAYS —
+      //     railWindowRows only overrides a rail the registry prices, so
+      //     /capabilities answering did not correct it.
+      //   * deepseek carried no `weekdays` gate. The registry gates both windows
+      //     Mon-Fri (added after a silent vendor edit), so the console priced
+      //     deepseek at 2x for 14 h every weekend that the vendor bills at 1x.
       const RAIL_WINDOWS = {
-        deepseek: [{ hours: [1, 4], multiplier: 2 }, { hours: [6, 10], multiplier: 2 }],
+        deepseek: [
+          { hours: [1, 4], weekdays: [0, 1, 2, 3, 4], multiplier: 2 },
+          { hours: [6, 10], weekdays: [0, 1, 2, 3, 4], multiplier: 2 },
+        ],
         zai: [{ hours: [6, 10], weekdays: [0, 1, 2, 3, 4], multiplier: 2 }],
-        xiaomi: [{ hours: [16, 24], multiplier: 0.8 }],
       };
 
       // ── the window shape, validated the way the ROUTER validates it ──
