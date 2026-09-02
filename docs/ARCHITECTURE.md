@@ -676,6 +676,23 @@ settled it, so a wrong call is visible and reversible.
 | Keep or retire `dashboard/`? | **Keep and fix** | Documented in README and PRODUCT.md; its parity tests exist because the directory is deployed by file COPY and can land beside an older `router/`. The coverage argument for deleting it was refuted — `dd9ec2f` put its 185 statements inside the gate instead. (`08e8d2f`) |
 | Should the classifier follow a hot edit? | **Yes** | `enabled` is in `_HOT_KEYS` and `router.example.yaml` promises "live with no restart". Only the process-stable half (does the host expose `ctx.llm`) is still decided at register. (`1a8d4ae`) |
 
+### Second wave (2026-09-02)
+
+| commit | what it closes |
+|---|---|
+| `1a8d4ae` | The classifier was built ONCE at register, freezing `enabled`/`provider`/`model` for the process — while `enabled` is a hot key under a "live with no restart" promise. Flipping it on left `classify_fn is None`, producing `fail_safe_strong / no_classifier`: a third case indistinguishable from the trust-grant incident. |
+| `19bff0e` | `HERMES_DELEGATE_PROFILE_DISABLE` is READ now. Only the tool is withheld; both hooks stay registered, or shadow kanban routing dies in every delegated child. |
+| `b3cadf5` | HALF_OPEN is no longer absorbing: the probe grant expires after one `backoff_seconds`, so a slot lost to a crashed attempt costs a delay instead of permanent exclusion. |
+| `08e8d2f` | The dashboard bundle addressed `delegate-profile` while its manifest and API said `hermes-smart-router` — under any host derivation the panel was broken. And `GET /log` serves dry runs, which the card titled "Decision Log" (`PRODUCT.md:60` forbids it verbatim). |
+| `056d21e` | `router/paths.py`: the state-dir resolution was typed twice and the copies diverged for four weeks (`d0802d6` → `305a901`), which cost cooldowns that never accumulated. |
+| `124b587` | The stale-code poller announced restarts that never happened, hard-coded one operator's plugin path, read the wrong token rung, and blamed `Restart=always` for misconfiguration. Its unit was missing `@WEBUI_STATE_DIR@` while the installer already passed the value — `_render_unit` only checked one direction. |
+| `9633be3` | `/explain` labels the hops the veto would remove, with `would_block` (a pollable GET must not spend a probe) and `blocked_source: "preview_label"` so a label is not mistaken for a vetted plan. |
+| `b12405f` | `peak_windows_utc`/`peak_multiplier` — a window dialect that has NEVER existed in Python — is gone from the console, pinned by `CAP_FIELDS ⊆ _REGISTRY_FIELDS`. Plus the served `default_weight` the breaker notes ignored, and the one English phrase on the pt-BR surface. |
+| `d3cb3ef` | Three tests that asserted nothing: a `caplog` with no assertion, a `monkeypatch.setattr(..., raising=False)` on a name that never existed, and a CWD-relative read that broke from a parent directory. |
+| `aade4bc` | The compaction candidate leaked +5 files per run into the real temp dir (467 accumulated, 0600). Fixed in the harness — production's behaviour is correct under `PrivateTmp`. |
+| `8c6a338` | `_FakeCaps` had drifted on FOUR vendor facts, each one a measured money defect, and two test NAMES asserted the old vendor claim. Now pinned against `MODEL_CAPABILITIES`. |
+| `a8cf62d` | `_lint_tier_shapes` was the deepest function in the repo (7 real levels; next is 5). Split; verdicts proven identical across 16 fallback shapes. |
+
 ### Still open, and deliberately not decided here
 
 * **Does the deployed host's `VALID_HOOKS` contain `pre_kanban_dispatch`?** Declaring
