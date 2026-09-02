@@ -33,10 +33,26 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # fastapi is NOT a dependency of this plugin (pyyaml is the only one). It is
+      # installed here because dashboard/plugin_api.py imports it, and without it
+      # that module is invisible to this job in two ways at once:
+      #
+      #   * tests/test_dashboard_plugin_api.py gates on it and skips — 42 parity
+      #     tests never run;
+      #   * dashboard/plugin_api.py is never imported, so coverage never descends
+      #     into it and its 185 statements / 58 branches leave the denominator
+      #     entirely. Measured on this tree: 5184 statements gated without fastapi
+      #     vs 5369 with it, and --cov-fail-under=100 PASSED either way.
+      #
+      # A gate whose denominator shrinks to fit is not a gate. Worse, until the
+      # 2026-09-01 split those 42 tests shared a module with the 25 console
+      # contract tests (XSS sinks, the one-wall-clock rule, the tab structure, the
+      # CSS token contract), and a module-level importorskip skips the WHOLE
+      # MODULE — so all 67 silently did not run here either.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyyaml pytest pytest-cov
+          pip install pyyaml pytest pytest-cov fastapi
 
       - name: Run tests with coverage
         run: |
@@ -110,13 +126,20 @@ jobs:
             node --test "$suite"
           done
 
+      # dashboard/dist/index.js is a SHIPPED browser asset with no test and no CI
+      # step of any kind. A syntax check is the floor, not coverage.
       - name: Syntax-check shipped browser assets
         run: |
           node --check webui_extension/hermes-smart-router/router-nav.js
+          node --check dashboard/dist/index.js
           python3 - <<'PY'
           import re, subprocess, sys, tempfile, pathlib
           html = pathlib.Path("webui_extension/hermes-smart-router/console.html").read_text(encoding="utf-8")
-          scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
+          # `<script\b[^>]*>`, not `<script>`: the bare form does not see
+          # `<script type="module">`, so a second script block added with any
+          # attribute at all would slip past the count AND past every harness that
+          # extracts "the" inline script by the same pattern.
+          scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", html, re.S)
           assert len(scripts) == 1, f"console.html must carry exactly one inline script, found {len(scripts)}"
           with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
               fh.write(scripts[0])

@@ -517,7 +517,7 @@ question (§9).
 ### Service, sidecar, frontends
 
 - **Asymmetric validation.** `_load()` runs only `rules.lint`, while the write gate is `rules.lint + _validate_fail_safe + _validate_compaction`. A file already on disk with a malformed `fail_safe`/`compaction` reads `valid: True` on `/status` and `/lint` and runs through `explain()`, but the same content is refused by `plan`/`apply`. Not commented anywhere.
-- **`explain()` passes `blocked_model=False` unconditionally** (`router/service.py:1888`, verified) and never constructs a `Blocklist`. The previewed `chain_plan` can therefore contain a banned or breaker-open elo that production's `_veto_blocked` removes — **the preview is not the vetted plan.**
+- **`explain()` never vets the previewed chain against the blocklist — CORRECTED.** An earlier reading of this called the hardcoded `blocked_model=False` (`router/service.py:2030`) the defect. It is not: `blocked_model` is an INJECTED `when:` field (`router/rules.py:169`) carrying whether the CALLER'S REQUESTED model is banned, and `RouterService.explain(task, at, prompt_text)` takes no requested model — so `False` is the only correct value, and a rule keyed on `blocked_model` is legitimately inert in a dry-run that requested nothing. What IS true is narrower and still real: `explain()` constructs no `Blocklist` at all, so the previewed `chain_plan` can list a banned or breaker-open elo that production's `_veto_blocked` would remove or substitute. **The preview is not the vetted plan.** Note the CLI does not share this gap — `router explain --model X` and `router chain --model X` both build a `Blocklist` and pass the real boolean, so the two surfaces disagree about their own contract.
 - A **removal cannot round-trip** through `plan()['policy']`: `policy` is the already-merged result and a merge cannot see absence, so replaying it restores the knob and is answered `no_op: True`. Removals must be sent as the change.
 - `_policy_references` raises `TypeError` on a malformed scalar `tier.fallback` (`fallback: 5` → iterating `5`), which is why `_policy_provider_index` wraps it while `liveness()` degrades wholesale. The string branch of its fallback-chain loop is **inert** (it feeds only a `continue`) while the comment above it describes a mapping the code never performs.
 - `_max_prompt_chars` (1 MiB ≈ 291k tokens) **cannot reach** the shipped `huge-context-read` rule, which fires above 400k tokens. Asserted as a fact rather than fixed, because 1 MiB is ~0.4 s of CPU per request on an unbounded-body HTTP path; the refusal message must keep pointing at `router chain --prompt-text`.
@@ -583,7 +583,7 @@ question (§9).
 6. **Does the host validate `provides_hooks` against what `register()` subscribes?** If it does, the undeclared `pre_kanban_dispatch` could be rejected or unlogged.
 7. **Is `HERMES_DELEGATE_PROFILE_DISABLE` enforced anywhere?** Nothing in this repo reads it, so the anti-recursion guarantee may be vacuous.
 8. **Where is `HERMES_ROUTE_ATTEMPTS_FILE` consumed?** `attempts_path()` reads `attempts.jsonl` from `routes_path()`, not from that variable, so the env publish (and its leak into later children via `os.environ.copy()`) only matters to a core-side writer outside this checkout.
-9. **Is `explain()`'s unconditional `blocked_model=False` intentional?** No docstring or test says the preview should ignore bans and cooldowns while production vets against them. Two operator surfaces (`/explain`, the console's Simular tab) can therefore show a plan production would refuse.
+9. **Should the `/explain` preview be vetted against the live blocklist?** Not the `blocked_model=False` question (that one is answered — see §8), but the chain: `explain()` builds no `Blocklist`, so `/explain` and the console's Simular tab can show an attempt order production would refuse. Fixing it means either reproducing `_veto_blocked`'s substitute/widen behaviour in the read model — which would be a second copy of the policy, and PRODUCT.md forbids that — or ADDITIVELY reporting which previewed hops are currently refused and letting the console label them. The second is cheap and honest; it is a product decision, not an implementation one, so it is written down rather than chosen here. If it is taken, the query must use `Blocklist.would_block`, never `is_blocked`: a preview consumes no capacity and must consume no probe slot.
 10. **Is the `_load()` vs `_lint_merged` asymmetry deliberate?** A file with a malformed `fail_safe`/`compaction` reads `valid: True` and runs, but is unwritable.
 11. **Is `policy()` dropping rule `enabled` intentional?** No test asserts either behaviour, and the console depends on the field.
 12. **Is `_apply_session_floor`'s stale-provider asymmetry intentional?** It sets provider only when the pinned tier declares one, with no `else`-pop, unlike the two other paths.
@@ -635,7 +635,7 @@ convention this repo already applies to its specs.
 
 **Still open from §9 and NOT addressed by those commits** — the probe-slot /
 planning-query interaction (#3), the Python 3.10 collection abort (#2),
-`explain()`'s unconditional `blocked_model=False` (#9), the `_load()` vs
+the unvetted `/explain` chain preview (#9), the `_load()` vs
 `_lint_merged` asymmetry (#10), `breaker_cooldown` with no producer (#13), the
 unenabled stale-check timer (#25), and every spec/doc divergence in #19–#24.
 
