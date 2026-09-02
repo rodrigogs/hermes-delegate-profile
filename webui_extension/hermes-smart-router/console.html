@@ -6383,7 +6383,7 @@
         // are parked — a pick from the Modelos ladder is the ladder's to move,
         // and yanking it here would make the result depend on which renderer a
         // reload happened to call last.
-        parkInspector('row:', 'tail:');
+        parkInspector($('sheet'), $('sheetTailList'));
         clear(box);
         // The catch-all block (default and fail-safe) and the column heads
         // live outside the numbered list; both are toggled by the policy.
@@ -6794,8 +6794,8 @@
 
       function renderLadder() {
         const box = $('ladder');
-        // Same reason as renderSheet's, for the one prefix this renderer owns.
-        parkInspector('ladder:');
+        // Same reason as renderSheet's, for the one container this renderer clears.
+        parkInspector($('ladder'));
         clear(box);
         const note = $('ladderNote');
         const tiers = (state.policy && state.policy.tiers) || {};
@@ -8354,17 +8354,56 @@
       // `state.selectedOrigin` is that identity — `row:<ruleId>`,
       // `tail:<default|fail_safe>` or `ladder:<tier>`.
       let inspectorHost = null;
+      //: The node ITSELF, cached. A node that has been moved into a row and whose
+      //: row is then discarded is DETACHED, and `document.getElementById` cannot
+      //: find a detached node — it answers null exactly when recovery matters. So
+      //: the id is used once, to find it, and the reference is what park and dock
+      //: move from then on.
+      let inspectorNode = null;
 
-      // Park the editor back home, but ONLY when this surface is the one that
-      // owns the dock. An unconditional park would make the result depend on
-      // renderer ORDER: a reload renders the sheet and the ladder both, and
-      // renderLadder would yank the editor out of the row renderSheet had just
-      // docked it into.
-      function parkInspector(...prefixes) {
+      function inspectorEl() {
+        if (!inspectorNode) inspectorNode = $('inspector');
+        return inspectorNode;
+      }
+
+      // Is the editor currently sitting inside `container`? `contains` in a real
+      // document; a walk over `children` for the test DOM, which has no `contains`.
+      function inspectorInside(container) {
+        if (!inspectorHost || !container) return false;
+        if (typeof container.contains === 'function') return container.contains(inspectorHost);
+        const walk = (n) => (n.children || []).some((k) => k === inspectorHost || walk(k));
+        return walk(container);
+      }
+
+      // Park the editor back home. The containers are the ones the CALLER is about
+      // to clear, and the park happens only when the editor is actually inside one
+      // of them.
+      //
+      // ON CONTAINMENT, NOT ON `state.selectedOrigin`. The first version of this
+      // asked "does the origin's prefix belong to this renderer?", which is a
+      // question about where the selection is GOING and not about where the node
+      // IS. Those differ on exactly one gesture — moving the selection to a
+      // DIFFERENT surface — and there it lost the editor outright: picking a group
+      // from the Modelos ladder while the editor was docked in a Tarefas row set
+      // the origin to `ladder:…`, so renderSheet's park declined ("not my
+      // prefix"), `clear(#sheet)` then discarded the row WITH the editor inside it,
+      // and renderLadder's park could not recover it because it resolved the node
+      // by id and a detached node has no id to find. Net effect: the console's one
+      // editor left the document and no click reopened it until a page reload.
+      //
+      // Reproduced in a browser against the live local stack on 2026-09-02 —
+      // `document.getElementById('inspector')` answered null. It is invisible to
+      // the JS suite because the DOM stub keys nodes in a Map, so nothing there is
+      // ever unreachable; see the contract test that pins both halves.
+      //
+      // Containment is also order-independent, which is what the prefix scoping was
+      // reaching for: on a reload that renders the sheet AND the ladder, the sheet
+      // parks and re-docks its own row, and the ladder then sees a host that is not
+      // inside it and leaves it alone.
+      function parkInspector(...containers) {
         if (!inspectorHost) return;
-        const origin = String(state.selectedOrigin || '');
-        if (prefixes.length && !prefixes.some((p) => origin.startsWith(p))) return;
-        const node = $('inspector');
+        if (containers.length && !containers.some(inspectorInside)) return;
+        const node = inspectorEl();
         if (!node) return;
         if (typeof inspectorHost.removeChild === 'function') inspectorHost.removeChild(node);
         inspectorHost = null;
@@ -8376,11 +8415,17 @@
       // so the node is parented before renderInspector fills it — which is the
       // order pickBind already ran in (renderSheet, then renderInspector).
       function dockInspector(host) {
-        const node = $('inspector');
+        const node = inspectorEl();
         if (!node || !host || typeof host.appendChild !== 'function') return;
         parkInspector();
         const home = $('panel-tarefas');
-        if (home && typeof home.removeChild === 'function') home.removeChild(node);
+        // Only when it is really a child: removeChild throws NotFoundError in a real
+        // document otherwise, and this runs mid-render where a throw would abort the
+        // whole sheet.
+        if (home && typeof home.removeChild === 'function'
+            && (typeof home.contains !== 'function' || home.contains(node))) {
+          home.removeChild(node);
+        }
         host.appendChild(node);
         inspectorHost = host;
       }

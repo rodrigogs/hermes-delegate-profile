@@ -684,6 +684,61 @@ test('a rebuild of the sheet leaves the open editor where the operator left it',
   assert.equal(findAll(ruleRow(), 'step-open')[0].hidden, false, 'still open');
 });
 
+test('moving the selection to another surface does not lose the editor', () => {
+  // The gesture: the editor is docked in a Tarefas row, and the operator picks a
+  // group from the Modelos ladder. The selection crosses surfaces, so the row that
+  // holds the editor is about to be discarded by a renderer that is NOT the one
+  // taking the editor.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = chipPolicy();
+  api.state.capabilities = capModels();
+  api.renderSheet();
+  api.renderLadder();
+  const ruleRow = () => dom.get('sheet').children[0];
+  findAll(ruleRow(), 'step-dest')[0]._listeners.click();
+  const box = dom.get('inspector');
+  assert.ok(contains(ruleRow(), box), 'docked in the row first');
+  // Now the ladder's group name — a different surface, a different dock owner.
+  findAll(dom.get('ladder'), 'tier-name')[0]._listeners.click();
+  assert.equal(api.state.selectedOrigin, 'ladder:T3');
+  assert.ok(contains(findAll(dom.get('ladder'), 'tier')[0], box),
+    'the editor moved to the ladder entry');
+  assert.equal(contains(dom.get('sheet'), box), false,
+    'and left the sheet rather than riding a discarded row out of the document');
+  assert.ok(byLabel(box, 'Modelo'), 'and it is filled, so the node that moved is the live one');
+});
+
+test('the editor is moved by reference and parked by containment, not by id and origin', () => {
+  // THE DOM STUB CANNOT SEE THIS ONE, which is why it is a contract test. Its
+  // getElementById is a Map lookup, so no node is ever unreachable and a detached
+  // editor still answers — the exact opposite of a browser, where a node inside a
+  // discarded row is gone and getElementById returns null.
+  //
+  // Reproduced in a real browser against the live local hermes-stack on 2026-09-02:
+  // with the editor docked in a Tarefas row, clicking a group name on Modelos left
+  // `document.getElementById('inspector')` === null and no click reopened the editor
+  // until a page reload. Two causes, both pinned here.
+  const src = fs.readFileSync(sourcePath, 'utf8');
+  const park = src.match(/function parkInspector\([^)]*\)\s*{([\s\S]*?)\n      }/);
+  assert.ok(park, 'parkInspector is gone or reformatted — this test cannot see it');
+
+  // (1) It must decide on WHERE THE NODE IS. An origin-prefix test asks where the
+  // selection is going, and those differ exactly when the selection crosses
+  // surfaces — which is the gesture that lost the editor.
+  assert.match(park[1], /inspectorInside/,
+    'the park decision is containment of the current host');
+  assert.doesNotMatch(park[1], /selectedOrigin/,
+    'and never state.selectedOrigin, which describes the destination, not the node');
+
+  // (2) It must not resolve the node by id: a detached node has no id to find, so
+  // resolving that way fails precisely when recovery matters.
+  assert.doesNotMatch(park[1], /\$\('inspector'\)/,
+    "parkInspector must use the tracked reference, not $('inspector')");
+  assert.match(src, /function inspectorEl\(\)\s*{\s*\n\s*if \(!inspectorNode\) inspectorNode = \$\('inspector'\);/,
+    'the id is used once, to find the node; the reference is what moves afterwards');
+});
+
 test('the editor goes home when the row it was docked in stops existing', () => {
   // clear(sheet) removes the sheet's children, and in a real document that
   // DETACHES everything inside them — so an editor left in a discarded row is no
