@@ -11238,6 +11238,47 @@ test('confirming a ban plans the whole list with the new row, and nothing else',
     + 'so a one-item patch would delete every existing ban — and no other top-level key');
 });
 
+test('a saved ban says so where the message survives the reload it triggers', async () => {
+  // The write reloads, and the reload rebuilds #bans — so a confirmation written
+  // into the proposal row's own .msg is destroyed by the very success it reports.
+  // Found in the real Hermes One app against the live local stack (2026-09-02): the
+  // ban landed on disk and the screen said NOTHING.
+  //
+  // #bansMsg exists outside the group for exactly this reason; the markup says so
+  // ("the confirmation must not hide with it") and the LIFT already uses it. This is
+  // the add path joining it.
+  const server = { blocklist: { manual_bans: [], fallback_chain: [], breaker_enabled: true, breaker_cooldowns: [] } };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (url.endsWith('/blocklist')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(server.blocklist)) });
+      }
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(chipPolicy())) });
+      }
+      if (url.endsWith('/plan')) {
+        const policy = JSON.parse(opts.body).policy;
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy, diff: '+ glm-5.3', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+    },
+  });
+  api.state.policy = chipPolicy();
+  api.state.blocklist = server.blocklist;
+  api.renderHealth();
+  // The markup ships this hidden; the stub cannot read the attribute.
+  dom.get('bansMsg').hidden = true;
+  const pick = findAll(dom.get('bans'), 'ban-pick')[0];
+  pick.value = 'glm-5.3';
+  pick._listeners.change();
+  findAll(findAll(dom.get('bans'), 'proposal-row')[0], 'btn')[0]._listeners.click();
+  await tick();
+  assert.match(dom.get('bansMsg').textContent, /Vale para as próximas tarefas/,
+    '§2.7: the saved ban states its temporal scope, in the node that outlives the rebuild');
+  assert.equal(dom.get('bansMsg').hidden, false, 'and that node stops hiding once the write speaks');
+});
+
 test('the router is switched off from the fact that reports it, with no JSON editor', () => {
   const { api, dom } = loadConsole({ csrfToken: 'tok' });
   api.state.policy = chipPolicy();

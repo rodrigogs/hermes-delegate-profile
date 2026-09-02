@@ -5152,7 +5152,20 @@
         const pick = document.createElement('select');
         pick.id = pickId;
         pick.className = 'ban-pick';
-        const addArea = proposalArea('banSave', () => confirmPolicyProposal(addArea, WRITE.banSave));
+        const addArea = proposalArea('banSave', () => {
+          // The confirmation goes to #bansMsg, OUTSIDE the group. The write triggers
+          // a reload, the reload rebuilds #bans, and a message written into the
+          // proposal row's own .msg is destroyed by the very success it reports —
+          // measured in the real Hermes One app on 2026-09-02: the ban landed on
+          // disk and the screen said nothing at all. The markup keeps that node
+          // outside the group for exactly this reason and the LIFT already uses it.
+          const outside = $('bansMsg');
+          if (outside) {
+            outside.hidden = false;
+            addArea.msg = outside;
+          }
+          return confirmPolicyProposal(addArea, WRITE.banSave);
+        });
         // The empty first option is the resting state, so a stray change on the
         // select cannot arm a ban against whichever model happened to sort first.
         [''].concat(bannableModels(state)).forEach((m) => {
