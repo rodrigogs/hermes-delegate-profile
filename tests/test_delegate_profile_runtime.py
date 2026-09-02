@@ -1355,3 +1355,60 @@ def test_a_router_yaml_whose_top_level_is_a_list_derives_no_rail(tmp_path):
     assert isinstance(config, list), "the premise: a list survives the `or {}`"
 
     assert _dp._provider_of_declared_model("glm-5.3", config) == ""
+
+
+def test_a_caller_named_model_never_inherits_the_routers_rail(monkeypatch):
+    """(model, provider) is ONE decision, and this seam split it.
+
+    `routed_provider` was assigned unconditionally from the routed decision, while
+    the PAIR was only completed `if not model` — so when the caller named a model,
+    the router's rail survived and was spawned beside it. Reproduced argv:
+
+        -m operator-choice --provider zai
+
+    which is the exact shape `adapter.py` documents in three comment blocks after
+    measuring `gpt-5.6-terra @ zai`: a pair that names no real rail, whose spawn
+    fails with an opaque provider error, and — because `nonzero_exit` is not
+    retryable — takes the cross-rail fallback down with it. It also records a
+    breaker strike under a `model@provider` key naming a rail that does not exist,
+    which then blocks the healthy pair nobody ran.
+    """
+    handler, _pool = _cross_handler(monkeypatch, ("exited", 0, "done", ""))
+    cmds = _spawn_recorder(monkeypatch)
+    # The router chose a T1-shaped decision on zai; the caller wants another model.
+    monkeypatch.setattr(_dp, "_route_task", lambda *_args: {
+        "profile": "child", "model": "glm-5.3-flash", "provider": "zai",
+        "fallback": [{"model": "gpt-5.6-luna", "provider": "openai-codex"}],
+    })
+
+    handler({"prompt": "do the thing", "model": "operator-choice"})
+
+    assert _models_attempted(cmds)[0] == "operator-choice", (
+        "the caller's model must still be honoured"
+    )
+    assert "zai" not in _providers_attempted(cmds), (
+        f"the caller's model inherited the router's rail: {cmds[0]}"
+    )
+
+
+def test_a_caller_named_model_that_is_a_plan_hop_takes_that_hops_rail(monkeypatch):
+    """The rail comes from the hop that names the SAME model, or from nowhere.
+
+    Not `(model, "")` unconditionally: when the caller names an elo the router also
+    planned, that hop already pairs it with the rail it would be dispatched on, and
+    dropping it would both lose a real answer and break the dedupe that keeps a
+    target from being attempted twice.
+    """
+    handler, _pool = _cross_handler(monkeypatch, ("exited", 0, "done", ""))
+    cmds = _spawn_recorder(monkeypatch)
+    monkeypatch.setattr(_dp, "_route_task", lambda *_args: {
+        "profile": "child", "model": "glm-5.3-flash", "provider": "zai",
+        "fallback": [{"model": "gpt-5.6-luna", "provider": "openai-codex"}],
+    })
+
+    handler({"prompt": "do the thing", "model": "gpt-5.6-luna"})
+
+    assert _models_attempted(cmds)[0] == "gpt-5.6-luna"
+    assert _providers_attempted(cmds)[0] == "openai-codex", (
+        "the rail must be the one that hop declared, not the router's primary rail"
+    )

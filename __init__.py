@@ -1496,6 +1496,30 @@ def _make_handler(
                     # turn whose primary cannot see images must not be attempted
                     # first, nor handed to the inline delegate_task path.
                     model, routed_provider = routed_targets[0]
+                elif model:
+                    # (MODEL, PROVIDER) IS ONE DECISION — and this seam split it.
+                    #
+                    # `routed_provider` above is the rail the router picked for the
+                    # model IT chose. When the caller names a different model, that
+                    # rail belongs to a decision that is no longer being made, and
+                    # keeping it spawned the pair `-m operator-choice --provider
+                    # zai`: exactly the shape adapter.py documents in three comment
+                    # blocks after measuring `gpt-5.6-terra @ zai`. It names no real
+                    # rail, the spawn fails with an opaque provider error, and
+                    # because `nonzero_exit` is not retryable it takes the
+                    # cross-rail fallback down with it — then records a breaker
+                    # strike under a `model@provider` key that does not exist,
+                    # which blocks the healthy pair nobody ran.
+                    #
+                    # The rail comes from the hop that names THIS model, or from
+                    # nowhere. Not unconditionally "" — when the caller names an elo
+                    # the router also planned, that hop already pairs it with the
+                    # rail it would be dispatched on, and dropping it would lose a
+                    # real answer and break the dedupe that stops a target being
+                    # attempted twice.
+                    routed_provider = next(
+                        (rail for elo, rail in routed_targets if elo == model), "",
+                    )
 
         if not profile:
             return json.dumps({"error": "profile is required", "failure_kind": "bad_args"})
