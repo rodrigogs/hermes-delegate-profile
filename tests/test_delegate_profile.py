@@ -369,8 +369,18 @@ def test_list_known_profiles_delegates_to_hermes_cli(monkeypatch):
 # post_tool_call hook
 # ---------------------------------------------------------------------------
 def test_hook_no_op_for_other_tools(caplog):
+    """The advisory hook fires for `delegate_task` ONLY, and this now asserts it.
+
+    It took `caplog` and asserted nothing — every tool call in the process passes
+    through this hook, so a guard regression would have made it log on every one of
+    them, and the test would still have passed.
+    """
+    caplog.set_level("INFO")
     dp._on_post_tool_call("read_file", {"profile": "x"}, "ok")
-    # Should not warn for non-delegate_task tools.
+    assert caplog.records == [], (
+        f"the hook must be silent for every tool but delegate_task; it logged "
+        f"{[r.message for r in caplog.records]}"
+    )
 
 
 def test_hook_logs_delegate_profile_invocations(caplog):
@@ -891,15 +901,18 @@ def test_pool_snapshot_shape():
     pool.unregister(4242)
     assert pool.snapshot() == []
 
-def test_post_tool_call_accepts_the_host_keyword_contract(monkeypatch):
+def test_post_tool_call_accepts_the_host_keyword_contract(monkeypatch, caplog):
     """model_tools._emit_post_tool_call_hook passes `args=`, not `params=`.
 
     Every field is keyword-only, so a handler that names the payload `params`
     raises TypeError on every single tool call. See hermes_cli/hooks.py, which
     documents the post_tool_call payload as {"tool_name", "args", "result", ...}.
     """
-    warned = []
-    monkeypatch.setattr(dp, "_warn", lambda *a, **k: warned.append(a), raising=False)
+    # `raising=False` on a name that never existed is not a spy — it CREATES
+    # `dp._warn`, which nothing calls, so the list stayed empty whatever the hook
+    # did. The real advisory goes through `logger.warning`, so that is what this
+    # asserts now.
+    caplog.set_level("WARNING")
     # exactly how the host invokes it
     dp._on_post_tool_call(
         tool_name="delegate_task",
@@ -916,6 +929,14 @@ def test_post_tool_call_accepts_the_host_keyword_contract(monkeypatch):
         error_message=None,
         middleware_trace=[],
     )
+    # The point of the test is that the call SHAPE works — a handler naming the
+    # payload `params` raises TypeError on every tool call. Asserting the advisory
+    # actually fired is what proves the call reached the body rather than being
+    # swallowed somewhere.
+    assert any(
+        "delegate_task" in record.message for record in caplog.records
+    ), f"the advisory did not fire: {[r.message for r in caplog.records]}"
+
 
 def test_router_config_seeds_from_example_when_absent(tmp_path, monkeypatch):
     """router.yaml is untracked live config, seeded from router.example.yaml.

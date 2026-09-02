@@ -133,9 +133,11 @@ def test_the_shipped_policy_names_a_classifier_the_grant_must_cover():
     deployment's llm allowlist has to permit it. This asserts the repo's own
     policy is internally coherent, so a classifier swap can't silently
     re-introduce the fail-safe storm."""
-    import pathlib
-
-    policy = yaml.safe_load(pathlib.Path("router.yaml").read_text(encoding="utf-8"))
+    # Through REPO_ROOT, not a CWD-relative literal: this read reproduced a
+    # FileNotFoundError when pytest was invoked from a parent directory, and the
+    # module already computes the root. Still the LIVE router.yaml deliberately —
+    # the conftest seeds it for exactly this assertion.
+    policy = yaml.safe_load((REPO_ROOT / "router.yaml").read_text(encoding="utf-8"))
     classifier = policy.get("classifier") or {}
     assert classifier.get("model") and classifier.get("provider"), \
         "router.yaml must name a classifier model+provider, or Stage 1 can never run"
