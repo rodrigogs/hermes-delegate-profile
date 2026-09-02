@@ -9893,11 +9893,32 @@
         // alone. After that the line stays as the message until the next write
         // or read replaces it.
         setMsg(msg, WRITE.saved, 'ok');
-        state.plan = null; state.draft = null;
+        state.plan = null;
+        // THE OPEN PANEL MUST BE REBUILT, and this is the same capture-reload-
+        // rerender `refuseStale` already does for the 409 path.
+        //
+        // `renderAll` only rebuilds the inspector `if (!state.selected)`, which is
+        // FALSE after a row click. So a successful save left the open panel bound
+        // to a draft that had just been set to null: `surfacePatch` returned null,
+        // and every later Salvar answered "Não há o que salvar." Reproduced: the
+        // second edit from one open panel was silently discarded, with zero POSTs.
+        // `moveRule` goes through this same path and had the same bug.
+        //
+        // The node is captured BEFORE the reload because renderAll clears the
+        // selection when none is marked. And both the saved LINE and the button's
+        // eight-second hide have to be re-applied to the FRESH nodes — the naive
+        // fix (re-render and stop) loses both, because `msg` and `saveBtn` here
+        // point at the panel renderInspector just replaced.
+        const openNode = state.selectedNode;
+        state.draft = null;
         await load();
-        if (saveBtn && path !== '/apply/revert') {
-          saveBtn.hidden = true;
-          setTimeout(() => { saveBtn.hidden = false; }, 8000);
+        if (openNode) renderInspector(openNode);
+        const freshMsg = openNode ? $('nodeMsg') : null;
+        if (freshMsg) setMsg(freshMsg, WRITE.saved, 'ok');
+        const freshBtn = (saveBtn && saveBtn.id && $(saveBtn.id)) || saveBtn;
+        if (freshBtn && path !== '/apply/revert') {
+          freshBtn.hidden = true;
+          setTimeout(() => { freshBtn.hidden = false; }, 8000);
         }
         return true;
         } finally {

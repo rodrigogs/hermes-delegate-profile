@@ -13014,3 +13014,45 @@ test("the browser's own surfaces wear the skin, not the engine's defaults", () =
   const surfaces = style.slice(style.indexOf('::selection'), style.indexOf('h1, h2 {'));
   assert.doesNotMatch(surfaces, /#[0-9a-fA-F]{3}/, 'every value is a host token');
 });
+
+// ── U19: a save must not orphan the open inspector ────────────────────────────
+//
+// `renderAll` only rebuilds the inspector `if (!state.selected)`, which is FALSE
+// after a row click. The success path did `state.draft = null; await load()` and
+// stopped — leaving the open panel bound to a draft that had just been nulled, so
+// `surfacePatch` returned null and every later Salvar answered "Não há o que
+// salvar." Measured: the second edit from one open panel was silently discarded,
+// with zero POSTs. `refuseStale` (the 409 path) already captured the node,
+// reloaded, and re-rendered; the success path did not.
+
+test('a save rebuilds the open inspector, re-stamps the line, re-hides the button', () => {
+  // A SOURCE SCAN, deliberately, and the reason is worth stating: doApply's
+  // success path is reachable only through the inspector's own save, whose draft
+  // comes from `state.draft` and whose message and button nodes are created by
+  // `renderInspector`. Driving that through the DOM stub means standing up the
+  // whole panel and a `load()` that re-fetches six endpoints; and calling
+  // `doApply` with an explicit `draft` argument — the easy way — BYPASSES
+  // `state.draft`, i.e. the exact field the bug lives in, so such a test passes
+  // with the bug present. Measured: it did.
+  //
+  // This file already scans source for contracts a DOM cannot show (the one
+  // wall-clock read, the pt-BR vocabulary, the single-authority write labels), so
+  // the scan is the idiom here rather than a shortcut. Verified by reverting the
+  // fix: this test fails, and the DOM-level one did not.
+  //
+  // What it pins, and why each half matters: the naive fix (capture, reload,
+  // re-render, stop) loses both the saved LINE and the eight-second hide, because
+  // `msg` and `saveBtn` in doApply's scope point at the panel renderInspector just
+  // replaced.
+  const src = fs.readFileSync(sourcePath, 'utf8')
+    .match(/<script>([\s\S]*?)<\/script>/)[1];
+  const body = src.slice(src.indexOf('async function doApply'));
+  const success = body.slice(0, body.indexOf('} finally {'));
+  assert.match(success, /const openNode = state\.selectedNode;/,
+    'the node is captured BEFORE the reload');
+  assert.match(success, /if \(openNode\) renderInspector\(openNode\);/);
+  assert.match(success, /\$\('nodeMsg'\)/,
+    'the saved line is re-stamped on the FRESH message node');
+  assert.match(success, /freshBtn/,
+    'and the hide applies to the FRESH button, resolved by id');
+});
