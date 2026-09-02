@@ -1177,3 +1177,32 @@ def test_the_rail_window_baseline_matches_the_registry():
         "the console's offline price-window baseline disagrees with the capability "
         f"registry.\n  console:  {console_windows}\n  registry: {registry_windows}"
     )
+
+
+def test_the_consoles_capability_field_list_is_a_subset_of_the_registrys():
+    """`CAP_FIELDS` is a transcription, and it had drifted by two invented names.
+
+    It carried `peak_multiplier` and `peak_windows_utc` — names that exist NOWHERE in
+    Python and, per `git log -S` over `router/`, never have. The console was the only
+    thing in the repo that understood them, so a hop written that way was priced HERE
+    and priced flat everywhere else: a display contradicting the run on exactly the
+    input an operator is trying to diagnose.
+
+    This is the check that would have caught it, and it is a SUBSET rather than an
+    equality: the console legitimately renders fewer fields than the registry stores
+    (it has no use for `price_windows_verified` or `notes`), but it must never claim
+    a field the registry would drop.
+    """
+    from router.capabilities import _REGISTRY_FIELDS
+
+    script = _console_inline_script()
+    block = re.search(r"const CAP_FIELDS = \[(.*?)\];", script, re.S)
+    assert block, "CAP_FIELDS is gone or reformatted — this test cannot see it"
+    fields = set(re.findall(r"'([a-z_]+)'", block.group(1)))
+    assert fields, "the CAP_FIELDS regex matched nothing — vacuous"
+
+    unknown = sorted(fields - set(_REGISTRY_FIELDS))
+    assert not unknown, (
+        f"the console reads capability fields the registry does not keep, so a hop "
+        f"declaring them prices here and nowhere else: {unknown}"
+    )

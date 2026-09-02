@@ -5230,20 +5230,21 @@ test('both clocks are labelled, because a bare 07:14 is ambiguous by the offset'
   assert.equal(api.timeFace(null, 0), null);
 });
 
-test('a declared window is read from either spelling, and junk is read as flat', () => {
+test('a declared window is read from the ONE spelling, and junk is read as flat', () => {
   const { api } = loadConsole();
-  // The declared form the spec adds.
+  // `price_windows` — which the time-layer addendum calls "the ONE encoding".
   assert.deepEqual(plain(api.entryWindows({
     price_windows: [{ hours_utc: [6, 10], weekdays: [0, 1, 2, 3, 4], multiplier: 2 }],
   })), [{ hours: [6, 10], multiplier: 2, weekdays: [0, 1, 2, 3, 4] }]);
-  // And the pair the registry already carried for deepseek before windows were
-  // generalised — dropping it would silently un-price the busiest metered rail.
+  // `peak_windows_utc` + `peak_multiplier` is NOT a second spelling. This test used
+  // to assert it worked, with a comment saying dropping it "would silently un-price
+  // the busiest metered rail" — and `git log -S` over router/ shows those names never
+  // existed there, in any version. The console was the only thing in the repo that
+  // understood them, so a hop written that way priced HERE and priced flat
+  // everywhere else. It is now a hard lint error, so such a hop cannot be saved.
   assert.deepEqual(plain(api.entryWindows({
     peak_windows_utc: [[1, 4], [6, 10]], peak_multiplier: 2,
-  })), [
-    { hours: [1, 4], multiplier: 2, weekdays: null },
-    { hours: [6, 10], multiplier: 2, weekdays: null },
-  ]);
+  })), [], 'the retired dialect must read as no window at all');
   // A shape nobody agreed on must leave the console reporting FLAT pricing, not
   // throwing on the first elo: a sidecar's payload is not this console's to trust.
   for (const junk of [null, {}, { price_windows: 'soon' }, { price_windows: [{ hours_utc: [10, 4], multiplier: 2 }] },
@@ -6280,7 +6281,7 @@ test('an elo the time cap refused says the two numbers that make it fixable', ()
   assert.match(text, /Tirados da fila \(1\)/, 'a cost refusal and a capability refusal answer the same question');
   assert.match(text, /deepseek-v4-pro/);
   assert.match(text, /nesta hora ele custa mais do que o teto de preço do grupo permite/);
-  assert.match(text, /2× now, cap 1\.5×/, 'the price and the ceiling, not an enum');
+  assert.match(text, /2× agora, teto 1\.5×/, 'the price and the ceiling, not an enum');
   assert.doesNotMatch(text, /time_cap allows|reject_reason/, 'the enum never reaches the screen');
 
   // The capped ENTRY's own multiplier is enough on its own: a plan whose
@@ -6293,7 +6294,7 @@ test('an elo the time cap refused says the two numbers that make it fixable', ()
     chain: [{ model: 'gpt-5.6-luna', provider: 'openai-codex' }],
     capped: [{ model: 'deepseek-v4-pro', multiplier: 2 }],
   }));
-  assert.match(flat(dom.get('chainPlan')), /2× now, cap 1\.5×/);
+  assert.match(flat(dom.get('chainPlan')), /2× agora, teto 1\.5×/);
 });
 
 test('a capped elo is listed once, even when the filter also reported it', () => {
@@ -6506,7 +6507,7 @@ test('a bypassed time cap drops nothing either, and the two bypasses are indepen
   assert.doesNotMatch(text, /Dropped/, 'but nothing was dropped');
   assert.match(text, /Continuam na fila \(2\)/);
   assert.match(text, /teto de preço cedeu/);
-  assert.match(text, /2× now, cap 1\.5×/, 'and the numbers behind the objection survive');
+  assert.match(text, /2× agora, teto 1\.5×/, 'and the numbers behind the objection survive');
   // The ceiling's value joins the sentence with the pt-BR preposition; the
   // English 'of' this replaces rode inside a nested template, invisible to
   // the static extractors, so it is pinned here where it renders.
@@ -13055,4 +13056,35 @@ test('a save rebuilds the open inspector, re-stamps the line, re-hides the butto
     'the saved line is re-stamped on the FRESH message node');
   assert.match(success, /freshBtn/,
     'and the hide applies to the FRESH button, resolved by id');
+});
+
+// ── U33: an unpriced failure kind reads the SERVED default ────────────────────
+
+test('a failure kind the weight table omits still says what it is worth', () => {
+  const { api } = loadConsole();
+  // FAILURE_WEIGHTS does not enumerate every kind: `agent_error`, `spawn_error`,
+  // `inline_error` and `at_capacity` are all documented first-class kinds that
+  // score the default. /blocklist carries `default_weight` beside the table for
+  // exactly that reason (breaker.py:270) and this read ignored it, so a reachable
+  // kind rendered BARE while the payload said what it was worth.
+  const policy = {
+    threshold: 5, window_seconds: 600, default_weight: 1,
+    failure_weights: { ttfb_stall: 3 },
+  };
+  const named = api.breakerNotes({ last_failure_kind: 'ttfb_stall' }, policy);
+  assert.ok(named.some((n) => /ttfb_stall/.test(n) && /3/.test(n)),
+    'a kind the table names keeps its own weight');
+
+  const defaulted = api.breakerNotes({ last_failure_kind: 'agent_error' }, policy);
+  assert.ok(defaulted.some((n) => /agent_error/.test(n) && /1/.test(n)),
+    'a kind the table omits takes the SERVED default, not a bare label');
+});
+
+test('a payload with no weight policy at all still renders the kind bare', () => {
+  // Back-compat: an older sidecar serves no policy, and the console must not
+  // invent a weight. Falling back to a hardcoded 1 would be a second authority.
+  const { api } = loadConsole();
+  const bare = api.breakerNotes({ last_failure_kind: 'ttfb_stall' }, {});
+  assert.ok(bare.includes('ttfb_stall'), 'the kind is named, with no number');
+  assert.ok(!bare.some((n) => /ttfb_stall.*\d/.test(n)));
 });

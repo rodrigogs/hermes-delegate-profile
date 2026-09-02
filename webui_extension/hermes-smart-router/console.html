@@ -2960,10 +2960,17 @@
 
       // A registry entry's windows, read defensively: the payload is a sidecar's,
       // so a shape nobody agreed on must leave the console reporting flat pricing
-      // rather than throwing on the first elo. Two spellings are accepted because
-      // both are real — `price_windows` is the declared form, and
-      // `peak_windows_utc` + `peak_multiplier` is what the registry carried for
-      // deepseek before the windows were generalised.
+      // rather than throwing on the first elo.
+      //
+      // ONE spelling, `price_windows`, which the time-layer addendum calls "the ONE
+      // encoding". A second branch used to accept `peak_windows_utc` +
+      // `peak_multiplier` + `peak_weekdays`, described as "what the registry carried
+      // for deepseek before the windows were generalised" — and `git log -S` over
+      // router/ shows those names NEVER existed there, in any version. The console
+      // was the only thing in the repo that understood them, so a hop written that
+      // way priced here and priced flat everywhere else. Since a capability key the
+      // registry does not know is now a hard lint error, such a hop cannot even be
+      // saved.
       function entryWindows(entry) {
         const e = entry && typeof entry === 'object' ? entry : {};
         const out = [];
@@ -2980,9 +2987,6 @@
           e.price_windows.forEach((w) => {
             if (w && typeof w === 'object') push(w.hours_utc || w.hours, w.multiplier, w.weekdays);
           });
-        }
-        if (!out.length && Array.isArray(e.peak_windows_utc)) {
-          e.peak_windows_utc.forEach((w) => push(w, e.peak_multiplier, e.peak_weekdays));
         }
         return out;
       }
@@ -3432,8 +3436,7 @@
       // THEIR number in the comparison, not the registry's.
       const CAP_FIELDS = ['provider', 'context_window', 'max_input_tokens', 'max_output',
                           'vision', 'tool_calling', 'structured_output', 'billing_mode',
-                          'price_in', 'price_out', 'price_windows',
-                          'peak_multiplier', 'peak_windows_utc'];
+                          'price_in', 'price_out', 'price_windows'];
       function hopCaps(hop, registry) {
         const elo = hop && typeof hop === 'object' ? hop : {};
         const model = String(elo.model || '');
@@ -4919,7 +4922,16 @@
         const kind = e.last_failure_kind;
         if (kind) {
           const weights = p.failure_weights;
-          const w = weights ? Number(weights[kind]) : NaN;
+          const named = weights ? Number(weights[kind]) : NaN;
+          // The SERVED default, not an invented one. /blocklist carries
+          // `default_weight` beside the table (breaker.py:270) precisely because
+          // FAILURE_WEIGHTS does not enumerate every kind — `agent_error`,
+          // `spawn_error`, `inline_error` and `at_capacity` are all documented
+          // first-class kinds that score the default — and this read ignored it, so
+          // a reachable kind rendered BARE while the payload said what it was worth.
+          // Falling back to a hardcoded 1 would be a second authority on the
+          // number; falling back to the served field is not.
+          const w = Number.isFinite(named) ? named : Number(p.default_weight);
           // The kind is said ONCE: with a weight when the route served one, bare
           // when it did not. Two notes naming the same kind would be the same
           // fact from two authorities, which is what §2 forbids.
@@ -5367,7 +5379,7 @@
             : priceMultiplier(eloWindows(caps), o.when || null);
           const cap = Number.isFinite(Number(o.cap)) ? Number(o.cap) : null;
           row.append(el('span', 'reject-num',
-            cap !== null ? `${times(multiplier)} now, cap ${times(cap)}` : `${times(multiplier)} now`));
+            cap !== null ? `${times(multiplier)} agora, teto ${times(cap)}` : `${times(multiplier)} agora`));
         }
         return row;
       }
