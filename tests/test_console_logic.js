@@ -11284,6 +11284,85 @@ test('confirming a ban plans the whole list with the new row, and nothing else',
     + 'so a one-item patch would delete every existing ban — and no other top-level key');
 });
 
+test('ago and utcClock agree about a timestamp neither can read', () => {
+  // The decision row composes both halves into one string:
+  //   [ago(r.ts, nowUtc()), utcClock(r.ts)].filter(Boolean).join(' · ')
+  // utcClock has a Number.isFinite gate and renders nothing for junk; ago had only a
+  // falsy check, so a TRUTHY unreadable ts (an ISO string where epoch seconds belong)
+  // made every threshold comparison false and the day branch returned
+  // `há ${Math.round(NaN / 86400)}d` — "há NaNd", printed beside a clock that had
+  // correctly declined to answer. Two halves of one expression, opposite verdicts.
+  //
+  // Nothing in the repo emits such a ts today (decision_log writes time.time()), so
+  // this is the asymmetry being removed rather than an operator-visible bug — the same
+  // reasoning pickRoute already states next door: "Junk is no instant at all".
+  const { api } = loadConsole();
+  const now = new Date(Date.UTC(2026, 7, 19, 12, 0, 0));
+  assert.equal(api.ago(0, now), '—', 'falsy stays the absence it already was');
+  assert.equal(api.ago(undefined, now), '—');
+  assert.equal(api.utcClock('2026-09-01T10:00:00+00:00'), '',
+    'the clock half declines an unreadable instant');
+  assert.equal(api.ago('2026-09-01T10:00:00+00:00', now), '—',
+    'and so does the age half, instead of saying "há NaNd" beside it');
+  assert.equal(api.ago(NaN, now), '—');
+  // A real timestamp still reads normally.
+  assert.equal(api.ago(Math.floor(now.getTime() / 1000) - 120, now), 'há 2m');
+
+});
+
+test('one unreadable mtime does not poison the header line it sits on', () => {
+  // fmtAge is ago's sibling — it composes the header's provenance line — and had the
+  // same hole in the same place: absent was guarded ('—'), unreadable was not, so
+  // `new Date('not a date').getTime()` is NaN and the day branch returned "NaNd".
+  //
+  // The branch is entered on `procStart` ALONE, so a single bad mtime used to poison
+  // its own clause while the other two read correctly. The sidecar serves isoformat()
+  // and OMITS a field it cannot answer, so this closes the asymmetry rather than a
+  // bug an operator hits — asserted through renderRail because fmtAge is internal and
+  // widening the export surface for a test would be the wrong trade.
+  const { api, dom } = loadConsole();
+  const T = Date.UTC(2026, 7, 19, 12, 0, 0);
+  api.state.clock = new Date(T);
+  api.state.unreachable = false;
+  api.state.status = {
+    process_started_at: new Date(T - 2 * 3600 * 1000).toISOString(),
+    code_mtime: 'not a date',
+    config_mtime: new Date(T - 5 * 60 * 1000).toISOString(),
+  };
+  api.renderRail();
+  const text = dom.get('reachText').textContent;
+  assert.doesNotMatch(text, /NaN/, 'no NaN in the provenance line');
+  assert.match(text, /código carregado há —/, 'the unreadable one states the absence');
+  assert.match(text, /serviço no ar há 2h/, 'and its neighbours still read normally');
+  assert.match(text, /arquivo mudou há 5m/);
+});
+
+test('a clause with no value prefills empty, never the literal word null', () => {
+  // Reachable straight from an operator's file: `when: {keywords: {contains: }}` is
+  // valid YAML for `{contains: null}`, /policy projects `when` verbatim, and the
+  // inspector is not gated on the policy being tidy. null is not boolean, not number
+  // and not an array, so it fell to the else branch and the input came up holding the
+  // four characters "null" — a value the operator never wrote, offered back as if
+  // they had.
+  //
+  // The commit guard below it (`if (String(next) === String(value)) return`) means
+  // retyping "null" cannot be SAVED, so this is a display lie rather than a
+  // corrupting write. The fix is the idiom this file already uses at three other
+  // inputs: `x == null ? '' : String(x)`.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  const policy = sheetPolicy();
+  policy.rules[0].when = { keywords: { contains: null } };
+  api.state.policy = policy;
+  api.renderSheet();
+  const row = dom.get('sheet').children.find((c) => c.dataset.ruleId === 'audit');
+  findAll(row, 'step-when')[0]._listeners.click();
+  const wrap = byLabel(dom.get('inspector'), 'keywords (contains)');
+  assert.ok(wrap, 'the clause is still offered for editing');
+  const input = wrap.children.find((c) => c.tagName === 'input');
+  assert.equal(input.value, '', 'an absent value is an empty field, not the word "null"');
+});
+
 test('a saved ban says so where the message survives the reload it triggers', async () => {
   // The write reloads, and the reload rebuilds #bans — so a confirmation written
   // into the proposal row's own .msg is destroyed by the very success it reports.
@@ -12599,6 +12678,67 @@ test('a 409 on the peak-policy write says the §4.7 conflict sentence', async ()
 });
 
 // ── the compaction block: state read off the real /compaction shape ───────
+
+test('a sidecar with no /compaction route degrades to the stated absence, never to NaN', async () => {
+  // A 404 HAS A BODY. one_sidecar answers `_error(404, "unknown route")`, so the
+  // response carries `{"error":"unknown route"}`, and call() returns
+  // `{missing: true, data}` — where `missing` is NOT `.error`. The read boundary
+  // tested only `.error`, so the ERROR ENVELOPE was stored as the payload:
+  //
+  //     state.compaction = compaction.error ? state.compaction : (compaction.data || null)
+  //
+  // renderCompaction's own guard is `!data || typeof data !== 'object'`, which an
+  // error envelope passes happily, so the panel drew itself over a payload with no
+  // numbers in it. Every other clause degraded honestly — "A leitura veio sem limiar
+  // nem janela" — and this one printed "Agressividade NaN de 100".
+  //
+  // The panel needs NO new words: its absent sentence already exists and is exactly
+  // right. And the console already had the correct shape one read over, in
+  // capabilityRegistry: `if (res.missing || res.error) return null` (console.html
+  // ~3548). /compaction was the read that did not follow it.
+  const { api, dom } = loadConsole({
+    fetch: (url) => {
+      const path = String(url).split('?')[0];
+      if (path.endsWith('/compaction')) {
+        return Promise.resolve({
+          ok: false, status: 404,
+          text: () => Promise.resolve(JSON.stringify({ error: 'unknown route' })),
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
+    },
+  });
+  await api.fetchAll();
+  assert.equal(api.state.compaction, null,
+    'a route the sidecar does not have carries no payload — the 404 body is not data');
+  api.renderCompaction();
+  const drawn = flat(dom.get('compactionBox'));
+  assert.doesNotMatch(drawn, /NaN/, 'and nothing renders NaN to the operator');
+  assert.match(drawn, /Sem leitura de \/compaction/,
+    'the block says the absence it already has words for');
+});
+
+test('a compaction payload that names no aggressiveness says so instead of printing NaN', () => {
+  // Defence at the formatter as well as the boundary. Today's sidecar always emits
+  // the field (it is `int(...)`), so this is not a shape the server produces — but
+  // `String(Number(x))` is the one expression in this block that DEFEATS el()'s own
+  // undefined/null skip, and the block's neighbours (fmt, fmtPt) all wrap the same
+  // call in Number.isFinite and fall through to say(). This makes the dial agree
+  // with them.
+  const { api, dom } = loadConsole();
+  const payload = compactionPayload();
+  delete payload.aggressiveness;
+  api.state.compaction = payload;
+  api.renderCompaction();
+  const drawn = flat(dom.get('compactionBox'));
+  assert.doesNotMatch(drawn, /NaN/, 'no NaN');
+  assert.doesNotMatch(drawn, /Agressividade\s+de 100/,
+    'and not a half-sentence with a hole where the number was');
+  assert.match(drawn, /Agressividade não informada/,
+    'the dial states that it was not reported, in the block\'s own voice');
+  // The clauses that WERE served still read normally.
+  assert.match(drawn, /Compacta quando a conversa passa de/);
+});
 
 function compactionPayload() {
   return {

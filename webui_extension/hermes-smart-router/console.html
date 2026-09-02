@@ -2310,7 +2310,15 @@
         // nowUtc(), the one wall-clock reader (§7). ago never reads the clock
         // itself: a `now` the caller forgot is a programming error, and the
         // throw says so instead of silently pricing off the machine.
-        const s = Math.max(0, Math.round(now.getTime() / 1000 - Number(ts)));
+        const seconds = Number(ts);
+        // The SAME gate utcClock has. The decision row composes the two into one
+        // string — [ago(r.ts, now), utcClock(r.ts)] — and without this a truthy
+        // unreadable ts made every comparison below false and the day branch return
+        // `há ${Math.round(NaN / 86400)}d`: "há NaNd", printed beside a clock that had
+        // correctly declined to answer. Two halves of one expression, opposite
+        // verdicts. pickRoute says the rule next door: junk is no instant at all.
+        if (!Number.isFinite(seconds)) return '—';
+        const s = Math.max(0, Math.round(now.getTime() / 1000 - seconds));
         if (s < 60) return `há ${s}s`;
         if (s < 3600) return `há ${Math.round(s / 60)}m`;
         if (s < 86400) return `há ${Math.round(s / 3600)}h`;
@@ -2326,7 +2334,12 @@
       const fmtAge = (ts) => {
         if (!ts) return '—';
         const nowSec = Math.floor(nowUtc().getTime() / 1000);
-        const s = Math.max(0, nowSec - Math.floor(new Date(ts).getTime() / 1000));
+        const at = new Date(ts).getTime();
+        // Same gate as ago and utcClock: absent was already '—', and an instant that
+        // cannot be PARSED used to fall through every comparison to `${Math.round(NaN
+        // / 86400)}d` — "NaNd" in the header's own provenance line.
+        if (!Number.isFinite(at)) return '—';
+        const s = Math.max(0, nowSec - Math.floor(at / 1000));
         if (s < 60) return `${s}s`;
         if (s < 3600) return `${Math.round(s / 60)}m`;
         if (s < 86400) return `${Math.round(s / 3600)}h`;
@@ -7544,8 +7557,20 @@
 
         const conseq = el('p', 'compaction-conseq');
         conseq.append(el('span', '', 'Compactar cedo custa mais chamadas; tarde arrisca estourar a janela. Agressividade '));
-        conseq.append(el('b', '', String(Number(data.aggressiveness))));
-        conseq.append(el('span', '', ' de 100 · por modelo: '));
+        // `String(Number(x))` is the one expression in this block that DEFEATS el()'s
+        // own undefined/null skip: it hands it the STRING "NaN", which is text. The
+        // neighbours (fmt, fmtPt) all wrap the same call in Number.isFinite and fall
+        // through to say(); "Agressividade — de 100" would still be a half-sentence, so
+        // the whole clause states the absence instead, like the lead does two branches
+        // above it.
+        const aggressiveness = Number(data.aggressiveness);
+        if (Number.isFinite(aggressiveness)) {
+          conseq.append(el('b', '', String(aggressiveness)));
+          conseq.append(el('span', '', ' de 100 · por modelo: '));
+        } else {
+          conseq.append(el('span', 'compaction-err', 'não informada'));
+          conseq.append(el('span', '', ' · por modelo: '));
+        }
         const thresholds = data.model_thresholds && typeof data.model_thresholds === 'object'
           ? data.model_thresholds : {};
         const keys = Object.keys(thresholds);
@@ -9880,7 +9905,14 @@
                   input.value = value.join(', ');
                 } else {
                   input = document.createElement('input');
-                  input.value = String(value);
+                  // `== null ? '' : String(...)`, the idiom this file already uses at
+                  // three other inputs (the tier model, an attempt's provider, the
+                  // generic field). `when: {keywords: {contains: }}` is valid YAML for
+                  // `{contains: null}`, /policy projects `when` verbatim, and null is
+                  // neither boolean nor number nor array — so it landed here and the
+                  // field came up holding the four characters "null", a value the
+                  // operator never wrote, offered back as if they had.
+                  input.value = value == null ? '' : String(value);
                 }
                 input.id = id;
                 const commit = (raw) => {
@@ -11812,7 +11844,16 @@
         state.blocklist = blocklist.error ? state.blocklist : (blocklist.data || null);
         state.liveness = liveness.error ? state.liveness : (liveness.data || null);
         if (!capabilities.error) state.capabilities = capabilityRegistry(capabilities);
-        state.compaction = compaction.error ? state.compaction : (compaction.data || null);
+        // `missing` TOO, not only `.error`. A 404 has a BODY — one_sidecar answers
+        // `_error(404, "unknown route")` — and call() returns `{missing: true, data}`,
+        // so testing `.error` alone stored that ERROR ENVELOPE as the payload. The
+        // panel's guard is `typeof data !== 'object'`, which an envelope passes, so
+        // it drew itself over a payload with no numbers: every clause degraded
+        // honestly except the dial, which printed "Agressividade NaN de 100".
+        // capabilityRegistry beside it already had the right shape —
+        // `if (res.missing || res.error) return null` — and this read did not.
+        state.compaction = (compaction.error || compaction.missing)
+          ? state.compaction : (compaction.data || null);
         if (!routes.error) state.routes = (routes.data && Array.isArray(routes.data.routes)) ? routes.data.routes : [];
         // The envelope reports how many decisions EXIST; we were discarding it and
         // then presenting the page we happened to receive as the whole record.
