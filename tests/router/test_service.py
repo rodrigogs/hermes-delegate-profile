@@ -4089,3 +4089,199 @@ def test_plan_refuses_an_unknown_compaction_model(config_path):
     assert plan["valid"] is False
     assert any("definitely-not-registered" in e for e in plan["errors"])
 
+
+
+class TestThePreviewNamesWhatProductionWouldRefuse:
+    """The two producers were only ever compared where they cannot disagree.
+
+    The flagship agreement test runs against the SHIPPED policy, whose `manual_ban`
+    ships empty — so `rules.explain` (no blocklist, and it cannot have one: the
+    layer is pure) and `adapter.route` (blocklist-vetted) always matched. With a real
+    ban on the T3 primary they diverge completely: production returns
+    `deepseek-v4-pro / blocklist_substituted` with `chain_plan.blocked` naming the
+    primary, while the preview returned `gpt-5.6-terra / size_rule` and NO `blocked`
+    key at all.
+    """
+
+    HARD_TASK = "Debug an unknown-cause race condition across the pool and the executor"
+
+    @staticmethod
+    def _policy_with_banned_t3(tmp_path):
+        import yaml as _yaml
+        shipped = _yaml.safe_load(
+            (Path(__file__).resolve().parents[2] / "router.example.yaml")
+            .read_text(encoding="utf-8")
+        )
+        primary = shipped["tiers"]["T3"]["model"]
+        shipped["blocklist"]["manual_ban"] = [
+            {"model": primary, "provider": "", "reason": "test-ban"}
+        ]
+        path = tmp_path / "router.yaml"
+        path.write_text(_yaml.safe_dump(shipped), encoding="utf-8")
+        return path, shipped, primary
+
+    def test_the_preview_reports_the_hop_the_veto_would_remove(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        path, config, primary = self._policy_with_banned_t3(tmp_path)
+
+        # NON-VACUITY FIRST, on the production side: this ban must really bite.
+        from router.adapter import route
+        from router.blocklist import Blocklist
+        from router.decision_log import DecisionLog
+
+        log = DecisionLog()
+        produced = route(self.HARD_TASK, config, blocklist=Blocklist(config),
+                         decision_log=log)
+        assert produced["cause"] == "blocklist_substituted", produced
+        assert primary in {
+            hop["model"] for hop in log.tail(1)[0]["chain_plan"]["blocked"]
+        }
+
+        # And now the preview, which used to say nothing at all about it.
+        preview = RouterService(path).explain(self.HARD_TASK)
+        refused = {hop["model"] for hop in preview["chain_plan"].get("blocked", [])}
+        assert primary in refused, (
+            "the preview shows an attempt order production would refuse, and says "
+            "nothing about it"
+        )
+        assert all(
+            hop.get("reject_reason") == "blocked"
+            for hop in preview["chain_plan"]["blocked"]
+        ), "the adapter's own spelling, so ONE console renderer serves both"
+
+    def test_the_label_says_it_is_a_label_and_not_a_vetted_plan(
+        self, tmp_path, monkeypatch,
+    ):
+        """LABELLED, not vetted — and the response has to admit which.
+
+        Reproducing `_veto_blocked`'s substitute/widen/deny here would put a SECOND
+        copy of the policy in the read model, which PRODUCT.md:60 forbids. So the
+        chain keeps the PLANNER's order and the refusal is annotated; a reader must
+        be able to tell that apart from a plan that was actually reordered.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        path, _config, primary = self._policy_with_banned_t3(tmp_path)
+        preview = RouterService(path).explain(self.HARD_TASK)
+        assert preview["chain_plan"]["blocked_source"] == "preview_label"
+        # The planner's order is untouched: the head is still what the planner chose.
+        assert preview["chain_plan"]["chain"][0]["model"] == primary
+
+    def test_a_clean_policy_gains_no_blocked_key(self, tmp_path, monkeypatch):
+        """Additive: the shipped policy's preview must be byte-identical to before."""
+        import yaml as _yaml
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        shipped = _yaml.safe_load(
+            (Path(__file__).resolve().parents[2] / "router.example.yaml")
+            .read_text(encoding="utf-8")
+        )
+        path = tmp_path / "router.yaml"
+        path.write_text(_yaml.safe_dump(shipped), encoding="utf-8")
+        plan = RouterService(path).explain(self.HARD_TASK)["chain_plan"]
+        assert "blocked_source" not in plan
+        assert not plan.get("blocked")
+
+    def test_the_preview_consumes_no_breaker_probe(self, tmp_path, monkeypatch):
+        """`/explain` is a pollable GET; `is_blocked` would burn the probe slot.
+
+        The console polls this. Using the mutating form here would take an
+        expired-OPEN rail out of rotation once per poll — which is the defect
+        `would_block` exists for, arriving through a new door.
+        """
+        import json as _json
+        import time as _time
+
+        import yaml as _yaml
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        shipped = _yaml.safe_load(
+            (Path(__file__).resolve().parents[2] / "router.example.yaml")
+            .read_text(encoding="utf-8")
+        )
+        shipped["blocklist"]["auto_breaker"]["enabled"] = True
+        path = tmp_path / "router.yaml"
+        path.write_text(_yaml.safe_dump(shipped), encoding="utf-8")
+
+        elo = shipped["tiers"]["T3"]["model"]
+        rail = shipped["tiers"]["T3"]["provider"]
+        state_dir = tmp_path / "hermes-smart-router" / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        past = _time.time() - 200_000
+        state = state_dir / "breaker-state.json"
+        state.write_text(_json.dumps({
+            "version": 1,
+            "entries": {f"{elo}@{rail}": {
+                "state": "OPEN",
+                "failure_events": [{"kind": "ttfb_stall", "ts": past, "weight": 3}] * 2,
+                "cooldown_until": past + 60, "backoff_seconds": 60.0,
+                "last_failure_kind": "ttfb_stall",
+            }},
+        }), encoding="utf-8")
+        before = state.read_bytes()
+
+        service = RouterService(path)
+        for _ in range(5):
+            service.explain(self.HARD_TASK)
+
+        assert state.read_bytes() == before, "a polled preview spent the probe slot"
+        from router.blocklist import Blocklist
+        assert Blocklist(shipped).would_block(elo, rail) is False
+
+    def test_the_label_tolerates_every_shape_it_can_be_handed(
+        self, tmp_path, monkeypatch,
+    ):
+        """A read path must not raise, and the plan comes from a HOT config.
+
+        Tested on the helper directly, as this file already does for
+        `_registry_window` and `_policy_models`: these branches exist for shapes a
+        deployed-by-copy planner can produce, and driving each one through the whole
+        explain path would mean stubbing `plan_chain` three different ways to assert
+        one `continue`.
+        """
+        import yaml as _yaml
+        import router.service as service_mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        shipped = _yaml.safe_load(
+            (Path(__file__).resolve().parents[2] / "router.example.yaml")
+            .read_text(encoding="utf-8")
+        )
+        path = tmp_path / "router.yaml"
+        path.write_text(_yaml.safe_dump(shipped), encoding="utf-8")
+        service = RouterService(path)
+        banned = shipped["tiers"]["T3"]["model"]
+        config = dict(shipped)
+        config["blocklist"] = {
+            **shipped["blocklist"],
+            "manual_ban": [{"model": banned, "provider": "", "reason": "t"}],
+        }
+
+        # No chain, or an empty one: nothing to annotate, returned unchanged.
+        for plan in ({}, {"chain": None}, {"chain": []}, {"chain": "nope"}):
+            assert service._label_refused_hops(plan, {}, config) is plan
+
+        # An unattributable hop is skipped rather than crashing on `str(None)`.
+        plan = {"chain": ["bare-string", {}, {"provider": "zai"},
+                          {"model": banned, "provider": "openai-codex"}]}
+        annotated = service._label_refused_hops(plan, {}, config)
+        assert [hop["model"] for hop in annotated["blocked"]] == [banned]
+
+        # A hop the PLANNER already rejected is not listed twice.
+        plan = {
+            "chain": [{"model": banned, "provider": "openai-codex"}],
+            "blocked": [{"model": banned, "provider": "openai-codex",
+                         "reject_reason": "blocked"}],
+        }
+        annotated = service._label_refused_hops(plan, {}, config)
+        assert annotated is plan, "nothing new to add means the plan is untouched"
+
+        # An unreadable blocklist degrades to an unannotated plan.
+        class _Exploding:
+            def __init__(self, _config):
+                raise RuntimeError("state dir is a file")
+
+        monkeypatch.setattr(service_mod, "Blocklist", _Exploding)
+        plan = {"chain": [{"model": banned, "provider": "openai-codex"}]}
+        assert service._label_refused_hops(plan, {}, config) is plan

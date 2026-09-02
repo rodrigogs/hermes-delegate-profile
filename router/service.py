@@ -1961,6 +1961,7 @@ class RouterService:
         features = self._explain_features(prompt, when)
         decision = self._explain_decision(task, features, config, when)
         plan = self._chain_plan_of(decision)
+        plan = self._label_refused_hops(plan, decision, config)
         requires_classifier = decision.get("output", {}).get("action") == "classify"
         return {
             "mode": "deterministic_dry_run",
@@ -1975,6 +1976,74 @@ class RouterService:
             "evaluated_at": self._evaluated_at(when, at_source, plan),
             "preview": self._preview_note(decision, plan, sized_from, len(prompt)),
         }
+
+    def _label_refused_hops(
+        self,
+        plan: Dict[str, Any],
+        decision: Dict[str, Any],
+        config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Annotate a previewed chain with the hops the live blocklist would refuse.
+
+        THE PREVIEW WAS NOT THE VETTED PLAN. ``rules.explain`` has no blocklist —
+        it cannot have one, the whole layer is pure — so ``/explain`` and the
+        console's Simular tab showed an attempt order production would refuse.
+        Reproduced with a real ban on the T3 primary: production returned
+        ``deepseek-v4-pro / blocklist_substituted`` with ``chain_plan.blocked``
+        naming the primary, while the preview returned ``gpt-5.6-terra / size_rule``
+        and NO ``blocked`` key at all. The flagship agreement test between the two
+        producers only ran in the regime where they cannot disagree (``manual_ban``
+        ships empty).
+
+        LABELLED, NOT VETTED, and that boundary is deliberate. Reproducing
+        ``_veto_blocked``'s substitute/widen/deny behaviour here would put a SECOND
+        copy of the policy in the read model, which ``PRODUCT.md:60`` forbids and
+        which is the defect this whole read model exists to avoid. So the plan keeps
+        the planner's order and gains the adapter's own ``blocked`` key with
+        ``reject_reason``, which means ONE render shape serves both a preview and a
+        real trace — the console needs no second parser.
+
+        ``would_block``, NEVER ``is_blocked``: ``/explain`` is a pollable GET, and
+        the mutating form transitions an expired-OPEN breaker to HALF_OPEN and
+        consumes its single probe slot. A preview consumes no capacity and must
+        consume no probe.
+
+        Fail-safe like every other read: an unreadable blocklist yields the plan
+        unannotated rather than breaking the preview.
+        """
+        chain = plan.get("chain")
+        if not isinstance(chain, list) or not chain:
+            return plan
+        try:
+            blocklist = Blocklist(config)
+        except Exception:  # noqa: BLE001 - a read path must not raise
+            return plan
+
+        already = {
+            (hop.get("model"), hop.get("provider"))
+            for hop in plan.get("blocked", []) or []
+            if isinstance(hop, dict)
+        }
+        refused: List[Dict[str, Any]] = []
+        for hop in chain:
+            if not isinstance(hop, dict) or not hop.get("model"):
+                continue
+            model, provider = str(hop["model"]), str(hop.get("provider") or "")
+            if (hop.get("model"), hop.get("provider")) in already:
+                continue
+            if blocklist.would_block(model, provider):
+                row = dict(hop)
+                # The adapter's own spelling, so one console renderer serves both.
+                row["reject_reason"] = "blocked"
+                refused.append(row)
+        if not refused:
+            return plan
+        annotated = dict(plan)
+        annotated["blocked"] = list(plan.get("blocked", []) or []) + refused
+        # Says WHY the key is here, so a reader cannot mistake a labelled preview
+        # for a plan that was actually vetted and reordered.
+        annotated["blocked_source"] = "preview_label"
+        return annotated
 
     def _resolve_prompt(self, task: str, prompt_text: str) -> Tuple[str, str]:
         """Return ``(text_to_size_from, sized_from)``.
