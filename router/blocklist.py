@@ -21,24 +21,24 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .breaker import BreakerState
 
+try:
+    from .paths import state_dir as _paths_state_dir
+except ImportError:  # pragma: no cover - flat layout used by the test harness
+    from router.paths import state_dir as _paths_state_dir
+
 logger = logging.getLogger(__name__)
 
 
 def _state_dir() -> Path:
-    """Return the plugin state directory for breaker-state.json.
+    """The plugin state directory holding breaker-state.json.
 
-    Same ``profiles/<name>`` peel as ``durable_decision_log.routes_path``:
-    the breaker state is written by the delegate_profile plugin process
-    (whose HERMES_HOME is profile-scoped per delegation) and read back by
-    the sidecar (pinned to one profile), so a profile-scoped path would
-    split the two — a rail failing for trama-engineer would keep getting
-    traffic from coder because its cooldown lives in a file the other
-    profile never reads and the breaker never accumulates.
+    Delegates to :func:`router.paths.state_dir`, which is the ONE place the
+    ``profiles/<name>`` peel and the directory name are written. This function used
+    to carry its own copy of both, and the divergence already shipped once — see
+    that module's docstring. The name is kept because ``tests/router/test_breaker.py``
+    imports it directly.
     """
-    home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
-    if home.parent.name == "profiles":
-        home = home.parent.parent
-    return home / "hermes-smart-router" / "state"
+    return _paths_state_dir()
 
 
 def _state_path() -> Path:

@@ -444,7 +444,12 @@ class TestBlocklistWithBreaker:
         assert bl.is_blocked("gpt-5.6-sol", "anthropic") is False
 
     def test_state_dir_peels_profile_scoped_home(self, monkeypatch, tmp_path):
-        """Writer (profiles/<name>) and sidecar (bare root) must share ONE state file."""
+        """Writer (profiles/<name>) and sidecar (bare root) must share ONE state file.
+
+        This is the ONE place the canonical literal is written on the breaker side —
+        the trace side asserts AGREEMENT with it rather than repeating it (see
+        test_the_two_state_paths_resolve_to_one_directory).
+        """
         root = tmp_path
         canonical = root / "hermes-smart-router" / "state"
         # The delegate_profile plugin process runs with a profile-scoped HERMES_HOME...
@@ -454,6 +459,55 @@ class TestBlocklistWithBreaker:
         # cooldown would live in a file the other profile never reads.
         monkeypatch.setenv("HERMES_HOME", str(root))
         assert _state_dir() == canonical
+
+    @pytest.mark.parametrize("home", [
+        "bare", "profile-scoped", "unset",
+    ])
+    def test_the_two_state_paths_resolve_to_one_directory(
+        self, home, monkeypatch, tmp_path,
+    ):
+        """The breaker file and the trace file must live in the SAME directory.
+
+        They are resolved by two functions that each used to carry their own copy of
+        the `profiles/<name>` peel and the directory name — and the copies DIVERGED:
+        `d0802d6` added the peel to the trace path, `305a901` added it to the breaker
+        path four weeks later, with a commit message describing the production bug
+        the gap had caused in between (each profile read a different state file, so
+        cooldowns never accumulated). The 2026-08-27 rename then had to touch both
+        literals by hand.
+
+        Asserted as AGREEMENT between the two producers over every HERMES_HOME shape,
+        not against a literal in a second place — which is what let them drift.
+        """
+        import router.durable_decision_log as ddl
+
+        # HERMES_ROUTE_TRACE_FILE is deliberately NOT part of this equality: it
+        # overrides the trace file only, and breaker state must not follow it or a
+        # redirected trace would orphan breaker-state.json somewhere unread.
+        monkeypatch.delenv("HERMES_ROUTE_TRACE_FILE", raising=False)
+        if home == "bare":
+            monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        elif home == "profile-scoped":
+            monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "coder"))
+        else:
+            monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        assert _state_dir() == ddl.routes_path().parent
+        assert _state_dir() == ddl.attempts_path().parent
+
+    def test_the_trace_override_does_not_move_the_breaker_file(
+        self, monkeypatch, tmp_path,
+    ):
+        """The one asymmetry, stated so nobody "fixes" it into symmetry."""
+        import router.durable_decision_log as ddl
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        canonical = _state_dir()
+        monkeypatch.setenv("HERMES_ROUTE_TRACE_FILE", str(tmp_path / "elsewhere.jsonl"))
+        assert ddl.routes_path() == tmp_path / "elsewhere.jsonl"
+        assert _state_dir() == canonical, (
+            "the breaker file must not follow a trace-file override"
+        )
 
 
 # ---------------------------------------------------------------------------

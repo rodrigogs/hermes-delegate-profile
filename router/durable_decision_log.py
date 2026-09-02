@@ -42,6 +42,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .paths import state_dir as _paths_state_dir
 from .decision_log import DecisionLog, attempts_of, chain_plan_of
 
 logger = logging.getLogger(__name__)
@@ -75,12 +76,12 @@ def routes_path() -> Path:
     explicit = os.environ.get("HERMES_ROUTE_TRACE_FILE")
     if explicit:
         return Path(explicit)
-    home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
-    # Peel a trailing ``profiles/<name>`` so a profile-scoped HERMES_HOME and the
-    # bare root resolve to the same canonical trace file.
-    if home.parent.name == "profiles":
-        home = home.parent.parent
-    return home / "hermes-smart-router" / "state" / "routes.jsonl"
+    # The peel and the directory name come from router.paths — one authority,
+    # because this resolution was typed twice and the two diverged for four
+    # weeks. The HERMES_ROUTE_TRACE_FILE override above stays LOCAL to this
+    # function: it overrides the trace file, and breaker state must not follow
+    # it or a redirected trace would orphan breaker-state.json.
+    return _paths_state_dir() / "routes.jsonl"
 
 
 def attempts_path() -> Path:
