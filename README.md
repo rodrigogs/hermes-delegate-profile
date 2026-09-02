@@ -84,6 +84,28 @@ after enabling — plugin loads happen at startup.
 - The `delegation` toolset enabled (`hermes tools enable delegation`)
 - One or more additional Hermes profiles. Create one with
   `hermes profile create <name>` and list them with `hermes profile list`.
+- **For the LLM classifier only — an explicit host trust grant.** Without it
+  Stage 1 never runs, and the symptom does not say so.
+
+  The classifier always passes `provider=` and `model=` to `ctx.llm.complete`,
+  which trips Hermes' per-plugin LLM trust gate unless BOTH overrides are
+  granted:
+
+  ```yaml
+  plugins:
+    entries:
+      hermes-smart-router:
+        llm:
+          allow_provider_override: true
+          allow_model_override: true
+  ```
+
+  This is the plugin's one measured production incident. Of 47 recorded routing
+  decisions, **zero** used the classifier and 16 ended in the fail-safe with
+  `no_classifier` / `classifier_error` — because the refusal is caught and
+  degraded, so a missing grant looks exactly like a router that simply never
+  needed to classify. Deterministic Stage-0 routing works fine without the
+  grant; only rules whose `then` carries `action: classify` need it.
 
 ## Usage
 

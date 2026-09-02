@@ -119,8 +119,13 @@ test('the frame is srcdoc, because a served page cannot be framed at all', async
   const panel = api.ensurePanel();
   await api.load(panel);
   const frame = panel.querySelector('[data-console-frame]');
-  // src= would be refused: the sidecar sends X-Frame-Options DENY and
-  // frame-ancestors 'none'. srcdoc inherits this origin, which is what lets the
+  // srcdoc, not src, and the reason is the ORIGIN. This comment used to say
+  // "src= would be refused: the sidecar sends X-Frame-Options DENY and
+  // frame-ancestors 'none'" — `Handler._write` sends NEITHER (Content-Type, Vary,
+  // Content-Encoding, Content-Length, Cache-Control, and that is all), and
+  // `git log -S` shows those strings never existed under router/. If framing
+  // denial is wanted it is a separate change with its own test. srcdoc inherits
+  // this origin, which is what lets the
   // console reach the proxy with cookies and borrow the host's token.
   assert.equal(frame.srcdoc, '<html>the console</html>');
   assert.equal(frame.attrs.src, undefined, 'never framed by URL');

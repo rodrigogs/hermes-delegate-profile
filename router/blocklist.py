@@ -53,7 +53,12 @@ def _state_path() -> Path:
 # breaker never trips. The lock is shared across all Blocklist instances in
 # this process; cross-process writers (the sidecar is read-only) are not a
 # concern here. Keyed by resolved path so distinct HERMES_HOME values don't
-# alias, and kept weakref-able so test temp dirs don't leak entries.
+# alias. INSERT-ONLY and never pruned: every call site holds the lock through the
+# whole load -> mutate -> save section, so the dict grows by one entry per distinct
+# state path and that is negligible. It is NOT weakref-able, which this comment
+# claimed — a `WeakValueDictionary` would be wrong here anyway, since the value is
+# the lock itself and dropping it while a waiter holds a reference is the bug the
+# registry exists to prevent.
 _BLOCKER_LOCKS: "Dict[str, threading.Lock]" = {}
 _BLOCKER_LOCKS_GUARD = threading.Lock()
 

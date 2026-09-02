@@ -71,8 +71,9 @@ def test_extension_script_mounts_the_console_instead_of_duplicating_it():
     It once reimplemented every read the console does, so the two surfaces could
     disagree. What is load-bearing now is the mount itself: the WebUI grants its
     CSRF token only to pages it renders, so the console can only write when it
-    runs inside the host document — hence srcdoc (the served page sends
-    X-Frame-Options DENY, so it cannot be framed by URL).
+    runs inside the host document — hence srcdoc, which inherits the host origin.
+    NOT because the served page refuses framing: the sidecar sends no
+    X-Frame-Options and no frame-ancestors, and never has.
     """
     script_path = EXTENSION / "router-nav.js"
     script = script_path.read_text(encoding="utf-8")

@@ -53,8 +53,8 @@
     if (panel) return panel;
     panel = el('section', 'main-view hermes-panel hermes-smart-router-panel');
     panel.id = PANEL_ID;
-    // srcdoc, not src: the sidecar sends X-Frame-Options DENY and
-    // frame-ancestors 'none', so the served page cannot be framed by URL. srcdoc
+    // srcdoc, not src, and the reason is the ORIGIN, not a server refusal.
+    // srcdoc
     // inherits this document's origin, which is the whole point — it is what lets
     // the console reach the proxy with cookies and read the host's token.
     const frame = el('iframe', 'hp-frame');

@@ -2594,16 +2594,14 @@
         }).filter(Boolean);
       }
 
-      const whenWords = (when) => {
-        if (!when || typeof when !== 'object') return 'vale para toda tarefa';
-        const clauses = Object.keys(when)
-          .map((field) => phraseCondition(field, when[field]))
-          .filter(Boolean);
-        return clauses.length ? `quando ${clauses.join(' e ')}` : 'vale para toda tarefa';
-      };
-      // phraseWhen keeps the EXACT shape the tests pin: clauses joined by
-      // ' e ' with no prefix — the second line of a rule row. whenWords is
-      // the same assembly with the sheet's "quando" prefix.
+      // phraseWhen keeps the EXACT shape the tests pin: clauses joined by ' e '
+      // with no prefix — the second line of a rule row.
+      //
+      // A `whenWords` used to sit here: the same assembly plus a "quando " prefix
+      // no element supplied, with ZERO callers, surviving only because the export
+      // block listed it. This file already records `hitsWindow` being "left
+      // exported and dead" for exactly that reason, so it is deleted rather than
+      // kept as a second spelling of one sentence.
       function phraseWhen(when) {
         if (!when || typeof when !== 'object') return 'vale para toda tarefa';
         const clauses = Object.keys(when)
@@ -11651,7 +11649,7 @@
         // pure, so the words an operator acts on are pinned by tests rather than
         // eyeballed on a screenshot.
         predicateFamily, predicateChip, predicateChips, requirementChips,
-        whenWords, ruleTitle, condNotes, destWords,
+        ruleTitle, condNotes, destWords,
         billingBadge, billsInDollars, ctxWindow, rejectWhy, contextShortfall, strategyWords,
         upstreamGroup, independentRails, sharedUpstream, hopCaps, billingIndex,
         capabilityRegistry, tierChain, tierWarnings, renderChainPlan,

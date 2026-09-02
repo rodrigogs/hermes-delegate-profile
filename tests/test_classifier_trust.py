@@ -66,7 +66,8 @@ def _ctx(*, trusted: bool):
         if not trusted:
             raise _TrustError(
                 "plugin 'hermes-smart-router' may not override provider "
-                "(set plugins.entries.delegate-profile.llm.allow_provider_override)"
+                "(set plugins.entries.hermes-smart-router.llm"
+                ".allow_provider_override)"
             )
         return SimpleNamespace(text='{"tier": "T3", "confidence": "high"}')
 

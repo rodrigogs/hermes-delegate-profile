@@ -405,13 +405,18 @@ def test_apply_commits_then_confirm_and_revert(tmp_path):
     )
     assert status == 200
     assert body["ok"] is True
-    # confirm re-commits against the (now advanced) on-disk hash: the plan's
-    # base_hash is stale, so it is a clean 409 rather than a dead 404.
-    confirm = app.dispatch(
-        "POST", "/apply/confirm", _auth(), body={"plan": plan, "policy": plan["policy"]}
+    # Re-posting the SAME plan against the now-advanced on-disk hash is a clean
+    # 409, not a dead 404 — the property /apply/confirm was said to provide, which
+    # /apply provides on its own. (That alias is gone: it had no client anywhere,
+    # and its comment described a console button console.html:2065 records as
+    # deleted.)
+    again = app.dispatch(
+        "POST", "/apply", _auth(), body={"plan": plan, "policy": plan["policy"]}
     )
-    assert confirm[0] == 409
+    assert again[0] == 409
     assert app.dispatch("POST", "/apply/revert", _auth(), body={})[0] == 200
+    # And the retired alias is a 404 like any other unknown route.
+    assert app.dispatch("POST", "/apply/confirm", _auth(), body={})[0] == 404
 
 
 def test_apply_stale_hash_is_409(tmp_path):

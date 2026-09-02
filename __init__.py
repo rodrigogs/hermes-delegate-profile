@@ -738,7 +738,13 @@ def _make_classify_fn(ctx: Any) -> Optional[Callable[[str, Dict[str, Any]], Dict
     Returns None if the router is disabled or ctx lacks llm. The classifier runs
     on the pair ``router.classify.CLASSIFIER_DEFAULTS`` names (trusted-streaming,
     temp=0, token-capped) unless router.yaml overrides it.
-    Requires allow_provider_override + allow_model_override in plugin config.
+    Requires BOTH ``allow_provider_override`` and ``allow_model_override`` under
+    ``plugins.entries.<plugin_id>.llm`` in Hermes' config.yaml (the plugin id is
+    :data:`_CONFIG_NAMESPACE`). Spelled out because the key path appeared nowhere
+    outside one test: this function always passes ``provider=`` and ``model=``, so
+    it ALWAYS trips the gate, and the refusal is caught and degraded — a missing
+    grant is indistinguishable from a router that never needed to classify.
+    Measured: 0 of 47 decisions used the classifier, 16 fail-safed.
 
     The defaults are IMPORTED, never restated: this function used to carry its own
     copy that defaulted to ``glm-5.2`` while ``classify.py`` said

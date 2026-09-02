@@ -1821,7 +1821,14 @@ def derive_requirements(
       needs_tools True             -> tool_calling = True
       needs_structured_output True -> structured_output = True
 
-    ``tier_requirements`` is an explicit per-tier floor and wins on conflict;
+    ``tier_requirements`` is an explicit per-tier floor and wins on conflict for
+    every NUMERIC key. For a BOOLEAN it is a bare overwrite, which can LOWER a
+    requirement: ``derive_requirements({'needs_vision': True}, {'vision': False})``
+    returns ``{'vision': False}``. The production path is safe because
+    ``rules._tier_floor_of`` drops falsy booleans before assembling the floor — so
+    the invariant holds one layer UP, not here, and a direct caller of this
+    function (``cli._compose_plan``) does not get it. Stated rather than silently
+    relied on;
     for ``min_context`` the MAXIMUM of the two is used. Only keys in
     REQUIREMENT_KEYS ever appear in the result.
 

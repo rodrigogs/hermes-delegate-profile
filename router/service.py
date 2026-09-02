@@ -1406,15 +1406,20 @@ class RouterService:
             for fallback in fail_safe.get("fallback", []) or []:
                 add(fallback)
 
-        # The historical fallback chain stores model names. Map each one to
-        # every provider already declared elsewhere in policy; no provider is
-        # invented for an unknown chain entry.
-        known_models = {model for model, _provider in references}
+        # The historical fallback chain stores bare model NAMES, and a name alone
+        # names no rail — so a string entry contributes nothing here and is
+        # skipped. There is deliberately no model->provider mapping: the comment
+        # here used to promise one ("map each one to every provider already
+        # declared elsewhere in policy") and the code never performed it, nor
+        # could it — the only provider index in this module
+        # (``_policy_provider_index``) is DERIVED from this very function, so
+        # there is nothing to look a chain entry up in. The `elif ... continue`
+        # that stood in for it was provably inert: `continue` was the last
+        # statement in the loop body, so taking the branch and falling through
+        # were the same no-op.
         for fallback in fallback_chain:
             if isinstance(fallback, dict):
                 add(fallback)
-            elif isinstance(fallback, str) and fallback in known_models:
-                continue
         return sorted(references)
 
     @staticmethod

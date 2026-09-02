@@ -3,8 +3,28 @@
 A stdlib-only loopback HTTP service consumed through Hermes One's consented
 extension-sidecar proxy.  Its only state-changing credential is WebUI's
 ``token-v1`` secret: every route except ``/health`` requires the per-extension
-``X-Hermes-Sidecar-Token`` header.  The service itself is read-only over the
-router policy; it cannot edit rules, change providers, or mutate breaker state.
+``X-Hermes-Sidecar-Token`` header.
+
+READ AND WRITE, and the split is the important part — this text is also the
+``--help`` output (``description=__doc__``), so it is what an operator reads.
+
+  GET  is read-only over everything: policy, capabilities, blocklist, breaker
+       state, the decision trace.  Nothing on a GET path mutates.
+  POST is the guarded WRITE path.  ``/plan`` previews, ``/apply`` commits
+       ``router.yaml`` behind ``rules.lint`` plus an optimistic ``base_hash``
+       check, and ``/apply`` with ``action: "compaction"`` is RESTART-class: it
+       stages a candidate for Hermes' own ``config.yaml`` and hands it to an
+       out-of-repo dead-man switch.  ``/apply/revert`` restores the single
+       ``.bak`` snapshot and is NOT hash-guarded (``apply_revert()`` takes no
+       ``base_hash``), so it is the one write that cannot detect drift.
+
+It still cannot mutate breaker state: that is written only by the plugin process
+recording a delegation outcome, and every read here goes through
+``Blocklist.would_block``, which consumes no probe slot.
+
+This docstring used to say "The service itself is read-only over the router
+policy; it cannot edit rules, change providers, or mutate breaker state" — in the
+module that owns every route above.  Only the last clause was true.
 """
 from __future__ import annotations
 
@@ -98,7 +118,7 @@ _GET_ROUTES = frozenset(
      "/compaction", "/lint", "/explain", "/routes", "/capabilities"}
 )
 _POST_ROUTES = frozenset(
-    {"/explain", "/plan", "/apply", "/apply/confirm", "/apply/revert"}
+    {"/explain", "/plan", "/apply", "/apply/revert"}
 )
 
 # Context windows for the dynamic-threshold curve are NOT declared here. They come
@@ -584,12 +604,14 @@ class SidecarApp:
                 return self._apply_compaction(body)
             return self._commit_policy(body)
 
-        # confirm is the console's second-stage commit button; it commits the
-        # same way apply does, so a click after an interrupted apply reconciles
-        # against the current on-disk hash (a drift returns a clean 409) rather
-        # than dead-ending on a 404.
-        if path == "/apply/confirm":
-            return self._commit_policy(body)
+        # There is no /apply/confirm. It was an alias whose whole body was
+        # `return self._commit_policy(body)`, justified by a comment describing
+        # "the console's second-stage commit button" that console.html:2065 itself
+        # records as DELETED ("two buttons, one effect" was unexplainable on
+        # screen). Nothing posts it: the console posts /apply and /apply/revert,
+        # plugin_api.py has no write routes, and the live smoke script never
+        # touches it. An alias with no client is a second spelling of the write
+        # path for an attacker to find and for a reader to wonder about.
 
         if path == "/apply/revert":
             return 200, self._service.apply_revert()
@@ -597,7 +619,7 @@ class SidecarApp:
         return _error(404, "unknown route")
 
     def _commit_policy(self, body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
-        """Shared commit for /apply and /apply/confirm: hash-checked write."""
+        """The hash-checked policy write behind POST /apply."""
         plan = body.get("plan")
         if not isinstance(plan, dict):
             return _error(400, "apply requires the 'plan' returned by /plan")
