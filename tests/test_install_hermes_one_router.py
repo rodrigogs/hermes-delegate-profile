@@ -169,6 +169,49 @@ def test_install_sweeps_the_retired_id_out_of_the_bundle(tmp_path):
     assert (extension_root / "hermes-smart-router" / "router-nav.js").is_file()
 
 
+def test_install_sweeps_the_retired_id_out_of_the_served_plugin_too(tmp_path):
+    """The bundle was swept and the SERVED PLUGIN COPY was not, so the dir lived on.
+
+    Found on the reference install on 2026-09-02, sixteen days after the rename:
+    ``~/.hermes/plugins/hermes-smart-router/webui_extension/hermes-one-capability-router``
+    still held five files — DESIGN.md, a 492KB console.html and a manifest.json
+    declaring ``"id": "hermes-one-capability-router"``.
+
+    Why no deploy could remove it: ``router-deploy.sh`` syncs the served copy with
+    ``git archive HEAD | tar -x``, which only ever ADDS. A file that was tracked once
+    and later deleted from the repo therefore survives in the served copy forever, and
+    the deploy's own drift check compares only that tracked files MATCH — it never
+    looks for extra ones. So the general hazard is bigger than this directory: the
+    served plugin accumulates everything the repo has ever deleted.
+
+    The sweep already existed and already had the right id; it just ran over
+    ``extension_root`` (the pack) and never over ``plugin_dir``, which the installer
+    is handed on the same call. This is that one line.
+    """
+    extension_root = tmp_path / "extensions"
+    extension_root.mkdir()
+    retired = installer._RETIRED_EXTENSION_IDS[0]
+    plugin_dir = tmp_path / "plugin"
+    # Exactly the shape found on the box: the leftover sits under the plugin's own
+    # copy of webui_extension/, beside the current id.
+    stale = plugin_dir / "webui_extension" / retired
+    stale.mkdir(parents=True)
+    (stale / "manifest.json").write_text(
+        json.dumps({"id": retired, "name": "Capability Router"}), encoding="utf-8")
+    (stale / "console.html").write_text("<!-- 492KB of stale bytes -->", encoding="utf-8")
+    live = plugin_dir / "webui_extension" / "hermes-smart-router"
+    live.mkdir(parents=True)
+    (live / "console.html").write_text("<!-- the real one -->", encoding="utf-8")
+
+    install(ROOT, extension_root, tmp_path / "systemd", plugin_dir)
+
+    assert not stale.exists(), (
+        "the retired directory survived inside the served plugin copy, where "
+        "git archive | tar -x can never delete it"
+    )
+    assert (live / "console.html").is_file(), "the sweep must not touch the live id"
+
+
 def test_installer_rejects_malformed_inputs_and_missing_templates(tmp_path):
     missing = tmp_path / "missing.json"
     assert installer._read_json(missing) == {"extensions": []}

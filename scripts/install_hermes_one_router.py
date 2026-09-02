@@ -144,13 +144,30 @@ def _copy_assets(repo_root: Path, extension_root: Path) -> None:
     if destination.exists():
         shutil.rmtree(destination)
     shutil.copytree(source, destination)
-    # Sweep retired ids off the disk side of the bundle too: the manifest entry
-    # removal alone would leave the old asset directory behind, serving stale
-    # bytes to anything that still walks the tree.
-    for retired in _RETIRED_EXTENSION_IDS:
-        retired_dir = extension_root / retired
-        if retired_dir.exists():
-            shutil.rmtree(retired_dir)
+    _sweep_retired(extension_root)
+
+
+def _sweep_retired(*roots: Path) -> None:
+    """Remove every retired id's asset directory from each of ``roots``.
+
+    The manifest entry removal alone would leave the old asset directory behind,
+    serving stale bytes to anything that still walks the tree.
+
+    TWO ROOTS, not one. This ran over the bundle only, and the SERVED PLUGIN COPY
+    kept its own copy of the retired directory for sixteen days after the rename —
+    found on the reference install 2026-09-02:
+    ``…/plugins/hermes-smart-router/webui_extension/hermes-one-capability-router``
+    still held DESIGN.md, a 492KB console.html and a manifest.json declaring the OLD
+    id. No deploy could ever have removed it: ``router-deploy.sh`` syncs that copy
+    with ``git archive HEAD | tar -x``, which only ADDS, and its drift check asks
+    only whether tracked files MATCH — never whether extra ones exist. So a file
+    tracked once and later deleted survives in the served copy forever.
+    """
+    for root in roots:
+        for retired in _RETIRED_EXTENSION_IDS:
+            retired_dir = Path(root) / retired
+            if retired_dir.exists():
+                shutil.rmtree(retired_dir)
 
 
 def _default_python() -> str:
@@ -321,6 +338,10 @@ def install(
 
     extension_root.mkdir(parents=True, exist_ok=True)
     _copy_assets(repo_root, extension_root)
+    # And out of the served plugin's own copy of webui_extension/, which no deploy
+    # can prune (see _sweep_retired). The plugin dir is already a parameter of this
+    # call, so this needs nothing the installer was not already given.
+    _sweep_retired(plugin_dir / "webui_extension")
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     systemd_dir.mkdir(parents=True, exist_ok=True)

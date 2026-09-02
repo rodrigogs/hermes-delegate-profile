@@ -502,6 +502,52 @@ test('the header reports three ages, and a stale sidecar says so', () => {
   assert.match(banner, /systemctl --user restart hermes-router-sidecar/);
 });
 
+test('the freshness report is one line, so the embedded head matches the host it sits beside', () => {
+  // TWO RECORDED DECISIONS WERE IN CONTRADICTION, and the operator saw the result.
+  //
+  //   * `.is-embedded .view-head` is tuned to the host sidebar's .panel-head
+  //     "exactly: 41px min-height, 8px/16px padding", with the arithmetic written
+  //     down — "25px of content plus 16px of padding lands on 41 exactly" — which is
+  //     true of a ONE-LINE reach. The comment says WHY: a head that misses that
+  //     height "read as a second navigation row one row off from the real one".
+  //   * `.reach`'s own comment then made the three ages "their own lines at every
+  //     width", because they ARE the report and not collapsible chrome.
+  //
+  // Measured in the real Hermes One panel on 2026-09-02: .view-head renders 59px,
+  // 18px over its target, and the .reach block inside it is 165×42 starting at
+  // x=561 of an 851px band — so two thirds of the head is empty and the densest
+  // text on the screen is jammed into the right edge of it.
+  //
+  // The resolution keeps BOTH intents: every age keeps its full words and stays
+  // visible at every width (nothing collapses, nothing hides, nothing moves to
+  // another surface), and they sit on ONE line, which is what returns the head to
+  // 41px.
+  const { api, dom } = loadConsole();
+  const T = Date.UTC(2026, 7, 19, 12, 0, 0);
+  api.state.clock = new Date(T);
+  api.state.unreachable = false;
+  api.state.status = {
+    process_started_at: new Date(T - 2 * 3600 * 1000).toISOString(),
+    code_mtime: new Date(T - 3 * 3600 * 1000).toISOString(),
+    config_mtime: new Date(T - 5 * 60 * 1000).toISOString(),
+  };
+  api.renderRail();
+  const text = dom.get('reachText').textContent;
+  // Nothing was dropped: all three ages, in their own words.
+  assert.match(text, /serviço no ar há 2h/);
+  assert.match(text, /código carregado há 3h/);
+  assert.match(text, /arquivo mudou há 5m/);
+  // And it is one line, which is the whole point.
+  assert.equal(text.includes('\n'), false,
+    'a three-line reach puts the embedded head 18px over the 41px its own comment '
+    + 'measured against the host sidebar');
+  assert.match(text, / · /, 'the ages are separated by the middot this console uses everywhere');
+  // The CSS that only made sense while it was multi-line goes with it.
+  const { style } = consoleStyle();
+  assert.doesNotMatch(style, /#reachText\s*{[^}]*pre-line/,
+    'pre-line existed to render the newlines; there are none left to render');
+});
+
 test('a fresh sidecar shows no stale banner; checking and dead keep their words', () => {
   const { api, dom } = loadConsole();
   const T = Date.UTC(2026, 7, 19, 12, 0, 0);

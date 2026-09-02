@@ -258,12 +258,21 @@
 
     /* Liveness of the console's own reading, next to the controls that refresh
        it: a dot and the provenance ages, 11px, the host's metadata step. The
-       ages render as their own lines at every width — they ARE the report
-       (which source is stale), not chrome, so the old phone rule that collapsed
-       the "checked HH:MM" clock was removed with the clock. A dead sidecar or a
-       not-yet-read status still keeps its words. */
+       ages keep their full words at every width — they ARE the report (which
+       source is stale), not chrome, so the old phone rule that collapsed the
+       "checked HH:MM" clock was removed with the clock. A dead sidecar or a
+       not-yet-read status still keeps its words.
+
+       ON ONE LINE, which corrects this block. They used to render as three lines,
+       and that put `.is-embedded .view-head` 18px over the 41px its own comment
+       measures against the host sidebar's .panel-head — producing the very "second
+       navigation row one row off from the real one" that comment exists to prevent.
+       Measured in the running panel on 2026-09-02: the head was 59px and the .reach
+       inside it 165x42 starting at x=561 of an 851px band, so two thirds of the head
+       was empty while the densest text on the screen was crushed into its right
+       edge. Nothing is collapsed or hidden to fix it — every word is still here,
+       joined by the middot this console already uses to join facts on a line. */
     .reach { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font: var(--t-label) var(--mono); white-space: nowrap; }
-    #reachText { white-space: pre-line; }
 
     /* ── The three destinations ────────────────────────────────────────
        Drawn as the host draws its own nav tabs: a quiet 14px label that takes
@@ -3730,7 +3739,7 @@
             `serviço no ar há ${fmtAge(procStart)}`,
             `código carregado há ${fmtAge(codeLoaded)}`,
             `arquivo mudou há ${fmtAge(configChanged)}`,
-          ].join('\n');
+          ].join(' · ');
         } else {
           reachText.textContent = 'Ainda não li nada do roteador.';
         }
