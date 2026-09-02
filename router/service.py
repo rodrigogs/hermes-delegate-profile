@@ -1224,16 +1224,37 @@ class RouterService:
         published. A screen showing ``failure_count: 3`` with no threshold beside it
         is a number the operator has to go read the source to interpret — and a
         screen that guessed the threshold would be a second authority on it.
+
+        A READ PATH MUST NOT RAISE. This one had no guard at all, and
+        ``SidecarApp.dispatch`` has no catch-all either, so an exception here did
+        not become a 500 — it propagated out of the handler and DROPPED THE
+        CONNECTION, which the console reads as "I could not talk to the router"
+        rather than as a config problem it could name. ``liveness()`` next door
+        already degrades wholesale for the same reason; this is the same envelope.
         """
         config, _errors = self._load()
-        blocklist = Blocklist(config)
-        return {
-            "manual_bans": blocklist.manual_bans(),
-            "fallback_chain": blocklist.fallback_chain(),
-            "breaker_enabled": blocklist.breaker_enabled(),
-            "breaker_cooldowns": blocklist.breaker_status(),
-            "auto_breaker": blocklist.breaker_policy(),
-        }
+        try:
+            blocklist = Blocklist(config)
+            return {
+                "manual_bans": blocklist.manual_bans(),
+                "fallback_chain": blocklist.fallback_chain(),
+                "breaker_enabled": blocklist.breaker_enabled(),
+                "breaker_cooldowns": blocklist.breaker_status(),
+                "auto_breaker": blocklist.breaker_policy(),
+            }
+        except Exception as exc:  # noqa: BLE001 - a read path must not raise
+            # Labelled, not silent: every key the console reads is present and
+            # empty, and `error` says why, so the screen can distinguish "no bans"
+            # from "I could not read the bans" — the distinction the dropped
+            # connection destroyed.
+            return {
+                "manual_bans": [],
+                "fallback_chain": [],
+                "breaker_enabled": False,
+                "breaker_cooldowns": [],
+                "auto_breaker": {},
+                "error": f"blocklist unreadable: {exc}",
+            }
 
     def liveness(self) -> Dict[str, Any]:
         """Compose policy references with manual-ban and breaker health.

@@ -495,6 +495,7 @@ def lint(config: Dict[str, Any]) -> List[str]:
 
     errors.extend(_lint_tier_shapes(tiers_cfg))
     errors.extend(_lint_global_price_windows(config))
+    errors.extend(_lint_blocklist_shape(config))
 
     # The default is the route EVERY fall-through takes, so an unresolvable tier
     # alias there misroutes more traffic than any single rule can. The identical
@@ -688,6 +689,11 @@ def lint_warnings(config: Dict[str, Any]) -> List[str]:
 
     if not isinstance(config, dict):
         return warnings
+
+    # Before the tiers guard: a malformed ban row is worth reporting even when the
+    # tier table is the thing that is broken, and it does not depend on tiers.
+    warnings.extend(_blocklist_row_warnings(config))
+
     tiers_cfg = config.get("tiers")
     if not isinstance(tiers_cfg, dict):
         return warnings
@@ -733,6 +739,89 @@ def lint_warnings(config: Dict[str, Any]) -> List[str]:
 
     warnings.extend(_fallback_chain_warnings(config, tiers_cfg))
 
+    return warnings
+
+
+def _lint_blocklist_shape(config: Dict[str, Any]) -> List[str]:
+    """HARD errors for the COARSE shape of the ``blocklist:`` section.
+
+    This is a write gate, and the gap it closes is a fail-OPEN on the one
+    component whose whole job is to refuse. Measured on the shipped policy with
+    ``blocklist: off`` appended: ``lint`` returned ``[]``, so ``/status`` reported
+    ``valid: True`` and ``plan``/``apply`` would have PERSISTED it — after which
+    ``Blocklist.__init__`` raised ``AttributeError``, ``adapter.route`` died,
+    ``_route_task`` swallowed it at DEBUG, every delegation answered ``bad_args``,
+    and every manual ban was unenforced.
+
+    COARSE ONLY, and the line is deliberate:
+
+      * The four container shapes are errors — a mapping under ``blocklist``, a
+        list for ``manual_ban`` and ``fallback_chain``, a mapping for
+        ``auto_breaker``. Get one of these wrong and the section as a whole cannot
+        mean anything.
+      * A malformed ROW inside those lists is NOT an error. A ban row naming no
+        model is a documented shippable input (it bans every model), and
+        ``test_plugin_status_drops_a_ban_row_it_cannot_name`` pins that a row the
+        UI cannot name still round-trips. Per-row problems are reported by
+        ``lint_warnings`` and skipped by ``_ban_row`` at the match site.
+    """
+    errors: List[str] = []
+    blocklist = config.get("blocklist")
+    if blocklist is None:
+        return errors  # absent is valid: no bans, breaker off
+    if not isinstance(blocklist, dict):
+        return [
+            f"'blocklist' must be a mapping, got {type(blocklist).__name__} "
+            f"— a blocklist that cannot be read blocks nothing"
+        ]
+    for key in ("manual_ban", "fallback_chain"):
+        value = blocklist.get(key)
+        if value is not None and not isinstance(value, list):
+            errors.append(
+                f"blocklist.{key} must be a list, got {type(value).__name__}"
+            )
+    breaker = blocklist.get("auto_breaker")
+    if breaker is not None and not isinstance(breaker, dict):
+        errors.append(
+            f"blocklist.auto_breaker must be a mapping, got "
+            f"{type(breaker).__name__}"
+        )
+    return errors
+
+
+def _blocklist_row_warnings(config: Dict[str, Any]) -> List[str]:
+    """Advisory findings for ``manual_ban`` rows that cannot ban anything.
+
+    Skipped at the match site by ``blocklist._ban_row`` rather than raising, so
+    without this they were silently ignored — an operator who typed
+    ``- glm-5.3`` instead of ``- {model: glm-5.3}`` got no ban and no complaint.
+
+    ADVISORY, not an error: the row shape has a documented shippable edge (a row
+    naming no model bans every model), so the write gate must not refuse the file
+    over one line it can simply not honour.
+    """
+    blocklist = config.get("blocklist")
+    if not isinstance(blocklist, dict):
+        return []
+    bans = blocklist.get("manual_ban")
+    if not isinstance(bans, list):
+        return []
+    warnings: List[str] = []
+    for i, ban in enumerate(bans):
+        if not isinstance(ban, dict):
+            warnings.append(
+                f"blocklist.manual_ban[{i}] must be a mapping "
+                f"({{model, provider, reason}}), got {type(ban).__name__} "
+                f"— this row bans nothing"
+            )
+            continue
+        for key in ("model", "provider"):
+            value = ban.get(key, "")
+            if not isinstance(value, str):
+                warnings.append(
+                    f"blocklist.manual_ban[{i}]: '{key}' must be a string, got "
+                    f"{type(value).__name__} — this row bans nothing"
+                )
     return warnings
 
 

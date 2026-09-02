@@ -17,7 +17,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .breaker import BreakerState
 
@@ -69,6 +69,26 @@ def _state_lock(path: Path) -> threading.Lock:
     return lock
 
 
+def _ban_row(ban: Any) -> Optional[Tuple[str, str]]:
+    """``(model, provider)`` from one ``manual_ban`` row, or None if unusable.
+
+    Rows come from the operator's YAML, so every field is untrusted shape. A bare
+    string in the list, or a row whose ``model`` is a number, used to raise
+    ``AttributeError`` out of the match loop — which took ALL routing down and
+    unenforced every OTHER ban in the list along with it.
+    None means "this row cannot ban anything", never "nothing is banned": the loop
+    skips it and keeps evaluating the rows that ARE well formed. ``lint_warnings``
+    reports the row so it is not silently ignored.
+    """
+    if not isinstance(ban, dict):
+        return None
+    model = ban.get("model", "")
+    provider = ban.get("provider", "")
+    if not isinstance(model, str) or not isinstance(provider, str):
+        return None
+    return model, provider
+
+
 class Blocklist:
     """Fail-closed blocklist with manual bans, fallback chain, and auto-breaker.
 
@@ -81,9 +101,32 @@ class Blocklist:
         self._manual_bans: List[Dict[str, str]] = []
         self._fallback_chain: List[str] = []
 
-        bl_conf = config.get("blocklist", {})
-        self._manual_bans = bl_conf.get("manual_ban", [])
-        self._fallback_chain = bl_conf.get("fallback_chain", [])
+        # EVERY read here is shape-guarded, and the reason is a fail-OPEN on the
+        # one component whose whole job is to refuse.
+        #
+        # `config.get("blocklist", {}).get(...)` raised AttributeError for
+        # `blocklist:` with nothing under it (None), `blocklist: off`, or a list.
+        # Measured on the shipped policy with `blocklist: off` appended:
+        # `rules.lint` returned [] — so `/status` said `valid: True` AND the write
+        # gate ACCEPTED it, meaning the operator's own console would persist it —
+        # while `adapter.route` raised, `_route_task` swallowed it at
+        # logger.debug, every delegation came back `bad_args`, and every manual
+        # ban was unenforced. A blocklist that cannot be constructed is a
+        # blocklist that blocks nothing.
+        #
+        # `lint` now hard-errors on these coarse shapes (see
+        # `rules._lint_blocklist_shape`), so an operator cannot write one. This
+        # guard is the second half: the config is HOT and a file already on disk
+        # must still route.
+        bl_conf = config.get("blocklist")
+        if not isinstance(bl_conf, dict):
+            bl_conf = {}
+        bans = bl_conf.get("manual_ban")
+        self._manual_bans = bans if isinstance(bans, list) else []
+        chain = bl_conf.get("fallback_chain")
+        self._fallback_chain = [
+            model for model in chain if isinstance(model, str)
+        ] if isinstance(chain, list) else []
 
         # Auto-breaker config
         ab = bl_conf.get("auto_breaker", {})
@@ -112,9 +155,10 @@ class Blocklist:
 
         # Check manual bans — these always fire
         for ban in self._manual_bans:
-            ban_model = ban.get("model", "")
-            ban_provider = ban.get("provider", "")
-            if self._match(ban_model, ban_provider, model, provider or ""):
+            row = _ban_row(ban)
+            if row is None:
+                continue
+            if self._match(row[0], row[1], model, provider or ""):
                 return True
 
         # Check breaker cooldowns
@@ -155,8 +199,10 @@ class Blocklist:
             return False
 
         for ban in self._manual_bans:
-            if self._match(ban.get("model", ""), ban.get("provider", ""),
-                           model, provider or ""):
+            row = _ban_row(ban)
+            if row is None:
+                continue
+            if self._match(row[0], row[1], model, provider or ""):
                 return True
 
         if self._breaker_enabled:
@@ -263,9 +309,23 @@ class Blocklist:
     ) -> bool:
         """Check if model/provider matches a ban entry.
 
-        If the model matches the ban, block regardless of provider
-        (fail-closed — a banned model is banned).
-        An empty ban provider matches any provider.
+        The rules, in the order they are applied:
+
+          * An empty ban ``model`` matches EVERY model.
+          * An empty ban ``provider`` bans the model on every rail.
+          * An empty QUERIED ``provider`` is fail-closed: a model banned on any
+            named rail answers True. This is why ``adapter`` must never widen a
+            lookup with ``is_blocked(model, "")`` — for a provider-scoped ban that
+            call is strictly MORE blocking than the truth.
+          * Otherwise both must match, case-insensitively.
+
+        The docstring used to say "if the model matches the ban, block regardless
+        of provider (fail-closed — a banned model is banned)", which is NOT what
+        the last line does: a provider-scoped ban does not block the model on
+        another rail. That reading is deliberate and pinned by
+        ``test_banned_model_wrong_provider`` — a contributor "simplifying" the code
+        to match the old sentence would start refusing rails the operator never
+        named.
         """
         model_match = not ban_model or ban_model.lower() == model.lower()
         if not model_match:

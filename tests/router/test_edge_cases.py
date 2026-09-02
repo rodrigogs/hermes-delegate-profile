@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 import pytest
 
-from router import cli
+from router import cli, rules
 from router.adapter import _apply_session_floor, _cause_from_rule, _resolve_output, route
 from router.blocklist import Blocklist
 from router.cache import Cache, SessionPin
@@ -542,3 +543,130 @@ def test_explain_handles_rule_id_missing_from_rows(monkeypatch):
     # cause to fail_safe_strong, so a new string here would relabel healthy
     # routes as fail-safe.
     assert result["cause"] == "default_fallthrough"
+
+
+# ---------------------------------------------------------------------------
+# A malformed blocklist must not unenforce every ban in it
+# ---------------------------------------------------------------------------
+
+class TestAMalformedBlocklistFailsClosed:
+    """The blocklist is the component whose whole job is to refuse.
+
+    `config.get("blocklist", {}).get(...)` raised AttributeError for
+    ``blocklist:`` with nothing under it, ``blocklist: off``, or a list. Measured
+    on the shipped policy with ``blocklist: off`` appended: ``rules.lint``
+    returned ``[]``, so ``/status`` said ``valid: True`` AND the write gate
+    accepted it — the operator's own console would have PERSISTED it — after which
+    ``adapter.route`` raised, ``_route_task`` swallowed it at DEBUG, every
+    delegation answered ``bad_args``, and EVERY MANUAL BAN WAS UNENFORCED.
+
+    Both halves are asserted here: the gate now refuses the shape, and a file
+    already on disk still routes.
+    """
+
+    @staticmethod
+    def _shipped():
+        import yaml
+        return yaml.safe_load(
+            (Path(__file__).resolve().parents[2] / "router.example.yaml")
+            .read_text(encoding="utf-8")
+        )
+
+    @pytest.mark.parametrize("bad", ["off", [], ["glm-5.3"], 7, 1.5, True])
+    def test_a_non_mapping_blocklist_is_refused_by_the_write_gate(self, bad):
+        cfg = dict(self._shipped())
+        cfg["blocklist"] = bad
+        errors = [e for e in rules.lint(cfg) if "blocklist" in e]
+        assert errors, f"the write gate accepted blocklist={bad!r}"
+        assert "blocks nothing" in errors[0], errors
+
+    @pytest.mark.parametrize("bad", ["off", [], 7, None])
+    def test_routing_survives_a_malformed_blocklist_already_on_disk(
+        self, bad, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg = dict(self._shipped())
+        cfg["blocklist"] = bad
+        # Constructing it is what used to raise, and route() calls it.
+        assert Blocklist(cfg).breaker_enabled() is False
+        out = route("rename a variable in utils.py", cfg)
+        assert out.get("model"), out
+
+    @pytest.mark.parametrize("key,bad", [
+        ("manual_ban", "nope"), ("manual_ban", 7),
+        ("fallback_chain", "nope"), ("fallback_chain", {}),
+        ("auto_breaker", 7), ("auto_breaker", "on"),
+    ])
+    def test_a_malformed_section_list_is_refused_by_name(self, key, bad):
+        cfg = dict(self._shipped())
+        cfg["blocklist"] = {**cfg["blocklist"], key: bad}
+        assert any(
+            f"blocklist.{key}" in e for e in rules.lint(cfg)
+        ), rules.lint(cfg)
+
+    def test_a_malformed_ban_ROW_warns_and_the_other_rows_still_fire(
+        self, tmp_path, monkeypatch,
+    ):
+        """Per-row, per-row only: the rest of the list must keep working.
+
+        The whole list used to be unenforced by one bad row, which is the worst
+        possible reading of a safety list. A row shape is a WARNING, not an error:
+        a row naming no model is a documented shippable input (it bans every
+        model), pinned by test_plugin_status_drops_a_ban_row_it_cannot_name.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg = dict(self._shipped())
+        cfg["blocklist"] = {
+            "manual_ban": [
+                "glm-5.3-flash",                       # a bare string
+                {"model": 7},                          # non-string model
+                {"model": "gpt-5.6-luna", "provider": "openai-codex"},  # valid
+            ],
+            "fallback_chain": cfg["blocklist"]["fallback_chain"],
+            "auto_breaker": {"enabled": False},
+        }
+
+        assert [e for e in rules.lint(cfg) if "blocklist" in e] == [], (
+            "a row shape must not block the write"
+        )
+        warnings = [w for w in rules.lint_warnings(cfg) if "manual_ban" in w]
+        assert len(warnings) == 2, warnings
+        assert "bans nothing" in warnings[0]
+
+        bl = Blocklist(cfg)
+        # The well-formed row still fires...
+        assert bl.is_blocked("gpt-5.6-luna", "openai-codex") is True
+        assert bl.would_block("gpt-5.6-luna", "openai-codex") is True
+        # ...and the unusable rows ban nothing rather than everything.
+        assert bl.is_blocked("glm-5.3-flash", "zai") is False
+
+    def test_a_non_string_entry_in_the_fallback_chain_is_dropped(self):
+        cfg = dict(self._shipped())
+        cfg["blocklist"] = {
+            "manual_ban": [], "auto_breaker": {"enabled": False},
+            "fallback_chain": ["a", 7, None, "b"],
+        }
+        assert Blocklist(cfg).fallback_chain() == ["a", "b"]
+
+    def test_the_read_surface_degrades_instead_of_dropping_the_connection(
+        self, tmp_path, monkeypatch,
+    ):
+        """``SidecarApp.dispatch`` has no catch-all, so a raise here killed the socket."""
+        import yaml as _yaml
+
+        from router.service import RouterService
+        import router.service as service_mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        path = tmp_path / "router.yaml"
+        path.write_text(_yaml.safe_dump(self._shipped()), encoding="utf-8")
+
+        class _Exploding:
+            def __init__(self, config):
+                raise RuntimeError("state file is a directory")
+
+        monkeypatch.setattr(service_mod, "Blocklist", _Exploding)
+        answer = RouterService(path).blocklist()
+        assert answer["manual_bans"] == []
+        assert answer["breaker_enabled"] is False
+        assert "state file is a directory" in answer["error"]
