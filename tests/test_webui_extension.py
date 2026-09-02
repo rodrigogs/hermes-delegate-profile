@@ -1206,3 +1206,66 @@ def test_the_consoles_capability_field_list_is_a_subset_of_the_registrys():
         f"the console reads capability fields the registry does not keep, so a hop "
         f"declaring them prices here and nowhere else: {unknown}"
     )
+
+
+def test_every_writable_key_has_a_control_that_is_not_the_json_editor():
+    """JSON is OPTIONAL: every key the write gate accepts is editable through a form.
+
+    ``_HOT_KEYS`` is the closed set the server will merge, so it is the exact
+    definition of "what can be changed". Two of its nine members had no control on
+    any screen and could only be reached by typing YAML into the Política editor:
+
+      * ``blocklist`` — the manual-ban list could be REMOVED from (each row carries
+        its lift) and never added to, and the "Fora de rotação" block hid itself
+        whenever nobody was banned, which is exactly the state in which an operator
+        wants to ban somebody.
+      * ``enabled`` — the router's master switch. The Modelos lede REPORTED it
+        ("Roteamento: ligado") and nothing anywhere could change it.
+
+    A third was reachable only by accident: ``classifier`` is in the console's
+    ``EDITABLE`` set and ``renderInspector`` has always had a branch for it, and no
+    pickBind call site named the bind — the editor existed, worked, and had no door.
+
+    This is an AGREEMENT test, not a restatement: the covered set is DERIVED (the
+    inspector's binds are read out of the console source) plus a declared table of
+    the keys that have their own form, each entry verified by the expression that
+    actually builds its patch. A new hot key fails here until it has a control, and
+    a control that is deleted fails here too.
+    """
+    from router.service import _HOT_KEYS
+
+    script = _console_inline_script()
+
+    # The inspector's binds, read from the console rather than restated here.
+    editable = re.search(r"const EDITABLE = new Set\(\[(.*?)\]\)", script, re.S)
+    assert editable, "EDITABLE is gone or reformatted — this test cannot see it"
+    binds = set(re.findall(r"'([a-z_]+)'", editable.group(1)))
+    assert binds, "the EDITABLE regex matched nothing — vacuous"
+    # 'rule' and 'tier' are the singular bind names for the plural policy tables.
+    from_inspector = {{"rule": "rules", "tier": "tiers"}.get(b, b) for b in binds}
+
+    # The keys with their own dedicated form, and the expression that builds the
+    # patch each one posts. Greps, so a control that is removed or renamed fails
+    # here rather than leaving a stale claim behind.
+    dedicated = {
+        "blocklist": "{ blocklist: { manual_ban: bans.concat([{ model }]) } }",
+        "enabled": "{ enabled: !routingOn }",
+        "price_windows": "return { price_windows: {",
+        "compaction": "return { compaction: {",
+        # Reordering rules is its own write: the drag handle and the arrow keys
+        # post the whole list, never a fragment of the inspector's draft.
+        "rules": "{ rules: next }",
+    }
+    for key, marker in dedicated.items():
+        assert marker in script, (
+            f"the form that writes '{key}' is gone: expected {marker!r} in the "
+            f"console's inline script, so this key is JSON-only again"
+        )
+
+    covered = from_inspector | set(dedicated)
+    missing = sorted(_HOT_KEYS - covered)
+    assert not missing, (
+        f"the write gate accepts {missing} and no form on any tab can produce it, "
+        f"so changing it requires the JSON editor — give it a control, or take it "
+        f"out of _HOT_KEYS"
+    )

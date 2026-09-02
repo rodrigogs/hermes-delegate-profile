@@ -622,6 +622,277 @@ test('clicking a capsule in the open queue opens the group\'s chain editor', () 
     'the chain editor is the surface where that hop is swapped');
 });
 
+// WHERE THE EDITOR APPEARS IS THE WHOLE OF WHETHER IT IS USABLE. The three tests
+// above prove the click opens the editor; none of them proved the operator can
+// SEE it. It could not: renderInspector filled `<div id="inspector">`, declared as
+// the LAST child of panel-tarefas — below every rule row, below the "se nada acima
+// casou" tail and below the stale note — and pickBind neither scrolled nor
+// focused. On the reference install (8 rules, 1440×900) the editor opened roughly
+// 900px below the fold, so a click on row 1 produced no visible change at all, and
+// the gesture that DID produce one — the row click, which opens the read-only
+// fila/papel/regra block — taught that clicking shows details rather than edits.
+//
+// So the editor is now DOCKED at the click: one node, moved to whatever owns the
+// selection. One node and not two, because a second editor would be a second
+// renderInspector, a second surfacePatch and a second write path to keep honest.
+function contains(root, node) {
+  const kids = root.children || [];
+  for (let i = 0; i < kids.length; i += 1) {
+    if (kids[i] === node || contains(kids[i], node)) return true;
+  }
+  return false;
+}
+
+test('the editor opens inside the row the operator clicked, not at the foot of the tab', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = sheetPolicy();
+  api.renderSheet();
+  const ruleRow = () => dom.get('sheet').children.find((c) => c.dataset.ruleId === 'audit');
+  findAll(ruleRow(), 'step-when')[0]._listeners.click();
+  const box = dom.get('inspector');
+  assert.match(flat(box), /Condições/, 'the editor did render');
+  // Re-read the row: pickBind re-renders the sheet, so the node the click came
+  // from is gone and the docked row is its replacement.
+  const row = ruleRow();
+  assert.ok(contains(row, box),
+    'the editor is a descendant of the row whose condition was clicked');
+  // The dock is the row's OPEN block, so the row reads as one thing: the read
+  // view the row click gives, and the edit view underneath it.
+  const open = findAll(row, 'step-open')[0];
+  assert.ok(open && contains(open, box), 'it docks inside the row\'s open block');
+  assert.equal(open.hidden, false, 'and clicking a value forces that block open');
+  assert.match(flat(open), /fila/, 'the read view is still there, above the editor');
+});
+
+test('a rebuild of the sheet leaves the open editor where the operator left it', () => {
+  // The sheet is rebuilt on a timer-driven reload, not only by a click. An
+  // editor that closed itself every few seconds would be worse than one that
+  // opened out of sight, so the dock is re-established from state.selectedOrigin
+  // on every render rather than being a one-shot of the click.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = sheetPolicy();
+  api.renderSheet();
+  const ruleRow = () => dom.get('sheet').children.find((c) => c.dataset.ruleId === 'audit');
+  findAll(ruleRow(), 'step-when')[0]._listeners.click();
+  const box = dom.get('inspector');
+  assert.ok(contains(ruleRow(), box), 'docked once');
+  api.renderSheet();
+  assert.equal(dom.get('inspector'), box, 'the node was moved, never replaced');
+  assert.ok(contains(ruleRow(), box), 'and the rebuilt row has it again');
+  assert.equal(findAll(ruleRow(), 'step-open')[0].hidden, false, 'still open');
+});
+
+test('the editor goes home when the row it was docked in stops existing', () => {
+  // clear(sheet) removes the sheet's children, and in a real document that
+  // DETACHES everything inside them — so an editor left in a discarded row is no
+  // longer reachable by getElementById, and every later renderInspector would
+  // fill a node that is not on the page. Parking before the clear is what keeps
+  // the node in the document when no host is going to claim it back.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = sheetPolicy();
+  api.renderSheet();
+  const ruleRow = () => dom.get('sheet').children.find((c) => c.dataset.ruleId === 'audit');
+  findAll(ruleRow(), 'step-when')[0]._listeners.click();
+  const box = dom.get('inspector');
+  assert.ok(contains(ruleRow(), box), 'docked in the row that was clicked');
+  // The rule leaves the file, so the row that held the editor cannot be rebuilt.
+  api.state.policy = Object.assign(sheetPolicy(),
+    { rules: sheetPolicy().rules.filter((r) => r.id !== 'audit') });
+  api.renderSheet();
+  assert.equal(ruleRow(), undefined, 'the row really is gone');
+  assert.equal(contains(dom.get('sheet'), box), false,
+    'and the editor was not left behind inside the discarded row');
+  assert.ok(contains(dom.get('panel-tarefas'), box),
+    'it is home in the panel it is declared in, still reachable by id');
+});
+
+test('the catch-all rows dock their editor too, not just the numbered ones', () => {
+  // default and fail_safe live in #sheetTailList, not in the sheet, and they are
+  // editable binds. They were the two rows whose click sent the editor furthest
+  // away — the tail is the LAST thing above the inspector's declared home.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = sheetPolicy();
+  api.renderSheet();
+  const tailRow = () => dom.get('sheetTailList').children.find((c) => c.dataset.ruleId === '__default');
+  assert.ok(tailRow(), 'the tail rendered the default row');
+  const cell = findAll(tailRow(), 'step-dest')[0] || findAll(tailRow(), 'step-when')[0];
+  assert.ok(cell, 'the catch-all row carries a clickable value');
+  cell._listeners.click();
+  assert.equal(api.state.selected, 'default', 'the click opened the default\'s editor');
+  assert.ok(contains(tailRow(), dom.get('inspector')),
+    'the editor docks in the catch-all row that was clicked');
+});
+
+test('a group picked from the model ladder edits inside the ladder, not in a hidden panel', () => {
+  // The ladder lives on Modelos and its "Trocar por um modelo do catálogo" button
+  // called pickBind WITHOUT selectTab('tarefas') — so it filled a node inside the
+  // HIDDEN panel-tarefas and the operator saw nothing whatsoever. Docking is what
+  // fixes it: the editor goes where the click was, whichever tab that is.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = chipPolicy();
+  api.state.capabilities = capModels();
+  api.renderLadder();
+  const group = () => findAll(dom.get('ladder'), 'tier')[0];
+  const block = group();
+  assert.ok(block, 'the ladder rendered its groups');
+  // The group's NAME is the affordance. Before this it had none: the only way
+  // into a queue editor from Modelos was the unknown-model swap button, so a
+  // group whose ids the catalogue all knew could not be edited from the screen
+  // that shows it at all.
+  const name = findAll(block, 'tier-name')[0];
+  assert.ok(name, 'the group carries its name');
+  assert.ok(name.classList.contains('is-edit'), 'and the name wears the editable affordance');
+  name._listeners.click();
+  const box = dom.get('inspector');
+  assert.equal(api.state.selected, 'tier:T3', 'the click opens that group\'s queue editor');
+  assert.ok(byLabel(box, 'Modelo'), 'the group editor rendered');
+  // Re-read: pickBind re-renders the ladder, so the docked block is the
+  // replacement for the one whose name was clicked.
+  assert.ok(contains(group(), box),
+    'and it is inside the ladder entry the operator was looking at');
+});
+
+// EVERY CONFIGURABLE VALUE ON THE ROW OPENS, or the ones that do cannot be
+// trusted. Quando and Vai para were clickable and Primeira tentativa was not,
+// which does not read as "that column is derived" — it reads as clicking being
+// unreliable, and an operator who tries the inert one first concludes the screen
+// does not edit. So the cell opens WHAT IT NAMES: a group's queue when the
+// attempt comes from a group, the rule when the rule names the model itself, and
+// the classifier when the answer is decided at runtime. A refusal names nothing,
+// and stays inert.
+test('the first-attempt cell opens the group it names, and a refusal\'s stays inert', () => {
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = chipPolicy(); // rules: 'deep' -> T3, 'no' -> deny
+  api.state.capabilities = capModels();
+  api.renderSheet();
+  const first = findAll(dom.get('sheet').children[0], 'step-first')[0];
+  assert.ok(first, 'the column exists');
+  assert.ok(first.classList.contains('is-edit'),
+    'an attempt that comes from a group wears the editable affordance');
+  first._listeners.click();
+  assert.equal(api.state.selected, 'tier:T3', 'and it opens that group\'s queue');
+  assert.ok(contains(dom.get('sheet').children[0], dom.get('inspector')),
+    'docked in the row the operator was reading, not in the ladder on another tab');
+  const deny = findAll(dom.get('sheet').children[1], 'step-first')[0];
+  assert.equal(deny.classList.contains('is-edit'), false,
+    'a refusal has no first attempt, so its cell is not dressed as a control');
+});
+
+test('a first attempt the rule names itself opens the rule; one decided at runtime opens the classifier', () => {
+  // The classifier is the second half of this: it is in EDITABLE and
+  // renderInspector has always had a branch for it, and NOTHING opened it —
+  // no pickBind call site named the bind. The editor existed and was
+  // unreachable, so the classifier's model was a JSON-only field in practice.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = sheetPolicy();
+  api.renderSheet();
+  const rowFor = (id) => dom.get('sheet').children.find((c) => c.dataset.ruleId === id);
+  const fixed = findAll(rowFor('fixed'), 'step-first')[0];
+  assert.ok(fixed.classList.contains('is-edit'), 'a rule-named model is clickable');
+  fixed._listeners.click();
+  assert.equal(api.state.selected, 'rule:fixed',
+    'the rule names the model, so the rule is what opens');
+  const ask = findAll(rowFor('ask'), 'step-first')[0];
+  assert.ok(ask.classList.contains('is-edit'), '"decide na hora" is clickable');
+  ask._listeners.click();
+  assert.equal(api.state.selected, 'classifier',
+    'a runtime decision opens the model that makes it');
+  assert.ok(byLabel(dom.get('inspector'), 'Provedor'),
+    'and that editor really is the classifier\'s');
+  assert.ok(contains(rowFor('ask'), dom.get('inspector')), 'docked in the row that asked');
+});
+
+test('the edit affordance is as legible as the value it marks', () => {
+  // MEASURED on the standalone console at 1440×900, 2026-09-02: the dotted
+  // underline was var(--line-strong) = #33333d on the page's #0a0a0c — a contrast
+  // ratio of 1.58:1 — while the words it underlines (var(--muted) = #9a9aa8) sit
+  // at 7.12:1. The mark that says "you can change this" was 4.5× harder to see
+  // than the value it marked, so on screen the cells read as inert text.
+  //
+  // That is the other half of "I don't know how to edit things here": docking the
+  // editor fixes the click that appeared to do nothing, and this fixes not knowing
+  // there was anything to click. A hairline token is for BORDERS, where 1.58:1 is
+  // exactly the point; it is the wrong family for a mark that has to be READ.
+  const { style } = consoleStyle();
+  const rule = style.match(/\.step-when\.is-edit,[\s\S]*?{([^}]*)}/);
+  assert.ok(rule, 'the affordance rule is gone or reformatted — this test cannot see it');
+  const deco = rule[1].match(/text-decoration-color:\s*var\((--[\w-]+)\)/);
+  assert.ok(deco, 'the affordance takes its underline colour from a token, never a literal');
+  assert.ok(!/^--line/.test(deco[1]),
+    `the underline must not use a hairline token (found ${deco[1]}): measured 1.58:1 `
+    + 'against the page background, against 7.12:1 for the text above it');
+  assert.equal(deco[1], '--muted',
+    'it is the text\'s own weight, so the mark is exactly as readable as the value');
+});
+
+test('every cell that opens an editor is styled as one, in all three states', () => {
+  // The affordance is THREE selector lists (base, :hover, :focus-visible) and a
+  // new editable cell has to enter all three. Nothing enforced that, so the way
+  // to add a clickable cell with no dotted underline, no hover and no focus ring
+  // was to simply add it — which is invisible in review and invisible on screen.
+  // This walks the rendered surfaces, collects what editAffordance actually
+  // marked, and requires each class in each list.
+  const { api, dom } = loadConsole();
+  api.state.loading = false;
+  api.state.policy = sheetPolicy();
+  api.state.capabilities = capModels();
+  api.state.status = { enabled: true };
+  api.state.blocklist = { manual_bans: [], breaker_cooldowns: [], fallback_chain: [] };
+  api.renderSheet();
+  api.renderLadder();
+  api.renderHealth();
+  // editAffordance marks with classList.add, and the stub keeps classList apart
+  // from className — so this reads BOTH, the way outerHtml does. findAll sees only
+  // className and would report every surface as unmarked.
+  const marked = new Set();
+  const walk = (node) => {
+    const classes = [...String(node.className || '').split(/\s+/).filter(Boolean),
+      ...((node.classList && node.classList._set) || [])];
+    if (classes.includes('is-edit')) {
+      classes.filter((c) => c !== 'is-edit').forEach((c) => marked.add(c));
+    }
+    (node.children || []).forEach(walk);
+  };
+  [dom.get('sheet'), dom.get('sheetTailList'), dom.get('ladder'), dom.get('healthFacts')]
+    .forEach(walk);
+  // Non-vacuity first: an empty walk would pass every assertion below.
+  assert.ok(marked.size >= 3,
+    `expected several kinds of editable cell, found ${[...marked].join(', ') || 'none'}`);
+  const { style } = consoleStyle();
+  const lists = {
+    base: style.match(/((?:\s*\.[\w-]+\.is-edit,)+\s*\.[\w-]+\.is-edit)\s*{\s*cursor: pointer/),
+    hover: style.match(/((?:\s*\.[\w-]+\.is-edit:hover,)+\s*\.[\w-]+\.is-edit:hover)\s*{/),
+    focus: style.match(/((?:\s*\.[\w-]+\.is-edit:focus-visible,)+\s*\.[\w-]+\.is-edit:focus-visible)\s*{/),
+  };
+  Object.entries(lists).forEach(([which, hit]) => {
+    assert.ok(hit, `the ${which} affordance rule must exist to be checked`);
+    marked.forEach((cls) => {
+      assert.ok(hit[1].includes(`.${cls}.is-edit`),
+        `.${cls} opens an editor, so it belongs in the ${which} affordance rule`);
+    });
+  });
+});
+
+test('the editor paints as a panel only when it is holding an edit', () => {
+  // #inspector matched ZERO css rules: even scrolled to, it was loose fields under
+  // a bare <h2>, which is not a thing a reader identifies as "the editor". It gets
+  // a card — and only when non-empty, because an empty bordered box parked in the
+  // row would read as a control that does nothing.
+  const { style } = consoleStyle();
+  assert.match(style, /#inspector:not\(:empty\)\s*{/,
+    'the card paints on the non-empty selector, never on the parked empty node');
+  const card = style.match(/#inspector:not\(:empty\)\s*{([^}]*)}/)[1];
+  assert.match(card, /border/, 'it has an edge, so it reads as attached to the row');
+  assert.match(card, /var\(--/, 'and it takes its colours from the tokens, never a literal');
+});
+
 test('a write needs no mode: writable() does not check any arming', () => {
   // An apply that is otherwise valid has to be possible without the operator
   // first arming a UI toggle, because the toggle never protected anything —
@@ -8752,6 +9023,13 @@ test('the §4.7 write literals are exact, and each lives in exactly one place: t
     // Copiar and the fold button's two labels — live in the map once each,
     // like every other button word on this editor.
     `'${api.WRITE.format}'`, `'${api.WRITE.copy}'`, `'${api.WRITE.foldAll}'`, `'${api.WRITE.expandAll}'`,
+    // The two writable keys that had no control at all until this card, and the
+    // words their controls say: the master switch's two directions with the
+    // consequence of each, and the ban gesture with its own. Same rule as every
+    // other surface word — the map is the only copy.
+    `'${api.WRITE.routingStop}'`, `'${api.WRITE.routingStart}'`,
+    `'${api.WRITE.routingStopWhy}'`, `'${api.WRITE.routingStartWhy}'`,
+    `'${api.WRITE.banSave}'`, `'${api.WRITE.banPick}'`, `'${api.WRITE.banWhy}'`,
   ];
   once.forEach((lit) => {
     const n = code.split(lit).length - 1;
@@ -10627,7 +10905,10 @@ test('a manual ban always offers removal; a breaker cooldown never does', () => 
   // The lift is always one tap away — the mode that used to hide it protected
   // nothing and cost a click on every removal (§3.3). The only gates are the
   // server's: token, CSRF, base_hash, lint.
-  const buttons = findAll(dom.get('bans'), 'btn');
+  // Counted on the ROW, not on the block: the block also carries the gesture that
+  // puts a model out of rotation (its own test above), so a block-wide count would
+  // conflate the two controls and stop meaning "this row is liftable".
+  const buttons = findAll(dom.get('bans').children[0], 'btn');
   assert.equal(buttons.length, 1, 'the manual ban row carries its control without arming anything');
   assert.equal(buttons[0].textContent, 'Remover o bloqueio');
   const breakerRow = dom.get('bans').children[1];
@@ -10674,7 +10955,9 @@ test('removing a ban plans the whole list without it, and nothing else', async (
   // The markup ships the message line hidden; the fake DOM cannot read the
   // attribute, so the test arms the state the markup declares.
   dom.get('bansMsg').hidden = true;
-  findAll(dom.get('bans'), 'btn')[0]._listeners.click();
+  // The FIRST row's lift, addressed through the row — the block's last child is the
+  // add control now, whose button is a ban, not a lift.
+  findAll(dom.get('bans').children[0], 'btn')[0]._listeners.click();
   await tick();
 
   assert.equal(planBodies.length, 1);
@@ -10683,7 +10966,8 @@ test('removing a ban plans the whole list without it, and nothing else', async (
   assert.match(dom.get('bansMsg').textContent, /Vale para as próximas tarefas/,
     '§2.7: a written save says the temporal scope');
   assert.equal(dom.get('bansMsg').hidden, false, 'the message line stops hiding once a write speaks');
-  assert.equal(findAll(dom.get('bans'), 'btn').length, 1,
+  const lifts = findAll(dom.get('bans'), 'btn').filter((b) => b.textContent === 'Remover o bloqueio');
+  assert.equal(lifts.length, 1,
     'after the reload one ban remains, still with its own control');
 });
 
@@ -10820,6 +11104,145 @@ test('the unban button says the gesture in flight and rests after the write (§3
     'and rests as the §3.3 gesture once the write is over');
 });
 
+// ── JSON IS OPTIONAL, WHICH MEANS EVERY WRITABLE KEY HAS A CONTROL ──────────
+// Two of the nine keys the server accepts had none, and both failed the same way:
+// the value existed on screen and there was no way to change it there.
+//
+//   * blocklist.manual_ban could only be REMOVED. There was no add control at
+//     all, and the block that would hold one hid itself whenever nobody was
+//     banned — which is exactly when an operator wants to ban somebody. So a ban
+//     could only be typed into the JSON editor.
+//   * `enabled`, the router's master switch, was REPORTED in the Modelos lede
+//     ("Roteamento: ligado") and had no control anywhere.
+test('a model goes out of rotation from the screen, with no JSON editor', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = chipPolicy();
+  api.state.status = { enabled: true };
+  api.state.blocklist = { manual_bans: [], breaker_cooldowns: [], fallback_chain: [] };
+  api.renderHealth();
+  assert.equal(dom.get('bansGroup').hidden, false,
+    'with nobody banned the block stays, because it carries the gesture that bans');
+  const pick = findAll(dom.get('bans'), 'ban-pick')[0];
+  assert.ok(pick, 'the model is CHOSEN from a list, never typed');
+  const ids = pick.children.map((o) => o.value);
+  assert.ok(ids.includes('gpt-5.6-terra') && ids.includes('glm-5.3'),
+    `the candidates are the models this policy routes with, got ${ids.join(', ')}`);
+  assert.equal(ids[0], '', 'and the list opens on no choice, so a stray change bans nobody');
+  // Choosing arms the same proposal spine the price and compaction forms use —
+  // a ban takes a rail out of rotation, so it is confirmed, never a side effect
+  // of touching a select.
+  pick.value = 'glm-5.3';
+  pick._listeners.change();
+  const area = findAll(dom.get('bans'), 'proposal-row')[0];
+  assert.ok(area, 'the proposal row is mounted');
+  assert.equal(area.hidden, false, 'and armed by the choice');
+  assert.match(flat(area), /glm-5\.3/, 'the consequence names the model that stops being used');
+  assert.equal(findAll(area, 'btn')[0].textContent, api.WRITE.banSave);
+});
+
+test('confirming a ban plans the whole list with the new row, and nothing else', async () => {
+  const planBodies = [];
+  const server = {
+    blocklist: {
+      manual_bans: [{ model: 'gpt-5.6-terra' }],
+      fallback_chain: [], breaker_enabled: true, breaker_cooldowns: [],
+    },
+  };
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      if (url.endsWith('/blocklist')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(server.blocklist)) });
+      }
+      // The freshness guard re-reads /policy and /blocklist and compares them to
+      // what this screen holds, so the stub has to serve the SAME documents or
+      // every write is (correctly) refused as stale.
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(chipPolicy())) });
+      }
+      if (url.endsWith('/plan')) {
+        const policy = JSON.parse(opts.body).policy;
+        planBodies.push(policy);
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy, diff: '+ glm-5.3', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+    },
+  });
+  api.state.policy = chipPolicy();
+  api.state.blocklist = server.blocklist;
+  api.renderHealth();
+  const pick = findAll(dom.get('bans'), 'ban-pick')[0];
+  pick.value = 'glm-5.3';
+  pick._listeners.change();
+  findAll(findAll(dom.get('bans'), 'proposal-row')[0], 'btn')[0]._listeners.click();
+  await tick();
+  assert.equal(planBodies.length, 1);
+  assert.deepEqual(planBodies[0],
+    { blocklist: { manual_ban: [{ model: 'gpt-5.6-terra' }, { model: 'glm-5.3' }] } },
+    'the whole list PLUS the new row — the server merge replaces lists wholesale, '
+    + 'so a one-item patch would delete every existing ban — and no other top-level key');
+});
+
+test('the router is switched off from the fact that reports it, with no JSON editor', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = chipPolicy();
+  api.state.status = { enabled: true };
+  api.renderHealth();
+  const value = findAll(dom.get('healthFacts'), 'fact-value')
+    .find((n) => n.textContent === api.WRITE.routingOn);
+  assert.ok(value, 'the routing fact still says its state');
+  assert.ok(value.classList.contains('is-edit'),
+    'and the state IS the control — one vocabulary: a value you can change is underlined');
+  value._listeners.click();
+  const area = findAll(dom.get('healthFacts'), 'proposal-row')[0];
+  assert.ok(area, 'clicking arms a proposal rather than writing on the spot');
+  assert.equal(area.hidden, false);
+  assert.match(flat(area), /nenhuma tarefa/,
+    'the consequence says what switching the router off actually does');
+  assert.equal(findAll(area, 'btn')[0].textContent, api.WRITE.routingStop);
+});
+
+test('the master switch writes only `enabled`, and reads its own current value', async () => {
+  const planBodies = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      // Same document the screen holds: the freshness guard re-reads /policy and
+      // refuses the write when it differs.
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(chipPolicy())) });
+      }
+      if (url.endsWith('/plan')) {
+        const policy = JSON.parse(opts.body).policy;
+        planBodies.push(policy);
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid: true, policy, diff: '- enabled: true', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) });
+    },
+  });
+  api.state.policy = chipPolicy();
+  api.state.status = { enabled: true };
+  api.renderHealth();
+  const on = findAll(dom.get('healthFacts'), 'fact-value').find((n) => n.textContent === api.WRITE.routingOn);
+  on._listeners.click();
+  findAll(findAll(dom.get('healthFacts'), 'proposal-row')[0], 'btn')[0]._listeners.click();
+  await tick();
+  assert.deepEqual(planBodies, [{ enabled: false }],
+    'switching off writes exactly one key, and no policy fragment rides along');
+  // And the other direction: a router already off offers to turn it ON.
+  api.state.status = { enabled: false };
+  api.renderHealth();
+  const off = findAll(dom.get('healthFacts'), 'fact-value').find((n) => n.textContent === api.WRITE.routingOff);
+  assert.ok(off, 'the fact reports the off state');
+  off._listeners.click();
+  const area = findAll(dom.get('healthFacts'), 'proposal-row')[0];
+  assert.equal(findAll(area, 'btn')[0].textContent, api.WRITE.routingStart,
+    'the button names the direction it would move, never a generic Salvar');
+  findAll(area, 'btn')[0]._listeners.click();
+  await tick();
+  assert.deepEqual(planBodies[1], { enabled: true });
+});
+
 test('with nobody banned the substitute queue is not mounted (§2.6)', () => {
   const { api, dom } = loadConsole();
   api.state.policy = {};
@@ -10829,8 +11252,10 @@ test('with nobody banned the substitute queue is not mounted (§2.6)', () => {
     fallback_chain: ['deepseek-v4-flash', 'glm-5.2'],
   };
   api.renderHealth();
-  assert.equal(dom.get('bansGroup').hidden, true,
-    'zero bans and zero cooldowns: the block itself is hidden');
+  // The block itself no longer hides — it carries the ban gesture, which an
+  // operator needs precisely when nobody is banned yet (see the JSON-optional
+  // block above). What §2.6 is about is untouched and is what this pins: the
+  // SUBSTITUTE QUEUE has nothing to substitute for and is not mounted.
   assert.equal(findAll(dom.get('bans'), 'chain-head').length, 0,
     'the queue is not mounted while its block is off screen (DESIGN.md rule 1)');
   assert.equal(findAll(dom.get('bans'), 'hop').length, 0, 'and no substitute line either');

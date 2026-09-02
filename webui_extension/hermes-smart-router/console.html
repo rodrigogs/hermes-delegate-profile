@@ -638,20 +638,37 @@
        condition is still clickable, but the warning is the news. */
     .step-when.is-edit,
     .step-dest.is-edit,
+    .step-first.is-edit,
+    .tier-name.is-edit,
+    .fact-value.is-edit,
     .step-open-chain.is-edit {
       cursor: pointer;
       text-decoration: underline dotted;
       text-underline-offset: 3px;
-      text-decoration-color: var(--line-strong);
+      /* THE TEXT'S OWN WEIGHT, not a hairline. This was var(--line-strong):
+         MEASURED on the standalone console at 1440×900 (2026-09-02) that is
+         #33333d on the page's #0a0a0c, a contrast ratio of 1.58:1, while the
+         words it underlines sit at 7.12:1 — the mark saying "you can change
+         this" was 4.5× harder to see than the value it marked, so every
+         editable cell read as inert text. A hairline token is for BORDERS,
+         where 1.58:1 is the point; a mark that has to be read is not a
+         border. */
+      text-decoration-color: var(--muted);
     }
     .step-when.is-edit:hover,
     .step-dest.is-edit:hover,
+    .step-first.is-edit:hover,
+    .tier-name.is-edit:hover,
+    .fact-value.is-edit:hover,
     .step-open-chain.is-edit:hover { color: var(--text); }
     /* Reachable by keyboard means VISIBLE to a keyboard: the same ring every other
        focusable thing on this surface uses, inset so it does not overlap the row's
        hairline. Without it the cells were in the tab order with nothing to see. */
     .step-when.is-edit:focus-visible,
     .step-dest.is-edit:focus-visible,
+    .step-first.is-edit:focus-visible,
+    .tier-name.is-edit:focus-visible,
+    .fact-value.is-edit:focus-visible,
     .step-open-chain.is-edit:focus-visible {
       outline: none; box-shadow: var(--focus); border-radius: var(--radius-sm);
       color: var(--text);
@@ -1217,6 +1234,29 @@
     }
     .io-label { color: var(--muted); font: 600 var(--t-label) var(--sans); letter-spacing: .05em; text-transform: uppercase; margin-bottom: 6px; }
     .inspector-head { margin: 28px 0 12px; font: 600 var(--t-head)/1.3 var(--sans); letter-spacing: -.18px; }
+    /* THE EDITOR IS A PANEL, and it says so. #inspector matched no rule at all
+       before this: even scrolled to, it was loose fields under a bare <h2>, which
+       is not a thing a reader identifies as "the editor" — and it now docks inside
+       a row, where an unbounded run of fields would read as more row.
+
+       ON :not(:empty), NOT on the id: the node is a single moved element that sits
+       parked and empty whenever nothing is selected, and a bordered empty box
+       parked in a row would read as a control that does nothing. The selector is
+       exact — :empty counts text nodes too, and renderInspector's clear() leaves
+       none, so a parked editor genuinely matches :empty.
+
+       The dotted top edge is the seam with the read view above it inside the same
+       open block: one border, so the two views read as one row rather than two
+       stacked cards. */
+    #inspector:not(:empty) {
+      display: block; margin-top: 11px; padding: 12px 14px 14px;
+      border: 1px solid var(--line-strong); border-top-style: dashed;
+      border-radius: var(--radius); background: var(--surface);
+    }
+    /* The head is the editor's own title inside a row now, not a page section, so
+       it loses the 28px it needed as one — the card's padding is the separation —
+       and drops from the page-heading 18px to the row's own 17px name size. */
+    #inspector:not(:empty) .inspector-head { margin: 0 0 12px; font-size: var(--t-name); }
 
     /* A condition that needs an operator is a LINE, marked with the same dot the
        tabs use — not a tinted card with a thick coloured edge. Every other group
@@ -1659,6 +1699,25 @@
     .proposal-row .msg { flex-basis: 100%; margin: 0; }
     .proposal-row pre.code { flex-basis: 100%; margin: 0; max-height: 120px; overflow: auto; }
     .proposal-conseq { font-size: var(--t-meta); color: var(--text); }
+    /* The gesture that puts a model out of rotation, last in the "Fora de rotação"
+       block. A label and a select on one line, with the block's own confirm row
+       under them — the same shape the peak-policy and compaction forms use, so the
+       operator does not learn a second kind of form here. */
+    .ban-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin-top: 14px; }
+    .ban-add label { color: var(--muted); font: 600 var(--t-label) var(--sans); letter-spacing: .05em; text-transform: uppercase; }
+    .ban-add .proposal-row { flex-basis: 100%; }
+    .ban-pick {
+      background: var(--surface); color: var(--text); font: var(--t-meta) var(--sans);
+      border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 5px 8px;
+    }
+    .ban-pick:focus { border-color: var(--accent); }
+    /* The routing fact's confirm row spans the facts line: the facts are a
+       horizontal strip, and a proposal wedged into it as a third fact would read
+       as one. Right-aligned like the strip it belongs to (.lede .facts is
+       flex-end), so the sentence sits under the fact it is about instead of
+       drifting to the opposite margin. */
+    #healthFacts .proposal-row { flex-basis: 100%; justify-content: flex-end; }
+    #healthFacts .proposal-conseq { text-align: right; }
     /* The "voltar ao catálogo" gesture: a quiet inline link under the model
        name, not a button that looks like a write control. */
     .linkish { background: none; border: none; padding: 0; margin-top: 2px; font: var(--t-micro) var(--sans); color: var(--accent); cursor: pointer; text-decoration: underline; }
@@ -2145,6 +2204,12 @@
         // the resolved choice. The write lives in the controls card.
         compaction: null,
         plan: null, draft: null, selected: null,
+        // WHICH SURFACE the current selection was clicked from, so the one editor
+        // node can be docked back into it on every re-render: `row:<ruleId>`,
+        // `tail:<default|fail_safe>` or `ladder:<tier>`. Not the element — hosts
+        // are rebuilt each render, and two rules can name the same group, so the
+        // group does not identify a host while the row that asked does.
+        selectedOrigin: null,
         // The last value renderAll wrote into the whole-file editor
         // (policyEditor). The editor is always armed; a textarea that still
         // holds this value is untouched, so a refresh may re-fill it with the
@@ -4296,6 +4361,22 @@
         routingOn: 'ligado',
         routingOff: 'desligado',
         routingVerdict: 'Roteando…',
+        // The master switch's two gestures and what each one does. `enabled` is
+        // one of the nine keys the server accepts and was the only one with no
+        // control anywhere: the fact above REPORTED it and nothing could change
+        // it, so the switch that turns the whole subsystem off was JSON-only. The
+        // button names the DIRECTION it moves, never a generic Salvar — the two
+        // words this pair replaces are the state, not the action.
+        routingStop: 'Desligar o roteamento',
+        routingStart: 'Ligar o roteamento',
+        routingStopWhy: 'Com o roteamento desligado nenhuma tarefa é roteada e nada é registrado: cada delegação roda no modelo padrão de quem a criou.',
+        routingStartWhy: 'Com o roteamento ligado as regras de Tarefas voltam a decidir o modelo de cada tarefa.',
+        // §3.3's other half: the gesture that PUTS a rail out of rotation. Only
+        // the lift existed, and the block that would hold this hid itself
+        // whenever nobody was banned — which is when it is wanted.
+        banSave: 'Tirar de rotação',
+        banPick: 'Tirar um modelo de rotação',
+        banWhy: '{M} sai de rotação: nenhuma fila vai tentar esse modelo até você remover o bloqueio.',
         // §3.3: the state word of a manually banned rail, and the breaker
         // cooldown's remaining time with the unit the spec spells — "faltam
         // 300s" reads as time still owed; "300s left" read as a label.
@@ -4810,18 +4891,45 @@
         // would copy — and sans for words. "ligado" is a word; "deepseek-v3.2" is not.
         const fact = (label, value, mono) => {
           const f = el('div', 'fact');
-          f.append(el('span', 'fact-label', label),
-                   el('span', `fact-value${mono ? ' is-mono' : ''}`, value));
+          const v = el('span', `fact-value${mono ? ' is-mono' : ''}`, value);
+          f.append(el('span', 'fact-label', label), v);
           facts.append(f);
+          return v;
         };
         // Only the two facts that exist NOWHERE ELSE on the screen stay. The
         // rules count echoed the Pipeline sheet's numbered list (and its badge,
         // now removed), and the invalid count echoed the lint banner's "Policy
         // invalid — N errors" 72px above — both were a second chip repeating a
         // state something else already owns (DESIGN.md §2.2).
-        fact(WRITE.routing, st.enabled ? WRITE.routingOn : WRITE.routingOff);
+        //
+        // THE STATE IS THE CONTROL. `enabled` was the one writable key with no
+        // control on any screen: this line reported it and nothing could change
+        // it, so the switch that stops all routing was JSON-only. It does not get
+        // a button beside it — that would be the value stated twice, once as a
+        // word and once as a verb. It gets the SAME dotted-underline affordance a
+        // rule's condition wears, so the console has one gesture: the value you
+        // can change is the thing you click.
+        //
+        // Confirmed, never a live toggle: this is the most consequential write on
+        // the surface, so it arms the same proposal spine the price, time-policy
+        // and compaction forms use, and the consequence sentence says what the
+        // router stops doing before anything is written.
+        const routingOn = st.enabled === true;
+        const routingValue = fact(WRITE.routing, routingOn ? WRITE.routingOn : WRITE.routingOff);
+        const routingArea = proposalArea(routingOn ? 'routingStop' : 'routingStart',
+          () => confirmPolicyProposal(routingArea,
+            routingOn ? WRITE.routingStop : WRITE.routingStart));
+        editAffordance(routingValue,
+          routingOn ? WRITE.routingStop : WRITE.routingStart,
+          () => armProposal(routingArea, { enabled: !routingOn },
+            routingOn ? WRITE.routingStopWhy : WRITE.routingStartWhy));
         const classifier = (st.classifier && st.classifier.model) || (state.policy && state.policy.classifier && state.policy.classifier.model);
         if (classifier) fact('classifier', classifier, true);
+        // AFTER every fact, never beside the one it belongs to. The strip is a
+        // wrapping flex row and the confirm row spans it, so appending it next to
+        // the routing fact pushed `classifier` onto a third line — the two facts
+        // read as separated by an unrelated sentence.
+        facts.append(routingArea.row);
 
         const list = $('models');
         clear(list);
@@ -4954,7 +5062,18 @@
         const group = $('bansGroup');
         const banBox = $('bans');
         clear(banBox);
-        group.hidden = !(bans.length || breakers.length);
+        // THE BLOCK NO LONGER HIDES ITSELF. It used to, whenever nobody was out of
+        // rotation — DESIGN.md rule 1, no empty frame — and that was right while
+        // the block was pure reporting. It carries the gesture that PUTS a model
+        // out of rotation now, and the state where that gesture is wanted is
+        // exactly the state the block used to disappear in: nobody banned yet. So
+        // banning was reachable only by typing YAML into the Política editor.
+        //
+        // Rule 1 is not broken by this — the block is never an empty frame, because
+        // the control is always in it. What §2.6 gates on emptiness (the substitute
+        // queue, which has nothing to substitute for when nobody is banned) still
+        // gates on it, below.
+        group.hidden = false;
         // §3.3: a manual ban is lifted by its own row's control; a breaker
         // cooldown is not — it expires on its own, and a button that promises
         // to remove what time removes would be a false control. The write is
@@ -5020,6 +5139,68 @@
           sub.append(ul);
           banBox.append(sub);
         }
+        // §3.3's other half: the gesture that PUTS a rail out of rotation. Only the
+        // lift existed, so a ban could be removed from this screen and never added
+        // from it — the one write in the blocklist that needed the JSON editor.
+        //
+        // Last in the block, after who is out and what substitutes for them,
+        // because that is the reading order: the state, then the action on it.
+        const addRow = el('div', 'ban-add');
+        const pickId = fieldId();
+        const lbl = el('label', '', WRITE.banPick);
+        lbl.htmlFor = pickId;
+        const pick = document.createElement('select');
+        pick.id = pickId;
+        pick.className = 'ban-pick';
+        const addArea = proposalArea('banSave', () => confirmPolicyProposal(addArea, WRITE.banSave));
+        // The empty first option is the resting state, so a stray change on the
+        // select cannot arm a ban against whichever model happened to sort first.
+        [''].concat(bannableModels(state)).forEach((m) => {
+          const opt = document.createElement('option');
+          opt.value = m;
+          opt.textContent = m || '—';
+          pick.appendChild(opt);
+        });
+        pick.addEventListener('change', () => {
+          const model = pick.value;
+          if (!model) { addArea.row.hidden = true; return; }
+          // The whole list PLUS the new row. The server merge replaces lists
+          // wholesale (router/service.py), so a one-item patch would not add a
+          // ban — it would DELETE every ban already in the file. Same reason the
+          // lift above posts the whole list minus one.
+          armProposal(addArea, { blocklist: { manual_ban: bans.concat([{ model }]) } },
+            fill(WRITE.banWhy, { M: model }));
+        });
+        addRow.append(lbl, pick, addArea.row);
+        banBox.append(addRow);
+      }
+
+      // The models this policy can actually route to, minus whoever is already out
+      // of rotation. A BOUNDED set and not the registry: banning an id no queue
+      // reaches changes nothing, and offering every known model is a wall to
+      // scroll rather than a choice to make. Same principle as
+      // compactionChainCandidates, which bounds its chips the same way.
+      function bannableModels(st) {
+        const seen = [];
+        const push = (m) => { if (typeof m === 'string' && m && seen.indexOf(m) < 0) seen.push(m); };
+        const policy = (st && st.policy) || {};
+        const tiers = (policy.tiers && typeof policy.tiers === 'object') ? policy.tiers : null;
+        if (tiers) Object.keys(tiers).forEach((tn) => tierChain(tiers[tn]).forEach((h) => push(h.model)));
+        (Array.isArray(policy.rules) ? policy.rules : []).forEach((r) => {
+          const m = r && r.then && r.then.model;
+          // A rule's destination is either a TIER ALIAS — expanded above, and not
+          // a model at all — or a concrete id. Only the second is bannable, and
+          // pushing the alias would offer "T3" as something to take out of
+          // rotation, which the blocklist cannot match on.
+          if (typeof m === 'string' && !(tiers && Object.prototype.hasOwnProperty.call(tiers, m))) push(m);
+        });
+        [policy.fail_safe, policy.classifier].forEach((b) => {
+          if (b && typeof b === 'object') push(b.model);
+        });
+        const bl = (st && st.blocklist) || {};
+        const already = (Array.isArray(bl.manual_bans) ? bl.manual_bans : [])
+          .map((b) => ((b && typeof b === 'object') ? String(b.model || '') : ''));
+        return seen.filter((m) => already.indexOf(m) < 0);
       }
 
       // ── chain views: the shared vocabulary ──────────────────────────
@@ -5695,8 +5876,37 @@
       // head of the queue the destination points at. A tier shows its first
       // elo with how it is billed and on whose rail; the classifier says the
       // decision is the call; a fixed model names itself.
-      const rowFirst = (opts, ctx, tier, hops) => {
+      // The dock key a row answers to: the synthetic catch-all rows take the editor
+      // directly (they have no open block — there is no queue to open), a numbered
+      // rule takes it inside that block. ONE authority, so a cell and the row it
+      // sits in cannot disagree about where the editor goes. A cell that opens a
+      // bind belonging to neither — a group's queue, the classifier — still docks
+      // here, because here is where the operator is looking.
+      const rowDockKey = (opts) => (opts.id ? `${opts.synthetic ? 'tail' : 'row'}:${opts.id}` : '');
+
+      // THE CELL OPENS WHAT IT NAMES. Three of the four branches name something
+      // configurable, and each opens that thing's own editor rather than a generic
+      // one: the group's queue when the attempt comes from a group, the rule when
+      // the rule names the model itself, the classifier when the answer is decided
+      // at runtime. The fourth (a refusal) names nothing and stays inert — dressing
+      // an empty cell as a control is the same lie in the other direction.
+      //
+      // It was inert in all four while Quando and Vai para were clickable, which
+      // does not read as "this column is derived": it reads as clicking being
+      // unreliable, and an operator who happens to try this column first concludes
+      // the screen does not edit at all.
+      //
+      // The classifier branch is also the ONLY door to the classifier's editor.
+      // That editor is in EDITABLE and renderInspector has always had a branch for
+      // it, and no pickBind call site ever named the bind — so it existed, worked,
+      // and could not be reached, which made the classifier's model a JSON-only
+      // field in practice.
+      const rowFirst = (opts, ctx, tier, hops, edit, dockKey) => {
         const first = el('div', 'step-first');
+        const opens = (title, node) => {
+          if (!edit) return;
+          edit(first, title, () => pickBind(node, dockKey));
+        };
         if (tier && hops.length) {
           const head = hops[0];
           const caps = hopCaps(head, ctx.state.capabilities).caps;
@@ -5705,12 +5915,22 @@
           first.append(el('b', '', String(head.model || '—')));
           const rail = String(caps.provider || head.provider || '');
           first.append(el('span', '', ` ${bill.word}${rail ? ` · ${rail}` : ''}`));
+          if (opts.tierDest) {
+            opens('Mudar a fila deste grupo',
+              { id: `tier:${opts.tierDest}`, name: String(opts.tierDest), bind: 'tier', tier: opts.tierDest });
+          }
         } else if (opts.destKind === 'classify') {
           first.append(el('b', '', 'decide na hora'));
           first.append(el('span', 'first-note', 'custa 1 chamada extra'));
+          opens('Mudar o modelo que decide na hora',
+            { id: 'classifier', name: 'classifier', bind: 'classifier' });
         } else if (opts.destKind === 'fixed') {
           first.append(el('b', '', String(opts.targetModel || '—')));
           if (opts.targetRail) first.append(el('span', '', ` · ${opts.targetRail}`));
+          // The model is this row's OWN field (a rule's then.model, or the
+          // fail-safe's), so the row's own editor is where it changes — the same
+          // onPick the Quando and Vai para cells already open.
+          if (edit && opts.onPick) edit(first, opts.editTitle || 'Mudar este modelo', opts.onPick);
         } else {
           first.append(el('b', '', '—'));
         }
@@ -5740,59 +5960,77 @@
       // id. The row click owns the queue; the condition, the destination cell
       // and the queue's own capsules stop their propagation on top of this and
       // open the editor of the value they name.
-      const rowOpen = (item, opts, ctx, edit, tier, hops, hitWords) => {
+      // `startOpen` is set for the row that owns the current selection: its
+      // editor is docked INSIDE this block, so the block has to be open or the
+      // editor would be filled behind `hidden` — the same invisible-write defect
+      // the dock exists to remove, one level down.
+      const rowOpen = (item, opts, ctx, edit, tier, hops, hitWords, startOpen) => {
         const openBox = el('div', 'step-open');
+        // The read view gets its OWN box, because the editor docks in this same
+        // block and a refill used to `clear(openBox)` — which would carry the one
+        // #inspector node away with the three rows it meant to replace.
+        const readBox = el('div', 'step-open-read');
+        openBox.append(readBox);
         openBox.hidden = true;
+        const drawRead = () => {
+          clear(readBox);
+          // fila — the whole queue, or the sentence for a destination
+          // with no queue (a refusal has nothing to try).
+          const fila = el('div', 'step-open-row');
+          fila.append(el('span', 'step-open-k', 'fila'));
+          if (tier && hops.length) {
+            const strategy = strategyWords(tier.fallback_strategy,
+              { pinPrimary: declaredPin(tier.pin_primary), when: ctx.chainWhen });
+            const body = el('div', 'step-open-chain');
+            body.append(chainList(hops, {
+              strategy, registry: ctx.state.capabilities, billing: ctx.chainBilling,
+              when: ctx.chainWhen, live: ctx.chainLive, showPrice: strategy.timeRelative,
+            }));
+            // The comp's capsule: "clique numa cápsula da fila para
+            // trocar". The hop pills are drawn by the shared chain
+            // renderer, so the click target is the chain line as a
+            // whole — the gesture opens the group's queue editor, where
+            // that hop is one ↑/↓/Remover away.
+            //
+            // The ORIGIN is this row, not the ladder: the operator is looking at
+            // the queue inside this row, so this row is where its editor belongs.
+            if (opts.tierDest) {
+              edit(body,
+                'Clique numa cápsula para trocar essa opção da fila',
+                () => pickBind({ id: `tier:${opts.tierDest}`, name: String(opts.tierDest), bind: 'tier', tier: opts.tierDest },
+                  rowDockKey(opts)));
+            }
+            fila.append(body);
+          } else {
+            fila.append(el('div', 'step-open-val', opts.queueWords || opts.target || '—'));
+          }
+          readBox.append(fila);
+          // papel — the rule's declared role; informative in this path,
+          // because the card creator picks the role at dispatch.
+          const papel = el('div', 'step-open-row');
+          papel.append(el('span', 'step-open-k', 'papel'));
+          const pval = el('div', 'step-open-val');
+          pval.append(el('span', '', opts.role || '—'));
+          pval.append(el('span', 'step-open-note', ' — informativo neste caminho: quem cria o card escolhe o papel'));
+          papel.append(pval);
+          readBox.append(papel);
+          // regra — the id, and the count column 6 summarised.
+          const regra = el('div', 'step-open-row');
+          regra.append(el('span', 'step-open-k', 'regra'));
+          regra.append(el('div', 'step-open-id', `${opts.id}${hitWords ? ` · ${hitWords}` : ''}`));
+          readBox.append(regra);
+        };
         let open = false;
+        const setOpen = (next) => {
+          open = next;
+          if (open) drawRead();
+          openBox.hidden = !open;
+        };
         item.addEventListener('click', (event) => {
           if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-          open = !open;
-          if (open) {
-            clear(openBox);
-            // fila — the whole queue, or the sentence for a destination
-            // with no queue (a refusal has nothing to try).
-            const fila = el('div', 'step-open-row');
-            fila.append(el('span', 'step-open-k', 'fila'));
-            if (tier && hops.length) {
-              const strategy = strategyWords(tier.fallback_strategy,
-                { pinPrimary: declaredPin(tier.pin_primary), when: ctx.chainWhen });
-              const body = el('div', 'step-open-chain');
-              body.append(chainList(hops, {
-                strategy, registry: ctx.state.capabilities, billing: ctx.chainBilling,
-                when: ctx.chainWhen, live: ctx.chainLive, showPrice: strategy.timeRelative,
-              }));
-              // The comp's capsule: "clique numa cápsula da fila para
-              // trocar". The hop pills are drawn by the shared chain
-              // renderer, so the click target is the chain line as a
-              // whole — the gesture opens the group's queue editor, where
-              // that hop is one ↑/↓/Remover away.
-              if (opts.tierDest) {
-                edit(body,
-                  'Clique numa cápsula para trocar essa opção da fila',
-                  () => pickBind({ id: `tier:${opts.tierDest}`, name: String(opts.tierDest), bind: 'tier', tier: opts.tierDest }));
-              }
-              fila.append(body);
-            } else {
-              fila.append(el('div', 'step-open-val', opts.queueWords || opts.target || '—'));
-            }
-            openBox.append(fila);
-            // papel — the rule's declared role; informative in this path,
-            // because the card creator picks the role at dispatch.
-            const papel = el('div', 'step-open-row');
-            papel.append(el('span', 'step-open-k', 'papel'));
-            const pval = el('div', 'step-open-val');
-            pval.append(el('span', '', opts.role || '—'));
-            pval.append(el('span', 'step-open-note', ' — informativo neste caminho: quem cria o card escolhe o papel'));
-            papel.append(pval);
-            openBox.append(papel);
-            // regra — the id, and the count column 6 summarised.
-            const regra = el('div', 'step-open-row');
-            regra.append(el('span', 'step-open-k', 'regra'));
-            regra.append(el('div', 'step-open-id', `${opts.id}${hitWords ? ` · ${hitWords}` : ''}`));
-            openBox.append(regra);
-          }
-          openBox.hidden = !open;
+          setOpen(!open);
         });
+        if (startOpen) setOpen(true);
         return openBox;
       };
 
@@ -5946,7 +6184,8 @@
         item.append(what);
         const { to, expansion, tier, hops } = rowDestination(opts, ctx, editAffordance);
         item.append(to);
-        item.append(rowFirst(opts, ctx, tier, hops));
+        const dockKey = rowDockKey(opts);
+        item.append(rowFirst(opts, ctx, tier, hops, editAffordance, dockKey));
         const { h, hitWords } = rowCount(opts, hitsWindow());
         if (h) item.append(h);
         if (expansion) item.append(expansion);
@@ -5956,7 +6195,19 @@
         // The CSS pins each cell to its track (see .step-ord / .step-to /
         // .step-first / .step-hits above), so a reader down a column sees
         // the same thing on every line.
-        if (!opts.synthetic && opts.id) item.append(rowOpen(item, opts, ctx, editAffordance, tier, hops, hitWords));
+        // THE EDITOR DOCKS IN THE ROW THAT OWNS THE SELECTION. A numbered rule
+        // docks inside its open block, which is opened for it — the row then
+        // reads as one thing: the read view a row click gives, and the edit view
+        // under it. The catch-all rows have no open block (they are synthetic, so
+        // there is no queue to open), so they take the editor directly.
+        const owns = !!dockKey && ctx.state.selectedOrigin === dockKey;
+        if (!opts.synthetic && opts.id) {
+          const openBox = rowOpen(item, opts, ctx, editAffordance, tier, hops, hitWords, owns);
+          item.append(openBox);
+          if (owns) dockInspector(openBox);
+        } else if (owns) {
+          dockInspector(item);
+        }
         rowShadow(item, opts, ctx.rules);
         return item;
       };
@@ -6126,6 +6377,13 @@
 
       function renderSheet() {
         const box = $('sheet');
+        // BEFORE the clear, never after: the one editor node may be docked inside
+        // a row of this sheet or of its tail, and clear() would destroy it along
+        // with the row it is sitting in. Only the two prefixes this renderer owns
+        // are parked — a pick from the Modelos ladder is the ladder's to move,
+        // and yanking it here would make the result depend on which renderer a
+        // reload happened to call last.
+        parkInspector('row:', 'tail:');
         clear(box);
         // The catch-all block (default and fail-safe) and the column heads
         // live outside the numbered list; both are toggled by the policy.
@@ -6536,6 +6794,8 @@
 
       function renderLadder() {
         const box = $('ladder');
+        // Same reason as renderSheet's, for the one prefix this renderer owns.
+        parkInspector('ladder:');
         clear(box);
         const note = $('ladderNote');
         const tiers = (state.policy && state.policy.tiers) || {};
@@ -6579,8 +6839,17 @@
           const block = el('div', 'tier');
           const head = el('div', 'tier-head');
           const meaning = TIER_MEANING[name] || null;
-          head.append(el('span', 'tier-name',
-                          meaning ? `Grupo ${name} · ${meaning.label}` : `Grupo ${name} · sem descrição`));
+          // THE GROUP'S NAME IS ITS EDIT AFFORDANCE, the same dotted-underline
+          // control a rule's condition wears. It had none: the only way into a
+          // queue editor from the screen that SHOWS the queues was the
+          // "Trocar por um modelo do catálogo" button, which appears only when
+          // the catalogue does not know one of the ids — so a group whose ids
+          // were all known could not be edited from here at all.
+          const nameCell = el('span', 'tier-name',
+                              meaning ? `Grupo ${name} · ${meaning.label}` : `Grupo ${name} · sem descrição`);
+          editAffordance(nameCell, 'Mudar a fila deste grupo',
+            () => pickBind({ id: `tier:${name}`, name, bind: 'tier', tier: name }));
+          head.append(nameCell);
           // Redundancy in the only terms that mean anything: distinct upstreams. A
           // count of vendors would call two OpenRouter resellers two rails.
           head.append(el('span', `tier-fact${rails < 2 ? ' thin' : ''}`,
@@ -6714,6 +6983,11 @@
             });
           }
           box.append(block);
+          // The group that owns the selection takes the one editor node, so the
+          // queue being edited and the queue being read are the same thing on
+          // screen. Before this, a pick from here filled a node inside the HIDDEN
+          // panel-tarefas and the operator saw nothing at all.
+          if (state.selectedOrigin === `ladder:${name}`) dockInspector(block);
         });
 
         // The registry is what turns a model id into a context window. Without it
@@ -6762,9 +7036,14 @@
         const area = priceProposal;
         return doApply('/apply', area.msg, area.pending.patch, area.diff, area.btn, WRITE.windowSave);
       }
-      function confirmPolicyProposal(area) {
+      // `action` names the gesture the in-flight and resting labels report. It
+      // defaults to the peak-policy save this was written for; the routing switch
+      // and the ban pass their own, because "Salvando a política…" over a button
+      // that says "Desligar o roteamento" is two names for one write.
+      function confirmPolicyProposal(area, action) {
         if (!area || !area.pending) return Promise.resolve(false);
-        return doApply('/apply', area.msg, area.pending.patch, area.diff, area.btn, WRITE.policySave);
+        return doApply('/apply', area.msg, area.pending.patch, area.diff, area.btn,
+          action || WRITE.policySave);
       }
       // The facts line shared by both price forms: the window note, the
       // ORIGIN (a registry window and a hand-declared one must not look the
@@ -8034,16 +8313,108 @@
       // `state.selected` was set by a click and never cleared.
       function closeRow() {
         if (state.selected == null) return;
+        const wasLadder = String(state.selectedOrigin || '').startsWith('ladder:');
         state.selected = null;
         state.draft = null;
+        state.selectedOrigin = null;
+        // parkInspector reads selectedOrigin to decide whether the surface owns
+        // the dock, and it has just been cleared — so the park is done here, by
+        // the one call that knows the editor is being put away regardless of
+        // which surface it sat in.
+        parkInspector();
         renderSheet();
+        if (wasLadder) renderLadder();
         renderInspector(null);
       }
 
-      function pickBind(node) {
+      // ── THE EDITOR DOCKS WHERE THE CLICK WAS ────────────────────────
+      // There is ONE editor node — `<div id="inspector">`, declared as the last
+      // child of panel-tarefas — and one renderInspector that fills it. That is
+      // deliberate: a second editor would be a second surfacePatch and a second
+      // write path to keep honest with the first.
+      //
+      // What was wrong is not that there is one node, it is that the node never
+      // MOVED. It rendered at the foot of the Tarefas panel: below every rule
+      // row, below the "se nada acima casou" tail, below the stale banner. On the
+      // reference install (8 rules, 1440×900) that is roughly 900px below the
+      // fold, and pickBind neither scrolled nor focused — so clicking a value
+      // changed nothing the operator could see, while the gesture that DID change
+      // something visibly (the row click, which opens the read-only
+      // fila/papel/regra block) taught that clicking shows details, not edits.
+      // Picking a group from the Modelos ladder was worse still: it filled a node
+      // inside the HIDDEN panel-tarefas, so nothing appeared anywhere at all.
+      //
+      // So the node is moved to whatever the operator clicked, and moved home
+      // before any renderer clears a container it might be sitting in — an editor
+      // parked inside a rebuilt row is destroyed with the row.
+      //
+      // WHO OWNS THE DOCK IS AN ORIGIN STRING, never the element: hosts are
+      // rebuilt on every render, and two rules can route to the same group, so
+      // "the group T3" does not identify a host while "the row that asked" does.
+      // `state.selectedOrigin` is that identity — `row:<ruleId>`,
+      // `tail:<default|fail_safe>` or `ladder:<tier>`.
+      let inspectorHost = null;
+
+      // Park the editor back home, but ONLY when this surface is the one that
+      // owns the dock. An unconditional park would make the result depend on
+      // renderer ORDER: a reload renders the sheet and the ladder both, and
+      // renderLadder would yank the editor out of the row renderSheet had just
+      // docked it into.
+      function parkInspector(...prefixes) {
+        if (!inspectorHost) return;
+        const origin = String(state.selectedOrigin || '');
+        if (prefixes.length && !prefixes.some((p) => origin.startsWith(p))) return;
+        const node = $('inspector');
+        if (!node) return;
+        if (typeof inspectorHost.removeChild === 'function') inspectorHost.removeChild(node);
+        inspectorHost = null;
+        const home = $('panel-tarefas');
+        if (home && typeof home.appendChild === 'function') home.appendChild(node);
+      }
+
+      // Move the editor into `host`. Called by the renderer that builds the host,
+      // so the node is parented before renderInspector fills it — which is the
+      // order pickBind already ran in (renderSheet, then renderInspector).
+      function dockInspector(host) {
+        const node = $('inspector');
+        if (!node || !host || typeof host.appendChild !== 'function') return;
+        parkInspector();
+        const home = $('panel-tarefas');
+        if (home && typeof home.removeChild === 'function') home.removeChild(node);
+        host.appendChild(node);
+        inspectorHost = host;
+      }
+
+      // The origin a bind implies when a caller does not name one: every editable
+      // bind has exactly one surface that shows it, so a caller only has to be
+      // explicit when the click came from somewhere else (a row's queue capsule
+      // opens a GROUP editor, and the row is the origin, not the ladder).
+      function originFor(node) {
+        if (!node || !node.bind) return '';
+        if (node.bind === 'rule') return `row:${node.name}`;
+        if (node.bind === 'tier') return `ladder:${node.tier}`;
+        return `tail:${node.bind}`;
+      }
+
+      function pickBind(node, origin) {
         state.selected = node.id;
+        state.selectedOrigin = origin || originFor(node);
         renderSheet();
+        // The ladder is not re-rendered by renderSheet, so a pick it owns has to
+        // ask for it — otherwise the host that should hold the editor is never
+        // rebuilt and the dock never happens.
+        if (String(state.selectedOrigin).startsWith('ladder:')) renderLadder();
         renderInspector(node);
+        // A surface with no host on screen (a rule the file no longer has, a
+        // group the ladder is not showing) leaves the editor parked at the foot
+        // of the panel. That is the old placement, so it gets the old placement's
+        // missing half: it is scrolled to, rather than filled out of sight.
+        if (!inspectorHost) {
+          const parked = $('inspector');
+          if (parked && typeof parked.scrollIntoView === 'function') {
+            parked.scrollIntoView({ block: 'center' });
+          }
+        }
         // §3.4(b): the "Trocar por um modelo do catálogo" target is a
         // one-shot — the chain editor reads it during renderInspector to mark
         // the attempt row, and any later navigation must not re-mark it.
