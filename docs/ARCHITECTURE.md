@@ -621,31 +621,69 @@ question (§9).
 
 ## 10. What has already superseded this snapshot
 
-Four commits landed after `c3962a5` and each one contradicts something above. They
-are listed here rather than edited into place, because §8 is a catalogue of
-measured defects and deleting the measurement would defeat its purpose — the
-convention this repo already applies to its specs.
+Twenty-one commits landed after `c3962a5`, and most of them contradict something
+above. They are listed here rather than edited into place, because §8 is a
+catalogue of measured defects and deleting the measurement would defeat its
+purpose — the convention this repo already applies to its specs.
+
+**Read this section before trusting §8 or §9.**
+
+### Correctness
 
 | commit | supersedes | now |
 |---|---|---|
-| `e1021bc` | §9 #1 (CI red), §3 stage 13b, §8 "the substitution is capability-blind", §8 "a banned primary absent from `fallback_chain` denies" | `_reachable_replacement` searches the **plan** first, then the declared chain, then `blocklist.fallback_chain`; it denies only when all three offer no clean rail. The capability-blindness and the operator-reachable total refusal are both closed. `_dispatch_provider` lost its declared-chain loop as provably dead. `lint_warnings` now reports a tier member missing from `fallback_chain` (advisory). |
-| `7da8ba5` | §5b, §8, and the whole `MODEL_WINDOWS`/`SUMMARIZER_WINDOW` story | Those constants are GONE. `RouterService.compaction_windows()` derives the key set from the live policy and every window from the capability registry, and the read path and the RESTART-class apply now call the same function — they used to take different sources. |
-| `fc9d15e` | §8 "`policy()` drops `enabled`", §8 "`status:` is inert" (half of it) | `policy()` serves `enabled` and `status` only when present, and invents neither. `status` is still inert in the engine; that half stands. |
-| `5925b15` | §8 config-key mismatch, §8 two classifier defaults, §8 stale `timeout` schema, §8 `_REVIEW_KEYWORDS` dead | All four were one fact written twice. `_CONFIG_NAMESPACE` / `_WATCHDOG_CFG_PATH`, `classify.CLASSIFIER_DEFAULTS`, an interpolated schema default, and `_keyword_hits` reading the exported constant (sorted, so two processes agree). |
+| `e1021bc` | §9 #1 (CI red), §3 stage 13b, §8 "the substitution is capability-blind" | `_reachable_replacement` searches the **plan**, then the declared chain, then `blocklist.fallback_chain`; it denies only when all three offer no clean rail. `_dispatch_provider` lost a provably dead loop. `lint_warnings` reports a tier member missing from `fallback_chain`. |
+| `41c64df` | §9 #3 (partly), §8 "`breaker_status()` mutates" | `BreakerState.would_block` / `Blocklist.would_block` — the same answer with no state change. **Five reporting surfaces** used the mutating form (`blocked_entries`, `/liveness`, the provider index, `router blocklist`, `router explain`/`chain`), so merely LOOKING at the breaker consumed an expired rail's single probe slot and, since HALF_OPEN is left only by a recorded outcome, excluded it permanently. |
+| `f1a0c60` | §9 #3 (the rest) | `_VettedOnce` memoises `is_blocked` per DECISION. `_veto_blocked` and `_vet_plan_chain` asked about the same pair and got opposite answers, so the decision NAMED a refused elo with `blocked_model`/`cause` absent while `chain[0]` ran something else — and the granted probe was never spent. |
+| `dc1102e` | not in the snapshot | `_ObservingBlocklist`: shadow mode measures without spending. The hook runs a full `route()` and only then checks the mode, so the SHIPPED DEFAULT mutated and persisted breaker state for cards it never dispatches. |
+| `849d55f` | not in the snapshot | `blocklist:` shape is guarded in `Blocklist.__init__` AND hard-linted. `blocklist: off` linted clean — so the write gate accepted it — then raised out of the constructor, took all routing down, and left **every manual ban unenforced**. One malformed ROW did the same to the whole list. |
+| `ee1f0fc` | §8 "an explicitly requested `model` is paired with the ROUTER's provider" | The rail now comes from the hop naming that model, or from nowhere. |
+| `118e373` | §8 "`bad_args` for a routing decline" | Six declines carry their own `failure_kind` + `retryable`. `bad_args` had told the caller to name a profile — which skips routing, and therefore skips the blocklist that had just refused. Stage 0's deny now carries `blocked_model` and a `reason`. |
+| `8a9180e` | §8 `_matching_clauses` any-vs-all, §8 `_detect_stacktrace`'s `"error:"` note | Chips use ALL, like the matcher. `" runtime error"` lost its leading space (it could not match at a line start). A non-hashable `run_id` no longer raises out of two "never raises" readers. |
+| `a7f2068` | §8 `_load_router_config` returning `{}` silently | A non-mapping root is guarded and LOGGED once. It used to raise out of `register()` — before `_REGISTERED_CTX` was set, so a retry re-raised — so the plugin did not load at all. |
+| `5b39117` | §9 #19 and #21 | A capability key the registry would drop is a hard lint error, in the wording the spec promised. The `min_context → context_window` alias promise is deleted from the spec rather than implemented. |
 
-**Still open from §9 and NOT addressed by those commits** — the probe-slot /
-planning-query interaction (#3), the Python 3.10 collection abort (#2),
-the unvetted `/explain` chain preview (#9), the `_load()` vs
-`_lint_merged` asymmetry (#10), `breaker_cooldown` with no producer (#13), the
-unenabled stale-check timer (#25), and every spec/doc divergence in #19–#24.
+### The gate itself
+
+| commit | what was wrong |
+|---|---|
+| `dd9ec2f` | A module-level `pytest.importorskip("fastapi")` in the MIDDLE of `tests/test_webui_extension.py` skipped the whole module, so **67 tests never ran in CI** — including every console-contract scan. And `dashboard/plugin_api.py` (185 statements) was outside the coverage denominator entirely while `--cov-fail-under=100` passed. Split, fastapi added to CI, `node --check` added for the dashboard bundle, and the one-inline-`<script>` count made attribute-tolerant and actually counted. |
+| `21cd943` | `from datetime import UTC` aborted COLLECTION on 3.10 — zero tests, not one failure. |
+
+### Operator-facing
+
+| commit | what was wrong |
+|---|---|
+| `7da8ba5` | `MODEL_WINDOWS`/`SUMMARIZER_WINDOW` are GONE; the compaction curve reads the registry. Three of four entries disagreed with it, including the shipped `compaction.model` (272,000 vs 131,072), and the read path and the RESTART-class apply took DIFFERENT sources. |
+| `fc9d15e` | `policy()` serves `enabled` (the field the engine honours) and stops inventing `status`. A rule the operator disabled read back as enabled, so the console's switch turned itself on again. |
+| `9e17b94` | `RAIL_WINDOWS` matches the registry: the xiaomi 0.8× discount the registry publishes for NO elo is gone, and deepseek's Mon-Fri gate is present. The 168-hour arithmetic is re-swept: **133 quiet / 20 priced / 15 reordering**, Mon-Fri — four documents and a dead test citation said 119/29/49 "daily". |
+| `d201683` | A successful save rebuilds the open inspector. It used to leave the panel bound to a nulled draft, so the second edit was silently discarded with zero POSTs. |
+| `e7eb54e` | `var(--soft)` was undefined, so three declarations were dropped entirely — two panel dividers did not render and the marked chip had no fill. |
+| `5925b15` | Four facts written twice, all four disagreeing: the watchdog config key the `at_capacity` error told the operator to edit, the classifier default (a vendor alias the plan silently substitutes), the `timeout` default the MODEL reads, and a review keyword the extractor could never produce. |
+| `f898d63`, `e9213a0`, `0b2ad8f` | Documentation. The sidecar described itself as read-only while owning every write route; four places asserted framing headers that have never existed; the README's Requirements never named the LLM trust grant without which Stage 1 never runs; and `/apply/confirm`, `whenWords` and `known_models` are deleted. |
+
+### Still open, and NOT addressed here
+
+From §9: the HALF_OPEN absorbing state (a slot lost to a crashed attempt still
+strands the rail — `41c64df` and `f1a0c60` remove the ways an OBSERVER could cause
+it, not the state machine's shape), the `_load()` vs write-gate validation
+asymmetry (#10), `breaker_cooldown` with no producer (#13), the unenabled
+stale-check timer (#25), and the spec/doc divergences in #22–#24.
+
+Plus twelve questions an implementer must not decide alone — which id the running
+dashboard keys on, whether the host's `VALID_HOOKS` knows `pre_kanban_dispatch`,
+whether recursive `delegate_profile` is meant to be refused, whether `/explain`
+should be vetted or merely labelled, whether to keep `dashboard/` at all. These
+are recorded in the audit's fix plan and summarised for the operator rather than
+guessed at.
 
 **Observed once, cause unknown.** In one full run under `--cov`,
 `tests/router/test_cli.py::TestCLIChainTime::test_the_clock_reaches_the_planner_and_the_feature_vector`
 and `::test_a_time_blind_explain_does_not_answer_for_the_requested_hour` both
-failed; four subsequent full runs (two with coverage, two without) were green, and
-the class passes in isolation. Both tests monkeypatch the module global
-`rules.plan_chain`, which `router/adapter.py` has already bound by value at import
-(`from .rules import plan_chain`) and whose signature it probed once into
-`_PLAN_CHAIN_ACCEPTS_WHEN` — the same import-time-flag hazard §8 records for
-`_ORDER_CHAIN_ACCEPTS_WHEN`. That is a hypothesis, not a diagnosis: it is written
-down because an intermittent failure nobody recorded is one nobody can reproduce.
+failed; every subsequent full run was green, and the class passes in isolation.
+Both tests monkeypatch the module global `rules.plan_chain`, which
+`router/adapter.py` has already bound by value at import and whose signature it
+probed once into `_PLAN_CHAIN_ACCEPTS_WHEN` — the same import-time-flag hazard §8
+records for `_ORDER_CHAIN_ACCEPTS_WHEN`. That is a hypothesis, not a diagnosis: it
+is written down because an intermittent failure nobody recorded is one nobody can
+reproduce.
