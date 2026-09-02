@@ -11,6 +11,7 @@ import re
 from datetime import datetime, timezone
 from typing import Optional
 
+import pytest
 import yaml
 
 import router.one_sidecar as sidecar_mod
@@ -76,6 +77,29 @@ def _app(tmp_path, token: Optional[str] = _TOKEN):
 
 def _auth():
     return {"X-Hermes-Sidecar-Token": _TOKEN}
+
+
+@pytest.fixture(autouse=True)
+def _candidate_files_stay_in_pytests_tmp(tmp_path, monkeypatch):
+    """Point ``tempfile`` at pytest's tmp dir for the whole module.
+
+    ``_apply_compaction`` hands a ``mkstemp`` candidate to the out-of-repo launcher
+    and never removes it, and that is CORRECT in production: the unit runs
+    ``PrivateTmp=true`` so the namespace self-cleans, and the launcher OWNS the file
+    it was given — unlinking it from under a detached ``systemd-run`` would be a
+    race. Moving the candidate to the persistent state dir would be strictly worse:
+    operator configs accumulating with no pruner.
+
+    The TESTS have no PrivateTmp. Measured on this machine: +5 per run, 456
+    accumulated 0600 ``compaction-candidate-*.yaml`` files in the real temp dir. So
+    the fix belongs in the HARNESS, and it is one fixture rather than a wrapper per
+    helper: this also covers ``test_compaction_staging_failure_is_500``, which
+    monkeypatches ``os.unlink`` to FAIL on purpose and therefore cannot clean up
+    after itself by any means inside the test.
+    """
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
 
 
 def test_accept_encoding_only_allows_gzip_when_it_is_permitted():
@@ -466,7 +490,11 @@ def _registry_config_path(tmp_path):
 
 def _compaction_app(tmp_path, runner, core_yaml=None, config_path=None):
     """A sidecar wired with a stubbed restart runner + a fake core config.yaml
-    so the compaction path never actually restarts anything in a test."""
+    so the compaction path never actually restarts anything in a test.
+
+    The compaction candidate lands in pytest's own tmp dir, not the machine's — see
+    the ``_candidate_files_stay_in_pytests_tmp`` fixture.
+    """
     token_path = tmp_path / "token"
     token_path.write_text(_TOKEN, encoding="utf-8")
     core = tmp_path / "config.yaml"
