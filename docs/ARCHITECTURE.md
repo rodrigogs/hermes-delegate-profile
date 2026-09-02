@@ -662,20 +662,35 @@ purpose — the convention this repo already applies to its specs.
 | `5925b15` | Four facts written twice, all four disagreeing: the watchdog config key the `at_capacity` error told the operator to edit, the classifier default (a vendor alias the plan silently substitutes), the `timeout` default the MODEL reads, and a review keyword the extractor could never produce. |
 | `f898d63`, `e9213a0`, `0b2ad8f` | Documentation. The sidecar described itself as read-only while owning every write route; four places asserted framing headers that have never existed; the README's Requirements never named the LLM trust grant without which Stage 1 never runs; and `/apply/confirm`, `whenWords` and `known_models` are deleted. |
 
-### Still open, and NOT addressed here
+### Decisions taken, with their reasoning
 
-From §9: the HALF_OPEN absorbing state (a slot lost to a crashed attempt still
-strands the rail — `41c64df` and `f1a0c60` remove the ways an OBSERVER could cause
-it, not the state machine's shape), the `_load()` vs write-gate validation
-asymmetry (#10), `breaker_cooldown` with no producer (#13), the unenabled
-stale-check timer (#25), and the spec/doc divergences in #22–#24.
+The repo is pre-production, so questions that would otherwise wait for an operator
+were DECIDED on the evidence rather than held. Each is recorded here with what
+settled it, so a wrong call is visible and reversible.
 
-Plus twelve questions an implementer must not decide alone — which id the running
-dashboard keys on, whether the host's `VALID_HOOKS` knows `pre_kanban_dispatch`,
-whether recursive `delegate_profile` is meant to be refused, whether `/explain`
-should be vetted or merely labelled, whether to keep `dashboard/` at all. These
-are recorded in the audit's fix plan and summarised for the operator rather than
-guessed at.
+| question | decision | what settled it |
+|---|---|---|
+| Which id does the dashboard key on? | **`hermes-smart-router`** | Three of four sites already said so; the BUNDLE was the lone outlier because `40f533d` renamed three and left it. `plugin.yaml:name` and the tool name stay `delegate-profile` — the migration doc keeps both deliberately. (`08e8d2f`) |
+| Is recursive `delegate_profile` refused? | **Yes, and now enforced** | The README ×2, PRODUCT.md and this document all asserted the guarantee as fact while nothing read the variable. A nested `_spawn` gets its own session and pgid, so a depth-2 tree escapes both the outer `killpg` and the atexit registry. Only the TOOL is withheld; both hooks stay registered. (`19bff0e`) |
+| Should HALF_OPEN self-heal, or need a manual reset? | **Self-heal after one `backoff_seconds`** | There IS no reset or unban command anywhere in this repo, so "require a reset" is not an option that exists — it is permanent exclusion with extra steps. (`b3cadf5`) |
+| Keep or retire `dashboard/`? | **Keep and fix** | Documented in README and PRODUCT.md; its parity tests exist because the directory is deployed by file COPY and can land beside an older `router/`. The coverage argument for deleting it was refuted — `dd9ec2f` put its 185 statements inside the gate instead. (`08e8d2f`) |
+| Should the classifier follow a hot edit? | **Yes** | `enabled` is in `_HOT_KEYS` and `router.example.yaml` promises "live with no restart". Only the process-stable half (does the host expose `ctx.llm`) is still decided at register. (`1a8d4ae`) |
+
+### Still open, and deliberately not decided here
+
+* **Does the deployed host's `VALID_HOOKS` contain `pre_kanban_dispatch`?** Declaring
+  it in `plugin.yaml` would turn a `plugin doctor` WARNING into an ERROR on an older
+  host. Unverifiable from this checkout, and the failure mode is worse than the
+  inaccuracy, so the manifest still under-declares. Check the box, then declare it.
+* **Should `/explain` be genuinely vetted or only labelled?** Labelling is safe now
+  that probe-free reads exist; genuine vetting decides whether Simular may claim to
+  be the plan that runs. A product question.
+* **Should a vetoed explicit `model` RETRY on the `fallback_model` the router
+  named?** `fallback_model` is computed and has zero consumers; `118e373` only
+  reports it. Retrying is a behaviour change with no evidence behind it yet.
+* From §9: the `_load()` vs write-gate validation asymmetry (#10),
+  `breaker_cooldown` with no producer (#13), and the unenabled stale-check timer
+  (#25 — nothing in the repo arms it).
 
 **Observed once, cause unknown.** In one full run under `--cov`,
 `tests/router/test_cli.py::TestCLIChainTime::test_the_clock_reaches_the_planner_and_the_feature_vector`
