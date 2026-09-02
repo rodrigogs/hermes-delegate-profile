@@ -7,7 +7,13 @@ the caller (Blocklist).
 Three states:
   CLOSED    — healthy, counting failures in a sliding window
   OPEN      — tripped, blocking all calls during cooldown
-  HALF_OPEN — cooldown expired, allowing exactly one probe call
+  HALF_OPEN — cooldown expired; exactly one probe passes, and the grant EXPIRES
+              after one ``backoff_seconds`` so a probe that is never reported
+              cannot strand the rail (there is no reset command in this repo)
+
+Two ways to read the state, and the difference matters:
+  ``is_blocked``  the decision path. CONSUMES the probe slot when one is due.
+  ``would_block`` every reporting path. Same answer, no mutation.
 
 Design: (state, event, timestamp) → (new_state, blocked_set) reducer.
 Config deny rows fire independently — breaker only ADDS blocks.
@@ -136,7 +142,14 @@ class BreakerState:
         if entry.state == "OPEN":
             # Cooldown expired means "the next real call may probe", not "blocked".
             return timestamp < entry.cooldown_until
-        return not entry.probe_allowed
+        # HALF_OPEN. Mirrors is_blocked branch-for-branch, INCLUDING the stale-grant
+        # re-arm: a grant past its deadline answers "not blocked" there, so it must
+        # answer the same here or the two predicates disagree exactly when a rail is
+        # recovering. `half_open_until == 0.0` is "no deadline recorded" (an entry
+        # from an older state file) and re-arms, same as there.
+        if entry.probe_allowed:
+            return False
+        return bool(entry.half_open_until) and timestamp < entry.half_open_until
 
     def is_blocked(self, model_key: str, timestamp: float) -> bool:
         """Check if model is currently blocked, CONSUMING a probe slot if due.
@@ -163,13 +176,35 @@ class BreakerState:
                 # recovering rail.
                 entry.state = "HALF_OPEN"
                 entry.probe_allowed = False
+                entry.half_open_until = timestamp + entry.backoff_seconds
                 return False  # not blocked during HALF_OPEN
             return True  # still in cooldown
 
-        # HALF_OPEN: a probe is already in flight unless this entry came from an
-        # older persisted state that still had an unconsumed probe_allowed flag.
+        # HALF_OPEN: a probe is in flight, so everyone else waits — but NOT forever.
+        #
+        # This state used to be ABSORBING. The only exits were `record_success` and
+        # `record_failure`, so a probe that was granted and then never reported —
+        # the process crashed, the attempt was abandoned, or (before 2026-09-01) a
+        # mere STATUS READ consumed the slot — left the rail blocked permanently,
+        # reporting `cooldown_remaining_s: 0.0`, which the CLI renders as "expiring
+        # now" for as long as anyone looks. There is no reset or unban command
+        # anywhere in this repo, so nothing could recover it.
+        #
+        # The grant therefore has a deadline: one `backoff_seconds`, the same
+        # interval the rail was just made to wait, after which a fresh probe is
+        # handed out. Worst case is now a DELAY of one backoff rather than
+        # permanent exclusion, and the anti-stampede property is unchanged inside
+        # the window (exactly one caller passes, everyone else is blocked).
+        #
+        # `half_open_until == 0.0` means no deadline was recorded — an entry
+        # persisted by an older version, or restored from such a file — and it
+        # re-arms rather than staying stuck, because a missing deadline must not be
+        # read as an infinite one.
         if entry.probe_allowed:
             entry.probe_allowed = False
+            return False
+        if not entry.half_open_until or timestamp >= entry.half_open_until:
+            entry.half_open_until = timestamp + entry.backoff_seconds
             return False
         return True
 
@@ -302,6 +337,7 @@ class BreakerState:
         entry.cooldown_until = 0.0
         entry.backoff_seconds = 0.0
         entry.probe_allowed = False
+        entry.half_open_until = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +382,7 @@ class _Entry:
         "backoff_seconds",
         "last_failure_kind",
         "probe_allowed",
+        "half_open_until",
     )
 
     def __init__(self) -> None:
@@ -355,6 +392,9 @@ class _Entry:
         self.backoff_seconds: float = 0.0
         self.last_failure_kind: str = ""
         self.probe_allowed: bool = False
+        #: When the current HALF_OPEN probe grant goes stale (0.0 = not HALF_OPEN).
+        #: See BreakerState.is_blocked for why an absorbing HALF_OPEN was a bug.
+        self.half_open_until: float = 0.0
 
     def prune(self, now: float, window_s: float) -> None:
         """Remove events older than the sliding window."""
@@ -372,6 +412,7 @@ class _Entry:
             "backoff_seconds": self.backoff_seconds,
             "last_failure_kind": self.last_failure_kind,
             "probe_allowed": self.probe_allowed,
+            "half_open_until": self.half_open_until,
         }
 
     @classmethod
@@ -390,4 +431,12 @@ class _Entry:
         entry.backoff_seconds = float(data.get("backoff_seconds", 0.0))
         entry.last_failure_kind = str(data.get("last_failure_kind", ""))
         entry.probe_allowed = bool(data.get("probe_allowed", False))
+        # Additive: a state file written before this field existed loads with 0.0,
+        # which `is_blocked` reads as "no deadline recorded" and re-arms from — so an
+        # entry already stranded in HALF_OPEN on disk recovers rather than staying
+        # stuck forever.
+        try:
+            entry.half_open_until = float(data.get("half_open_until", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            entry.half_open_until = 0.0
         return entry

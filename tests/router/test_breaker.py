@@ -684,3 +684,143 @@ class TestObservingDoesNotStrandARail:
         assert bl.would_block("anything-else", "prov") is False
         # No state file is created by a read path on a breaker-less config.
         assert not _state_path().exists()
+
+
+class TestHalfOpenIsNotAbsorbing:
+    """A granted probe that is never reported must not strand the rail forever.
+
+    HALF_OPEN's only exits were `record_success` and `record_failure`. So a probe
+    granted and then never reported — the process crashed, the attempt was
+    abandoned, or (before 2026-09-01) a mere STATUS READ consumed the slot — left
+    the rail blocked permanently, reporting `cooldown_remaining_s: 0.0`, which the
+    CLI renders as "expiring now" for as long as anyone looks. There is no reset or
+    unban command anywhere in this repo, so nothing could recover it.
+
+    The grant now has a deadline of one `backoff_seconds` — the same interval the
+    rail was just made to wait. Worst case is a DELAY of one backoff instead of
+    permanent exclusion, and the anti-stampede property is unchanged INSIDE the
+    window.
+    """
+
+    @staticmethod
+    def _half_open_at(t):
+        """A breaker whose entry is HALF_OPEN with its probe consumed at ``t``."""
+        b = BreakerState({"enabled": True, "threshold": 2, "window_seconds": 600,
+                          "base_cooldown_seconds": 60})
+        b.record("rail", "ttfb_stall", t)
+        b.record("rail", "ttfb_stall", t)
+        assert b._entries["rail"].state == "OPEN"
+        # Past the cooldown: this consumes the probe and stamps the deadline.
+        assert b.is_blocked("rail", t + 10_000) is False
+        entry = b._entries["rail"]
+        assert entry.state == "HALF_OPEN"
+        assert entry.probe_allowed is False
+        return b, entry
+
+    def test_the_grant_holds_for_one_backoff_then_re_arms(self):
+        b, entry = self._half_open_at(1000.0)
+        deadline = entry.half_open_until
+        assert deadline == 10_000 + 1000.0 + entry.backoff_seconds
+
+        # Inside the window: everyone else waits. That is the anti-stampede half.
+        assert b.is_blocked("rail", deadline - 1) is True
+        assert b.would_block("rail", deadline - 1) is True
+
+        # At the deadline: a fresh probe, because the last one was never reported.
+        assert b.is_blocked("rail", deadline) is False
+        assert b._entries["rail"].half_open_until == deadline + entry.backoff_seconds
+
+    def test_a_reported_outcome_still_ends_half_open_immediately(self):
+        """The deadline is a backstop, not the normal exit."""
+        b, _entry = self._half_open_at(1000.0)
+        b.record_success("rail", 1000.0 + 10_001)
+        assert b._entries["rail"].state == "CLOSED"
+        assert b._entries["rail"].half_open_until == 0.0
+        assert b.is_blocked("rail", 1000.0 + 10_002) is False
+
+        b2, _e2 = self._half_open_at(2000.0)
+        b2.record("rail", "ttfb_stall", 2000.0 + 10_001)
+        assert b2._entries["rail"].state == "OPEN", "a failed probe re-opens"
+
+    def test_would_block_agrees_across_the_new_state(self):
+        """The two predicates must not disagree exactly when a rail is recovering."""
+        for offset in (-1, 0, 1, 5_000):
+            fresh_a, entry = self._half_open_at(3000.0)
+            fresh_b, _ = self._half_open_at(3000.0)
+            at = entry.half_open_until + offset
+            assert fresh_a.would_block("rail", at) is fresh_b.is_blocked("rail", at), (
+                f"disagreement at offset {offset}"
+            )
+
+    def test_an_entry_from_an_older_state_file_re_arms_rather_than_sticking(self):
+        """`half_open_until` is additive, so old files load with 0.0.
+
+        A missing deadline must not be read as an infinite one — an entry already
+        stranded in HALF_OPEN on disk has to recover, which is the whole point.
+        """
+        old = {
+            "version": 1,
+            "entries": {"rail": {
+                "state": "HALF_OPEN",
+                "failure_events": [],
+                "cooldown_until": 100.0,
+                "backoff_seconds": 60.0,
+                "last_failure_kind": "ttfb_stall",
+                "probe_allowed": False,
+                # no half_open_until key at all
+            }},
+        }
+        b = BreakerState.from_dict(old, {"enabled": True})
+        assert b._entries["rail"].half_open_until == 0.0
+        assert b.would_block("rail", 1_000_000.0) is False
+        assert b.is_blocked("rail", 1_000_000.0) is False, (
+            "a stranded entry from an older version must recover"
+        )
+
+    def test_a_garbage_deadline_on_disk_degrades_to_re_arming(self):
+        for bad in ("soon", None, [], {}):
+            data = {
+                "version": 1,
+                "entries": {"rail": {
+                    "state": "HALF_OPEN", "failure_events": [],
+                    "cooldown_until": 1.0, "backoff_seconds": 60.0,
+                    "last_failure_kind": "x", "probe_allowed": False,
+                    "half_open_until": bad,
+                }},
+            }
+            b = BreakerState.from_dict(data, {"enabled": True})
+            assert b._entries["rail"].half_open_until == 0.0, bad
+
+    def test_the_deadline_round_trips_through_persistence(self):
+        b, entry = self._half_open_at(4000.0)
+        restored = BreakerState.from_dict(b.to_dict(), {"enabled": True})
+        assert restored._entries["rail"].half_open_until == entry.half_open_until
+        # And the restored entry answers identically on both sides of the deadline.
+        for at in (entry.half_open_until - 1, entry.half_open_until):
+            assert restored.would_block("rail", at) is b.would_block("rail", at)
+
+    def test_a_restored_entry_with_an_unconsumed_grant_reads_as_not_blocked(self):
+        """A HALF_OPEN entry persisted with `probe_allowed: True` still owes a probe.
+
+        `is_blocked` consumes it; `would_block` must report the same answer without
+        consuming — the two have to agree here as everywhere else.
+        """
+        data = {
+            "version": 1,
+            "entries": {"rail": {
+                "state": "HALF_OPEN", "failure_events": [],
+                "cooldown_until": 1.0, "backoff_seconds": 60.0,
+                "last_failure_kind": "ttfb_stall", "probe_allowed": True,
+                "half_open_until": 1_000_000.0,
+            }},
+        }
+        reading = BreakerState.from_dict(data, {"enabled": True})
+        consuming = BreakerState.from_dict(data, {"enabled": True})
+        # Not blocked: the grant is still owed, even though the deadline is far off.
+        assert reading.would_block("rail", 500.0) is False
+        assert consuming.is_blocked("rail", 500.0) is False
+        # And only the consuming form spent it.
+        assert reading._entries["rail"].probe_allowed is True
+        assert consuming._entries["rail"].probe_allowed is False
+        assert reading.would_block("rail", 500.0) is False
+        assert consuming.would_block("rail", 500.0) is True
