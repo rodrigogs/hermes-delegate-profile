@@ -323,11 +323,32 @@ def test_cause_from_rule_survives_a_non_string_rule_id():
     assert _cause_from_rule(7, {"deny": True}) == "blocklist_veto"
 
 
-def _live_config():
+def _shipped_config():
+    """The SHIPPED policy — ``router.example.yaml``, which is tracked.
+
+    It used to read ``router.yaml``, and that made the suite's verdict depend on a
+    machine-specific untracked file. ``conftest._seed_live_router_config`` copies the
+    example over only when ``router.yaml`` is ABSENT, so the suite was hermetic in
+    exactly the two places nobody operates from — a fresh CI checkout and a dev clone
+    whose copy nobody had edited — and read the operator's real policy everywhere
+    else.
+
+    That is not theoretical. It failed the ``router-deploy.sh`` gate on the reference
+    install on 2026-09-02 and blocked the deploy:
+    ``test_a_banned_primary_missing_from_fallback_chain_still_routes`` asserts its own
+    premise (that ``glm-5.3`` is absent from the flat ``fallback_chain``), and the
+    operator's live chain there lists it. Green on CI, green on the developer's Mac,
+    red on the only box that serves traffic — and the failure was a true statement
+    about the operator's policy, not about this code.
+
+    ``_banned_live_config``'s docstring already stated the principle for the WRITE
+    side — *"the file is the operator's and a test must not need to touch it"*. This
+    applies it to the READ side, which is where it was actually being violated.
+    """
     import yaml
     from pathlib import Path
     root = Path(__file__).resolve().parent.parent.parent
-    return yaml.safe_load((root / "router.yaml").read_text(encoding="utf-8"))
+    return yaml.safe_load((root / "router.example.yaml").read_text(encoding="utf-8"))
 
 
 def test_a_blocked_model_the_router_chose_itself_is_not_dispatched():
@@ -344,7 +365,7 @@ def test_a_blocked_model_the_router_chose_itself_is_not_dispatched():
     from router.adapter import route
     from router.blocklist import Blocklist
 
-    cfg = _live_config()
+    cfg = _shipped_config()
     task = "Rename getCwd in src/utils.py"
     chosen = route(task, cfg).get("model")
     assert chosen, "the live config must route this task somewhere"
@@ -365,7 +386,7 @@ def test_an_explicit_request_for_a_clean_model_is_untouched():
     """The wrapper must not disturb the ordinary path."""
     from router.adapter import route
 
-    cfg = _live_config()
+    cfg = _shipped_config()
     out = route("Rename getCwd in src/utils.py", cfg)
     assert out.get("deny") is not True
     assert out.get("cause") != "blocklist_substituted"
@@ -383,7 +404,7 @@ def test_a_failsafe_after_a_matched_rule_still_names_that_rule():
     from router.adapter import route
     from router.decision_log import DecisionLog
 
-    cfg = _live_config()
+    cfg = _shipped_config()
     log = DecisionLog()
     route("Review this PR for security issues", cfg, classify_fn=None, decision_log=log)
     entries = log.tail(1)
@@ -407,7 +428,7 @@ def test_the_classifier_tier_supplies_both_model_and_provider(tier):
     import copy
     from router.adapter import route
 
-    cfg = _live_config()
+    cfg = _shipped_config()
     steered = copy.deepcopy(cfg)
     steered["default"] = {"profile": "coder", "provider": "zai", "action": "classify"}
 
@@ -438,7 +459,7 @@ def test_a_default_that_names_a_model_is_honoured_not_reclassified(has_classifie
     import copy
     from router.adapter import route
 
-    cfg = _live_config()
+    cfg = _shipped_config()
     steered = copy.deepcopy(cfg)
     steered["default"] = {"profile": "coder", "model": "T2"}
     fn = (lambda _t, _f: {"tier": "T1", "confidence": "high"}) if has_classifier else None
@@ -457,7 +478,7 @@ def test_a_default_asking_to_classify_still_classifies():
     """
     from router.adapter import route
 
-    cfg = _live_config()
+    cfg = _shipped_config()
     out = route("do something", cfg, classify_fn=lambda _t, _f: {"tier": "T3", "confidence": "high"})
     assert out.get("model") == cfg["tiers"]["T3"]["model"]
 
@@ -466,7 +487,7 @@ def test_decision_without_model_passes_through_unvetted():
     """A pipeline result with no model is returned as-is (nothing to vet)."""
     from router.adapter import route
 
-    cfg = _live_config()
+    cfg = _shipped_config()
     # A config with NO tiers: the classifier can name T4 but no tier exists,
     # so the merged result carries no model — the wrapper must not crash.
     no_tiers = copy.deepcopy(cfg)
@@ -493,7 +514,7 @@ def test_blocklist_chain_fully_blocked_denies():
     from router.adapter import route
     from router.blocklist import Blocklist
 
-    cfg = copy.deepcopy(_live_config())
+    cfg = copy.deepcopy(_shipped_config())
     task = "rename a variable in utils.py"
     chosen = route(task, cfg).get("model")
     assert chosen, "the live config must route this task somewhere"
@@ -534,7 +555,7 @@ def test_a_guard_firing_model_the_router_chose_is_not_dispatched():
     so a policy edited to name an above-threshold model was dispatched to
     silently. The guard answer is a rail veto: substitute or deny, never run.
     """
-    cfg = copy.deepcopy(_live_config())
+    cfg = copy.deepcopy(_shipped_config())
     task = "Rename getCwd in src/utils.py"
     chosen = route(task, cfg).get("model")
     assert chosen, "the live config must route this task somewhere"
@@ -556,7 +577,7 @@ def test_guard_firing_primary_with_no_clean_fallback_denies_with_cause():
     """
     from router.decision_log import DecisionLog
 
-    cfg = copy.deepcopy(_live_config())
+    cfg = copy.deepcopy(_shipped_config())
     task = "rename a variable in utils.py"
     chosen = route(task, cfg).get("model")
     assert chosen
@@ -577,7 +598,7 @@ def test_guard_firing_on_a_planned_hop_removes_it_with_reason():
     from router.blocklist import Blocklist
     from router.decision_log import DecisionLog
 
-    cfg = copy.deepcopy(_live_config())
+    cfg = copy.deepcopy(_shipped_config())
     # Two clean hops; the guard fires only on the second. The planned chain
     # must lose it, and the trace must say WHICH veto took it out.
     cfg["tiers"]["T1"]["fallback"] = [
@@ -607,7 +628,7 @@ def test_guard_firing_on_a_planned_hop_removes_it_with_reason():
 
 def test_guard_raising_never_breaks_routing():
     """A misbehaving guard degrades to 'not vetoed', never to a refused turn."""
-    cfg = copy.deepcopy(_live_config())
+    cfg = copy.deepcopy(_shipped_config())
 
     def broken_guard(model, provider=None):
         raise RuntimeError("guard blew up")
@@ -693,7 +714,7 @@ def test_classifier_tier_without_provider_drops_stale_provider():
     """A tier that names no provider must not pair a stale provider with its model."""
     from router.adapter import route
 
-    cfg = copy.deepcopy(_live_config())
+    cfg = copy.deepcopy(_shipped_config())
     # T3 without provider — the merged result must not keep a stale provider.
     cfg["tiers"]["T3"] = {"model": "providerless-model"}
     out = route(
@@ -710,7 +731,7 @@ def test_default_with_model_and_unknown_action_falls_through_to_fail_safe():
     from router.adapter import route
     from router.decision_log import DecisionLog
 
-    cfg = copy.deepcopy(_live_config())
+    cfg = copy.deepcopy(_shipped_config())
     # action present (so the concrete-route gate at Stage 0 is skipped) but not
     # "classify" (so the classifier gate is skipped too) → final fail-safe.
     cfg["default"] = {"profile": "coder", "model": "T1", "action": "weird-action"}
@@ -726,7 +747,7 @@ def test_cache_resolve_output_model_without_provider_drops_stale_provider():
     from router.adapter import route
     from router.cache import Cache
 
-    cfg = copy.deepcopy(_live_config())
+    cfg = copy.deepcopy(_shipped_config())
     cch = Cache()
     # Cached result has a model but NO provider: the rule output's stale
     # provider must be dropped rather than paired with the new model.
@@ -746,7 +767,7 @@ def test_cache_resolve_output_provider_without_model_uses_setdefault():
     from router.adapter import route
     from router.cache import Cache
 
-    cfg = copy.deepcopy(_live_config())
+    cfg = copy.deepcopy(_shipped_config())
     cch = Cache()
     # Rule output already carries a provider (review-request names reviewer);
     # cached classifier result contributes only a provider → setdefault keeps rule's.
@@ -908,14 +929,12 @@ class TestPlannedChain:
         assert _hops(dlog.tail(1)[0]["chain_plan"]["chain"]) == _targets(result)
 
     def test_the_shipped_policy_never_attempts_a_blind_elo_for_a_vision_turn(self):
-        """The claim router.yaml makes about itself, checked against the file.
+        """The claim router.example.yaml makes about itself, checked against the file.
 
         Written as a property rather than a literal chain so an operator editing
         the tier table cannot make it vacuous.
         """
-        policy = yaml.safe_load(
-            (Path(__file__).resolve().parents[2] / "router.yaml").read_text(encoding="utf-8")
-        )
+        policy = _shipped_config()
         dlog = DecisionLog()
         result = route(VISION_TASK, policy, decision_log=dlog, now=FIXED_CLOCK)
 
@@ -1194,9 +1213,7 @@ class TestInjectedClock:
         hours means the clock stopped reaching the planner — the failure mode
         that made the whole time layer a no-op.
         """
-        policy = yaml.safe_load(
-            (Path(__file__).resolve().parents[2] / "router.yaml").read_text(encoding="utf-8")
-        )
+        policy = _shipped_config()
         orders = {
             tuple(
                 _targets(route("add a health endpoint to the api code", policy,
@@ -1382,7 +1399,7 @@ def _vision_gap_config():
     which is the outcome anyone would want and would also silently hollow out
     every test below — so the gap is CONSTRUCTED here rather than borrowed.
     """
-    cfg = copy.deepcopy(_live_config())
+    cfg = copy.deepcopy(_shipped_config())
     cfg["tiers"]["T2"]["model"] = VISION_BLIND_PRIMARY
     return cfg
 
@@ -1393,7 +1410,7 @@ def _banned_live_config(model, provider="", base=None):
     Built as a dict rather than by editing router.yaml: the file is the operator's
     and a test must not need to touch it to state a safety property.
     """
-    cfg = copy.deepcopy(base if base is not None else _live_config())
+    cfg = copy.deepcopy(base if base is not None else _shipped_config())
     cfg["blocklist"]["manual_ban"].append(
         {"model": model, "provider": provider, "reason": "test-ban"}
     )
@@ -1431,7 +1448,7 @@ def _open_breakers_config(pairs, tmp_path, monkeypatch, *, now=None, base=None):
             for model, provider in pairs
         },
     }), encoding="utf-8")
-    cfg = copy.deepcopy(base if base is not None else _live_config())
+    cfg = copy.deepcopy(base if base is not None else _shipped_config())
     cfg["blocklist"]["auto_breaker"]["enabled"] = True
     return cfg
 
@@ -1529,7 +1546,7 @@ def _incident_banned_primary(tmp_path, monkeypatch):
     came back empty, and the non-vacuity guard is what caught it.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    cfg = _live_config()
+    cfg = _shipped_config()
     return _banned_live_config(cfg["tiers"]["T2"]["model"]), SHIPPED_STANDARD_TASK
 
 
@@ -1581,7 +1598,7 @@ class TestTheVetoBindsWhatRuns:
         the declared primary, and the work stays on an allowance already bought
         instead of billing dollars on the subscription seat.
         """
-        cfg = _live_config()
+        cfg = _shipped_config()
         dlog = DecisionLog()
         result = route(SHIPPED_VISION_TASK, cfg, decision_log=dlog, now=PEAK_CLOCK)
 
@@ -1752,7 +1769,7 @@ class TestTheVetoBindsWhatRuns:
         the elo that just failed.
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        cfg = copy.deepcopy(_live_config())
+        cfg = copy.deepcopy(_shipped_config())
         task = "rename a variable in utils.py"
         chosen = route(task, cfg, now=PEAK_CLOCK)["model"]
 
@@ -1812,7 +1829,7 @@ class TestTheVetoBindsWhatRuns:
         # declared primary being the same pair as chain[0], which is exactly the
         # shape _vision_gap_config exists to break (it forces a blind primary the
         # capability filter drops, so head != chain[0] there BY DESIGN).
-        tier = _live_config()["tiers"]["T3"]
+        tier = _shipped_config()["tiers"]["T3"]
         elo, rail = tier["model"], tier["provider"]
         # `now` far in the past puts cooldown_until (now + 86_400) behind us.
         cfg = _open_breakers_config(
@@ -1864,7 +1881,7 @@ class TestTheVetoBindsWhatRuns:
         the SAME on both asks. Asserted beside the expired case so the two cannot
         be conflated.
         """
-        tier = _live_config()["tiers"]["T3"]
+        tier = _shipped_config()["tiers"]["T3"]
         elo, rail = tier["model"], tier["provider"]
         cfg = _open_breakers_config([(elo, rail)], tmp_path, monkeypatch)
         bl = Blocklist(cfg)
@@ -1971,7 +1988,7 @@ class TestTheVetoBindsWhatRuns:
         Its three plan keys are absent, not defaulted, so every clean trace stays
         byte-identical to one written before the veto vetted chains at all.
         """
-        cfg = _live_config()
+        cfg = _shipped_config()
         dlog = DecisionLog()
         result = route(SHIPPED_VISION_TASK, cfg, decision_log=dlog, now=PEAK_CLOCK)
 
@@ -2013,7 +2030,7 @@ class TestTheVetoBindsWhatRuns:
         prefers `chain` over the declared order — so a stale plan would hand the
         banned target straight back as the first attempt.
         """
-        cfg = copy.deepcopy(_live_config())
+        cfg = copy.deepcopy(_shipped_config())
         task = "Rename getCwd in src/utils.py"
         chosen = route(task, cfg, now=PEAK_CLOCK)["model"]
         cfg["blocklist"]["manual_ban"].append(
@@ -2042,7 +2059,7 @@ class TestTheVetoBindsWhatRuns:
         to refuse the turn. What is new is that the recorded entry is the DENIAL
         rather than the decision that would have run.
         """
-        cfg = copy.deepcopy(_live_config())
+        cfg = copy.deepcopy(_shipped_config())
         task = "rename a variable in utils.py"
         chosen = route(task, cfg, now=PEAK_CLOCK)["model"]
         cfg["blocklist"]["fallback_chain"] = [chosen, "fallback-a", "fallback-b"]
@@ -2153,7 +2170,7 @@ class TestTheTraceNamesTheModelThatRuns:
         self, task,
     ):
         """One property over four routing paths, rather than four literals."""
-        cfg = _live_config()
+        cfg = _shipped_config()
         dlog = DecisionLog()
         result = route(task, cfg, decision_log=dlog, now=PEAK_CLOCK,
                        classify_fn=lambda _t, _f: {"tier": "T3",

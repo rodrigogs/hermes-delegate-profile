@@ -4430,13 +4430,22 @@ class TestAClauseLintRefusesIsDeadNotFatal:
 # ---------------------------------------------------------------------------
 
 
-def _live_policy():
-    """The shipped router.yaml — the rule ids an operator actually sees labelled."""
+def _shipped_policy():
+    """``router.example.yaml`` — the rule ids an operator actually sees labelled.
+
+    The SHIPPED file, which this docstring always claimed and the code did not do: it
+    read ``router.yaml``, the operator's untracked copy, so the verdict depended on
+    whose machine ran it. ``_NoBans`` directly below already guards the same class of
+    contamination for BANS — *"a ban the operator happens to be carrying … would turn
+    the recorded cause into blocklist_veto"* — and the policy itself was left open.
+    Its sibling in test_adapter failed the router-deploy.sh gate on the reference
+    install on 2026-09-02 for exactly this reason.
+    """
     import yaml
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2]
-    return yaml.safe_load((root / "router.yaml").read_text(encoding="utf-8"))
+    return yaml.safe_load((root / "router.example.yaml").read_text(encoding="utf-8"))
 
 
 class _NoBans:
@@ -4475,7 +4484,7 @@ class TestOneCauseTable:
         from router.adapter import _cause_from_rule
         from router.decision_log import VALID_CAUSES
 
-        for rule in _live_policy()["rules"]:
+        for rule in _shipped_policy()["rules"]:
             rid = rule["id"]
             display = rules_mod._determine_cause(rid, {})
             running = _cause_from_rule(rid, {})
@@ -4499,7 +4508,7 @@ class TestOneCauseTable:
         """
         from router.adapter import _cause_from_rule
 
-        policy = _live_policy()
+        policy = _shipped_policy()
         for rule in policy["rules"]:
             rid = rule["id"]
             output = resolve_tiers(rule.get("then", {}), policy["tiers"])
@@ -4518,7 +4527,7 @@ class TestOneCauseTable:
         as "nothing matched", and an operator counting hits per cause seeing the
         two conditional-routing rows never fire.
         """
-        for rule in _live_policy()["rules"]:
+        for rule in _shipped_policy()["rules"]:
             rid = rule["id"]
             assert rules_mod._determine_cause(rid, {}) != "default_fallthrough", (
                 f"rule {rid!r} carries no cause: add it to adapter._RULE_ID_CAUSES "
@@ -4538,7 +4547,7 @@ class TestOneCauseTable:
         from router.decision_log import DecisionLog
         from router.signals import extract
 
-        policy = _live_policy()
+        policy = _shipped_policy()
         task = ("Look at this screenshot of the dashboard and tell me what the "
                 "chart image gets wrong")
         features = extract(task)
@@ -4570,7 +4579,7 @@ class TestOneCauseTable:
         from router.decision_log import DecisionLog
         from router.signals import extract
 
-        policy = _live_policy()
+        policy = _shipped_policy()
         task = "Please review this PR for correctness"
         features = extract(task)
 

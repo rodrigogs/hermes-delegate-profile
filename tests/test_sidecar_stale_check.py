@@ -167,7 +167,20 @@ class TestThePollerReportsWhatItActuallyDid:
         from pathlib import Path
 
         assert checker.PLUGIN_DIR == Path(checker.__file__).resolve().parent.parent
-        assert "/home/rodrigo" not in str(checker.PLUGIN_DIR)
+        # DERIVED is proven by the identity above and by the LITERAL being gone from
+        # the source. It used to be asserted as `"/home/rodrigo" not in
+        # str(PLUGIN_DIR)`, which does not test this code at all — it tests where the
+        # suite happens to be checked out. On the reference install the repo genuinely
+        # lives at /home/rodrigo/Workspace/hermes-smart-router, so a CORRECTLY derived
+        # path contains that string and the assertion forbade the right answer: it
+        # passed on CI and on a Mac and failed the router-deploy.sh gate on the only
+        # box that serves traffic (2026-09-02).
+        source = Path(checker.__file__).read_text(encoding="utf-8")
+        assert '"/home/rodrigo/.hermes/plugins/hermes-smart-router"' not in source
+        assert "Path(__file__).resolve().parent.parent" in source, (
+            "PLUGIN_DIR must still be derived from __file__, which is the property "
+            "this test exists for"
+        )
         # And it really finds this repo's router modules.
         assert checker.newest_module_mtime() > 0.0
 

@@ -129,18 +129,26 @@ def test_a_disabled_router_reports_no_classifier_rather_than_a_trust_error(monke
 
 
 def test_the_shipped_policy_names_a_classifier_the_grant_must_cover():
-    """Guards the pairing that broke: whatever classifier router.yaml names, the
+    """Guards the pairing that broke: whatever classifier router.example.yaml names, the
     deployment's llm allowlist has to permit it. This asserts the repo's own
     policy is internally coherent, so a classifier swap can't silently
     re-introduce the fail-safe storm."""
     # Through REPO_ROOT, not a CWD-relative literal: this read reproduced a
     # FileNotFoundError when pytest was invoked from a parent directory, and the
-    # module already computes the root. Still the LIVE router.yaml deliberately —
-    # the conftest seeds it for exactly this assertion.
-    policy = yaml.safe_load((REPO_ROOT / "router.yaml").read_text(encoding="utf-8"))
+    # module already computes the root.
+    #
+    # And the SHIPPED policy, which is what this test's own name and docstring
+    # claim. It read the live router.yaml — the operator's untracked file — so a
+    # test asserting "the repo's own policy is internally coherent" was in fact
+    # asserting that the OPERATOR's policy is, on every machine where they had
+    # edited it. It passed on the reference install by luck rather than by design;
+    # its sibling in test_adapter (_shipped_config) failed the deploy gate there on
+    # 2026-09-02 for exactly this reason.
+    policy = yaml.safe_load(
+        (REPO_ROOT / "router.example.yaml").read_text(encoding="utf-8"))
     classifier = policy.get("classifier") or {}
     assert classifier.get("model") and classifier.get("provider"), \
-        "router.yaml must name a classifier model+provider, or Stage 1 can never run"
+        "router.example.yaml must name a classifier model+provider, or Stage 1 can never run"
     # And it must be a model the tier table also knows how to reach, i.e. a real
     # provider in this deployment rather than a placeholder.
     providers = {t.get("provider") for t in (policy.get("tiers") or {}).values()}

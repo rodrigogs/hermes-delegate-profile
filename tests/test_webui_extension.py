@@ -1269,3 +1269,53 @@ def test_every_writable_key_has_a_control_that_is_not_the_json_editor():
         f"so changing it requires the JSON editor — give it a control, or take it "
         f"out of _HOT_KEYS"
     )
+
+
+def test_no_test_decides_its_verdict_from_the_operators_untracked_policy():
+    """A test that READS `router.yaml` is a test whose answer depends on whose machine ran it.
+
+    `router.yaml` is gitignored: it is the operator's policy, seeded from
+    `router.example.yaml` on first load. `tests/conftest.py::_seed_live_router_config`
+    copies the example over **only when router.yaml is ABSENT**, so a suite that reads
+    it is hermetic in exactly the two places nobody operates from — a fresh CI checkout
+    and a dev clone whose copy nobody edited — and reads real operator policy
+    everywhere else.
+
+    THIS COST A DEPLOY. On 2026-09-02 `router-deploy.sh` on the reference install
+    aborted at its own gate with
+    `test_a_banned_primary_missing_from_fallback_chain_still_routes` failing: the test
+    asserts its premise (that `glm-5.3` is absent from the flat `fallback_chain`) and
+    the operator's live chain there lists it. Green on CI, green on the developer's
+    Mac, red on the only box that serves traffic — and the failure was a TRUE statement
+    about the operator's policy, not a defect in the code under test. Three helpers had
+    the bug, and all three docstrings already said "shipped": `test_adapter._live_config`,
+    `test_rules._live_policy`, and the read inside
+    `test_classifier_trust.test_the_shipped_policy_names_a_classifier_the_grant_must_cover`.
+
+    Reading it as a PATH is still allowed — `test_one_sidecar_e2e` boots a real
+    RouterService over the file and is asserting the sidecar's plumbing, not the
+    policy's content. What is forbidden is parsing it to assert on what is inside.
+    """
+    root = Path(__file__).resolve().parent.parent
+    offenders = []
+    for path in sorted(root.joinpath("tests").rglob("test_*.py")):
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            code = line.split("#", 1)[0]
+            if 'router.yaml"' not in code:
+                continue
+            # A parse of the repo-root file is the forbidden shape. A tmp_path
+            # router.yaml a test writes itself is the whole point of a fixture, and
+            # handing the path to RouterService asserts plumbing, not content.
+            if "safe_load" not in code and "read_text" not in code:
+                continue
+            if "root / " not in code and "ROOT / " not in code and "parents[" not in code:
+                continue
+            offenders.append(f"{path.relative_to(root)}:{lineno}: {line.strip()}")
+
+    assert not offenders, (
+        "these read and parse the OPERATOR's untracked router.yaml, so their verdict "
+        "depends on the machine and they can fail a deploy gate on a healthy box — "
+        "read router.example.yaml instead:\n  " + "\n  ".join(offenders)
+    )
