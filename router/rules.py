@@ -1274,65 +1274,66 @@ def _lint_tier_shapes(tiers_cfg: Dict[str, Any]) -> List[str]:
         errors.extend(_lint_requirements(tn, tier))
         errors.extend(_lint_time_knobs(tn, tier))
 
-        fallback = tier.get("fallback")
-        if fallback is not None:
-            if not isinstance(fallback, list):
-                errors.append(f"tier '{tn}': 'fallback' must be a list")
-            else:
-                for i, hop in enumerate(fallback):
-                    if (
-                        not isinstance(hop, dict)
-                        or not hop.get("model")
-                        or not hop.get("provider")
-                    ):
-                        errors.append(
-                            f"tier '{tn}': fallback[{i}] must be a mapping with "
-                            f"'model' and 'provider'"
-                        )
-                    # A hop's own knobs, checked with the same rigour as the
-                    # tier's: the planner reads a hop's declaration with the same
-                    # weight as the tier's, so a knob validated on one and not the
-                    # other is a gap the operator cannot see. Reported alongside a
-                    # shape defect rather than instead of it — lint returns every
-                    # diagnostic it has, not the first. Guarded because a non-dict
-                    # hop was already reported above and `'k' in 7` raises.
-                    if isinstance(hop, dict):
-                        # IDENTITY, held to the tier's own standard — the same
-                        # symmetry _lint_billing_mode exists for. A hop's model and
-                        # provider were checked for TRUTHINESS only while the
-                        # tier's own must be a non-empty string, so `model: 4.7`
-                        # (what YAML makes of an unquoted glm-4.7) was refused on a
-                        # tier and passed the gate on a hop. It is not an inert
-                        # typo: _build_chain keeps the hop, the capability filter
-                        # reads its id as "" and lets it through on the FAIL-OPEN
-                        # unknown path, and ``unknown`` cannot even name it — that
-                        # list collects string ids — so the one flag whose job is
-                        # to make a fail-open loud stays silent and the router
-                        # attempts a rail whose model id is a float. This gate is
-                        # the only place it is visible. A missing or blank value is
-                        # already reported above, so only a truthy-but-unusable one
-                        # is named here; reporting both would be two errors for one
-                        # defect.
-                        for key in ("model", "provider"):
-                            value = hop.get(key)
-                            if value and (
-                                not isinstance(value, str) or not value.strip()
-                            ):
-                                errors.append(
-                                    f"tier '{tn}': fallback[{i}]: '{key}' must be "
-                                    f"a non-empty string"
-                                )
-                        errors.extend(
-                            _lint_billing_mode(f"tier '{tn}': fallback[{i}]", hop)
-                        )
-                        errors.extend(
-                            _lint_declared_capabilities(
-                                f"tier '{tn}': fallback[{i}]", hop,
-                            )
-                        )
-
+        errors.extend(_lint_tier_fallback(tn, tier))
         errors.extend(_lint_price_windows(tier))
 
+    return errors
+
+
+def _lint_tier_fallback(tn: str, tier: Dict[str, Any]) -> List[str]:
+    """Hard-error checks for ONE tier's ``fallback`` list and each hop in it.
+
+    Extracted from :func:`_lint_tier_shapes`, which was the deepest function in the
+    repo at seven levels of real nesting where the next was five — the whole depth
+    came from this one block. Signature mirrors its siblings ``_lint_requirements``
+    and ``_lint_time_knobs`` so the caller reads as a flat list of checks.
+
+    Behaviour-preserving, and the shape change is the point: the old
+    ``if fallback is not None: if not isinstance(...): ... else: ...`` pair became a
+    single ``if isinstance(...) / elif is not None``, which removes one level without
+    touching a verdict.
+    """
+    errors: List[str] = []
+    fallback = tier.get("fallback")
+    if not isinstance(fallback, list):
+        if fallback is not None:
+            errors.append(f"tier '{tn}': 'fallback' must be a list")
+        return errors
+
+    for i, hop in enumerate(fallback):
+        label = f"tier '{tn}': fallback[{i}]"
+        if (
+            not isinstance(hop, dict)
+            or not hop.get("model")
+            or not hop.get("provider")
+        ):
+            errors.append(f"{label} must be a mapping with 'model' and 'provider'")
+        # A hop's own knobs, checked with the same rigour as the tier's: the planner
+        # reads a hop's declaration with the same weight as the tier's, so a knob
+        # validated on one and not the other is a gap the operator cannot see.
+        # Reported alongside a shape defect rather than instead of it — lint returns
+        # every diagnostic it has, not the first. Guarded because a non-dict hop was
+        # already reported above and `'k' in 7` raises.
+        if not isinstance(hop, dict):
+            continue
+        # IDENTITY, held to the tier's own standard — the same symmetry
+        # _lint_billing_mode exists for. A hop's model and provider were checked for
+        # TRUTHINESS only while the tier's own must be a non-empty string, so
+        # `model: 4.7` (what YAML makes of an unquoted glm-4.7) was refused on a
+        # tier and passed the gate on a hop. It is not an inert typo: _build_chain
+        # keeps the hop, the capability filter reads its id as "" and lets it through
+        # on the FAIL-OPEN unknown path, and ``unknown`` cannot even name it — that
+        # list collects string ids — so the one flag whose job is to make a fail-open
+        # loud stays silent and the router attempts a rail whose model id is a float.
+        # This gate is the only place it is visible. A missing or blank value is
+        # already reported above, so only a truthy-but-unusable one is named here;
+        # reporting both would be two errors for one defect.
+        for key in ("model", "provider"):
+            value = hop.get(key)
+            if value and (not isinstance(value, str) or not value.strip()):
+                errors.append(f"{label}: '{key}' must be a non-empty string")
+        errors.extend(_lint_billing_mode(label, hop))
+        errors.extend(_lint_declared_capabilities(label, hop))
     return errors
 
 
