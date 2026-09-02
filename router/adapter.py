@@ -362,7 +362,27 @@ def route(
     })
     if blocked:
         fallback_model = bl.fallback_for(requested_model)
-        result = {"deny": True}
+        # `blocked_model` names WHICH elo was refused, the same key
+        # `_veto_blocked`'s own denial sets. Stage 0 omitted it, so the earliest
+        # and most common veto was the one denial that did not say what it refused
+        # — and every consumer downstream (the trace, the executor's envelope, the
+        # console) reads that key.
+        result = {
+            "deny": True,
+            "blocked_model": requested_model,
+            # Worded like _veto_blocked's denial, and for the same reason: this
+            # sentence is what the executor's failure envelope shows the caller, so
+            # "the router refused" has to be distinguishable from "you named no
+            # profile". Deliberately does NOT say ban-vs-cooldown —
+            # `Blocklist.is_blocked` unions the two into one boolean and this module
+            # must not invent a distinction it did not measure (see _BLOCKED_REASON).
+            "reason": (
+                f"requested model {requested_model!r} is blocked"
+                + (f"; the fallback chain offers {fallback_model!r}"
+                   if fallback_model else
+                   " and the fallback chain offers no replacement")
+            ),
+        }
         if fallback_model:
             result["fallback_model"] = fallback_model
         steps.append({"stage": "veto", "in": {"model": requested_model},

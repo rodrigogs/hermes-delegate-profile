@@ -629,6 +629,60 @@ def _is_exhaustion(text: str) -> bool:
 _router_guard = threading.local()
 
 
+def _no_profile_envelope() -> Dict[str, Any]:
+    """The failure envelope for "no profile to delegate to", by actual cause.
+
+    Every one of ``_route_task``'s seven declines used to arrive here as
+    ``{"error": "profile is required", "failure_kind": "bad_args"}``. Two things
+    were wrong with that, and the second is the serious one:
+
+      * ``bad_args`` describes a CALLER mistake. A blocklist veto, a classifier
+        with no trust grant and a router exception are not caller mistakes, and an
+        orchestrator reading ``failure_kind`` could not tell any of them apart —
+        nor whether retrying was worth anything, since the envelope carried no
+        ``retryable`` at all.
+      * The remediation text told the caller to NAME A PROFILE. An explicit profile
+        skips routing entirely, so nothing on that path consults the blocklist —
+        the advice for "fixing" a veto was the one action that circumvents it.
+        Measured on real traffic: 22 of 252 decisions (~9%) were blocklist vetoes
+        with no profile, every one of them reported as operator error.
+
+    ``bad_args`` is kept for the case it actually describes: the caller named no
+    profile and auto-routing is off or unavailable, so naming one IS the remedy.
+    """
+    decline = getattr(_router_guard, "decline", None)
+    if not isinstance(decline, dict) or not decline.get("kind"):
+        # No decline recorded: either the caller named nothing and never reached
+        # the router, or a test/host replaced the seam. The generic answer is right.
+        return {"error": "profile is required", "failure_kind": "bad_args"}
+
+    kind = str(decline["kind"])
+    envelope: Dict[str, Any] = {
+        "success": False,
+        "failure_kind": "bad_args" if kind == "routing_disabled" else kind,
+        "retryable": bool(decline.get("retryable")),
+        "error": str(decline.get("reason") or "the router named no profile"),
+    }
+    # The router's own words, verbatim, for the fields it filled in. No
+    # manual-ban-vs-cooldown distinction is invented here: `Blocklist.is_blocked`
+    # unions the two into one boolean and adapter.py forbids splitting them
+    # downstream.
+    for key in ("cause", "blocked_model", "fallback_model"):
+        value = decline.get(key)
+        if value:
+            envelope[key] = value
+    if kind == "routing_denied":
+        envelope["hint"] = (
+            "The ROUTER refused this turn. Naming `profile` explicitly skips "
+            "routing, and therefore skips this refusal — check "
+            "`hermes-router blocklist` and lift the ban or wait out the cooldown "
+            "instead."
+        )
+    elif kind in ("routing_disabled", "routing_unresolved"):
+        envelope["hint"] = "Pass an explicit `profile`, or fix router.yaml."
+    return envelope
+
+
 def _classifier_defaults() -> Dict[str, Any]:
     """``router.classify.CLASSIFIER_DEFAULTS``, the one place they are written.
 
@@ -815,11 +869,33 @@ def _route_task(
     the router reads its signals from that and classifies on ``goal`` alone.
     Empty means "same as goal", which is the shape a caller with no context has.
 
-    Best-effort: routing failure → caller falls through to normal delegation.
-    Never blocks — all errors are caught.
+    Best-effort: routing failure returns None and NEVER raises. But None is seven
+    different answers, and the handler used to collapse all of them into
+    ``{"error": "profile is required", "failure_kind": "bad_args"}`` — including a
+    BLOCKLIST VETO, whose remediation text then told the caller to name a profile,
+    which is the one path that consults no blocklist at all. So the router's own
+    refusal read as operator error and the advice for fixing it circumvented the
+    refusal. Measured on real traffic: 22 of 252 decisions (~9%) were blocklist
+    vetoes with no profile.
+
+    WHY the decline rides on the thread-local instead of a parameter: this seam is
+    monkeypatched in four test files as ``lambda *_args: None``, and
+    ``_make_handler`` calls it with 3 args or 4 depending on whether there is
+    context. Adding a parameter — positional or keyword — breaks a stand-in that
+    matches the historical shape, and the shape is the contract. A replaced seam
+    simply sets nothing, and the handler falls back to the generic answer.
     """
+    _router_guard.decline = None
     # Recursion guard: don't re-enter the router during a classifier dispatch.
     if getattr(_router_guard, "active", False):
+        _router_guard.decline = {
+            "kind": "routing_recursion",
+            "retryable": False,
+            "reason": (
+                "the router is already deciding on this thread (a classifier "
+                "dispatch cannot re-enter it)"
+            ),
+        }
         return None
 
     _router_guard.active = True
@@ -835,6 +911,18 @@ def _route_task(
 
         config = _load_router_config()
         if not config.get("enabled", False):
+            # Auto-routing is off, so naming a profile IS the remedy here — this is
+            # the one decline where the generic message was right. It just never
+            # said WHY.
+            _router_guard.decline = {
+                "kind": "routing_disabled",
+                "retryable": False,
+                "reason": (
+                    "the capability router is disabled in router.yaml "
+                    "(enabled: false, or the policy could not be read), so a "
+                    "profile must be named explicitly"
+                ),
+            }
             return None
 
         blocklist = Blocklist(config)
@@ -858,17 +946,59 @@ def _route_task(
             prompt_text=prompt_text,
         )
 
-        # Blocklist veto or pending classify action → no concrete target
-        if result.get("deny") or result.get("action") == "classify":
+        # Blocklist veto or pending classify action → no concrete target. These
+        # are NOT the same answer and must not read as one: a veto is the router
+        # refusing, and the operator must not be told to work around it.
+        if result.get("deny"):
+            _router_guard.decline = {
+                "kind": "routing_denied",
+                # An alternative was named, so an orchestrator can act on it; the
+                # same turn retried unchanged would be refused again.
+                "retryable": False,
+                "reason": str(
+                    result.get("reason")
+                    or "the router refused every rail it could reach"
+                ),
+                "blocked_model": str(result.get("blocked_model") or ""),
+                "cause": str(result.get("cause") or "blocklist_veto"),
+                "fallback_model": str(result.get("fallback_model") or ""),
+            }
             return None
+        # There is deliberately no `action == "classify"` branch here. This function
+        # used to test for one, and it was DEAD: `adapter.route` never returns an
+        # `action` key at all (verified — zero occurrences), because a pending
+        # classify is resolved INSIDE the adapter, either by the classifier or by
+        # the fail-safe. So "the classifier could not answer" reaches this caller as
+        # a successful route to the fail-safe rail, which is the correct outcome and
+        # not a decline. Reinstating the check would add a branch no caller can
+        # produce; if the adapter ever starts returning `action`, the
+        # `not result.get("profile")` guard below already refuses it.
 
         # Must have a profile to be useful
         if not result.get("profile"):
+            _router_guard.decline = {
+                "kind": "routing_unresolved",
+                "retryable": False,
+                "reason": (
+                    "the policy resolved no profile for this turn (no rule matched "
+                    "and the default names none)"
+                ),
+            }
             return None
 
         return result
-    except Exception as exc:
-        logger.debug("hermes-smart-router: _route_task failed: %s", exc)
+    except Exception as exc:  # noqa: BLE001 - routing must never break delegation
+        # WARNING with a traceback, matching the two sibling handlers in this file.
+        # It was DEBUG with no exc_info, so the one decline that means "the router
+        # has a bug" was the quietest of the seven.
+        logger.warning(
+            "hermes-smart-router: _route_task failed: %s", exc, exc_info=True,
+        )
+        _router_guard.decline = {
+            "kind": "routing_error",
+            "retryable": True,
+            "reason": f"the router raised while deciding: {exc}",
+        }
         return None
     finally:
         _router_guard.active = False
@@ -1480,6 +1610,11 @@ def _make_handler(
             # `hermes profile create auto` - advice that would create a profile
             # shadowing the sentinel.
             profile = ""
+            # Clear any decline left on this thread before asking. The reader owns
+            # clearing, not the writer: a HOST- or test-replaced `_route_task` sets
+            # nothing, and without this it would inherit the previous call's
+            # decline and report a cause that belongs to another turn.
+            _router_guard.decline = None
             # With no context the composed prompt IS the goal, so the fourth
             # argument is skipped there: identical routing either way, and the
             # historical 3-argument shape stays what a host-patched seam sees.
@@ -1522,7 +1657,7 @@ def _make_handler(
                     )
 
         if not profile:
-            return json.dumps({"error": "profile is required", "failure_kind": "bad_args"})
+            return json.dumps(_no_profile_envelope(), ensure_ascii=False)
 
         # Validate the target profile BEFORE the same-profile shortcut, so a
         # typo produces an instant clear error even when it happens to differ

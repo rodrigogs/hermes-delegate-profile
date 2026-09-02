@@ -1412,3 +1412,106 @@ def test_a_caller_named_model_that_is_a_plan_hop_takes_that_hops_rail(monkeypatc
     assert _providers_attempted(cmds)[0] == "openai-codex", (
         "the rail must be the one that hop declared, not the router's primary rail"
     )
+
+
+# ---------------------------------------------------------------------------
+# A routing REFUSAL is not a caller mistake
+# ---------------------------------------------------------------------------
+
+class TestARoutingDeclineNamesItsOwnCause:
+    """Seven declines used to arrive as one `bad_args`, with harmful advice.
+
+    `_route_task` returns None for the recursion guard, a disabled router, a
+    malformed policy, a blocklist/breaker veto, a pending `action: classify`, an
+    unresolved profile and any exception. The handler collapsed all seven into
+    `{"error": "profile is required", "failure_kind": "bad_args"}` with no
+    `retryable`.
+
+    `bad_args` describes a CALLER mistake, which a veto is not — and the
+    remediation told the caller to name a profile, which skips routing and
+    therefore skips the blocklist entirely. The advice for "fixing" a refusal was
+    the one action that circumvents it. Measured on real traffic: 22 of 252
+    decisions (~9%) were blocklist vetoes with no profile.
+    """
+
+    @staticmethod
+    def _handler(monkeypatch, config):
+        monkeypatch.setattr(_dp, "_load_router_config", lambda: config)
+        monkeypatch.setattr(_dp, "_profile_exists", lambda _p: True)
+        return _dp._make_handler("parent", lambda _args: "inline")
+
+    @staticmethod
+    def _shipped():
+        return yaml.safe_load(
+            (REPO_ROOT / "router.example.yaml").read_text(encoding="utf-8")
+        )
+
+    def test_a_blocklist_veto_is_not_reported_as_bad_args(
+        self, monkeypatch, tmp_path,
+    ):
+        """The real path, not a stubbed `_route_task`: ban everything and route."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_ROUTE_TRACE_FILE", str(tmp_path / "r.jsonl"))
+        config = self._shipped()
+        # A caller-named model that is banned: Stage 0 vetoes before anything else.
+        config["blocklist"]["manual_ban"] = [
+            {"model": "glm-5.3-flash", "provider": "", "reason": "test"}
+        ]
+        handler = self._handler(monkeypatch, config)
+
+        answer = json.loads(handler({"prompt": "rename a variable",
+                                     "model": "glm-5.3-flash"}))
+
+        assert answer["failure_kind"] == "routing_denied", answer
+        assert answer["failure_kind"] != "bad_args"
+        assert answer["success"] is False
+        assert answer["retryable"] is False
+        assert answer["blocked_model"] == "glm-5.3-flash"
+        assert answer["cause"] == "blocklist_veto"
+        # The router's own sentence, verbatim.
+        assert "blocked" in answer["error"]
+        # And the advice must NOT be "name a profile", which would skip the veto.
+        assert "skips this refusal" in answer["hint"]
+
+    def test_a_disabled_router_still_says_name_a_profile_because_that_is_true(
+        self, monkeypatch,
+    ):
+        """The one decline where the generic message was right — it just never said why."""
+        handler = self._handler(monkeypatch, {"enabled": False})
+        answer = json.loads(handler({"prompt": "rename a variable"}))
+        assert answer["failure_kind"] == "bad_args"
+        assert "disabled" in answer["error"]
+        assert answer["retryable"] is False
+
+    def test_the_recursion_guard_names_itself(self, monkeypatch):
+        handler = self._handler(monkeypatch, self._shipped())
+        monkeypatch.setattr(_dp._router_guard, "active", True, raising=False)
+        answer = json.loads(handler({"prompt": "rename a variable"}))
+        assert answer["failure_kind"] == "routing_recursion"
+        assert "re-enter" in answer["error"]
+
+    def test_a_router_exception_is_retryable_and_says_so(self, monkeypatch):
+        handler = self._handler(monkeypatch, self._shipped())
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("registry on fire")
+
+        # Break the router from the inside, past the seam the fakes replace.
+        import router.adapter as adapter_mod
+        monkeypatch.setattr(adapter_mod, "route", _boom)
+        answer = json.loads(handler({"prompt": "rename a variable"}))
+        assert answer["failure_kind"] == "routing_error"
+        assert answer["retryable"] is True
+        assert "registry on fire" in answer["error"]
+
+    def test_a_replaced_seam_still_gets_the_generic_answer(self, monkeypatch):
+        """Four test files patch `_route_task` as `lambda *_args: None`.
+
+        The decline rides on the thread-local precisely so that shape keeps
+        working — a stand-in sets nothing, and the handler falls back.
+        """
+        monkeypatch.setattr(_dp, "_route_task", lambda *_args: None)
+        handler = _dp._make_handler("parent", lambda _args: "inline")
+        assert json.loads(handler({"goal": "task"})) == {
+            "error": "profile is required", "failure_kind": "bad_args",
+        }

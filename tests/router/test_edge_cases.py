@@ -53,7 +53,14 @@ def test_adapter_blocklist_without_fallback_and_fallback_fallback():
         }
     )
     result = route("task", config, requested_model="blocked", requested_provider="p")
-    assert result == {"deny": True}
+    # A Stage-0 veto now NAMES what it refused and why. It used to be a bare
+    # `{"deny": True}`, which made the earliest and most common veto the one denial
+    # that said nothing — and the executor then reported it as `bad_args` with
+    # "profile is required", advice whose remedy skips the blocklist entirely.
+    assert result["deny"] is True
+    assert result["blocked_model"] == "blocked"
+    assert "is blocked" in result["reason"]
+    assert "fallback_model" not in result, "this chain offers no replacement"
 
     fallback_config = _config(
         blocklist={
@@ -63,7 +70,10 @@ def test_adapter_blocklist_without_fallback_and_fallback_fallback():
         }
     )
     result = route("task", fallback_config, requested_model="blocked", requested_provider="p")
-    assert result == {"deny": True, "fallback_model": "next"}
+    assert result["deny"] is True
+    assert result["blocked_model"] == "blocked"
+    assert result["fallback_model"] == "next"
+    assert "'next'" in result["reason"], "the reason names the replacement it found"
 
 
 def test_adapter_session_pin_prevents_downgrade():
