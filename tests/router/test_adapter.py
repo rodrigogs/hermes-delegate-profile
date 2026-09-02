@@ -1335,6 +1335,14 @@ class TestDefensiveShapes:
 # config still does.
 SHIPPED_VISION_TASK = "Look at this screenshot and tell me why the layout breaks"
 
+#: A turn the SHIPPED policy routes to T3, i.e. one where the declared primary and
+#: the planned chain[0] are the same pair. That identity is the property the
+#: probe-slot tests below assert, and it is what _vision_gap_config deliberately
+#: destroys, so those tests cannot borrow its fixture.
+_HARD_T3_TASK = (
+    "Debug an unknown-cause race condition across the pool and the executor"
+)
+
 # 07:00 UTC on Monday 2026-08-17 — inside the overlapping deepseek/zai peak, so
 # the time layer is live for this turn rather than a no-op.
 PEAK_CLOCK = datetime(2026, 8, 17, 7, 0, tzinfo=timezone.utc)
@@ -1771,6 +1779,104 @@ class TestTheVetoBindsWhatRuns:
         # under test — otherwise this checks the scan against itself.
         assert (result["model"], result["provider"]) == (escape, rails[escape])
         assert _targets(result)[0] == (escape, rails[escape])
+
+    def test_one_decision_asks_the_blocklist_once_per_rail(
+        self, tmp_path, monkeypatch,
+    ):
+        """The two halves of a decision must not get opposite answers.
+
+        ``Blocklist.is_blocked`` CONSUMES the breaker's probe slot for an
+        expired-OPEN rail: False once, True after. A decision asks twice —
+        ``_veto_blocked`` vets ``output["model"]``, then ``_vet_plan_chain`` vets
+        ``chain[0]``, the same pair for an unsubstituted decision — so it saw both.
+
+        Measured on the shipped policy with T3's primary expired-OPEN:
+
+            output.model         gpt-5.6-terra    <- the refused elo
+            output.blocked_model (absent)
+            output.cause         (absent)
+            chain_plan.blocked   [gpt-5.6-terra]  <- says it WAS refused
+            chain[0]             deepseek-v4-pro  <- what actually ran
+
+        The decision NAMED a refused elo with every substitution field empty, so no
+        surface reported a veto; and the probe the breaker granted was thrown away,
+        because nothing was dispatched to that rail — leaving it HALF_OPEN, which
+        only a RECORDED outcome exits, i.e. out of rotation for good.
+
+        This is the EXPIRED-cooldown case on purpose. Every other breaker test in
+        this class pins its cooldown a day out so the transition "cannot fire
+        mid-test and make this flaky" — which is exactly why the interaction was
+        untested.
+        """
+        # The SHIPPED policy, not the vision-gap fixture: this test is about the
+        # declared primary being the same pair as chain[0], which is exactly the
+        # shape _vision_gap_config exists to break (it forces a blind primary the
+        # capability filter drops, so head != chain[0] there BY DESIGN).
+        tier = _live_config()["tiers"]["T3"]
+        elo, rail = tier["model"], tier["provider"]
+        # `now` far in the past puts cooldown_until (now + 86_400) behind us.
+        cfg = _open_breakers_config(
+            [(elo, rail)], tmp_path, monkeypatch, now=time.time() - 200_000,
+        )
+        bl = Blocklist(cfg)
+        assert bl.breaker_enabled() is True
+
+        dlog = DecisionLog()
+        result = route(_HARD_T3_TASK, cfg, blocklist=bl,
+                       decision_log=dlog, now=PEAK_CLOCK)
+        assert result["model"] == elo, (
+            "this task must route to the tier whose primary is expired-OPEN, or "
+            "the test asserts nothing"
+        )
+        plan = dlog.tail(1)[0]["chain_plan"]
+
+        # The decision and what runs name the same elo — the property the two
+        # opposite answers broke.
+        assert _hops(plan["chain"])[0] == (
+            result["model"], result.get("provider"),
+        ), f"the decision names {result['model']} while chain[0] is {plan['chain'][0]}"
+        assert _targets(result)[0] == (result["model"], result.get("provider"))
+
+        # And the trace is self-consistent: an elo cannot be both the head and
+        # listed as refused.
+        refused = {hop["model"] for hop in plan.get("blocked", [])}
+        assert result["model"] not in refused, (
+            f"{result['model']} is the head AND in chain_plan.blocked"
+        )
+
+        # Exactly one probe was spent for the whole decision, and the rail the
+        # breaker granted it to is the rail the executor will actually try — so the
+        # probe gets SPENT rather than stranded.
+        state = json.loads(
+            (tmp_path / "hermes-smart-router" / "state" / "breaker-state.json")
+            .read_text(encoding="utf-8")
+        )
+        entry = state["entries"][f"{elo}@{rail}"]
+        assert entry["state"] == "HALF_OPEN"
+        assert entry["probe_allowed"] is False
+
+    def test_a_still_cooling_rail_is_substituted_and_says_so(
+        self, tmp_path, monkeypatch,
+    ):
+        """The non-regression half: a cooldown that has NOT expired still vetoes.
+
+        The memo must not turn "blocked" into "clean" — it only makes the answer
+        the SAME on both asks. Asserted beside the expired case so the two cannot
+        be conflated.
+        """
+        tier = _live_config()["tiers"]["T3"]
+        elo, rail = tier["model"], tier["provider"]
+        cfg = _open_breakers_config([(elo, rail)], tmp_path, monkeypatch)
+        bl = Blocklist(cfg)
+        dlog = DecisionLog()
+        result = route(_HARD_T3_TASK, cfg, blocklist=bl,
+                       decision_log=dlog, now=PEAK_CLOCK)
+        plan = dlog.tail(1)[0]["chain_plan"]
+
+        assert result["model"] != elo
+        assert result["blocked_model"] == elo
+        assert elo in {h["model"] for h in plan["blocked"]}
+        assert _hops(plan["chain"])[0] == (result["model"], result.get("provider"))
 
     def test_the_first_attempt_is_never_a_breaker_open_elo(
         self, tmp_path, monkeypatch,

@@ -92,6 +92,61 @@ except (TypeError, ValueError):  # pragma: no cover - absent/unintrospectable
     _PLAN_CHAIN_ACCEPTS_WHEN = False
 
 
+class _VettedOnce:
+    """One answer per ``(model, provider)`` for the whole DECISION.
+
+    ``Blocklist.is_blocked`` is not a query: for an expired-OPEN breaker it
+    transitions to HALF_OPEN and CONSUMES the single probe slot, answering False
+    once and True thereafter. A decision asks about the same rail more than once —
+    :func:`_veto_blocked` vets ``output["model"]``, then :func:`_vet_plan_chain`
+    vets ``chain[0]``, which for an unsubstituted decision is that same pair — so
+    the two halves of one decision got OPPOSITE answers.
+
+    Measured on the shipped policy with T3's primary expired-OPEN:
+
+        output.model         gpt-5.6-terra     <- the refused elo
+        output.blocked_model (absent)
+        output.cause         (absent)
+        chain_plan.blocked   [gpt-5.6-terra]   <- says it WAS refused
+        chain[0]             deepseek-v4-pro   <- what actually runs
+
+    Three separate defects fall out of that one inconsistency: the decision NAMES a
+    refused elo while every substitution field stays empty, so no surface reports a
+    veto; the substitution machinery never engages because step 1 saw a clean
+    primary; and the probe the breaker granted is never spent, because nothing is
+    dispatched to that rail — and HALF_OPEN is left only by a RECORDED outcome, so
+    the rail is out of rotation for good.
+
+    Memoised PER DECISION and in memory only. Cross-process anti-stampede is
+    untouched: ``delegate_profile`` builds a fresh ``Blocklist`` per call, so a
+    second process still reads the persisted HALF_OPEN and stays blocked, which is
+    the behaviour ``test_expired_cooldown_allows_one_probe_across_fresh_blocklists``
+    pins.
+
+    Only ``is_blocked`` is memoised. Everything else — ``fallback_for``,
+    ``manual_bans``, ``record_failure`` — forwards untouched, so this is a
+    drop-in for every existing caller and for a test that injects its own
+    ``Blocklist``.
+    """
+
+    __slots__ = ("_bl", "_answers")
+
+    def __init__(self, blocklist: Blocklist) -> None:
+        self._bl = blocklist
+        self._answers: Dict[Tuple[str, str], bool] = {}
+
+    def is_blocked(self, model: Optional[str], provider: Optional[str]) -> bool:
+        key = (model or "", provider or "")
+        if key not in self._answers:
+            self._answers[key] = self._bl.is_blocked(model, provider)
+        return self._answers[key]
+
+    def __getattr__(self, name: str) -> Any:
+        # Reached only for names this class does not define, i.e. everything but
+        # is_blocked. Keeps the proxy transparent without restating the API.
+        return getattr(self._bl, name)
+
+
 def _copy_fallbacks(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
     """Copy validated cross-rail targets without sharing mutable config rows."""
     fallback = source.get("fallback")
@@ -232,7 +287,7 @@ def route(
     plan.
     """
     config = with_global_price_windows(config)
-    bl = blocklist or Blocklist(config)
+    bl = _VettedOnce(blocklist or Blocklist(config))
     cch = cache or Cache()
     pin = session_pin or SessionPin()
     dlog = decision_log or DecisionLog()
