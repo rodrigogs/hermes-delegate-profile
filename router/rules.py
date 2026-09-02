@@ -1172,6 +1172,61 @@ def _inject_overlay_windows(hop: Dict[str, Any], overlay: Dict[str, Any]) -> Non
     hop["price_windows"] = copy.deepcopy(entry)
 
 
+#: The registry field names a tier or hop may DECLARE, when capabilities.py can be
+#: asked. Local fallback for a checkout whose sibling module predates the export.
+_FALLBACK_REGISTRY_FIELDS = frozenset({
+    "provider", "context_window", "max_input_tokens", "max_output", "vision",
+    "tool_calling", "structured_output", "billing_mode", "price_in",
+    "price_out", "price_windows", "price_windows_verified", "notes",
+})
+
+
+def _registry_fields() -> frozenset:
+    """Field names ``capabilities._declared_overrides`` will actually keep.
+
+    Read through the module-level ``_caps`` handle with ``getattr`` +
+    ``isinstance``, exactly like ``_requirement_keys`` and ``_billing_modes``: a
+    direct ``import router.capabilities`` fails under Hermes' ``hermes_plugins.
+    <slug>`` package shape, which
+    ``TestCapabilityLayerIsLiveUnderHermesPluginPackageShape`` pins.
+    """
+    if _caps is not None:
+        fields = getattr(_caps, "_REGISTRY_FIELDS", None)
+        if isinstance(fields, (frozenset, set)):
+            return frozenset(fields)
+    return _FALLBACK_REGISTRY_FIELDS
+
+
+def _lint_declared_capabilities(label: str, entry: Dict[str, Any]) -> List[str]:
+    """Hard errors for capability keys the registry will silently DROP.
+
+    ``_declared_capabilities`` is EXCLUSION-based: everything not in
+    ``_NON_CAPABILITY_KEYS`` is harvested and handed to ``capabilities_for`` as a
+    per-elo override — and ``capabilities._declared_overrides`` then keeps only
+    ``_REGISTRY_FIELDS`` and drops the rest without a word. Neither ``lint`` nor
+    ``lint_warnings`` said anything, so a typo was invisible in both channels.
+
+    Measured on the real ``router.yaml``: ``visssion: True`` and
+    ``min_context: 128000`` on a REGISTERED T3 hop both linted clean. The first is
+    a one-letter typo that silently un-declares vision on the hop the operator was
+    trying to describe. The second is worse, because the v2 spec's own hop example
+    uses it: ``min_context`` is a REQUIREMENT (a floor, belonging under
+    ``requirements:``), not a registry field, and declaring it on a hop asserts
+    nothing at all — the spec promised a ``min_context -> context_window`` alias
+    that was never implemented and must not be, since it would re-merge the two
+    vocabularies the code deliberately separated (a floor is not a ceiling).
+
+    Scoped to ``tiers`` deliberately. ``classifier:`` legitimately carries
+    ``temperature``/``max_tokens``/``timeout_seconds``, which are not capability
+    declarations and are validated elsewhere.
+    """
+    allowed = _NON_CAPABILITY_KEYS | _registry_fields()
+    unknown = sorted(key for key in entry if isinstance(key, str) and key not in allowed)
+    return [
+        f"{label} declares unknown capability key '{key}'" for key in unknown
+    ]
+
+
 def _lint_tier_shapes(tiers_cfg: Dict[str, Any]) -> List[str]:
     """Hard-error checks for the per-tier routing knobs."""
     errors: List[str] = []
@@ -1197,6 +1252,8 @@ def _lint_tier_shapes(tiers_cfg: Dict[str, Any]) -> List[str]:
                 errors.append(f"tier '{tn}': missing '{key}'")
             elif not isinstance(tier[key], str) or not tier[key].strip():
                 errors.append(f"tier '{tn}': '{key}' must be a non-empty string")
+
+        errors.extend(_lint_declared_capabilities(f"tier '{tn}':", tier))
 
         # The isinstance guard is not decoration: `x in frozenset` raises
         # TypeError for an unhashable x, and YAML can legally produce a list or a
@@ -1267,6 +1324,11 @@ def _lint_tier_shapes(tiers_cfg: Dict[str, Any]) -> List[str]:
                                 )
                         errors.extend(
                             _lint_billing_mode(f"tier '{tn}': fallback[{i}]", hop)
+                        )
+                        errors.extend(
+                            _lint_declared_capabilities(
+                                f"tier '{tn}': fallback[{i}]", hop,
+                            )
                         )
 
         errors.extend(_lint_price_windows(tier))

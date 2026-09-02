@@ -287,13 +287,26 @@ below, and an entry that writes `vision: False` is making a claim the operator m
 to defend.
 
 The requirement vocabulary and the capability vocabulary collide on exactly one key: a request
-asks for `min_context` (a floor), a model offers `context_window` (a ceiling). `_resolve_tiers`
-already harvests a tier's declared overrides as the subset of `REQUIREMENT_KEYS` present on the
-tier, so YAML will present the context fact as `min_context`. Resolution, fixed here so the two
-sides cannot drift: **`capabilities_for` treats a declared `min_context` as an alias for
-`context_window`** and normalizes it during the merge. `satisfies` reads `context_window` only.
-`REQUIREMENT_KEYS` stays the single vocabulary lint validates on the YAML side; the registry
-keeps the honest name internally.
+asks for `min_context` (a floor), a model offers `context_window` (a ceiling).
+
+**Corrected 2026-09-01 — the alias this section specified was never implemented, and must not
+be.** The original text said `capabilities_for` would treat a declared `min_context` as an alias
+for `context_window` and normalize it during the merge. It does not: `min_context` is absent from
+`_REGISTRY_FIELDS`, so `_declared_overrides` drops it, and the hop example this section carried
+therefore planned with its declared bound silently ignored.
+
+Aliasing a FLOOR name onto a CEILING is the wrong resolution. It re-merges the two vocabularies
+the code deliberately separated after the gpt-5.6-luna incident (a model whose 1,050,000
+`context_window` sits above a 922,000 `max_input_tokens` — the distinction between what a model
+holds and what it will accept is exactly what one name would erase). The two vocabularies stay
+separate: a floor belongs under `requirements:`, a ceiling is a registry field, and neither
+spelling is accepted where the other belongs.
+
+`rules.lint` now REFUSES a capability key the registry would drop —
+`tier '<Tn>': fallback[<i>] declares unknown capability key '<key>'`, the wording this spec
+promised — so a hop declaring `min_context` is a hard error at the write gate rather than a
+silently-dropped assertion. `satisfies` reads `context_window` only, and `REQUIREMENT_KEYS`
+remains the single vocabulary lint validates on the requirements side.
 
 Registry entries are hand-maintained and will go stale — a provider silently doubles a window,
 or an id gains vision. That is precisely why `declared` wins over the registry: an operator
@@ -321,8 +334,14 @@ tiers:
     requirements:                 # per-tier FLOOR, unioned with the derived requirements
       min_context: 128000
     fallback:
+      # A hop declares CAPABILITY facts (what the elo can do), never a
+      # requirement. `min_context` is a FLOOR and belongs under `requirements:`
+      # above; declaring it on a hop is now a hard lint error. This example
+      # carried `min_context: 128000` on the hop below until 2026-09-01, matching
+      # the alias promise corrected in §"requirement vs capability vocabulary" —
+      # it asserted nothing, because the registry dropped the key.
       - { model: glm-4.7, provider: zai }
-      - { model: deepseek-v4-pro, provider: deepseek, min_context: 128000 }
+      - { model: deepseek-v4-pro, provider: deepseek, context_window: 128000 }
 ```
 
 `_resolve_tiers` propagates them into the resolved output, and this is the part that keeps every

@@ -1773,6 +1773,7 @@ class TestClosedSetsWithoutTheRegistry:
         assert rules_mod._FALLBACK_STRATEGIES == rules_mod._caps.FALLBACK_STRATEGIES
         assert rules_mod._FALLBACK_BILLING_MODES == rules_mod._caps.BILLING_MODES
         assert rules_mod._FALLBACK_REQUIREMENT_KEYS == rules_mod._caps.REQUIREMENT_KEYS
+        assert rules_mod._FALLBACK_REGISTRY_FIELDS == rules_mod._caps._REGISTRY_FIELDS
 
     @pytest.mark.parametrize(
         "tier,fragment",
@@ -1780,6 +1781,8 @@ class TestClosedSetsWithoutTheRegistry:
             ({"fallback_strategy": "round_robin"}, "'fallback_strategy' must be one of"),
             ({"billing_mode": "gift-card"}, "'billing_mode' must be one of"),
             ({"requirements": {"gpu": True}}, "'requirements.gpu' not in closed"),
+            ({"visssion": True}, "declares unknown capability key 'visssion'"),
+            ({"min_context": 128000}, "declares unknown capability key 'min_context'"),
         ],
     )
     def test_the_gate_reaches_the_same_verdict_without_the_registry(
@@ -1796,6 +1799,28 @@ class TestClosedSetsWithoutTheRegistry:
         monkeypatch.setattr(rules_mod, "_caps", None)
         assert [e for e in lint(config) if fragment in e] == with_registry
         assert len(with_registry) == 1
+
+    def test_a_registry_exporting_a_string_of_fields_cannot_open_the_capability_gate(
+        self, monkeypatch,
+    ):
+        """Same argument as the closed sets above, for the capability field set.
+
+        `key not in allowed` where `allowed` is a STRING is a substring test, so a
+        registry exporting `"vision"` instead of a set would accept every key that
+        happens to be a substring of it — `visio`, `si`, `n` — and refuse the real
+        ones. The `isinstance` check is what stops that, and the local mirror is
+        what keeps the gate closed at all.
+        """
+        class _StringFields:
+            _REGISTRY_FIELDS = "provider vision context_window"
+
+        config = _cfg({"T2": {"model": "m2", "provider": "p2", "visio": True}})
+        with_registry = [e for e in lint(config) if "capability key 'visio'" in e]
+        assert len(with_registry) == 1, "the real registry refuses the typo"
+        monkeypatch.setattr(rules_mod, "_caps", _StringFields())
+        assert [e for e in lint(config) if "capability key 'visio'" in e] == (
+            with_registry
+        ), "a string export must not open the gate to a substring of itself"
 
     @pytest.mark.parametrize(
         "attr,tier,accepted",
