@@ -8,6 +8,7 @@ Stage 0 alone falls through on REAL cards.
 
 import json
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -628,3 +629,186 @@ def test_a_role_scoped_rule_does_not_fire_for_another_role(trace_home, monkeypat
         assignee="reviewer", run_id=101,
     )
     assert result == {"model": "gpt-5.6-terra", "provider": "openai-codex"}
+
+
+# ---------------------------------------------------------------------------
+# Shadow mode MEASURES; it must not spend the breaker's probe slot
+# ---------------------------------------------------------------------------
+
+def _seed_expired_open(home, model, provider):
+    """Write a breaker entry that is OPEN with its cooldown already past.
+
+    The shape where `is_blocked` is at its least query-like: it transitions to
+    HALF_OPEN, consumes the probe, and persists — so this is the state a
+    measurement must be able to observe without changing.
+    """
+    state_dir = home / "hermes-smart-router" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = state_dir / "breaker-state.json"
+    past = time.time() - 200_000
+    path.write_text(json.dumps({
+        "version": 1,
+        "entries": {f"{model}@{provider}": {
+            "state": "OPEN",
+            "failure_events": [{"kind": "ttfb_stall", "ts": past, "weight": 3}] * 2,
+            "cooldown_until": past + 60,
+            "backoff_seconds": 60.0,
+            "last_failure_kind": "ttfb_stall",
+        }},
+    }), encoding="utf-8")
+    return path
+
+
+def _shipped_with_breaker():
+    """The shipped policy with the auto-breaker on (it ships on)."""
+    import yaml
+    config = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "router.example.yaml")
+        .read_text(encoding="utf-8")
+    )
+    config["blocklist"]["auto_breaker"]["enabled"] = True
+    return config
+
+
+def test_a_shadow_card_does_not_spend_the_breakers_probe_slot(
+    trace_home, monkeypatch,
+):
+    """Measuring took rails out of rotation, permanently.
+
+    The hook runs a full `route()` and only then checks the mode, so in shadow
+    mode — the SHIPPED DEFAULT — every card produced a real decision against the
+    real breaker for a card it never dispatches. `is_blocked` flips an
+    expired-OPEN rail to HALF_OPEN, consumes its single probe and PERSISTS that;
+    HALF_OPEN is left only by a RECORDED outcome, and a shadow card records none.
+    So the rail was excluded for good, by a measurement.
+
+    Asserted on the bytes AND on the consequence: a later reader must still see
+    the probe available.
+    """
+    config = _shipped_with_breaker()
+    tier = config["tiers"]["T1"]
+    model, provider = tier["model"], tier["provider"]
+    state = _seed_expired_open(trace_home, model, provider)
+    before = state.read_bytes()
+
+    monkeypatch.setattr(dp, "_load_router_config", lambda: config)
+    monkeypatch.setattr(
+        dp, "_read_kanban_task",
+        lambda task_id, board: _card("Rename getCwd in src/utils.py"),
+    )
+
+    for i in range(3):
+        assert dp._on_pre_kanban_dispatch(
+            task_id=f"shadow-{i}", profile_name="x", board="default",
+            assignee="coder", run_id=i,
+        ) is None
+
+    assert state.read_bytes() == before, (
+        "a shadow card rewrote the breaker state it was only supposed to measure"
+    )
+    # The consequence, not just the bytes: the probe is still there for the real
+    # decision that will actually test the rail.
+    from router.blocklist import Blocklist
+    assert Blocklist(config).would_block(model, provider) is False
+    assert Blocklist(config).is_blocked(model, provider) is False
+
+    # And the shadow trace still recorded a decision — the measurement is intact.
+    entries = [e for e in _read_trace() if e.get("shadow") is True]
+    assert len(entries) == 3
+    assert all(e.get("cause") for e in entries)
+
+
+def test_a_live_card_may_spend_the_probe_because_it_really_dispatches(
+    trace_home, monkeypatch,
+):
+    """The other side of the same rule: live mode IS a decision.
+
+    It returns a model the dispatcher applies, so it is entitled to the probe —
+    and must persist the transition, or two concurrent live cards both probe a
+    recovering rail.
+    """
+    config = _shipped_with_breaker()
+    config["shadow"] = {"enabled": False}
+    tier = config["tiers"]["T1"]
+    model, provider = tier["model"], tier["provider"]
+    state = _seed_expired_open(trace_home, model, provider)
+    before = state.read_bytes()
+
+    monkeypatch.setattr(dp, "_load_router_config", lambda: config)
+    monkeypatch.setattr(
+        dp, "_read_kanban_task",
+        lambda task_id, board: _card("Rename getCwd in src/utils.py"),
+    )
+    dp._on_pre_kanban_dispatch(
+        task_id="live-1", profile_name="x", board="default",
+        assignee="coder", run_id=1,
+    )
+    assert state.read_bytes() != before, (
+        "a live decision must persist the probe it consumed"
+    )
+
+
+class TestTheObservingBlocklist:
+    """The proxy's own contract: same answers, no spend, everything else forwards."""
+
+    @staticmethod
+    def _real(home):
+        from router.blocklist import Blocklist
+        config = _shipped_with_breaker()
+        _seed_expired_open(home, "glm-5.3-flash", "zai")
+        return Blocklist(config), config
+
+    def test_is_blocked_answers_without_consuming_the_probe(self, trace_home):
+        real, config = self._real(trace_home)
+        observing = dp._ObservingBlocklist(real)
+
+        # Ten looks, no spend.
+        for _ in range(10):
+            assert observing.is_blocked("glm-5.3-flash", "zai") is False
+        from router.blocklist import Blocklist
+        assert Blocklist(config).is_blocked("glm-5.3-flash", "zai") is False, (
+            "the proxy consumed the probe a real decision needed"
+        )
+
+    def test_a_still_cooling_rail_still_reads_as_blocked(self, trace_home):
+        """The proxy must not turn "blocked" into "clean" — only "do not spend"."""
+        from router.blocklist import Blocklist
+        config = _shipped_with_breaker()
+        state_dir = trace_home / "hermes-smart-router" / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        (state_dir / "breaker-state.json").write_text(json.dumps({
+            "version": 1,
+            "entries": {"glm-5.3-flash@zai": {
+                "state": "OPEN",
+                "failure_events": [{"kind": "ttfb_stall", "ts": now, "weight": 3}] * 2,
+                "cooldown_until": now + 86_400, "backoff_seconds": 60.0,
+                "last_failure_kind": "ttfb_stall"}},
+        }), encoding="utf-8")
+        observing = dp._ObservingBlocklist(Blocklist(config))
+        assert observing.is_blocked("glm-5.3-flash", "zai") is True
+
+    def test_a_manual_ban_reads_through_unchanged(self, trace_home):
+        from router.blocklist import Blocklist
+        config = _shipped_with_breaker()
+        config["blocklist"]["manual_ban"] = [
+            {"model": "gpt-5.5", "provider": "", "reason": "test"}
+        ]
+        observing = dp._ObservingBlocklist(Blocklist(config))
+        assert observing.is_blocked("gpt-5.5", "openai-codex") is True
+
+    def test_every_other_member_forwards_untouched(self, trace_home):
+        """Only ``is_blocked`` is special; the proxy must stay a drop-in."""
+        real, _config = self._real(trace_home)
+        observing = dp._ObservingBlocklist(real)
+
+        # __getattr__ forwarding: methods, and the same answers as the real one.
+        assert observing.fallback_chain() == real.fallback_chain()
+        assert observing.manual_bans() == real.manual_bans()
+        assert observing.breaker_enabled() is real.breaker_enabled()
+        assert observing.fallback_for("glm-5.3-flash") == (
+            real.fallback_for("glm-5.3-flash")
+        )
+        assert observing.would_block("gpt-5.5", "") is real.would_block("gpt-5.5", "")
+        with pytest.raises(AttributeError):
+            observing.no_such_member

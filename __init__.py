@@ -938,6 +938,35 @@ except ImportError:  # pragma: no cover - flat layout used by the test harness
     from router.decision_log import DecisionLog, plan_head_of
 
 
+class _ObservingBlocklist:
+    """A ``Blocklist`` view that answers without spending or persisting anything.
+
+    For SHADOW mode. ``Blocklist.is_blocked`` transitions an expired-OPEN breaker
+    to HALF_OPEN, consumes its single probe slot, and persists that — so a hook
+    that only measures was taking rails out of rotation, permanently, for cards it
+    never dispatched (HALF_OPEN is left only by a recorded outcome).
+
+    ``is_blocked`` delegates to ``would_block``, which is the same predicate with
+    no transition and no write. Everything else forwards untouched: the kanban path
+    reads ``fallback_for`` and nothing else, and forwarding keeps this a drop-in.
+
+    Constructed AROUND a real ``Blocklist``, not instead of one, so the state file
+    is still LOADED — the shadow trace has to show the same vetoes a live decision
+    would see, or it is measuring a different router.
+    """
+
+    __slots__ = ("_bl",)
+
+    def __init__(self, blocklist: Any) -> None:
+        self._bl = blocklist
+
+    def is_blocked(self, model: Any, provider: Any) -> bool:
+        return bool(self._bl.would_block(model, provider))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._bl, name)
+
+
 class _KanbanShadowLog(DurableDecisionLog):
     """Durable trace log for the kanban dispatch path — one entry per card.
 
@@ -1157,7 +1186,25 @@ def _on_pre_kanban_dispatch(
             from router.adapter import route
             from router.blocklist import Blocklist
 
+        # SHADOW MODE MEASURES; IT MUST NOT SPEND ANYTHING.
+        #
+        # This hook runs a full `route()` and only then checks the mode
+        # (`if not live: return None` below) — so in shadow mode, which is the
+        # SHIPPED DEFAULT, every card produced a real decision against the real
+        # breaker for a card the hook never dispatches. `Blocklist.is_blocked`
+        # consumes the HALF_OPEN probe slot of an expired-OPEN rail and PERSISTS
+        # the transition, so measuring took rails out of rotation: reproduced with
+        # one shadow call flipping glm-5.3-flash@zai to `HALF_OPEN,
+        # probe_allowed: false` on disk, after which three fresh `Blocklist` reads
+        # answered blocked — for a probe nothing ever spent.
+        #
+        # `_ObservingBlocklist` gives the same answers with no transition and no
+        # write, so the shadow trace still shows the vetoes a live decision would
+        # have seen. Live mode keeps the real one: it returns a model the
+        # dispatcher applies, so it IS a decision and may spend the probe.
         blocklist = Blocklist(config)
+        if not live:
+            blocklist = _ObservingBlocklist(blocklist)
         # The worker has profile-scoped HERMES_HOME and does not load this
         # plugin. Publish our canonical file path through the dispatcher env
         # before it spawns, so core's executor journal and this durable reader
