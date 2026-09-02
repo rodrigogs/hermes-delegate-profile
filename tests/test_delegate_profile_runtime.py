@@ -1582,3 +1582,108 @@ class TestAMalformedPolicyRootDoesNotBreakLoading:
         naming = [r for r in caplog.records if "top level" in r.getMessage()]
         assert len(naming) == 1, [r.getMessage() for r in naming]
         assert "routing is DISABLED" in naming[0].getMessage()
+
+
+class TestTheAntiRecursionGuaranteeIsEnforced:
+    """`HERMES_DELEGATE_PROFILE_DISABLE=1` was written and read by nothing.
+
+    `_attempt` puts it in every child env, and the README (twice), PRODUCT.md and
+    the architecture map all assert the guarantee as fact — while nothing in the
+    repo read it back. It was a comment, not a control.
+
+    It is not cosmetic: a nested `_spawn` creates its OWN session and pgid, so a
+    depth-2 tree escapes both the outer `killpg` and the atexit registry — the
+    orphaned-grandchildren failure mode this whole plugin exists to prevent.
+    """
+
+    class _Ctx:
+        def __init__(self):
+            self.tools = []
+            self.hooks = []
+
+        def register_tool(self, **kwargs):
+            self.tools.append(kwargs["name"])
+
+        def register_hook(self, name, _fn):
+            self.hooks.append(name)
+
+    def test_a_delegated_child_is_not_offered_the_tool(self, monkeypatch):
+        monkeypatch.setenv("HERMES_DELEGATE_PROFILE_DISABLE", "1")
+        monkeypatch.setattr(_dp, "_get_active_profile_name", lambda: "child")
+        monkeypatch.setattr(_dp, "_REGISTERED_CTX", {})
+        ctx = self._Ctx()
+        _dp.register(ctx)
+        assert ctx.tools == [], "a delegated child must not be able to spawn another"
+
+    def test_the_hooks_stay_registered_in_that_child(self, monkeypatch):
+        """Deliberate, and the reason matters.
+
+        The child is still a Hermes agent that may dispatch kanban cards. Gating
+        `register_hook` too would silently turn off shadow/live kanban routing in
+        every delegated process — losing the measurement for exactly the traffic a
+        subagent generates.
+        """
+        monkeypatch.setenv("HERMES_DELEGATE_PROFILE_DISABLE", "1")
+        monkeypatch.setattr(_dp, "_get_active_profile_name", lambda: "child")
+        monkeypatch.setattr(_dp, "_REGISTERED_CTX", {})
+        ctx = self._Ctx()
+        _dp.register(ctx)
+        assert ctx.hooks == ["post_tool_call", "pre_kanban_dispatch"]
+
+    def test_an_ordinary_process_still_gets_the_tool(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DELEGATE_PROFILE_DISABLE", raising=False)
+        monkeypatch.setattr(_dp, "_get_active_profile_name", lambda: "parent")
+        monkeypatch.setattr(_dp, "_REGISTERED_CTX", {})
+        ctx = self._Ctx()
+        _dp.register(ctx)
+        assert ctx.tools == ["delegate_profile"]
+        assert ctx.hooks == ["post_tool_call", "pre_kanban_dispatch"]
+
+    @pytest.mark.parametrize("value", ["0", "", "true", "yes", "2"])
+    def test_only_the_exact_documented_value_withholds_it(self, value, monkeypatch):
+        """`== "1"` exactly, which is what `_attempt` writes and the README states.
+
+        A truthy-string reading would make `HERMES_DELEGATE_PROFILE_DISABLE=0`
+        disable the tool — a setting that looks like "off" turning it off.
+        """
+        monkeypatch.setenv("HERMES_DELEGATE_PROFILE_DISABLE", value)
+        monkeypatch.setattr(_dp, "_get_active_profile_name", lambda: "parent")
+        monkeypatch.setattr(_dp, "_REGISTERED_CTX", {})
+        ctx = self._Ctx()
+        _dp.register(ctx)
+        assert ctx.tools == ["delegate_profile"], value
+
+    def test_the_value_the_child_receives_is_the_value_that_withholds(
+        self, monkeypatch,
+    ):
+        """The two halves must agree, and this asserts them against each other.
+
+        `_attempt` writes the variable; `register` reads it. A test that pinned
+        either literal alone would let the pair drift — which is how this stayed
+        vacuous for as long as it did.
+        """
+        written = {}
+
+        def fake_spawn(cmd, env):
+            written.update(env)
+            raise FileNotFoundError("stop here; the env is what is under test")
+
+        monkeypatch.setattr(_dp, "_spawn", fake_spawn)
+        monkeypatch.setattr(_dp, "_profile_exists", lambda _p: True)
+        monkeypatch.setattr(_dp, "_resolve_hermes_bin", lambda: "hermes")
+        monkeypatch.setattr(_dp, "_get_pool", lambda: FakePool())
+        handler = _dp._make_handler("parent", lambda _a: "inline")
+        handler({"prompt": "task", "profile": "child"})
+
+        assert "HERMES_DELEGATE_PROFILE_DISABLE" in written
+        monkeypatch.setenv(
+            "HERMES_DELEGATE_PROFILE_DISABLE",
+            written["HERMES_DELEGATE_PROFILE_DISABLE"],
+        )
+        monkeypatch.setattr(_dp, "_get_active_profile_name", lambda: "child")
+        monkeypatch.setattr(_dp, "_REGISTERED_CTX", {})
+        ctx = self._Ctx()
+        _dp.register(ctx)
+        assert ctx.tools == [], (
+            "the value _attempt writes must be the value register withholds on"
+        )

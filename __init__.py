@@ -2131,16 +2131,41 @@ def register(ctx):
         },
     }
 
-    ctx.register_tool(
-        name="delegate_profile",
-        toolset="delegation",
-        schema=DELEGATE_PROFILE_SCHEMA,
-        handler=handler,
-        description=(
-            "Spawn a subagent under a specific Hermes profile via "
-            "hermes -p <profile> chat -q (watchdog-guarded subprocess isolation)"
-        ),
-    )
+    # ANTI-RECURSION, AND IT IS ENFORCED HERE RATHER THAN ONLY PROMISED.
+    #
+    # `_attempt` writes HERMES_DELEGATE_PROFILE_DISABLE=1 into every child env, and
+    # until now NOTHING in this repo read it back — while the README (twice),
+    # PRODUCT.md and the architecture map all assert the guarantee as fact. It was
+    # a comment, not a control.
+    #
+    # It is not cosmetic. A nested `_spawn` creates its OWN session and pgid, so a
+    # depth-2 tree escapes both the outer `killpg` AND the atexit registry — the
+    # orphaned-grandchildren failure mode this entire plugin exists to prevent.
+    #
+    # ONLY THE TOOL IS WITHHELD. The two hooks stay registered on purpose: the
+    # child is still a Hermes agent that may dispatch kanban cards, and gating
+    # `register_hook` would silently turn off shadow/live kanban routing in every
+    # delegated process — measurement lost for the very traffic a subagent
+    # generates. Withholding the tool is sufficient: the model cannot call a tool
+    # it was never offered, and `delegate_task` (in-process, no new session) stays
+    # available for a child that genuinely needs to sub-delegate.
+    if os.environ.get("HERMES_DELEGATE_PROFILE_DISABLE") == "1":
+        logger.info(
+            "hermes-smart-router: delegate_profile withheld in this process "
+            "(HERMES_DELEGATE_PROFILE_DISABLE=1) — a delegated child must not "
+            "spawn another process tree; delegate_task remains available"
+        )
+    else:
+        ctx.register_tool(
+            name="delegate_profile",
+            toolset="delegation",
+            schema=DELEGATE_PROFILE_SCHEMA,
+            handler=handler,
+            description=(
+                "Spawn a subagent under a specific Hermes profile via "
+                "hermes -p <profile> chat -q (watchdog-guarded subprocess isolation)"
+            ),
+        )
 
     ctx.register_hook("post_tool_call", _on_post_tool_call)
 
