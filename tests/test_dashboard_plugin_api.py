@@ -1289,3 +1289,93 @@ def test_plugin_makes_its_own_plugin_root_importable_in_the_flat_layout(monkeypa
     )
     assert reloaded.DecisionLog is DecisionLog
     assert reloaded._CONFIG_PATH == reloaded._PLUGIN_DIR / "router.yaml"
+
+
+def test_every_dashboard_id_site_names_the_same_plugin():
+    """The bundle, the manifest and the API mount must agree. They did not.
+
+    Three-way split, verified: `dashboard/manifest.json` said
+    `hermes-smart-router`, `plugin_api.py`'s docstring said the same, and
+    `dist/index.js` said `delegate-profile` in three places — the API prefix it
+    fetches, the id it registers under, and its header comment. Commit `40f533d`
+    renamed three of the four and left the bundle.
+
+    Under any host derivation at least one half was broken: `21dc5d1` records that
+    the dashboard filters the manifest `name` against the enabled plugin set, so a
+    bundle registering another id is either not served or serves a panel whose every
+    fetch 404s.
+
+    Asserted as agreement between the files rather than against a literal, so the
+    next rename cannot leave one behind. `plugin.yaml:name` and the TOOL name are
+    deliberately NOT part of this set — the migration doc keeps both as
+    `delegate-profile`, and the host derives the dashboard id from the manifest.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parents[1]
+    manifest = _json.loads(
+        (root / "dashboard" / "manifest.json").read_text(encoding="utf-8")
+    )
+    name = manifest["name"]
+    bundle = (root / "dashboard" / "dist" / "index.js").read_text(encoding="utf-8")
+
+    assert f'"/api/plugins/{name}"' in bundle, (
+        f"the bundle does not fetch /api/plugins/{name} — the manifest name"
+    )
+    assert f'register("{name}"' in bundle, (
+        f"the bundle does not register under {name!r}"
+    )
+    # And the retired spelling appears at NEITHER id site.
+    for retired_site in ('"/api/plugins/delegate-profile"',
+                         'register("delegate-profile"'):
+        assert retired_site not in bundle, retired_site
+
+    # The API module documents the same mount point.
+    api_doc = (root / "dashboard" / "plugin_api.py").read_text(encoding="utf-8")
+    assert f"/api/plugins/{name}/" in api_doc
+
+
+def test_the_dashboard_log_card_does_not_call_a_dry_run_a_decision_log():
+    """`GET /log` serves SIMULATIONS, and the card was titled "Decision Log".
+
+    Its only writer is `_explain_payload` — one entry per Stage-0 dry run, never a
+    dispatched turn — rendered with the same `cause=`/`rule=`/`→ model` shape as a
+    real trace line. `PRODUCT.md:60` forbids that verbatim and `:70` reserves
+    "decision log" for `routes.jsonl`. The old empty state ("No routing decisions
+    yet") was the COMMON case and affirmatively false on a busy router.
+    """
+    import re
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parents[1]
+    bundle = (root / "dashboard" / "dist" / "index.js").read_text(encoding="utf-8")
+    # Comments stripped first — this file's own comments quote the retired strings
+    # in order to record why they are retired, which is the same reason
+    # tests/test_console_logic.js strips them before its literal scans.
+    rendered = re.sub(r"//[^\n]*", "", bundle)
+
+    # It still reads the endpoint...
+    assert "/log?tail=" in rendered
+    # ...and no longer claims to be the decision log.
+    assert "Decision Log" not in rendered
+    assert "No routing decisions yet" not in rendered
+    # It says what it IS, and where the real thing lives.
+    assert "Simula" in rendered
+    assert "routes.jsonl" in rendered
+
+
+def test_the_only_writer_of_the_dashboard_log_is_the_dry_run():
+    """The premise of the test above, asserted against the code rather than assumed."""
+    import re
+    from pathlib import Path as _Path
+
+    src = (_Path(__file__).resolve().parents[1] / "dashboard" / "plugin_api.py").read_text(
+        encoding="utf-8"
+    )
+    writers = re.findall(r"^\s*_log\.record\(", src, re.M)
+    assert len(writers) == 1, f"expected exactly one writer, found {len(writers)}"
+    # And it sits inside the explain payload builder, not on any dispatch path.
+    explain_start = src.index("def _explain_payload")
+    nxt = src.find("\ndef ", explain_start + 1)
+    assert "_log.record(" in src[explain_start:nxt if nxt > 0 else len(src)]

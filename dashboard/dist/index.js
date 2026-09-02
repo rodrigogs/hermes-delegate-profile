@@ -2,7 +2,7 @@
  * Smart Router dashboard panel.
  *
  * Uses the official Hermes Plugin SDK (window.__HERMES_PLUGIN_SDK__).
- * API: /api/plugins/delegate-profile/
+ * API: /api/plugins/hermes-smart-router/  (must equal manifest.json "name")
  */
 (function () {
   "use strict";
@@ -18,7 +18,7 @@
   } = SDK.components;
   const { fetchJSON } = SDK;
 
-  const API = "/api/plugins/delegate-profile";
+  const API = "/api/plugins/hermes-smart-router";
 
   const TIER_COLORS = {
     T1: "#3fb950", T2: "#d2991d", T3: "#a371f7", T4: "#f85149",
@@ -255,11 +255,24 @@
           style: { display: "flex", justifyContent: "space-between",
                    alignItems: "center" },
         },
-          React.createElement(CardTitle, null, "📜 Decision Log"),
+          React.createElement(CardTitle, null, "🔎 Simulações desta sessão"),
           React.createElement(Button, {
             variant: "outline", onClick: reload, style: { fontSize: "0.75em" },
           }, "↻ Refresh"),
         ),
+        // NOT a decision log, and it was titled as one. GET /log serves a
+        // module-level in-memory DecisionLog whose ONLY writer is
+        // _explain_payload — one entry per Stage-0 DRY RUN, never a dispatched
+        // turn — rendered with the same cause=/rule=/-> model shape as a real
+        // trace line. PRODUCT.md:60 forbids that verbatim ("não devem ...
+        // apresentar simulações como se fossem telemetria de decisões reais")
+        // and reserves "decision log" for routes.jsonl. The old empty state
+        // ("No routing decisions yet") was the COMMON case and affirmatively
+        // false on a busy router.
+        React.createElement("p", {
+          style: { fontSize: "0.75em", color: "hsl(var(--muted-foreground))",
+                   margin: "2px 0 0" },
+        }, "Só o que foi simulado aqui. As decisões reais ficam em routes.jsonl."),
       ),
       React.createElement(CardContent, null,
         React.createElement("div", {
@@ -271,7 +284,7 @@
               ? React.createElement("p", {
                   style: { fontSize: "0.8em",
                            color: "hsl(var(--muted-foreground))" },
-                }, "No routing decisions yet")
+                }, "Nenhuma simulação nesta sessão ainda")
               : entries.map((e, i) => {
                   const time = new Date(e.ts * 1000).toLocaleTimeString();
                   return React.createElement("div", {
@@ -316,5 +329,5 @@
     );
   }
 
-  window.__HERMES_PLUGINS__.register("delegate-profile", RouterPage);
+  window.__HERMES_PLUGINS__.register("hermes-smart-router", RouterPage);
 })();

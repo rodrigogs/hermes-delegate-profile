@@ -1,7 +1,7 @@
 """Smart Router dashboard plugin — backend API routes.
 
 Mounted at /api/plugins/hermes-smart-router/ by the dashboard plugin
-system. Imports the pure-core router from the delegate-profile plugin.
+system. Imports the pure-core router from the hermes-smart-router plugin.
 
 Contract: every route here is a READ path — including the two POSTs, where the
 method is transport (a body is the only pipe wide enough for a composed prompt, and
@@ -69,7 +69,7 @@ from typing import Annotated, Any, Dict, Optional, Tuple
 # The router modules live in the parent plugin directory. This stays for the flat
 # shape only — where ``dashboard`` is itself top-level, ``..router`` is beyond the
 # top-level package, and the absolute name below is the only one that can resolve.
-_PLUGIN_DIR = Path(__file__).resolve().parent.parent  # dashboard/ -> delegate-profile/
+_PLUGIN_DIR = Path(__file__).resolve().parent.parent  # dashboard/ -> plugin root
 if str(_PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_DIR))
 
