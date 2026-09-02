@@ -165,6 +165,25 @@ def _default_python() -> str:
     return sys.executable
 
 
+#: What each unit template MUST reference, per unit. Checked by :func:`_render_unit`
+#: in addition to the unknown-placeholder check, because only the unknown direction
+#: was guarded and the missing direction is the one that shipped broken.
+#:
+#: The stale-check unit needs ``@WEBUI_STATE_DIR@`` because the poller resolves the
+#: sidecar token through ``one_sidecar.resolve_token_path``, whose second rung reads
+#: ``HERMES_WEBUI_STATE_DIR`` — the same variable the sidecar's own unit sets. Its
+#: absence is not cosmetic: the poller then reads a token the sidecar does not
+#: authorise with and cannot tell that from "the service is down".
+_REQUIRED_PLACEHOLDERS: dict[str, set[str]] = {
+    "hermes-router-sidecar.service": {
+        "@PLUGIN_DIR@", "@HERMES_HOME@", "@WEBUI_STATE_DIR@", "@PYTHON@",
+    },
+    "hermes-router-sidecar-stale-check.service": {
+        "@PLUGIN_DIR@", "@HERMES_HOME@", "@WEBUI_STATE_DIR@", "@PYTHON@",
+    },
+}
+
+
 def _render_unit(
     repo_root: Path,
     plugin_dir: Path,
@@ -190,6 +209,25 @@ def _render_unit(
         raise ValueError(
             f"{template_name} template has unknown placeholders: {', '.join(unknown)}"
         )
+    # ...and the other direction, which is the one that actually bit. Only ONE
+    # direction was checked, so a template that FORGOT a placeholder rendered a unit
+    # that looked complete: the stale-check unit was missing `@WEBUI_STATE_DIR@`
+    # while this function was already handed the value, so the poller's token ladder
+    # silently fell to a different rung, read a file the sidecar does not authorise
+    # with, and reported "sidecar down" forever.
+    #
+    # Per-template, NOT "every value must be consumed": the two units legitimately
+    # need different subsets, and a blanket rule would forbid the smaller one. What
+    # each unit REQUIRES is a contract, so it is written down.
+    required = _REQUIRED_PLACEHOLDERS.get(template_name)
+    if required is not None:
+        missing = sorted(required - set(tokens))
+        if missing:
+            raise ValueError(
+                f"{template_name} must use {', '.join(missing)} — the installer "
+                f"computes these, and a template that drops one renders a unit whose "
+                f"environment is silently incomplete"
+            )
     for placeholder, value in replacements.items():
         template = template.replace(placeholder, value)
     return template

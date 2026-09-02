@@ -6,5 +6,12 @@ After=network.target
 [Service]
 Type=oneshot
 Environment=HERMES_HOME=@HERMES_HOME@
+# The poller resolves the sidecar token through one_sidecar.resolve_token_path,
+# whose rung 2 reads this variable — the same one the sidecar's own unit sets. It
+# was MISSING here while the installer already computed and passed the value, so
+# the placeholder was silently discarded and the poller fell to a different rung.
+# Reading the wrong token file yields None, which was indistinguishable from "the
+# sidecar is down": the poller then blamed Restart=always and watched nothing.
+Environment=HERMES_WEBUI_STATE_DIR=@WEBUI_STATE_DIR@
 WorkingDirectory=@PLUGIN_DIR@
 ExecStart=@PYTHON@ scripts/sidecar_stale_check.py

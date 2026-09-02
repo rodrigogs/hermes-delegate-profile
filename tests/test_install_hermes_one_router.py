@@ -217,11 +217,16 @@ def test_installer_rejects_malformed_inputs_and_missing_templates(tmp_path):
             tmp_path / "home/webui",
         )
 
-    # The check-service template only needs @PLUGIN_DIR@/@PYTHON@/@HERMES_HOME@ —
-    # it must render without the service-only placeholders.
+    # The check-service template must reference every placeholder it NEEDS —
+    # `_REQUIRED_PLACEHOLDERS` names them per unit. A template missing one renders a
+    # unit whose environment is silently incomplete, which is exactly how the poller
+    # lost `HERMES_WEBUI_STATE_DIR` and started reading the wrong token file.
     check_template = unit_root / "systemd/hermes-router-sidecar-stale-check.service"
     check_template.write_text(
-        "WorkingDirectory=@PLUGIN_DIR@\nExecStart=@PYTHON@ scripts/sidecar_stale_check.py\n",
+        "WorkingDirectory=@PLUGIN_DIR@\n"
+        "Environment=HERMES_HOME=@HERMES_HOME@\n"
+        "Environment=HERMES_WEBUI_STATE_DIR=@WEBUI_STATE_DIR@\n"
+        "ExecStart=@PYTHON@ scripts/sidecar_stale_check.py\n",
         encoding="utf-8",
     )
     rendered = installer._render_unit(
@@ -233,6 +238,24 @@ def test_installer_rejects_malformed_inputs_and_missing_templates(tmp_path):
     )
     assert f"WorkingDirectory={tmp_path / 'plugin'}" in rendered
     assert "scripts/sidecar_stale_check.py" in rendered
+    assert f"HERMES_WEBUI_STATE_DIR={tmp_path / 'home/webui'}" in rendered
+
+    # And a template that DROPS a required placeholder is refused by name — the
+    # check that was missing entirely.
+    check_template.write_text(
+        "WorkingDirectory=@PLUGIN_DIR@\n"
+        "Environment=HERMES_HOME=@HERMES_HOME@\n"
+        "ExecStart=@PYTHON@ scripts/sidecar_stale_check.py\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="@WEBUI_STATE_DIR@"):
+        installer._render_unit(
+            unit_root,
+            tmp_path / "plugin",
+            tmp_path / "home",
+            tmp_path / "home/webui",
+            template_name="hermes-router-sidecar-stale-check.service",
+        )
 
 
 def test_installer_cli_builds_defaults_and_invokes_install(monkeypatch, tmp_path, capsys):
