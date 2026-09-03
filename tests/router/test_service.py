@@ -104,6 +104,9 @@ def test_status_and_policy_are_read_only_snapshots(config_path):
     # HERMES_HOME this suite runs under has no agent config — which is the honest
     # answer, and the one the console renders as "no list to choose from".
     assert status.pop("configured_models") == []
+    # Same additivity, same reason: the queues describe the INSTALL, and this suite runs
+    # under an isolated HERMES_HOME with no agent config, so there are none to report.
+    assert status.pop("agent_queues") == []
 
     assert status == {
         "valid": True,
@@ -4486,3 +4489,133 @@ def test_configured_models_is_empty_when_there_is_no_agent_config_at_all(
 
     (root / "config.yaml").write_text("model: {unclosed\n", encoding="utf-8")
     assert RouterService(config_path).status()["configured_models"] == []
+
+
+# ── the agent's own queues, in the SAME shape as a tier ────────────────────────
+# "Até você se perde nessa configuração de models e fallback - de tão complexa que
+# ela é." Counted: FIVE spellings of one idea across the two files.
+#
+#   fallback_providers            [{label, provider, model, base_url?}]
+#   auxiliary.vision              {provider, model, fallback_chain: [{provider, model}]}
+#   tiers.Tn                      {model, provider, fallback: [{...}], fallback_strategy, …}
+#   blocklist.fallback_chain      [bare strings]
+#   compaction                    fallback_mode: standalone|tier:Tn + fallback_chain
+#
+# Four field orders, one bare-string list, one that can be a REFERENCE to another
+# queue. There is nothing to learn because there is no single thing to learn.
+#
+# Every one of them is the same idea: a PRIMARY and its RESERVES, tried in order. So
+# the server normalises the agent's side to exactly that, and the console draws all of
+# them with the one renderer it already shares (chainList).
+
+
+def test_agent_queues_normalise_the_config_to_primary_and_reserves(
+    config_path, tmp_path, monkeypatch
+):
+    """`model.default` + `fallback_providers` IS a queue; so is vision with its chain.
+
+    Naming them that way is what makes `fallback_providers` legible: it is not a list of
+    providers, it is the RESERVES of the main model.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    _write_agent_config(
+        root,
+        {
+            "model": {"default": "us.anthropic.claude-opus-5", "provider": "bedrock"},
+            "fallback_providers": [
+                {"label": "sonnet", "provider": "bedrock", "model": "us.anthropic.claude-sonnet-5"},
+                {"provider": "bedrock", "model": "us.anthropic.claude-haiku-4-5"},
+            ],
+            "auxiliary": {
+                "vision": {
+                    "provider": "bedrock",
+                    "model": "us.anthropic.claude-opus-5",
+                    "fallback_chain": [{"provider": "zai", "model": "glm-4.5v"}],
+                },
+                "compression": {"provider": "bedrock", "model": "us.anthropic.claude-haiku-4-5"},
+            },
+        },
+    )
+
+    queues = RouterService(config_path).status()["agent_queues"]
+    by_key = {q["key"]: q for q in queues}
+
+    assert list(by_key) == ["model", "auxiliary.vision", "auxiliary.compression"], (
+        "the main chain first, because it is what runs when nothing else is asked"
+    )
+    assert [(a["model"], a["provider"]) for a in by_key["model"]["attempts"]] == [
+        ("us.anthropic.claude-opus-5", "bedrock"),
+        ("us.anthropic.claude-sonnet-5", "bedrock"),
+        ("us.anthropic.claude-haiku-4-5", "bedrock"),
+    ], "the default is attempt 1 and fallback_providers are its reserves, in order"
+    assert [(a["model"], a["provider"]) for a in by_key["auxiliary.vision"]["attempts"]] == [
+        ("us.anthropic.claude-opus-5", "bedrock"),
+        ("glm-4.5v", "zai"),
+    ]
+    # `where` is the operator's pointer: which file and key owns this queue. The router
+    # does not write config.yaml, so saying where it lives is the whole of the answer to
+    # "why can I not edit this here?".
+    assert by_key["model"]["where"] == "config.yaml: model.default + fallback_providers"
+    assert all(q["editable"] is False for q in queues), (
+        "config.yaml is RESTART-class and the router only READS it; claiming otherwise "
+        "would put two authorities on one fact"
+    )
+
+
+def test_configured_models_is_the_agent_queues_flattened(config_path, tmp_path, monkeypatch):
+    """ONE walk over config.yaml, two facts derived from it.
+
+    These were two separate traversals and that is the defect class this repo keeps
+    paying for — two walks over one document drift, exactly as the console's own
+    bannableModels drifted from its twin. The flattening is asserted rather than
+    described so the two cannot disagree again.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    _write_agent_config(
+        root,
+        {
+            "model": {"default": "m1", "provider": "p1"},
+            "fallback_providers": [{"provider": "p2", "model": "m2"}],
+            "auxiliary": {"vision": {"provider": "p1", "model": "m1"}},
+        },
+    )
+
+    status = RouterService(config_path).status()
+    flat = [(e["model"], e["provider"]) for e in status["configured_models"]]
+    from_queues = []
+    for queue in status["agent_queues"]:
+        for attempt in queue["attempts"]:
+            pair = (attempt["model"], attempt["provider"])
+            if pair not in from_queues:
+                from_queues.append(pair)
+    assert flat == from_queues, "the model list IS the queues, deduplicated"
+    # m1/p1 appears in both the main queue and vision; it is one option.
+    assert flat == [("m1", "p1"), ("m2", "p2")]
+
+
+def test_a_queue_the_config_does_not_name_is_absent_rather_than_empty(
+    config_path, tmp_path, monkeypatch
+):
+    """`auxiliary.compression: {provider: auto}` names no model — that is not a queue.
+
+    An empty queue drawn as a queue is the "no empty frame" rule broken: it would put a
+    heading and a border around nothing. The live docker stack is in exactly this state.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    _write_agent_config(
+        root,
+        {
+            "model": {"default": "m", "provider": "p"},
+            "auxiliary": {"compression": {"provider": "auto"}, "vision": {"provider": "auto"}},
+        },
+    )
+    queues = RouterService(config_path).status()["agent_queues"]
+    assert [q["key"] for q in queues] == ["model"], (
+        "auto names no model, so there is no queue to draw"
+    )

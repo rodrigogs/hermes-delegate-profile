@@ -4520,7 +4520,7 @@ test('each block lives inside the panel the approved split names', () => {
   const inPanel = {
     'panel-tarefas': ['sheet', 'inspector', 'windowStale'],
     'panel-simular': ['probeForm', 'probeTask', 'probeHourBox', 'probeContextBox', 'probeResult', 'chainPlan'],
-    'panel-modelos': ['presetBox', 'ladder', 'failSafeBox', 'compactionBox', 'bans'],
+    'panel-modelos': ['presetBox', 'ladder', 'failSafeBox', 'compactionBox', 'agentQueues', 'bans'],
     'panel-precos': ['priceStrip', 'priceNote'],
     'panel-decisoes': ['routesTable', 'replayPath', 'replayPlan', 'routesFilter', 'routeScopes'],
     'panel-politica': ['jsonNote', 'policyEditor', 'jsonActions', 'jsonMsg', 'jsonDiff'],
@@ -11619,6 +11619,217 @@ test('the master switch writes only `enabled`, and reads its own current value',
   findAll(area, 'btn')[0]._listeners.click();
   await tick();
   assert.deepEqual(planBodies[1], { enabled: true });
+});
+
+// ── ONE QUEUE VOCABULARY ───────────────────────────────────────────────────────
+// "Até você se perde nessa configuração de models e fallback - de tão complexa que ela
+// é. Talvez só alinhando a forma como fazemos as coisas na UI já fique bom."
+//
+// Counted, across both files: FIVE spellings of one idea.
+//   fallback_providers        [{label, provider, model, base_url?}]
+//   auxiliary.vision          {provider, model, fallback_chain: [{provider, model}]}
+//   tiers.Tn                  {model, provider, fallback: [...], fallback_strategy, …}
+//   blocklist.fallback_chain  [bare strings]
+//   compaction                fallback_mode: standalone|tier:Tn + fallback_chain
+//
+// Every one is a PRIMARY and its RESERVES tried in order. The console already has one
+// renderer for that — chainList, which serves the rule sheet, the tier chains and the
+// probed plan — and three of the five were not going through it. These pin that they do.
+
+test('the compaction reserve is a queue you can see and reorder, not a chip cloud', () => {
+  // Its own note promised what the control could not deliver: "escolha os modelos da
+  // reserva, NA ORDEM — o primeiro é tentado primeiro", offered as toggle chips. Chips
+  // carry no order: what you got was insertion order, invisible and unchangeable. A
+  // control that states an order it cannot show is the worst of the five spellings.
+  //
+  // Now it is the same queue shape as a group's: ordinals, ↑ ↓ Remover per attempt, and
+  // the chips demoted to what they always were — the way to ADD one.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.capabilities = capModels();
+  api.state.policy = tierPolicy();
+  const payload = compactionPayload();
+  payload.compaction = {
+    provider: 'zai', model: 'glm-4.7', fallback_mode: 'standalone',
+    fallback_chain: [{ model: 'deepseek-v4-pro', provider: 'deepseek' },
+                     { model: 'gpt-5.5', provider: 'openai-codex' }],
+  };
+  api.state.compaction = payload;
+  api.renderCompaction();
+  const box = dom.get('compactionBox');
+
+  const ordered = findAll(box, 'hops').filter((n) => /ordered/.test(n.className));
+  assert.ok(ordered.length, 'the reserve is drawn as an ORDERED queue, so the order is visible');
+  const models = findAll(box, 'hop-model').map((n) => n.textContent);
+  assert.deepEqual(models, ['deepseek-v4-pro', 'gpt-5.5'],
+    'in the order the file declares — which is the order it is tried in');
+
+  // The same three controls the tier editor gives every attempt.
+  const rows = findAll(box, 'cq-row');
+  assert.equal(rows.length, 2, 'one control row per attempt');
+  assert.deepEqual(rows.map((r) => findAll(r, 'btn').map((b) => b.textContent)),
+    [['↑', '↓', 'Remover'], ['↑', '↓', 'Remover']],
+    'the same ↑ ↓ Remover vocabulary as a group queue');
+});
+
+test('moving a compaction attempt up changes the order that will be saved', () => {
+  const posted = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url, opts) => {
+      // The freshness guard re-reads /policy and compares it to what the screen holds,
+      // so the stub must serve the SAME document or the write is (correctly) refused.
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200,
+          text: () => Promise.resolve(JSON.stringify(tierPolicy())) });
+      }
+      if (url.endsWith('/plan')) {
+        posted.push(JSON.parse(opts.body).policy);
+        return Promise.resolve({ ok: true, status: 200,
+          text: () => Promise.resolve(JSON.stringify({ valid: true, policy: {}, diff: 'x', base_hash: 'h' })) });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
+    },
+  });
+  api.state.capabilities = capModels();
+  api.state.policy = tierPolicy();
+  const payload = compactionPayload();
+  payload.compaction = {
+    provider: 'zai', model: 'glm-4.7', fallback_mode: 'standalone',
+    fallback_chain: [{ model: 'deepseek-v4-pro', provider: 'deepseek' },
+                     { model: 'gpt-5.5', provider: 'openai-codex' }],
+  };
+  api.state.compaction = payload;
+  api.renderCompaction();
+  const box = dom.get('compactionBox');
+  // ↑ on the SECOND attempt promotes it.
+  const second = findAll(box, 'cq-row')[1];
+  findAll(second, 'btn')[0]._listeners.click();
+  const after = findAll(dom.get('compactionBox'), 'hop-model').map((n) => n.textContent);
+  assert.deepEqual(after, ['gpt-5.5', 'deepseek-v4-pro'], 'screen order follows the move');
+  // And the armed proposal carries that order, so what is saved is what is shown.
+  const area = findAll(dom.get('compactionBox'), 'proposal-row')[0];
+  assert.equal(area.hidden, false, 'the move arms the block\'s proposal');
+  findAll(area, 'btn')[0]._listeners.click();
+  return tick().then(() => {
+    assert.ok(posted.length, 'a plan was requested');
+    const chain = posted[0].compaction.fallback_chain.map((h) => h.model);
+    assert.deepEqual(chain, ['gpt-5.5', 'deepseek-v4-pro'],
+      'the saved order is the order on screen');
+  });
+});
+
+test('↑ on the first attempt and ↓ on the last move nothing', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.capabilities = capModels();
+  api.state.policy = tierPolicy();
+  const payload = compactionPayload();
+  payload.compaction = {
+    provider: 'zai', model: 'glm-4.7', fallback_mode: 'standalone',
+    fallback_chain: [{ model: 'deepseek-v4-pro', provider: 'deepseek' },
+                     { model: 'gpt-5.5', provider: 'openai-codex' }],
+  };
+  api.state.compaction = payload;
+  api.renderCompaction();
+  const rows = () => findAll(dom.get('compactionBox'), 'cq-row');
+  findAll(rows()[0], 'btn')[0]._listeners.click();   // ↑ on the first
+  findAll(rows()[1], 'btn')[1]._listeners.click();   // ↓ on the last
+  assert.deepEqual(findAll(dom.get('compactionBox'), 'hop-model').map((n) => n.textContent),
+    ['deepseek-v4-pro', 'gpt-5.5'], 'the ends of the queue are the ends');
+});
+
+test('Remover takes an attempt out of the compaction queue', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.capabilities = capModels();
+  api.state.policy = tierPolicy();
+  const payload = compactionPayload();
+  payload.compaction = {
+    provider: 'zai', model: 'glm-4.7', fallback_mode: 'standalone',
+    fallback_chain: [{ model: 'deepseek-v4-pro', provider: 'deepseek' },
+                     { model: 'gpt-5.5', provider: 'openai-codex' }],
+  };
+  api.state.compaction = payload;
+  api.renderCompaction();
+  const row = findAll(dom.get('compactionBox'), 'cq-row')[0];
+  findAll(row, 'btn')[2]._listeners.click();
+  assert.deepEqual(findAll(dom.get('compactionBox'), 'hop-model').map((n) => n.textContent),
+    ['gpt-5.5'], 'the removed attempt is gone and the rest keep their order');
+});
+
+test('the substitute queue is drawn by the shared renderer, ordinals and all', () => {
+  // It was a hand-rolled <ul class="hops drawn"> of bare spans: the same CSS classes as
+  // a real chain, built by different code, with no provider and NO ORDINALS — while
+  // Blocklist.fallback_for() walks this list POSITIONALLY. The order was load-bearing
+  // and the drawing hid it.
+  const { api, dom } = loadConsole();
+  api.state.policy = {};
+  api.state.capabilities = capModels();
+  api.state.blocklist = {
+    manual_bans: [{ model: 'glm-5.3' }],
+    breaker_cooldowns: [],
+    fallback_chain: ['deepseek-v4-pro', 'gpt-5.5'],
+  };
+  api.renderHealth();
+  const box = dom.get('bans');
+  const ordered = findAll(box, 'hops').filter((n) => /ordered/.test(n.className));
+  assert.ok(ordered.length,
+    'the substitute queue is an ORDERED chain, because fallback_for walks it positionally');
+  const drawn = flat(box);
+  assert.match(drawn, /deepseek-v4-pro/);
+  assert.match(drawn, /gpt-5\.5/);
+  // The shared renderer annotates from the catalogue; the hand-rolled one could not.
+  assert.match(drawn, /deepseek/, 'and the rail each attempt bills to');
+});
+
+test('the agent\'s own chains are drawn in the same vocabulary, and say who owns them', () => {
+  // model.default + fallback_providers IS a queue — that is what makes
+  // `fallback_providers` legible: it is the RESERVES OF THE MAIN MODEL, not a list of
+  // providers. Same for vision. Neither had any home in this console before.
+  const { api, dom } = loadConsole();
+  api.state.capabilities = capModels();
+  api.state.status = {
+    enabled: true,
+    agent_queues: [
+      { key: 'model', where: 'config.yaml: model.default + fallback_providers',
+        editable: false,
+        attempts: [
+          { model: 'us.anthropic.claude-opus-5', provider: 'bedrock' },
+          { model: 'us.anthropic.claude-sonnet-5', provider: 'bedrock' },
+        ] },
+      { key: 'auxiliary.vision', where: 'config.yaml: auxiliary.vision', editable: false,
+        attempts: [{ model: 'us.anthropic.claude-opus-5', provider: 'bedrock' }] },
+    ],
+  };
+  api.renderAgentQueues();
+  const box = dom.get('agentQueues');
+  // The GROUP is what the markup hides — the inner box is where the queues are drawn.
+  assert.equal(dom.get('agentQueuesGroup').hidden, false,
+    'the block shows when the install has chains to show');
+  const drawn = flat(box);
+  assert.match(drawn, /Modelo principal/, 'the main chain is named in operator words');
+  assert.match(drawn, /Vis/, 'and vision');
+  assert.match(drawn, /us\.anthropic\.claude-sonnet-5/, 'every attempt is listed');
+  assert.match(drawn, /config\.yaml/, 'and each queue says which file and key owns it');
+  // ORDERED, like every other queue whose order decides what runs first.
+  assert.ok(findAll(box, 'hops').some((n) => /ordered/.test(n.className)));
+  // No edit affordance: the router only READS config.yaml, and offering to edit it here
+  // would put a second authority on a fact that already has one.
+  assert.equal(findAll(box, 'is-edit').length, 0, 'read-only, and it does not pretend');
+});
+
+test('with no agent chains to show, the block is absent rather than empty', () => {
+  // DESIGN.md rule 1. An older sidecar serves no agent_queues, and a heading with a
+  // border around nothing is worse than no heading.
+  const { api, dom } = loadConsole();
+  api.state.status = { enabled: true };
+  api.renderAgentQueues();
+  assert.equal(dom.get('agentQueuesGroup').hidden, true);
+  api.state.status = { enabled: true, agent_queues: [] };
+  api.renderAgentQueues();
+  assert.equal(dom.get('agentQueuesGroup').hidden, true, 'an empty list is still an absence');
+  // And a served list whose entries carry no attempts is the same absence.
+  api.state.status = { enabled: true, agent_queues: [{ key: 'model', attempts: [] }] };
+  api.renderAgentQueues();
+  assert.equal(dom.get('agentQueuesGroup').hidden, true, 'a queue with no attempts is not a queue');
 });
 
 test('with nobody banned the substitute queue is not mounted (§2.6)', () => {

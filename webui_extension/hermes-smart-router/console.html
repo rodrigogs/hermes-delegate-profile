@@ -1731,6 +1731,18 @@
        name, not a button that looks like a write control. */
     .linkish { background: none; border: none; padding: 0; margin-top: 2px; font: var(--t-micro) var(--sans); color: var(--accent); cursor: pointer; text-decoration: underline; }
     /* The own-chain picker of the compaction block. */
+    /* The agent's chains: the same chain-head + hops drawing as everything else, with
+       one line naming the file and key that owns each — which is the whole answer to
+       "why is this not editable here?". */
+    .agent-queue { margin-bottom: 14px; }
+    .agent-queue:last-child { margin-bottom: 0; }
+    .agent-queue-where { margin-top: 4px; font: var(--t-micro) var(--mono); color: var(--muted); }
+    /* One control row per attempt in the compaction reserve — the same ↑ ↓ Remover the
+       group queue gives every attempt, so the gesture is learned once. */
+    .compaction-queue { margin-top: 6px; }
+    .cq-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+    .cq-name { flex: 1 1 auto; min-width: 0; font: var(--t-micro) var(--mono); color: var(--muted);
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .compaction-chain { margin-top: 9px; }
     .compaction-chain-note { font: var(--t-micro) var(--sans); color: var(--muted); margin-bottom: 6px; }
     .compaction-chips { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -2014,6 +2026,23 @@
              the writable source of truth for fallback_mode; the resolved aux
              is the display fallback when /policy carries no block yet. -->
         <div class="compaction-box" id="compactionBox"></div>
+
+        <!-- The agent's OWN chains, in the same queue vocabulary as everything else on
+             this screen. They had no home here at all, which is half of why the
+             configuration read as five ideas: two of the five were invisible.
+
+             READ-ONLY, and the block says so by naming the file and key that owns each
+             one. config.yaml is RESTART-class and this plugin only reads it; a console
+             offering to edit it would put a second authority on a fact that already has
+             one. Hidden until the sidecar reports some — an older one reports none, and
+             a heading around nothing is worse than no heading. -->
+        <div class="group" id="agentQueuesGroup" hidden>
+          <div class="group-head">
+            <h2>Filas do Hermes</h2>
+            <span class="screen-note">fora do router — quem edita é o config.yaml</span>
+          </div>
+          <div id="agentQueues"></div>
+        </div>
 
         <div class="group" id="bansGroup" hidden>
           <div class="group-head"><h2>Fora de rotação</h2></div>
@@ -5152,13 +5181,20 @@
         if (chain.length && (bans.length || breakers.length)) {
           const sub = el('div');
           sub.append(el('div', 'chain-head', 'Substituto da lista de reserva geral'));
-          const ul = el('ul', 'hops drawn');
-          chain.forEach((m) => {
-            const item = el('li', 'hop');
-            item.append(el('span', 'hop-model', String(m)));
-            ul.append(item);
-          });
-          sub.append(ul);
+          // THE SHARED RENDERER, like every other queue. This was a hand-rolled
+          // <ul class="hops drawn"> of bare spans — the same CSS classes as a real
+          // chain, built by different code, carrying no provider and no ordinals.
+          //
+          // The ordinals are not decoration: blocklist.fallback_chain is walked
+          // POSITIONALLY by Blocklist.fallback_for(), which router.example.yaml states in
+          // as many words ("the order encodes 'next cheapest thing that is not the model
+          // that just failed'"). The order was load-bearing and the drawing hid it. Bare
+          // strings become {model}: this list names no rail, and chainList says so per
+          // attempt instead of leaving a blank.
+          sub.append(chainList(chain.map((m) => ({ model: String(m) })), {
+            registry: state.capabilities,
+            strategy: strategyWords('sequential'),
+          }));
           banBox.append(sub);
         }
         // §3.3's other half: the gesture that PUTS a rail out of rotation. Only the
@@ -5325,6 +5361,53 @@
         const already = (Array.isArray(bl.manual_bans) ? bl.manual_bans : [])
           .map((b) => ((b && typeof b === 'object') ? String(b.model || '') : ''));
         return seen.filter((m) => already.indexOf(m) < 0);
+      }
+
+      // The agent's own chains, drawn in the queue vocabulary.
+      //
+      // WHY THEY ARE HERE AT ALL: the operator counted five spellings of "if this fails,
+      // try that" across the two config files and could not hold them. Two of the five —
+      // the main chain and vision — were on no screen, so the only way to read them was
+      // to open config.yaml. Showing them in the SAME shape as a group's queue is what
+      // turns five ideas back into one.
+      //
+      // The names are the operator's, not the key's: `model.default +
+      // fallback_providers` is "Modelo principal", because that is what it IS — the model
+      // that runs and its reserves.
+      const AGENT_QUEUE_NAMES = {
+        model: 'Modelo principal',
+        'auxiliary.vision': 'Visão',
+        'auxiliary.compression': 'Compressão',
+      };
+
+      function renderAgentQueues() {
+        const box = $('agentQueues');
+        const group = $('agentQueuesGroup');
+        if (!box || !group) return;
+        clear(box);
+        const served = state.status && state.status.agent_queues;
+        const queues = Array.isArray(served)
+          ? served.filter((q) => q && typeof q === 'object'
+              && Array.isArray(q.attempts) && q.attempts.length)
+          : [];
+        // Absence, not an empty frame (DESIGN.md rule 1): an older sidecar reports none.
+        group.hidden = !queues.length;
+        if (!queues.length) return;
+        queues.forEach((queue) => {
+          const block = el('div', 'agent-queue');
+          const key = String(queue.key || '');
+          block.append(el('div', 'chain-head', AGENT_QUEUE_NAMES[key] || key));
+          // ORDERED: these are tried in order, and the order is the whole of what
+          // "reserve" means. Same reading as a tier whose strategy is sequential.
+          block.append(chainList(queue.attempts, {
+            registry: state.capabilities,
+            strategy: strategyWords('sequential'),
+          }));
+          // WHERE it lives, which is the entire answer to "why can I not change it
+          // here?". Naming the file and the key beats a disabled control.
+          if (queue.where) block.append(el('div', 'agent-queue-where', String(queue.where)));
+          box.append(block);
+        });
       }
 
       // ── chain views: the shared vocabulary ──────────────────────────
@@ -7594,10 +7677,65 @@
         const chainBox = el('div', 'compaction-chain');
         chainBox.hidden = true;
         const chainNote = el('div', 'compaction-chain-note');
+        // THE QUEUE ITSELF, drawn and reordered like a group's.
+        //
+        // The note below this promised "escolha os modelos da reserva, NA ORDEM — o
+        // primeiro é tentado primeiro" and the control was a grid of toggle chips. Chips
+        // carry no order: what the operator got was INSERTION order, invisible and
+        // unchangeable. Of the five spellings of a fallback chain in these two files this
+        // was the worst — it stated an order it could not show.
+        //
+        // Now it is the vocabulary the rest of the console uses: an ordered chainList
+        // (the same renderer as the rule sheet, the group ladder and the probed plan) with
+        // ↑ ↓ Remover per attempt, and the chips demoted to what they always were — the
+        // way to ADD one.
+        const chainQueue = el('div', 'compaction-queue');
         const chainChips = el('div', 'compaction-chips');
-        chainBox.append(chainNote, chainChips);
+        chainBox.append(chainNote, chainQueue, chainChips);
+        const renderChainQueue = () => {
+          clear(chainQueue);
+          const chain = compactionChain || [];
+          if (!chain.length) return;
+          chainQueue.append(chainList(chain, {
+            registry: catalogue, strategy: strategyWords('sequential'),
+          }));
+          // One control row per attempt, in the drawing's own order, so a row and the hop
+          // above it cannot disagree about which attempt they mean.
+          chain.forEach((hop, index) => {
+            const row = el('div', 'cq-row');
+            row.append(el('span', 'cq-name', String((hop && hop.model) || '')));
+            const move = (delta) => {
+              const to = index + delta;
+              if (to < 0 || to >= chain.length) return;
+              const [moved] = chain.splice(index, 1);
+              chain.splice(to, 0, moved);
+              renderChainQueue();
+              renderChainPicker();
+              armQueueProposal('standalone', null, chain);
+            };
+            const up = el('button', 'btn', '↑');
+            up.type = 'button';
+            up.setAttribute('aria-label', `Subir ${(hop && hop.model) || ''}`);
+            up.addEventListener('click', () => move(-1));
+            const down = el('button', 'btn', '↓');
+            down.type = 'button';
+            down.setAttribute('aria-label', `Descer ${(hop && hop.model) || ''}`);
+            down.addEventListener('click', () => move(1));
+            const drop = el('button', 'btn warn', 'Remover');
+            drop.type = 'button';
+            drop.addEventListener('click', () => {
+              chain.splice(index, 1);
+              renderChainQueue();
+              renderChainPicker();
+              armQueueProposal('standalone', null, chain);
+            });
+            row.append(up, down, drop);
+            chainQueue.append(row);
+          });
+        };
         const renderChainPicker = () => {
           clear(chainChips);
+          renderChainQueue();
           const candidates = compactionChainCandidates(state);
           const chain = compactionChain || [];
           candidates.forEach((m) => {
@@ -7616,7 +7754,11 @@
             });
             chainChips.append(chip);
           });
-          chainNote.textContent = 'escolha os modelos da reserva, na ordem — o primeiro é tentado primeiro';
+          // The note describes what the QUEUE above shows, not what the chips do: the
+          // order lives in the queue now, and the chips only add and remove.
+          chainNote.textContent = chain.length
+            ? 'a reserva é tentada de cima para baixo — use ↑ ↓ para mudar a ordem'
+            : 'escolha abaixo os modelos da reserva; o primeiro escolhido é o primeiro tentado';
         };
         function armQueueProposal(kind, tierName, chain) {
           // The raw block the motor lints REQUIRES provider+model (service.py
@@ -11894,6 +12036,7 @@
         renderHealth();
         renderPriceStrip();
         renderCompaction();
+        renderAgentQueues();
         renderPresets();
         renderRoutes();
         renderSheet();
@@ -12228,7 +12371,7 @@
         // strip, the compaction facts block, and the group share helper the
         // ladder renders. Exported so the band counts, the now-mark's clock
         // authority and the disabled-state reasons are pinned by tests.
-        renderPriceStrip, renderCompaction, tierShare,
+        renderPriceStrip, renderCompaction, renderAgentQueues, tierShare,
         // The Modelos write surface (card t_5d8491bf): the pure half — the
         // hour toggle (base → 0.8×, inside → split out), the day words, the
         // origin/provenance readers, the patches (restore spelled null) and

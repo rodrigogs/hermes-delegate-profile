@@ -398,17 +398,26 @@ def _config_entry(row: Any, source: str) -> Optional[Dict[str, str]]:
     return {"model": model, "provider": provider, "source": source}
 
 
-def configured_models() -> List[Dict[str, str]]:
-    """The models the AGENT's config.yaml says this install can call.
+def agent_queues() -> List[Dict[str, Any]]:
+    """The agent's own fallback chains, normalised to PRIMARY + RESERVES.
 
-    Deduplicated on ``(model, provider)`` keeping the first source — the live stack
-    names its default again under ``fallback_providers``, and twice more with a
-    different ``base_url``, and two identical options in a select is a picker that
-    looks broken. The same id on a DIFFERENT rail is a different option and is kept.
+    A tier is a primary and its reserves, tried in order. So is the agent's main chain
+    (``model.default`` then ``fallback_providers``), and so is vision
+    (``auxiliary.vision`` then its ``fallback_chain``). They were written in four
+    different field orders, one of them a list of bare strings elsewhere, which is why
+    the configuration reads as five ideas instead of one.
 
-    An absent or unparseable config.yaml yields ``[]``. That is an absence, not an
-    error: ``status`` is what a console reads to describe a broken install, so it has
-    to answer, and the console already says "no list to choose from" honestly.
+    Naming them queues is what makes ``fallback_providers`` legible: it is not a list of
+    providers, it is the RESERVES OF THE MAIN MODEL.
+
+    ``where`` is the operator's pointer — which file and key owns the queue. ``editable``
+    is False on every one of these: config.yaml is RESTART-class and this plugin only
+    READS it, and a console that offered to edit it would put a second authority on a
+    fact that already has one. Saying where it lives is the honest whole of the answer.
+
+    A block that names no model (``auxiliary.compression: {provider: auto}``, which is the
+    live docker stack's state) yields NO queue rather than an empty one: an empty queue
+    drawn as a queue is a heading and a border around nothing.
     """
     try:
         raw = yaml.safe_load(
@@ -417,40 +426,72 @@ def configured_models() -> List[Dict[str, str]]:
     except (OSError, yaml.YAMLError):
         return []
     config = _as_mapping(raw)
+    queues: List[Dict[str, Any]] = []
 
-    found: List[Dict[str, str]] = []
+    def add(key: str, where: str, attempts: List[Dict[str, str]]) -> None:
+        if attempts:
+            queues.append(
+                {"key": key, "where": where, "editable": False, "attempts": attempts}
+            )
+
     model_block = _as_mapping(config.get("model"))
+    main: List[Dict[str, str]] = []
     entry = _config_entry(
         {"model": model_block.get("default"), "provider": model_block.get("provider")},
         "model.default",
     )
     if entry:
-        found.append(entry)
+        main.append(entry)
     for row in _as_list(config.get("fallback_providers")):
-        entry = _config_entry(row, "fallback_providers")
-        if entry:
-            found.append(entry)
-    auxiliary = _as_mapping(config.get("auxiliary"))
-    vision = _as_mapping(auxiliary.get("vision"))
-    entry = _config_entry(vision, "auxiliary.vision")
-    if entry:
-        found.append(entry)
-    for row in _as_list(vision.get("fallback_chain")):
-        entry = _config_entry(row, "auxiliary.vision")
-        if entry:
-            found.append(entry)
-    entry = _config_entry(_as_mapping(auxiliary.get("compression")), "auxiliary.compression")
-    if entry:
-        found.append(entry)
+        found = _config_entry(row, "fallback_providers")
+        if found:
+            main.append(found)
+    add("model", "config.yaml: model.default + fallback_providers", main)
 
+    auxiliary = _as_mapping(config.get("auxiliary"))
+    vision_block = _as_mapping(auxiliary.get("vision"))
+    vision: List[Dict[str, str]] = []
+    entry = _config_entry(vision_block, "auxiliary.vision")
+    if entry:
+        vision.append(entry)
+    for row in _as_list(vision_block.get("fallback_chain")):
+        found = _config_entry(row, "auxiliary.vision")
+        if found:
+            vision.append(found)
+    add("auxiliary.vision", "config.yaml: auxiliary.vision", vision)
+
+    compression = _config_entry(_as_mapping(auxiliary.get("compression")), "auxiliary.compression")
+    add("auxiliary.compression", "config.yaml: auxiliary.compression",
+        [compression] if compression else [])
+    return queues
+
+
+def configured_models() -> List[Dict[str, str]]:
+    """The models the AGENT's config.yaml says this install can call.
+
+    THE QUEUES, FLATTENED — one walk over config.yaml, two facts derived from it. These
+    were two traversals, and two walks over one document is the defect class this repo
+    keeps paying for: the console's own ``bannableModels`` had drifted from its twin the
+    same way, silently omitting ``default.model`` and the compaction block.
+
+    Deduplicated on ``(model, provider)`` keeping the first source — the live stack names
+    its default again under ``fallback_providers``, and twice more with a different
+    ``base_url``, and two identical options in a select is a picker that looks broken.
+    The same id on a DIFFERENT rail is a different option and is kept.
+
+    An absent or unparseable config.yaml yields ``[]``. That is an absence, not an error:
+    ``status`` is what a console reads to describe a broken install, so it has to answer,
+    and the console already says "no list to choose from" honestly.
+    """
     seen = set()
     unique: List[Dict[str, str]] = []
-    for item in found:
-        key = (item["model"], item["provider"])
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(item)
+    for queue in agent_queues():
+        for attempt in queue["attempts"]:
+            key = (attempt["model"], attempt["provider"])
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(dict(attempt))
     return unique
 
 
@@ -1112,6 +1153,9 @@ class RouterService:
             # Not the capability registry, which is what is KNOWN — see
             # configured_models' note on the two being different questions.
             "configured_models": configured_models(),
+            # The same queues UNFLATTENED, so a console can draw the agent's chains in
+            # the one queue vocabulary instead of a fourth field order.
+            "agent_queues": agent_queues(),
         }
         if process_started_at is not None:
             result["process_started_at"] = process_started_at
