@@ -757,6 +757,12 @@ def test_plugin_read_paths_answer_over_a_broken_install(
     assert status["classifier_model"] == ""
     assert served["rules"] == {
         "rules": [], "default": {}, "tiers": {}, "fail_safe": {},
+        # The classifier block degrades to an empty mapping, like `default` and
+        # `fail_safe`, rather than being omitted: the console's editor asks for
+        # the key and an absent one would read as "an older sidecar that cannot
+        # serve it" — the compatibility path that falls back to the two fields
+        # /status carries. Empty is "configure me"; absent is "I cannot".
+        "classifier": {},
         # The price-window overlay degrades to an empty table over a broken
         # install, exactly as `tiers` does.
         "price_windows": {},

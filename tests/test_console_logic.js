@@ -11636,6 +11636,98 @@ test('the master switch writes only `enabled`, and reads its own current value',
 // renderer for that — chainList, which serves the rule sheet, the tier chains and the
 // probed plan — and three of the five were not going through it. These pin that they do.
 
+// ── the classifier: the sixth queue, and its knobs ────────────────────────────
+// "não posso mudar o classifier?" — half of it. The door exists (the "decide na hora"
+// cell) and so does an editor, and that editor offered Modelo + Provedor. The block also
+// carries a `chain` (its own fallback queue, the SIXTH spelling in these two files) plus
+// on_total_failure, temperature, max_tokens and timeout_seconds — none of it on screen,
+// because /policy did not project `classifier` at all and /status sends only two fields.
+
+function classifierPolicy() {
+  return {
+    rules: [{ id: 'ask', when: {}, then: { action: 'classify' } }],
+    default: { action: 'classify' },
+    tiers: { T1: { model: 'glm-4.7', provider: 'zai' } },
+    classifier: {
+      model: 'glm-4.7', provider: 'zai',
+      chain: [
+        { model: 'deepseek-v4-pro', provider: 'deepseek' },
+        { model: 'gpt-5.5', provider: 'openai-codex' },
+      ],
+      on_total_failure: 'heuristic', temperature: 0, max_tokens: 128, timeout_seconds: 15,
+    },
+  };
+}
+
+test('the classifier is a queue like a group is, drawn and reordered the same way', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = classifierPolicy();
+  api.state.capabilities = capModels();
+  api.renderInspector({ id: 'classifier', name: 'classifier', bind: 'classifier' });
+  const box = dom.get('inspector');
+
+  const heads = findAll(box, 'chain-head').map((n) => n.textContent);
+  assert.deepEqual(heads, ['Primeira tentativa', 'Reserva', 'Reserva'],
+    'model+provider is attempt 1 and `chain` are its reserves — the tier vocabulary');
+  const rows = findAll(box, 'chain-row');
+  assert.equal(rows.length, 3);
+  assert.deepEqual(rows.map((r) => rowField(r, 'Modelo').children.find((c) => c.tagName === 'select').value),
+    ['glm-4.7', 'deepseek-v4-pro', 'gpt-5.5'], 'file order is screen order');
+  rows.forEach((r, i) => {
+    assert.deepEqual(rowButtons(r).children.map((b) => b.textContent), ['↑', '↓', 'Remover'],
+      `row ${i} carries the same three controls every other queue gives an attempt`);
+  });
+});
+
+test('the classifier knobs the file carries all reach the screen', () => {
+  // Three of seven fields was a console silently dropping four operator decisions.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = classifierPolicy();
+  api.state.capabilities = capModels();
+  api.renderInspector({ id: 'classifier', name: 'classifier', bind: 'classifier' });
+  const box = dom.get('inspector');
+  ['Se todas falharem', 'Temperatura', 'Máximo de tokens', 'Tempo limite (s)'].forEach((label) => {
+    assert.ok(byLabel(box, label), `${label} must be editable, it is in the file`);
+  });
+  // on_total_failure is a CLOSED set — the engine accepts two answers, so free text here
+  // would be a field that lints clean and does nothing.
+  const wrap = byLabel(box, 'Se todas falharem');
+  const sel = wrap.children.find((c) => c.tagName === 'select');
+  assert.ok(sel, 'it is a choice, not free text');
+  assert.deepEqual(sel.children.map((o) => o.value).filter(Boolean), ['heuristic', 'fail_safe']);
+});
+
+test('moving a classifier reserve up writes the order that will be saved', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = classifierPolicy();
+  api.state.capabilities = capModels();
+  api.renderInspector({ id: 'classifier', name: 'classifier', bind: 'classifier' });
+  const box = dom.get('inspector');
+  // ↑ on the FIRST reserve promotes it to the primary, exactly as a tier's does.
+  findAll(findAll(box, 'chain-row')[1], 'btn').find((b) => b.textContent === '↑')._listeners.click();
+  const draft = api.state.draft.classifier;
+  assert.equal(draft.model, 'deepseek-v4-pro', 'the promoted reserve became the first attempt');
+  assert.deepEqual(draft.chain.map((h) => h.model), ['glm-4.7', 'gpt-5.5'],
+    'and the demoted primary is the head of the reserves');
+});
+
+test('a classifier the file does not configure still opens, and offers to configure it', () => {
+  // `{}` is served for an unconfigured block; the editor must not blank out.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  const policy = classifierPolicy();
+  policy.classifier = {};
+  api.state.policy = policy;
+  api.state.capabilities = capModels();
+  api.renderInspector({ id: 'classifier', name: 'classifier', bind: 'classifier' });
+  const box = dom.get('inspector');
+  assert.ok(byLabel(box, 'Modelo'), 'the first attempt is offered even with nothing set');
+  assert.equal(findAll(box, 'chain-row').length, 1, 'one row: the primary, with no reserves');
+});
+
 test('the compaction block says when saving records a choice nothing here can enact', () => {
   // Measured on both installs, 2026-09-03: writing `compaction` into router.yaml works
   // (ordinary hot /plan + /apply). Projecting it into Hermes' own auxiliary.compression is

@@ -42,3 +42,7 @@ state/
 *.db
 # Live config (seeded from router.example.yaml on first run; edit freely)
 router.yaml
+
+# Playwright MCP session debris (page snapshots, console logs) from live measurement
+# against a running install. Never an input to any test; regenerated per session.
+.playwright-mcp/

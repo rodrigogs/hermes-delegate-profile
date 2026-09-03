@@ -4619,3 +4619,104 @@ def test_a_queue_the_config_does_not_name_is_absent_rather_than_empty(
     assert [q["key"] for q in queues] == ["model"], (
         "auto names no model, so there is no queue to draw"
     )
+
+
+# ── the classifier: a SIXTH queue, and the console could not see it ────────────
+# "não posso mudar o classifier?"
+#
+# Half of it. The console has a door (the "decide na hora" cell) and an editor, and that
+# editor offers Modelo + Provedor — three fields. The classifier block in router.yaml also
+# carries a `chain` (its own fallback queue, the SIXTH spelling of one idea), plus
+# temperature, max_tokens, timeout_seconds and on_total_failure. None of it reaches the
+# screen.
+#
+# The root cause is here, not in the console: `policy()` projects `fail_safe` verbatim and
+# does not project `classifier` at all, and `status()` sends only {model, provider}. A
+# console cannot offer what the server never sends.
+#
+# Measured on the docker stack 2026-09-03: its classifier chain was
+# glm-5.3-flash/zai -> deepseek-v4-flash/deepseek — two rails that install has no
+# credential for — and there was no surface on which an operator could have seen that.
+
+
+def test_policy_projects_the_classifier_like_it_projects_fail_safe(config_path):
+    """The last-resort block is served whole; the classifier was not served at all.
+
+    Both are single blocks naming a model, a rail and their own fallback behaviour, and
+    both are things an operator changes. Serving one and withholding the other is what made
+    the classifier half-editable: the editor could only offer the two fields `status`
+    happened to carry.
+
+    Verbatim, like `fail_safe` — the block's knobs (`chain`, `temperature`, `max_tokens`,
+    `timeout_seconds`, `on_total_failure`) are exactly what a console needs and none of them
+    is a secret.
+    """
+    served = RouterService(config_path).policy()
+    assert "classifier" in served, "the classifier block reaches the console"
+    assert served["classifier"] == {"model": "judge", "provider": "judge-rail"}, (
+        "verbatim, the same treatment fail_safe gets"
+    )
+    assert "fail_safe" in served, "and the sibling it is modelled on is still there"
+
+
+def test_the_classifier_chain_is_served_whole_so_it_can_be_read_and_edited(tmp_path):
+    """Its `chain` is a fallback queue and must arrive as one.
+
+    This is the SIXTH place these two files spell "if this fails, try that", after
+    fallback_providers, auxiliary.vision, tiers.Tn.fallback, blocklist.fallback_chain and
+    compaction. It is served verbatim so the console can draw it with the one queue
+    renderer instead of inventing a seventh shape.
+    """
+    import yaml as _yaml
+
+    path = tmp_path / "router.yaml"
+    path.write_text(
+        _yaml.safe_dump(
+            {
+                "enabled": True,
+                "classifier": {
+                    "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "provider": "bedrock",
+                    "chain": [
+                        {"model": "us.anthropic.claude-sonnet-5", "provider": "bedrock"},
+                    ],
+                    "on_total_failure": "heuristic",
+                    "temperature": 0,
+                    "max_tokens": 128,
+                    "timeout_seconds": 15,
+                },
+                "rules": [],
+                "default": {"action": "classify"},
+                "tiers": {"T1": {"model": "m", "provider": "p"}},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    served = RouterService(path).policy()["classifier"]
+    assert [h["model"] for h in served["chain"]] == ["us.anthropic.claude-sonnet-5"], (
+        "the reserves arrive, in order"
+    )
+    # And every knob the file carries, because a console that shows three of seven fields
+    # is a console that silently drops four operator decisions.
+    for knob in ("on_total_failure", "temperature", "max_tokens", "timeout_seconds"):
+        assert knob in served, f"{knob} is in the file and must reach the screen"
+
+
+def test_a_classifier_the_file_omits_is_an_empty_block_not_a_missing_key(tmp_path):
+    """Same shape as fail_safe's: the key is always present, empty when unconfigured.
+
+    A console branching on presence would otherwise have to tell "no classifier" from "an
+    older sidecar that does not serve it", which are different states with different
+    remedies.
+    """
+    import yaml as _yaml
+
+    path = tmp_path / "router.yaml"
+    path.write_text(
+        _yaml.safe_dump({"enabled": True, "rules": [], "default": {}, "tiers": {}}),
+        encoding="utf-8",
+    )
+    served = RouterService(path).policy()
+    assert served["classifier"] == {}

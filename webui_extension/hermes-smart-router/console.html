@@ -9784,8 +9784,29 @@
         return renderTierChainEditor({ box, tier: t, touched, msg, tierName, state });
       }
 
+      // The SAME queue editor for the classifier. Its reserves live in `chain`, not
+      // `fallback`, and it has none of a group's constraints — no context floor, no price
+      // ceiling — so it passes the reserve key and turns the group knobs off.
+      //
+      // Reusing this rather than writing a second editor is the whole point: `chain` is the
+      // SIXTH place these two files spell "if this fails, try that", and a sixth editor
+      // would have been a sixth thing to learn. Offering a group's floor here would be
+      // worse than not offering it — the engine ignores those keys on the classifier, so
+      // the field would lint clean and do nothing.
+      function editClassifierChain(box, c, touched, msg) {
+        return renderTierChainEditor({
+          box, tier: c, touched, msg, tierName: null, state,
+          reserveKey: 'chain', groupKnobs: false,
+        });
+      }
+
       function renderTierChainEditor(context) {
         const { box, tier: t, touched, msg, tierName, state: editorState } = context;
+        // Which key holds the reserves, and whether this block has a group's constraints.
+        // A tier keeps `fallback` and its two knobs; the classifier uses `chain` and has
+        // neither. Defaulted so every existing caller is unchanged.
+        const RESERVE_KEY = context.reserveKey || 'fallback';
+        const GROUP_KNOBS = context.groupKnobs !== false;
         // The floor is a STABLE object for the whole panel: every model picker
         // and the floor field below share THIS reference, so an edit in one is
         // read by the others (the live count answers the draft, not the value
@@ -9801,7 +9822,7 @@
         // an attempt moves. Declared ONCE, by name, and shared by the swap
         // and the remove — a second list in either operation would drift, and
         // the next group key added would leak into fallback.
-        const STRATEGY_KEYS = ['fallback', 'fallback_strategy', 'pin_primary', 'time_cap', 'time_policy', 'requirements'];
+        const STRATEGY_KEYS = [RESERVE_KEY, 'fallback_strategy', 'pin_primary', 'time_cap', 'time_policy', 'requirements'];
         // The attempt's own keys inside an object: for the primary that is the
         // tier minus the strategy set; for a reserve the WHOLE object is the
         // attempt. "Move the attempt" means move this set — however many keys
@@ -9814,9 +9835,9 @@
         // a key left (§2.1) — plus the fallback list.
         const touchAll = () => {
           attemptKeys(t).forEach((k) => touched.add(k));
-          touched.add('fallback');
+          touched.add(RESERVE_KEY);
         };
-        const touchList = () => touched.add('fallback');
+        const touchList = () => touched.add(RESERVE_KEY);
         // Swap the WHOLE attempts of a and b — every key each side carries
         // rides with its attempt (reserve = all keys; primary = tier minus the
         // strategy set, which never leaves the tier). billing_mode normalizes
@@ -9838,8 +9859,8 @@
           if (a.billing_mode === undefined) a.billing_mode = null;
           if (b.billing_mode === undefined) b.billing_mode = null;
         };
-        const fallback = () => (Array.isArray(t.fallback) ? t.fallback : []);
-        const setList = (list) => { t.fallback = list; };
+        const fallback = () => (Array.isArray(t[RESERVE_KEY]) ? t[RESERVE_KEY] : []);
+        const setList = (list) => { t[RESERVE_KEY] = list; };
 
         const billingField = (rowBox, attempt, mark) => {
           const wrap = el('div', 'field');
@@ -9896,7 +9917,7 @@
         // the edit touches: the primary's fields each have their own key,
         // while ANY change to a reserve touches the whole list.
         const attemptRow = (container, attempt, heading, isPrimary, rowIndex) => {
-          const mark = (tierKey) => touched.add(isPrimary ? tierKey : 'fallback');
+          const mark = (tierKey) => touched.add(isPrimary ? tierKey : RESERVE_KEY);
           const row = el('div', 'chain-row');
           // §3.4(b): the ladder's "Trocar por um modelo do catálogo" names the
           // attempt by index; the editor marks that row so the operator lands
@@ -9998,6 +10019,11 @@
         box.append(host);
 
         // ── The group's two operator constraints, beside the queue ────────
+        // Gated: a tier has them, the classifier does not. The engine ignores
+        // requirements/time_cap on the classifier block, so drawing them there would be a
+        // control that lints clean and does nothing — the failure mode this file calls out
+        // by name for typo'd time knobs.
+        const CONSTRAINT_FIELDS = GROUP_KNOBS;
         // min_context and max_multiplier are RESTRICTIONS the operator sets on
         // their own fleet (§3.4(d), §5.4), not strategy: the three strategy
         // keys stay the presets' territory. Both fields carry the CURRENT
@@ -10033,7 +10059,7 @@
           renderPresetNote();
         });
         floorWrap.append(floorInput);
-        box.append(floorWrap);
+        if (CONSTRAINT_FIELDS) box.append(floorWrap);
 
         const capWrap = el('div', 'field');
         const capLabel = el('label', '', 'Teto de preço (multiplicador máximo)');
@@ -10076,7 +10102,7 @@
           'O que um teto faz está dito na descrição do preset Economizar.');
         capNote.hidden = true;
         capWrap.append(capNote);
-        box.append(capWrap);
+        if (CONSTRAINT_FIELDS) box.append(capWrap);
 
         // §2.4: the panel says what the operator's edit did to the preset
         // match — on the spot, next to the fields — so "this group is now
@@ -10326,7 +10352,48 @@
           });
           ops.append(toggle);
           box.append(ops);
-        } else if (node.bind === 'classifier' || node.bind === 'fail_safe') {
+        } else if (node.bind === 'classifier') {
+          const c = d.classifier = d.classifier || {};
+          // THE SAME QUEUE EDITOR A GROUP GETS. The classifier's reserves live in `chain`
+          // — the SIXTH place these two files spell "if this fails, try that" — and until
+          // now this editor offered Modelo + Provedor and nothing else, so the chain plus
+          // four knobs the file carries had no surface at all. /policy did not even serve
+          // the block; the two fields came from /status.
+          editClassifierChain(box, c, touched, msg);
+          // The four knobs, after the queue, because they are about HOW the attempt is
+          // made rather than WHO makes it.
+          //
+          // `on_total_failure` is a CLOSED set: the engine answers to two values, so free
+          // text would be a field that lints clean and changes nothing.
+          const failWrap = el('div', 'field');
+          const failId = fieldId();
+          const failLabel = el('label', '', 'Se todas falharem');
+          failLabel.htmlFor = failId;
+          const failSel = document.createElement('select');
+          failSel.id = failId;
+          [['heuristic', 'cair na heurística da Tabela 1'],
+           ['fail_safe', 'ir para o último recurso']].forEach(([v, w]) => {
+            const opt = document.createElement('option');
+            opt.value = v; opt.textContent = w;
+            failSel.appendChild(opt);
+          });
+          failSel.value = c.on_total_failure === 'fail_safe' ? 'fail_safe' : 'heuristic';
+          failSel.addEventListener('change', () => {
+            touched.add('on_total_failure');
+            c.on_total_failure = failSel.value;
+          });
+          failWrap.append(failLabel, failSel);
+          box.append(failWrap);
+          // The three numbers. A blank clears the key rather than writing 0: a temperature
+          // of 0 and "no temperature declared" are different instructions, and the second
+          // is what an operator means by emptying the field.
+          [['Temperatura', 'temperature'], ['Máximo de tokens', 'max_tokens'],
+           ['Tempo limite (s)', 'timeout_seconds']].forEach(([label, key]) => {
+            field(label, key, () => c[key], (v) => {
+              c[key] = v === '' ? null : Number(v);
+            });
+          });
+        } else if (node.bind === 'fail_safe') {
           const f = d[node.bind] = d[node.bind] || {};
           modelField(box, 'Modelo', () => f.model, (v) => { touched.add('model'); f.model = v; },
             null, (provider) => { touched.add('provider'); f.provider = provider; });

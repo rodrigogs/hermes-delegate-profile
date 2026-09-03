@@ -1185,6 +1185,24 @@ class RouterService:
             "default": config.get("default", {}),
             "tiers": self._policy_tiers(config.get("tiers")),
             "fail_safe": config.get("fail_safe", {}),
+            # The classifier, verbatim — the same treatment fail_safe gets, and for the
+            # same reason: it is a single block naming a model, a rail and its own
+            # fallback behaviour, and it is a thing an operator changes.
+            #
+            # It was NOT served, and that is what made the classifier half-editable. The
+            # console's editor could only offer the two fields `status` happens to carry
+            # ({model, provider}), so the block's `chain` — a fallback queue, the SIXTH
+            # place these two files spell "if this fails, try that" — plus temperature,
+            # max_tokens, timeout_seconds and on_total_failure had no surface at all.
+            #
+            # Measured on the docker stack 2026-09-03: its classifier chain named
+            # glm-5.3-flash/zai and deepseek-v4-flash/deepseek, two rails that install has
+            # no credential for, and no screen could have shown that.
+            #
+            # `{}` when unconfigured rather than an absent key, exactly like fail_safe: a
+            # console branching on presence would otherwise have to tell "no classifier"
+            # from "a sidecar too old to serve it", which need different remedies.
+            "classifier": config.get("classifier", {}),
             # The model-keyed price-window overlay, served verbatim so the console
             # can render the current table and post edits back through plan/apply.
             "price_windows": config.get("price_windows", {}),
