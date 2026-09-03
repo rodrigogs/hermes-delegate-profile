@@ -85,6 +85,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import yaml
 
+# The same dual-import guard blocklist.py uses: this package is deployed by copy and
+# the test harness imports it flat, so both spellings have to resolve.
+try:
+    from .paths import hermes_root as _hermes_root
+except ImportError:  # pragma: no cover - flat layout used by the test harness
+    from router.paths import hermes_root as _hermes_root
+
 # Relative first, absolute second — the same two shapes ``rules.py`` resolves in.
 # Hermes loads this plugin as ``hermes_plugins.<slug>.router.service``, where
 # ``router`` is not a top-level package; the direct source-loading test harnesses
@@ -355,6 +362,96 @@ _HOT_KEYS = frozenset(
         "enabled", "price_windows", "compaction",
     }
 )
+
+
+#: The agent config keys that name a model this install can actually call, in the order
+#: a picker should offer them: the default leads because it is what runs when nothing
+#: else is chosen.
+#:
+#: WHY THIS EXISTS. The console's model pickers offered the capability REGISTRY — the
+#: catalogue of what is KNOWN — which answers a question nobody asked. Measured on the
+#: docker stack (2026-09-02): it runs `us.anthropic.claude-opus-5` on bedrock with AWS
+#: as its only provider credential, while the pickers offered glm/deepseek/gpt ids it
+#: has no key for and did NOT offer the id it actually runs on, because `us.anthropic.*`
+#: is deliberately unregistered (see capabilities.py's module docstring on why).
+#:
+#: The agent's own config.yaml is the only thing that knows what the install can reach,
+#: so it is the authority. Read through ``paths.hermes_root()``: the plugin runs with a
+#: profile-scoped HERMES_HOME, and install-level facts live at the ROOT.
+
+
+def _config_entry(row: Any, source: str) -> Optional[Dict[str, str]]:
+    """One ``{model, provider, source}`` from a config row, or None if unusable.
+
+    config.yaml is hand-edited, so every field is untrusted shape. A row this cannot
+    read is DROPPED rather than defaulted: the whole point of the list is to stop
+    offering models the install cannot call, so inventing one would be the defect.
+    """
+    if not isinstance(row, dict):
+        return None
+    model = row.get("model")
+    provider = row.get("provider")
+    if not isinstance(model, str) or not model:
+        return None
+    if not isinstance(provider, str) or not provider:
+        return None
+    return {"model": model, "provider": provider, "source": source}
+
+
+def configured_models() -> List[Dict[str, str]]:
+    """The models the AGENT's config.yaml says this install can call.
+
+    Deduplicated on ``(model, provider)`` keeping the first source — the live stack
+    names its default again under ``fallback_providers``, and twice more with a
+    different ``base_url``, and two identical options in a select is a picker that
+    looks broken. The same id on a DIFFERENT rail is a different option and is kept.
+
+    An absent or unparseable config.yaml yields ``[]``. That is an absence, not an
+    error: ``status`` is what a console reads to describe a broken install, so it has
+    to answer, and the console already says "no list to choose from" honestly.
+    """
+    try:
+        raw = yaml.safe_load(
+            (_hermes_root() / "config.yaml").read_text(encoding="utf-8")
+        )
+    except (OSError, yaml.YAMLError):
+        return []
+    config = _as_mapping(raw)
+
+    found: List[Dict[str, str]] = []
+    model_block = _as_mapping(config.get("model"))
+    entry = _config_entry(
+        {"model": model_block.get("default"), "provider": model_block.get("provider")},
+        "model.default",
+    )
+    if entry:
+        found.append(entry)
+    for row in _as_list(config.get("fallback_providers")):
+        entry = _config_entry(row, "fallback_providers")
+        if entry:
+            found.append(entry)
+    auxiliary = _as_mapping(config.get("auxiliary"))
+    vision = _as_mapping(auxiliary.get("vision"))
+    entry = _config_entry(vision, "auxiliary.vision")
+    if entry:
+        found.append(entry)
+    for row in _as_list(vision.get("fallback_chain")):
+        entry = _config_entry(row, "auxiliary.vision")
+        if entry:
+            found.append(entry)
+    entry = _config_entry(_as_mapping(auxiliary.get("compression")), "auxiliary.compression")
+    if entry:
+        found.append(entry)
+
+    seen = set()
+    unique: List[Dict[str, str]] = []
+    for item in found:
+        key = (item["model"], item["provider"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
 
 
 def _as_list(value: Any) -> List[Any]:
@@ -1011,6 +1108,10 @@ class RouterService:
                 "provider": classifier.get("provider", ""),
             },
             "breaker_enabled": bool(breaker.get("enabled", False)),
+            # What this install can actually CALL, for the console's model pickers.
+            # Not the capability registry, which is what is KNOWN — see
+            # configured_models' note on the two being different questions.
+            "configured_models": configured_models(),
         }
         if process_started_at is not None:
             result["process_started_at"] = process_started_at

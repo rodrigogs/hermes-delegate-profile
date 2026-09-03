@@ -9496,6 +9496,163 @@ function rowButtons(row) {
 function nodeMsg(box) {
   return box.children.find((c) => c.id === 'nodeMsg');
 }
+// ── ONE authority for which models may be offered ─────────────────────────────
+// Every model picker sourced `Object.keys(state.capabilities)` — the capability
+// CATALOGUE, which answers what is KNOWN. An operator choosing a model is asking a
+// different question: what can this Hermes actually call?
+//
+// Measured on the docker stack (2026-09-02): it runs `us.anthropic.claude-opus-5` on
+// bedrock with AWS as its only provider credential, and the pickers offered glm,
+// deepseek and gpt ids it has no key for while NOT offering the id it actually runs
+// on — `us.anthropic.*` is deliberately absent from the catalogue (capabilities.py's
+// docstring explains why: registering it would assert a price that rail may not
+// charge). So the catalogue is exactly the wrong list for this job.
+//
+// The authority is /status.configured_models (the agent's own config.yaml) UNION the
+// models the policy on screen already names — you must be able to keep what you have
+// even after it leaves the install's config. The catalogue is demoted to annotation,
+// and reaching it is a deliberate gesture rather than the default.
+
+function oneModelPolicy() {
+  // Deliberately smaller than capModels(): with tierPolicy(), which names all six
+  // catalogue ids, "offered" and "the catalogue" are the same set and no assertion
+  // about the difference can mean anything.
+  return {
+    rules: [], default: {},
+    tiers: { T1: { model: 'glm-4.7', provider: 'zai', billing_mode: 'plan' } },
+  };
+}
+
+function statusWithConfigured(extra) {
+  return Object.assign({
+    enabled: true,
+    configured_models: [
+      { model: 'us.anthropic.claude-opus-5', provider: 'bedrock', source: 'model.default' },
+      { model: 'glm-5.3-flash', provider: 'zai', source: 'fallback_providers' },
+    ],
+  }, extra || {});
+}
+
+test('a model picker offers what this install is configured with, not the whole catalogue', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = oneModelPolicy();
+  api.state.capabilities = capModels();
+  api.state.status = statusWithConfigured();
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+
+  const wrap = byLabel(dom.get('inspector'), 'Modelo');
+  const select = wrap.children.find((c) => c.tagName === 'select');
+  const offered = [];
+  const walk = (n) => (n.children || []).forEach((k) => {
+    if (k.tagName === 'option' && k.value) offered.push(k.value);
+    walk(k);
+  });
+  walk(select);
+
+  assert.ok(offered.includes('us.anthropic.claude-opus-5'),
+    'the id this install actually runs on is offered, even though the catalogue has no entry for it');
+  assert.ok(offered.includes('glm-5.3-flash'), 'and every other configured rail');
+  // The catalogue's ids are NOT the default offer.
+  assert.equal(offered.includes('deepseek-v4-pro'), false,
+    'a catalogue model this install has no credential for is not offered by default');
+  assert.equal(offered.includes('gpt-5.5'), false);
+});
+
+test('a model the policy already names stays offerable even when the install stopped listing it', () => {
+  // Otherwise editing a group would silently drop the very model it routes on: the
+  // select would not contain its own current value, and saving would rewrite it.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.state.capabilities = capModels();
+  // The install is configured with something else entirely.
+  api.state.status = statusWithConfigured({
+    configured_models: [{ model: 'us.anthropic.claude-opus-5', provider: 'bedrock', source: 'model.default' }],
+  });
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+
+  const wrap = byLabel(dom.get('inspector'), 'Modelo');
+  const select = wrap.children.find((c) => c.tagName === 'select');
+  const offered = [];
+  const walk = (n) => (n.children || []).forEach((k) => {
+    if (k.tagName === 'option' && k.value) offered.push(k.value);
+    walk(k);
+  });
+  walk(select);
+  const primary = tierPolicy().tiers.T1.model;
+  assert.ok(offered.includes(primary),
+    `the group's own primary (${primary}) must stay in its picker`);
+});
+
+test('the catalogue is still reachable, as a gesture rather than the default', () => {
+  // Nothing is lost: adding a model the install has not been configured with yet is
+  // exactly what the toggle is for, and its words say which list is which.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = oneModelPolicy();
+  api.state.capabilities = capModels();
+  api.state.status = statusWithConfigured();
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+
+  const wrap = byLabel(dom.get('inspector'), 'Modelo');
+  const toggle = wrap.children.find((c) => c.className === 'btn' && /catálogo/.test(c.textContent || ''));
+  assert.ok(toggle, `a control that reveals the catalogue must exist, got: ${wrap.children.map((c) => c.textContent).join(' | ')}`);
+  assert.equal(toggle.hidden, false);
+  toggle._listeners.click();
+  const select = wrap.children.find((c) => c.tagName === 'select');
+  const offered = [];
+  const walk = (n) => (n.children || []).forEach((k) => {
+    if (k.tagName === 'option' && k.value) offered.push(k.value);
+    walk(k);
+  });
+  walk(select);
+  assert.ok(offered.includes('deepseek-v4-pro'),
+    'after the gesture the whole catalogue is selectable again');
+});
+
+test('with no served configured list the picker falls back to the catalogue, and says nothing false', () => {
+  // An older sidecar serves no configured_models. Offering NOTHING would be worse
+  // than offering the catalogue, so the old behaviour is the floor.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = tierPolicy();
+  api.state.capabilities = capModels();
+  api.state.status = { enabled: true };
+  api.renderInspector({ id: 'tier:T1', name: 'T1', bind: 'tier', tier: 'T1' });
+
+  const wrap = byLabel(dom.get('inspector'), 'Modelo');
+  const select = wrap.children.find((c) => c.tagName === 'select');
+  const offered = [];
+  const walk = (n) => (n.children || []).forEach((k) => {
+    if (k.tagName === 'option' && k.value) offered.push(k.value);
+    walk(k);
+  });
+  walk(select);
+  assert.ok(offered.includes('deepseek-v4-pro') && offered.includes('gpt-5.5'),
+    'no served list means the catalogue is the list, exactly as before');
+});
+
+test('the compaction picker uses the same authority, not its own copy of the catalogue', () => {
+  // It is the ONE model select that does not go through modelField — it builds its
+  // own — so "padronizar" means it has to be pointed at the same authority or the
+  // standardisation would have a hole in it.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.capabilities = capModels();
+  api.state.status = statusWithConfigured();
+  api.state.compaction = compactionPayload();
+  api.renderCompaction();
+
+  const selects = findAll(dom.get('compactionBox'), 'ctl').filter((n) => n.tagName === 'select');
+  assert.ok(selects.length, 'the compaction model select exists');
+  const offered = [];
+  (selects[0].children || []).forEach((o) => { if (o.value) offered.push(o.value); });
+  assert.ok(offered.includes('us.anthropic.claude-opus-5'),
+    'the configured ids reach the compaction picker too');
+  assert.equal(offered.includes('gpt-5.5'), false,
+    'and a catalogue model this install cannot call does not');
+});
+
 function capModels() {
   return {
     'glm-4.7': { provider: 'zai', context_window: 200000 },

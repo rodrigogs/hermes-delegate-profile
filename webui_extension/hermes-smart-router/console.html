@@ -5210,28 +5210,117 @@
         banBox.append(addRow);
       }
 
+      // ── WHICH MODELS MAY BE OFFERED — one authority, every picker ──────
+      // Every model select used to source `Object.keys(state.capabilities)`: the
+      // capability CATALOGUE, which answers what is KNOWN. An operator choosing a
+      // model is asking a different question — what can this Hermes actually CALL?
+      //
+      // Those are not the same list and on a real install they barely overlap.
+      // Measured on the docker stack (2026-09-02): it runs
+      // `us.anthropic.claude-opus-5` on bedrock with AWS as its only provider
+      // credential, and the pickers offered glm/deepseek/gpt ids it has no key for
+      // while NOT offering the id it actually runs on — `us.anthropic.*` is absent
+      // from the catalogue deliberately (capabilities.py's docstring: registering it
+      // would assert a per-token price that rail may not charge).
+      //
+      // So the catalogue is demoted to ANNOTATION — it still supplies the window, the
+      // price and the billing word beside each option — and the offer comes from the
+      // install itself.
+
+      // Every model a POLICY names, wherever it names one. ONE walk, because the ban
+      // picker and the offer authority were each doing their own and they disagreed:
+      // bannableModels omitted `default.model` and the compaction block, so the
+      // console could install a model it then refused to let you take out of rotation.
+      function policyModels(policy) {
+        const out = [];
+        const seen = {};
+        const push = (model, provider) => {
+          const id = typeof model === 'string' ? model : '';
+          if (!id) return;
+          const rail = typeof provider === 'string' ? provider : '';
+          const key = `${id}\u0000${rail}`;
+          if (seen[key]) return;
+          seen[key] = true;
+          out.push({ model: id, provider: rail });
+        };
+        const p = (policy && typeof policy === 'object') ? policy : {};
+        const tiers = (p.tiers && typeof p.tiers === 'object') ? p.tiers : {};
+        Object.keys(tiers).forEach((name) => {
+          tierChain(tiers[name]).forEach((hop) => push(hop && hop.model, hop && hop.provider));
+        });
+        (Array.isArray(p.rules) ? p.rules : []).forEach((rule) => {
+          const then = (rule && rule.then && typeof rule.then === 'object') ? rule.then : {};
+          // A rule's destination is either a TIER ALIAS — expanded above, not a model —
+          // or a concrete id. Only the second is a model.
+          if (typeof then.model === 'string'
+              && !Object.prototype.hasOwnProperty.call(tiers, then.model)) {
+            push(then.model, then.provider);
+          }
+        });
+        [p.default, p.fail_safe, p.classifier].forEach((block) => {
+          if (!block || typeof block !== 'object') return;
+          if (typeof block.model === 'string'
+              && !Object.prototype.hasOwnProperty.call(tiers, block.model)) {
+            push(block.model, block.provider);
+          }
+        });
+        const comp = (p.compaction && typeof p.compaction === 'object') ? p.compaction : {};
+        push(comp.model, comp.provider);
+        (Array.isArray(comp.fallback_chain) ? comp.fallback_chain : []).forEach((hop) => {
+          if (hop && typeof hop === 'object') push(hop.model, hop.provider);
+        });
+        return out;
+      }
+
+      // The offer: what /status says this install is configured with, UNION what the
+      // policy on screen already names.
+      //
+      // The union is not decoration. Without it, editing a group would drop the very
+      // model it routes on — the select would not contain its own current value — and
+      // a save would rewrite it. You must be able to keep what you have.
+      //
+      // NULL means the sidecar did not say. An older sidecar serves no
+      // configured_models, and the console must not pretend to know: the catalogue is
+      // then the list, exactly as it was before. Offering nothing would be worse than
+      // offering too much.
+      function offerableModels() {
+        const served = state.status && state.status.configured_models;
+        if (!Array.isArray(served)) return null;
+        const out = [];
+        const seen = {};
+        const push = (model, provider, source) => {
+          const id = typeof model === 'string' ? model : '';
+          if (!id) return;
+          const rail = typeof provider === 'string' ? provider : '';
+          const key = `${id}\u0000${rail}`;
+          if (seen[key]) return;
+          seen[key] = true;
+          out.push({ model: id, provider: rail, source: source });
+        };
+        served.forEach((entry) => {
+          if (entry && typeof entry === 'object') push(entry.model, entry.provider, entry.source);
+        });
+        // The DRAFT when one is open, so a model the operator just added to the queue
+        // is offerable in the next row without a round trip.
+        policyModels(state.draft || state.policy)
+          .forEach((entry) => push(entry.model, entry.provider, 'na política'));
+        return out;
+      }
+
       // The models this policy can actually route to, minus whoever is already out
       // of rotation. A BOUNDED set and not the registry: banning an id no queue
       // reaches changes nothing, and offering every known model is a wall to
       // scroll rather than a choice to make. Same principle as
       // compactionChainCandidates, which bounds its chips the same way.
+      // ON THE SHARED WALK, which fixed two omissions of its own. This function used
+      // to do its own traversal and it missed `default.model` — the fixed model the
+      // destination picker writes for the catch-all row — and the whole compaction
+      // block. So the console could install a model and then refuse to let the
+      // operator take that same model out of rotation. Two walks over one policy is
+      // the same defect class as two copies of one table.
       function bannableModels(st) {
-        const seen = [];
-        const push = (m) => { if (typeof m === 'string' && m && seen.indexOf(m) < 0) seen.push(m); };
-        const policy = (st && st.policy) || {};
-        const tiers = (policy.tiers && typeof policy.tiers === 'object') ? policy.tiers : null;
-        if (tiers) Object.keys(tiers).forEach((tn) => tierChain(tiers[tn]).forEach((h) => push(h.model)));
-        (Array.isArray(policy.rules) ? policy.rules : []).forEach((r) => {
-          const m = r && r.then && r.then.model;
-          // A rule's destination is either a TIER ALIAS — expanded above, and not
-          // a model at all — or a concrete id. Only the second is bannable, and
-          // pushing the alias would offer "T3" as something to take out of
-          // rotation, which the blocklist cannot match on.
-          if (typeof m === 'string' && !(tiers && Object.prototype.hasOwnProperty.call(tiers, m))) push(m);
-        });
-        [policy.fail_safe, policy.classifier].forEach((b) => {
-          if (b && typeof b === 'object') push(b.model);
-        });
+        const seen = policyModels((st && st.policy) || {}).map((entry) => entry.model)
+          .filter((m, i, all) => all.indexOf(m) === i);
         const bl = (st && st.blocklist) || {};
         const already = (Array.isArray(bl.manual_bans) ? bl.manual_bans : [])
           .map((b) => ((b && typeof b === 'object') ? String(b.model || '') : ''));
@@ -7388,15 +7477,24 @@
 
         const pick = el('div', 'compaction-pick');
 
-        // The model choice: every catalogue model, labelled with its provider,
-        // so the choice names WHO bills it. The current model is prepended when
-        // the registry never heard of it — the block then shows what it holds
-        // and the motor's refusal (compaction_errors / plan lint) says why it
-        // cannot be used.
+        // The model choice, labelled with its provider so it names WHO bills it. The
+        // current model is prepended when the registry never heard of it — the block
+        // then shows what it holds and the motor's refusal (compaction_errors / plan
+        // lint) says why it cannot be used.
+        //
+        // ON THE SAME AUTHORITY AS EVERY OTHER MODEL PICKER. This is the one select
+        // that does not go through modelField — it builds its own — so standardising
+        // the offer meant pointing it here too, or the standardisation would have had
+        // a hole in exactly the surface nobody would think to check. `offerableModels`
+        // is what this install can call; null means the sidecar did not say, and then
+        // the catalogue is the list, as before.
         pick.append(el('span', 'compaction-k', 'modelo'));
         const modelCtl = el('select', 'ctl');
         if (catalogue) {
-          const modelKeys = Object.keys(catalogue);
+          const compOffer = offerableModels();
+          const modelKeys = compOffer
+            ? compOffer.map((entry) => entry.model).filter((id, i, all) => all.indexOf(id) === i)
+            : Object.keys(catalogue);
           if (currentModel && !Object.prototype.hasOwnProperty.call(catalogue, currentModel)) {
             modelKeys.unshift(currentModel);
           }
@@ -9017,8 +9115,25 @@
           return { wrap, input };
         }
         const current = String(get() == null ? '' : get());
-        let eligible = Object.keys(registry)
-          .filter((id) => modelMeetsRequirement(registry[id], requirements));
+        // THE OFFER, not the catalogue. offerableModels() is what this install can
+        // call (see its note); null means the sidecar did not say, and then the
+        // catalogue is the list exactly as it was before.
+        //
+        // A model the catalogue has no entry for STAYS OFFERABLE when a requirement
+        // is set. modelMeetsRequirement(undefined, {min_context: N}) is false, and
+        // filtering on that would hide the very id this install runs on — every
+        // `us.anthropic.*` is uncatalogued by design. The console already has the
+        // honest words for that case (the escape note, and the unknown-id warning on
+        // the ladder), so an unprovable capability is disclosed rather than used to
+        // silently remove the model.
+        const offered = offerableModels();
+        const offerIds = offered
+          ? offered.map((entry) => entry.model).filter((id, i, all) => all.indexOf(id) === i)
+          : Object.keys(registry);
+        const proven = (id) => (Object.prototype.hasOwnProperty.call(registry, id)
+          ? modelMeetsRequirement(registry[id], requirements)
+          : true);
+        let eligible = offerIds.filter(proven);
         // The floor is read LIVE: §3.4(d)'s "Baixar a exigência do grupo"
         // edits it in the draft, and the count and the zero block must follow
         // the operator's number, not the value the field was born with.
@@ -9031,8 +9146,7 @@
         // select's options, the count, the show-all toggle and the zero block
         // all answer the same question, so a floor edit re-asks it once.
         const refresh = () => {
-          eligible = Object.keys(registry)
-            .filter((id) => modelMeetsRequirement(registry[id], requirements));
+          eligible = offerIds.filter(proven);
           renderOptions();
           renderCount();
           renderToggle();
@@ -9132,13 +9246,16 @@
         showAllNote.hidden = true;
         const toggleBtn = el('button', 'btn', '');
         toggleBtn.type = 'button';
+        // The toggle's job changed with the offer: it is the way OUT of the offered
+        // set and into the catalogue — which is what an operator needs to add a model
+        // the install has not been configured with yet. Nothing became unreachable.
         const renderToggle = () => {
           const total = Object.keys(registry).length;
           const rest = total - eligible.length;
           toggleBtn.hidden = rest <= 0;
           toggleBtn.textContent = showAll
-            ? `mostrar só os que atendem (${eligible.length})`
-            : `mostrar todos os ${total}`;
+            ? `mostrar só os ${eligible.length} configurados aqui`
+            : `mostrar todos os ${total} do catálogo`;
         };
         renderToggle();
         toggleBtn.addEventListener('click', () => {

@@ -99,6 +99,12 @@ def test_status_and_policy_are_read_only_snapshots(config_path):
     assert "process_started_at" not in status
     assert "code_mtime" not in status
 
+    # `configured_models` is additive in the same sense: it describes the INSTALL (the
+    # agent's config.yaml), not this policy, and it is empty here because the isolated
+    # HERMES_HOME this suite runs under has no agent config — which is the honest
+    # answer, and the one the console renders as "no list to choose from".
+    assert status.pop("configured_models") == []
+
     assert status == {
         "valid": True,
         "validation_errors": [],
@@ -4285,3 +4291,198 @@ class TestThePreviewNamesWhatProductionWouldRefuse:
         monkeypatch.setattr(service_mod, "Blocklist", _Exploding)
         plan = {"chain": [{"model": banned, "provider": "openai-codex"}]}
         assert service._label_refused_hops(plan, {}, config) is plan
+
+
+# ── the models THIS INSTALL is configured with ─────────────────────────────────
+# The console's pickers offered `Object.keys(state.capabilities)` — the capability
+# REGISTRY, 43 ids across zai/deepseek/openai/anthropic/xiaomi/minimax. That is the
+# catalogue of what is KNOWN, and it answers a question nobody asked: an operator
+# choosing a model wants the ones their Hermes can actually call.
+#
+# Measured on the docker stack, 2026-09-02: its config is
+# `model.default: us.anthropic.claude-opus-5` on `provider: bedrock` and the only
+# provider credential in the containers is AWS — while the pickers happily offered
+# glm, deepseek and gpt ids it has no key for, and did NOT offer the bedrock id it
+# actually runs on (`us.anthropic.*` is deliberately unregistered, see
+# capabilities.py's module docstring).
+#
+# So "configured" is read from the AGENT's own config.yaml, which is the only thing
+# that knows what this install can reach. Through paths.hermes_root(), so a
+# profile-scoped HERMES_HOME still finds the root config rather than a profile's.
+
+
+def _write_agent_config(root, payload):
+    """Put an agent config.yaml at the Hermes root the service will resolve."""
+    import yaml
+
+    (root / "config.yaml").write_text(
+        yaml.safe_dump(payload, sort_keys=False), encoding="utf-8"
+    )
+
+
+def test_status_reports_the_models_this_install_is_configured_with(
+    config_path, tmp_path, monkeypatch
+):
+    """Every config key that names a callable model, in one list, each with its source.
+
+    The source is carried because it is the operator's trace: "why is this offered?"
+    is answered by the key that put it there, and a picker can say so.
+    """
+    root = tmp_path / "hermes-root"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    _write_agent_config(
+        root,
+        {
+            "model": {"default": "us.anthropic.claude-opus-5", "provider": "bedrock"},
+            "fallback_providers": [
+                {"label": "zai", "provider": "zai", "model": "glm-5.3-flash"},
+                {"provider": "deepseek", "model": "deepseek-v4-pro"},
+            ],
+            "auxiliary": {
+                "vision": {
+                    "provider": "zai",
+                    "model": "glm-4.5v",
+                    # TWO hops on purpose: a one-entry chain never exercises the
+                    # loop's back-edge, and this list is offered in order.
+                    "fallback_chain": [
+                        {"provider": "deepseek", "model": "deepseek-v4-flash-vision-exp"},
+                        {"provider": "zai", "model": "glm-4.6v"},
+                    ],
+                },
+                "compression": {"provider": "bedrock", "model": "us.anthropic.claude-haiku-4-5"},
+            },
+        },
+    )
+
+    served = RouterService(config_path).status()["configured_models"]
+
+    assert [(e["model"], e["provider"]) for e in served] == [
+        ("us.anthropic.claude-opus-5", "bedrock"),
+        ("glm-5.3-flash", "zai"),
+        ("deepseek-v4-pro", "deepseek"),
+        ("glm-4.5v", "zai"),
+        ("deepseek-v4-flash-vision-exp", "deepseek"),
+        ("glm-4.6v", "zai"),
+        ("us.anthropic.claude-haiku-4-5", "bedrock"),
+    ], "the default leads, then the file's own order"
+    assert served[0]["source"] == "model.default"
+    assert served[1]["source"] == "fallback_providers"
+    assert served[3]["source"] == "auxiliary.vision"
+    assert served[6]["source"] == "auxiliary.compression"
+
+
+def test_configured_models_dedupe_on_model_and_provider_keeping_the_first_source(
+    config_path, tmp_path, monkeypatch
+):
+    """The same rail named twice is one option, credited to where it was named first.
+
+    Real shape: a fallback_providers list that repeats the default, or repeats one
+    entry with a different base_url (the live stack has exactly that — two zai
+    glm-5.3-flash entries, one free-tier). Two identical options in a select is a
+    picker that looks broken.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    _write_agent_config(
+        root,
+        {
+            "model": {"default": "glm-5.3-flash", "provider": "zai"},
+            "fallback_providers": [
+                {"provider": "zai", "model": "glm-5.3-flash"},
+                {"provider": "zai", "model": "glm-5.3-flash", "base_url": "https://other"},
+                # Same model id on a DIFFERENT rail is a different option, not a dupe.
+                {"provider": "openrouter", "model": "glm-5.3-flash"},
+            ],
+        },
+    )
+
+    served = RouterService(config_path).status()["configured_models"]
+    assert [(e["model"], e["provider"], e["source"]) for e in served] == [
+        ("glm-5.3-flash", "zai", "model.default"),
+        ("glm-5.3-flash", "openrouter", "fallback_providers"),
+    ]
+
+
+def test_status_finds_the_root_config_from_a_profile_scoped_home(
+    config_path, tmp_path, monkeypatch
+):
+    """The plugin runs under ~/.hermes/profiles/<name>; the config lives at the root.
+
+    Same peel paths.hermes_root() exists for, and the reason it exists: resolving
+    install-level facts under a profile splits every reader from every writer.
+    """
+    root = tmp_path / "root"
+    (root / "profiles" / "coder").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "coder"))
+    _write_agent_config(root, {"model": {"default": "m", "provider": "p"}})
+
+    served = RouterService(config_path).status()["configured_models"]
+    assert [(e["model"], e["provider"]) for e in served] == [("m", "p")]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({}, id="empty-config"),
+        pytest.param({"model": "not-a-mapping"}, id="model-is-a-scalar"),
+        pytest.param({"model": {"default": "", "provider": "p"}}, id="empty-model-id"),
+        pytest.param({"model": {"default": "m"}}, id="model-without-provider"),
+        pytest.param({"fallback_providers": "not-a-list"}, id="fallbacks-not-a-list"),
+        pytest.param({"fallback_providers": ["a string", 7, None]}, id="fallback-rows-not-mappings"),
+        pytest.param({"fallback_providers": [{"provider": "p"}]}, id="fallback-without-model"),
+        pytest.param({"fallback_providers": [{"model": 7, "provider": "p"}]}, id="model-not-a-string"),
+        pytest.param({"auxiliary": "not-a-mapping"}, id="auxiliary-is-a-scalar"),
+        pytest.param({"auxiliary": {"vision": "not-a-mapping"}}, id="vision-is-a-scalar"),
+        pytest.param({"auxiliary": {"vision": {"provider": "p", "model": "m",
+                                               "fallback_chain": "not-a-list"}}},
+                     id="vision-chain-not-a-list"),
+        pytest.param({"auxiliary": {"compression": {"provider": "auto"}}},
+                     id="compression-names-no-model"),
+        # A chain whose FIRST hop is unusable and whose second is fine: the bad row is
+        # skipped and the good one still reaches the operator. A chain that lost one
+        # entry must not lose the rest of itself.
+        pytest.param({"auxiliary": {"vision": {"provider": "p", "model": "m",
+                                               "fallback_chain": [{"provider": "q"},
+                                                                  {"provider": "q", "model": "n"}]}}},
+                     id="vision-chain-row-without-a-model"),
+    ],
+)
+def test_configured_models_degrades_on_every_shape_an_operator_can_type(
+    config_path, tmp_path, monkeypatch, payload
+):
+    """A config.yaml is hand-edited, so every field is untrusted shape.
+
+    None of these may raise into /status, and none may invent an option: a picker
+    offering a model the install cannot call is the defect this list exists to fix,
+    so a row it cannot read is a row it drops.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    _write_agent_config(root, payload)
+
+    served = RouterService(config_path).status()["configured_models"]
+    assert isinstance(served, list)
+    assert all(
+        isinstance(e, dict) and e.get("model") and e.get("provider") for e in served
+    ), f"a row that cannot be read must be dropped, got {served}"
+
+
+def test_configured_models_is_empty_when_there_is_no_agent_config_at_all(
+    config_path, tmp_path, monkeypatch
+):
+    """An absent or unparseable config.yaml is an absence, not an error.
+
+    /status is what the console reads to describe a broken install, so it must
+    answer. The console's own job is to say "no list to choose from" — which it
+    already does, and which is honest.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    assert RouterService(config_path).status()["configured_models"] == []
+
+    (root / "config.yaml").write_text("model: {unclosed\n", encoding="utf-8")
+    assert RouterService(config_path).status()["configured_models"] == []
