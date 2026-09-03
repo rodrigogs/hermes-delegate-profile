@@ -11636,6 +11636,57 @@ test('the master switch writes only `enabled`, and reads its own current value',
 // renderer for that — chainList, which serves the rule sheet, the tier chains and the
 // probed plan — and three of the five were not going through it. These pin that they do.
 
+test('the compaction block says when saving records a choice nothing here can enact', () => {
+  // Measured on both installs, 2026-09-03: writing `compaction` into router.yaml works
+  // (ordinary hot /plan + /apply). Projecting it into Hermes' own auxiliary.compression is
+  // a RESTART-class apply that hands a candidate to ~/bin/hermes-safe-restart.sh — absent
+  // on the WSL box AND in the docker container — and the console never exposed that step
+  // (no action=compaction, no COMPACT confirm anywhere in this file).
+  //
+  // So: choose a model, press Gravar, read "Salvo", and nothing about summarisation
+  // changes. The server's refusal was honest wherever it was reached; nothing reached it.
+  // The screen has to say which half it did.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.capabilities = capModels();
+  const payload = compactionPayload();
+  payload.effective_apply = {
+    available: false,
+    reason: 'safe-restart launcher not found at /home/x/bin/hermes-safe-restart.sh — the '
+      + 'compaction choice is recorded in router.yaml but nothing projects it into config.yaml here',
+  };
+  api.state.compaction = payload;
+  api.renderCompaction();
+  const drawn = flat(dom.get('compactionBox'));
+  assert.match(drawn, /registra a escolha/,
+    'it says that saving records the choice rather than enacting it');
+  assert.match(drawn, /hermes-safe-restart\.sh/,
+    'and names the exact thing that is missing — installing it is the whole remedy');
+});
+
+test('with the projection available the block says nothing extra', () => {
+  // No empty disclosure: a warning that fires when nothing is wrong trains the operator
+  // to ignore warnings.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.capabilities = capModels();
+  const payload = compactionPayload();
+  payload.effective_apply = { available: true, reason: '' };
+  api.state.compaction = payload;
+  api.renderCompaction();
+  const drawn = flat(dom.get('compactionBox'));
+  assert.doesNotMatch(drawn, /registra a escolha/);
+  assert.doesNotMatch(drawn, /safe-restart/);
+});
+
+test('an older sidecar that does not report the projection says nothing either', () => {
+  // Absent is not false: a sidecar too old to answer must not make the console claim the
+  // projection is broken.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.capabilities = capModels();
+  api.state.compaction = compactionPayload();
+  api.renderCompaction();
+  assert.doesNotMatch(flat(dom.get('compactionBox')), /registra a escolha/);
+});
+
 test('the compaction reserve is a queue you can see and reorder, not a chip cloud', () => {
   // Its own note promised what the control could not deliver: "escolha os modelos da
   // reserva, NA ORDEM — o primeiro é tentado primeiro", offered as toggle chips. Chips

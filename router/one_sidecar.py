@@ -148,6 +148,23 @@ _COMPACTION_CONFIRM = "COMPACT"
 _SAFE_RESTART = Path.home() / "bin" / "hermes-safe-restart.sh"
 
 
+def _effective_apply_state() -> Dict[str, Any]:
+    """Can the RESTART-class projection run here? Named path when it cannot.
+
+    The reason carries the exact path, because installing that launcher is the whole
+    remedy and a generic "unavailable" would send the operator looking.
+    """
+    if _SAFE_RESTART.exists():
+        return {"available": True, "reason": ""}
+    return {
+        "available": False,
+        "reason": (
+            f"safe-restart launcher not found at {_SAFE_RESTART} — the compaction choice "
+            f"is recorded in router.yaml but nothing projects it into config.yaml here"
+        ),
+    }
+
+
 def resolve_core_config_path() -> Path:
     """Resolve the Hermes core (profile) config.yaml — the compaction target.
 
@@ -498,6 +515,22 @@ class SidecarApp:
                 "warning": threshold_tokens >= summarizer_window,
                 "compaction": aux if aux else None,
                 "compaction_errors": aux_errors,
+                # WHETHER THE CHOICE CAN BE MADE EFFECTIVE, which is part of the same
+                # answer as what the choice IS.
+                #
+                # Writing `compaction` into router.yaml goes through the ordinary hot
+                # /plan + /apply path and works. Projecting it into Hermes' own
+                # `auxiliary.compression` is the RESTART-class apply, which hands a
+                # candidate config to the safe-restart launcher — and on 2026-09-03 that
+                # launcher was absent on BOTH installs (the WSL box and the docker
+                # container). The console does not expose that step at all.
+                #
+                # So an operator could choose a model, press Gravar, read "Salvo", and
+                # nothing about how conversations are summarised would change. The
+                # refusal was honest wherever it was reached; nothing reached it. A
+                # screen that reports success for a declaration it cannot enact is
+                # worse than one that says which half it did.
+                "effective_apply": _effective_apply_state(),
             }
         if path == "/routes":
             # Read-only route-trace access for visual replay. ?id=X fetches one

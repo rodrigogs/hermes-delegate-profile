@@ -314,6 +314,50 @@ def test_compaction_route_reports_thresholds_and_summarizer_budget(tmp_path):
     assert isinstance(body["warning"], bool)
 
 
+def test_compaction_says_whether_the_choice_can_be_made_EFFECTIVE(tmp_path, monkeypatch):
+    """Saving the block records a DECLARATION. A second step makes it run — and it is missing.
+
+    The gap, measured on both installs on 2026-09-03: the console writes `compaction` into
+    router.yaml through the ordinary hot /plan + /apply path, which WORKS. What projects it
+    into Hermes' own ``auxiliary.compression`` is the RESTART-class apply, and that hands a
+    candidate config to ``~/bin/hermes-safe-restart.sh`` — a launcher that exists on
+    NEITHER the WSL box NOR the docker container. The console does not expose that step at
+    all (no `action=compaction`, no COMPACT confirm anywhere in console.html).
+
+    So an operator can choose a compaction model, press Gravar, get "Salvo", and have
+    nothing whatsoever change about how conversations are summarised. The refusal is
+    honest when reached — ``_apply_compaction`` returns "safe-restart launcher not found" —
+    but nothing reached it, so nothing said it.
+
+    This route already answers "what is the compaction state?". Whether that state can be
+    made effective is part of the same answer, so it is served here rather than left for
+    the operator to discover by pressing a button that reports success.
+    """
+    app = SidecarApp(
+        RouterService(_registry_config_path(tmp_path)),
+        token_path=lambda: _written_token(tmp_path),
+    )
+
+    missing = tmp_path / "no-such-launcher.sh"
+    monkeypatch.setattr(sidecar_mod, "_SAFE_RESTART", missing)
+    status, body = app.dispatch("GET", "/compaction", _auth(), {"aggr": ["50"]})
+    assert status == 200
+    effective = body["effective_apply"]
+    assert effective["available"] is False
+    assert str(missing) in effective["reason"], (
+        "the reason names the exact path, because that is what the operator has to install"
+    )
+
+    present = tmp_path / "hermes-safe-restart.sh"
+    present.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    monkeypatch.setattr(sidecar_mod, "_SAFE_RESTART", present)
+    status, body = app.dispatch("GET", "/compaction", _auth(), {"aggr": ["50"]})
+    assert status == 200
+    assert body["effective_apply"] == {"available": True, "reason": ""}, (
+        "with the launcher installed there is nothing to disclose"
+    )
+
+
 def test_the_served_compaction_windows_come_from_the_registry(tmp_path):
     """The window mirror, asserted equal to its one authority.
 

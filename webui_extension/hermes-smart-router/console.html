@@ -1739,6 +1739,10 @@
     .agent-queue-where { margin-top: 4px; font: var(--t-micro) var(--mono); color: var(--muted); }
     /* One control row per attempt in the compaction reserve — the same ↑ ↓ Remover the
        group queue gives every attempt, so the gesture is learned once. */
+    /* The half-a-save disclosure: a line, in the warn voice this screen uses for a
+       condition that needs a person, never a tinted card. */
+    .compaction-declared { margin: 8px 0 0; font: var(--t-meta)/1.5 var(--sans); color: var(--warn-text); }
+    .compaction-declared strong { font-weight: 600; }
     .compaction-queue { margin-top: 6px; }
     .cq-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
     .cq-name { flex: 1 1 auto; min-width: 0; font: var(--t-micro) var(--mono); color: var(--muted);
@@ -7542,6 +7546,22 @@
         }
         if (data.warning === true) lead.append(el('span', 'compaction-err', ' O limiar iguala ou passa a janela do resumidor.'));
         box.append(lead);
+        // WHICH HALF A SAVE DOES. Writing `compaction` into router.yaml is the ordinary
+        // hot write and works. Projecting it into Hermes' own auxiliary.compression is a
+        // RESTART-class apply this console never exposed, and on 2026-09-03 its launcher
+        // was absent on BOTH installs — so an operator could choose a model, press Gravar,
+        // read "Salvo", and nothing about summarisation would change.
+        //
+        // Only when the server SAYS it is unavailable: an absent field is a sidecar too
+        // old to answer, and a warning that fires when nothing is wrong teaches the
+        // operator to ignore warnings.
+        const effective = data.effective_apply;
+        if (effective && typeof effective === 'object' && effective.available === false) {
+          const note = el('p', 'compaction-declared');
+          note.append(el('strong', '', 'Salvar aqui registra a escolha, não a põe em uso. '));
+          note.append(el('span', '', String(effective.reason || '')));
+          box.append(note);
+        }
 
         const rawBlock = state.policy && state.policy.compaction && typeof state.policy.compaction === 'object'
           ? state.policy.compaction : null;
