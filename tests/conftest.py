@@ -539,6 +539,24 @@ def _isolate_route_trace(tmp_path, monkeypatch):
     variable. monkeypatch.delenv in the test unwinds cleanly at teardown.
     """
     monkeypatch.setenv("HERMES_ROUTE_TRACE_FILE", str(tmp_path / "routes.jsonl"))
+    # AND HERMES_HOME ITSELF, which is the decision runbook §25.6 left open.
+    #
+    # The trace had a per-file override and the rest of the plugin's HERMES_HOME
+    # readers do not, so §25.6 measured the consequence and wrote it down: every
+    # `router-deploy.sh` run cleared the operator's live breaker state, because
+    # blocklist._state_dir() resolves under HERMES_HOME and one test file writes it.
+    # A third reader has since arrived — service.configured_models() reads the AGENT's
+    # config.yaml at the Hermes root — and it turned the same asymmetry into a RED
+    # GATE on the box: the assertion "an install with no agent config offers nothing"
+    # is true on CI and on a developer's Mac and false on the only machine that serves
+    # traffic, which is the exact shape of the defect e0dddf7 fixed for router.yaml.
+    #
+    # Isolating the ENV rather than patching the functions is what keeps the tests that
+    # steer this path themselves working: test_state_dir_peels_profile_scoped_home and
+    # its neighbours call monkeypatch.setenv/delenv INSIDE the test, which lands after
+    # this fixture and therefore wins. Patching _state_dir would have had to lose to
+    # them instead, which is why §25.6 could not simply do it.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     # Isolate watchdog config from the operator's live config.yaml.
     # The plugin resolves watchdog params via cfg_get(plugins.entries.hermes-smart-router.watchdog);
     # tests expect module defaults (or env overrides), not the operator's live values.

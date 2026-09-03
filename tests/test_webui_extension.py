@@ -1319,3 +1319,45 @@ def test_no_test_decides_its_verdict_from_the_operators_untracked_policy():
         "depends on the machine and they can fail a deploy gate on a healthy box — "
         "read router.example.yaml instead:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_the_suite_isolates_hermes_home_so_no_test_reads_the_live_install():
+    """The harness guarantee that keeps machine-specific state out of every verdict.
+
+    Three plugin readers resolve under ``HERMES_HOME``: ``blocklist._state_dir`` (breaker
+    cooldowns), ``durable_decision_log.routes_path`` (the trace) and
+    ``service.configured_models`` (the AGENT's config.yaml). Only the trace has a
+    per-file override, which is why runbook §25.6 could measure that every
+    ``router-deploy.sh`` run cleared the operator's live breaker state and could not
+    cheaply fix it.
+
+    The third reader turned the same asymmetry into a RED GATE: "an install with no agent
+    config offers no models" is true on CI and on a developer's Mac and false on the only
+    machine that serves traffic, so the deploy aborted on a healthy box — the same shape
+    as the ``router.yaml`` defect the sibling guard below covers.
+
+    Isolating the variable in an autouse fixture fixes all three at once, and it is
+    asserted here because it is exactly the kind of guarantee that regresses silently:
+    nothing FAILS when it disappears, tests simply start reading the operator's install
+    again, and the failure surfaces on someone else's machine.
+    """
+    conftest = (Path(__file__).resolve().parent / "conftest.py").read_text(encoding="utf-8")
+    # EVERY autouse fixture's body, not the first one: conftest carries several (the
+    # spawn guard is one), and pinning the isolation to a particular name would fail on
+    # a rename that changed nothing about the guarantee.
+    bodies = re.findall(
+        r"@pytest\.fixture\(autouse=True\)\s*\ndef \w+\([^)]*\):(.*?)(?=\n@pytest\.fixture|\ndef |\Z)",
+        conftest,
+        re.S,
+    )
+    assert bodies, "no autouse fixture found in conftest at all"
+    body = "\n".join(bodies)
+    assert 'monkeypatch.setenv("HERMES_HOME"' in body, (
+        "the autouse fixture must isolate HERMES_HOME itself, not only the trace file: "
+        "blocklist._state_dir and service.configured_models have no per-file override, "
+        "so without it the suite reads and writes the operator's live install"
+    )
+    assert 'monkeypatch.setenv("HERMES_ROUTE_TRACE_FILE"' in body, (
+        "and the trace override stays: HERMES_HOME alone would still let a test that "
+        "sets HERMES_HOME itself write the operator's trace"
+    )
