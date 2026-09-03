@@ -1361,3 +1361,67 @@ def test_the_suite_isolates_hermes_home_so_no_test_reads_the_live_install():
         "and the trace override stays: HERMES_HOME alone would still let a test that "
         "sets HERMES_HOME itself write the operator's trace"
     )
+
+
+def test_the_console_yaml_fragment_parses_to_what_it_claims():
+    """The console emits YAML for a human to paste. This parses it and checks the meaning.
+
+    The console has no YAML library — the fragment is built by string concatenation in
+    ``agentQueueYaml`` — so the JS test can only assert the TEXT. Whether that text means
+    what it looks like is a question only a parser answers, and it is a real question here:
+    ``us.anthropic.claude-haiku-4-5-20251001-v1:0`` ends in ``v1:0``. A bare plain scalar
+    with a colon is legal only because no space follows it, which parses today and breaks
+    on the next id shape. The emitter quotes every scalar for that reason, and this is the
+    check that the quoting is right rather than merely present.
+
+    The expected strings are duplicated from tests/test_console_logic.js on purpose: this
+    is an AGREEMENT test, and an agreement whose two sides read the same variable proves
+    nothing. If the emitter changes, one side fails and a human reconciles them.
+    """
+    main_fragment = (
+        'model:\n'
+        '  default: "us.anthropic.claude-opus-5"\n'
+        '  provider: "bedrock"\n'
+        'fallback_providers:\n'
+        '- provider: "bedrock"\n'
+        '  model: "us.anthropic.claude-haiku-4-5-20251001-v1:0"\n'
+    )
+    parsed = yaml.safe_load(main_fragment)
+    assert parsed == {
+        "model": {"default": "us.anthropic.claude-opus-5", "provider": "bedrock"},
+        "fallback_providers": [
+            {"provider": "bedrock", "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0"}
+        ],
+    }, "the main chain's fragment means model.default plus its reserves"
+    # The colon-bearing id survives as ONE string rather than becoming a mapping.
+    assert isinstance(parsed["fallback_providers"][0]["model"], str)
+    assert parsed["fallback_providers"][0]["model"].endswith("v1:0")
+
+    vision_fragment = (
+        'auxiliary:\n'
+        '  vision:\n'
+        '    provider: "bedrock"\n'
+        '    model: "us.anthropic.claude-opus-5"\n'
+        '    fallback_chain:\n'
+        '    - provider: "zai"\n'
+        '      model: "glm-4.5v"\n'
+    )
+    assert yaml.safe_load(vision_fragment) == {
+        "auxiliary": {
+            "vision": {
+                "provider": "bedrock",
+                "model": "us.anthropic.claude-opus-5",
+                "fallback_chain": [{"provider": "zai", "model": "glm-4.5v"}],
+            }
+        }
+    }
+
+    # And the emitter really is the thing under test: the literals above must appear in the
+    # console's own source, or this test is checking YAML rather than the console.
+    script = _console_inline_script()
+    for marker in (
+        'model:\\n  default: ${q1(head.model)}\\n  provider: ${q1(head.provider)}\\n',
+        "- provider: ${q1(a.provider)}\\n  model: ${q1(a.model)}\\n",
+        "    fallback_chain:\\n",
+    ):
+        assert marker in script, f"the emitter no longer builds {marker!r}"

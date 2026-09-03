@@ -1737,6 +1737,8 @@
     .agent-queue { margin-bottom: 14px; }
     .agent-queue:last-child { margin-bottom: 0; }
     .agent-queue-where { margin-top: 4px; font: var(--t-micro) var(--mono); color: var(--muted); }
+    .agent-queue-actions { margin-top: 6px; display: flex; align-items: center; gap: 6px; }
+    .agent-queue-said { font: var(--t-micro) var(--sans); color: var(--muted); }
     /* One control row per attempt in the compaction reserve — the same ↑ ↓ Remover the
        group queue gives every attempt, so the gesture is learned once. */
     /* The half-a-save disclosure: a line, in the warn voice this screen uses for a
@@ -5384,6 +5386,53 @@
         'auxiliary.compression': 'Compressão',
       };
 
+      // The YAML fragment for one agent queue, exactly as config.yaml wants it.
+      //
+      // EVERY SCALAR IS QUOTED. `us.anthropic.claude-haiku-4-5-20251001-v1:0` ends in
+      // `v1:0`: a bare colon-bearing plain scalar is legal YAML only because the colon has
+      // no space after it, which is the kind of accident that parses today and breaks on
+      // the next id. Quoting removes the question instead of relying on it.
+      //
+      // The `model` queue spans TWO keys — model.default is attempt 1 and
+      // fallback_providers are its reserves — so its fragment emits both, and emits
+      // neither key it does not need: a `fallback_providers:` with nothing under it reads
+      // as null, not as "no reserves".
+      function agentQueueYaml(queue) {
+        const q = (queue && typeof queue === 'object') ? queue : {};
+        const attempts = (Array.isArray(q.attempts) ? q.attempts : [])
+          .filter((a) => a && typeof a === 'object' && a.model);
+        if (!attempts.length) return '';
+        const q1 = (v) => `"${String(v == null ? '' : v)}"`;
+        const key = String(q.key || '');
+        if (key === 'model') {
+          const head = attempts[0];
+          let out = `model:\n  default: ${q1(head.model)}\n  provider: ${q1(head.provider)}\n`;
+          const reserves = attempts.slice(1);
+          if (reserves.length) {
+            out += 'fallback_providers:\n';
+            reserves.forEach((a) => {
+              out += `- provider: ${q1(a.provider)}\n  model: ${q1(a.model)}\n`;
+            });
+          }
+          return out;
+        }
+        if (key === 'auxiliary.vision' || key === 'auxiliary.compression') {
+          const leaf = key.slice('auxiliary.'.length);
+          const head = attempts[0];
+          let out = `auxiliary:\n  ${leaf}:\n    provider: ${q1(head.provider)}\n`
+            + `    model: ${q1(head.model)}\n`;
+          const reserves = attempts.slice(1);
+          if (reserves.length) {
+            out += '    fallback_chain:\n';
+            reserves.forEach((a) => {
+              out += `    - provider: ${q1(a.provider)}\n      model: ${q1(a.model)}\n`;
+            });
+          }
+          return out;
+        }
+        return '';
+      }
+
       function renderAgentQueues() {
         const box = $('agentQueues');
         const group = $('agentQueuesGroup');
@@ -5410,6 +5459,28 @@
           // WHERE it lives, which is the entire answer to "why can I not change it
           // here?". Naming the file and the key beats a disabled control.
           if (queue.where) block.append(el('div', 'agent-queue-where', String(queue.where)));
+          // AND THE FRAGMENT ITSELF, ready to paste. The console cannot write config.yaml
+          // (four measured reasons: no round-trip loader in one of the two runtimes, a
+          // pyyaml write destroys the operator's comments with no tracked original on the
+          // box, the one precedent depends on a launcher absent on both installs, and
+          // `hermes config set` takes a single scalar so neither of these values can go
+          // through it). What it CAN do is remove the transcription step, which is where
+          // the mistakes are.
+          const copy = el('button', 'btn', 'copiar o trecho');
+          copy.type = 'button';
+          const said = el('span', 'agent-queue-said');
+          copy.addEventListener('click', () => {
+            const done = copiarTexto(agentQueueYaml(queue));
+            const settle = (ok) => {
+              said.textContent = ok ? ' copiado.' : ' não consegui copiar: o navegador não deu acesso.';
+              setTimeout(() => { said.textContent = ''; }, 2000);
+            };
+            if (done && typeof done.then === 'function') done.then(settle);
+            else settle(!!done);
+          });
+          const actions = el('div', 'agent-queue-actions');
+          actions.append(copy, said);
+          block.append(actions);
           box.append(block);
         });
       }
@@ -11892,10 +11963,15 @@
       // pair for hosts that do not grant the permission. Either way the
       // footer confirms for 2s — the timer hands the footer back to the
       // live view (renderJsonEditor), which recomputes the phrase.
-      async function copiarJson() {
-        const editor = $('policyEditor');
-        if (!editor) return false;
-        const texto = editor.value;
+      // ONE copy authority. The clipboard dance (API, then the selection +
+      // execCommand fallback for hosts that grant no permission) was written once for the
+      // JSON editor and is now shared with the agent-queue fragments — a second copy of
+      // it would drift on the next host that refuses the permission.
+      //
+      // `selectable` is optional: the fallback needs a real focusable node holding the
+      // text, which the editor has and a fragment does not, so a fragment gets a detached
+      // textarea for the length of the attempt.
+      async function copiarTexto(texto, selectable) {
         let ok = false;
         try {
           if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
@@ -11905,11 +11981,23 @@
         } catch (_) { ok = false; }
         if (!ok) {
           try {
-            editor.focus();
-            if (typeof editor.select === 'function') editor.select();
+            const node = selectable || (() => {
+              const t = document.createElement('textarea');
+              t.value = texto;
+              return t;
+            })();
+            if (typeof node.focus === 'function') node.focus();
+            if (typeof node.select === 'function') node.select();
             ok = typeof document.execCommand === 'function' && document.execCommand('copy');
           } catch (_) { ok = false; }
         }
+        return ok;
+      }
+
+      async function copiarJson() {
+        const editor = $('policyEditor');
+        if (!editor) return false;
+        const ok = await copiarTexto(editor.value, editor);
         const foot = $('jsonFoot');
         if (foot) {
           foot.className = 'editor-foot ok';
@@ -12391,7 +12479,7 @@
         // strip, the compaction facts block, and the group share helper the
         // ladder renders. Exported so the band counts, the now-mark's clock
         // authority and the disabled-state reasons are pinned by tests.
-        renderPriceStrip, renderCompaction, renderAgentQueues, tierShare,
+        renderPriceStrip, renderCompaction, renderAgentQueues, agentQueueYaml, tierShare,
         // The Modelos write surface (card t_5d8491bf): the pure half — the
         // hour toggle (base → 0.8×, inside → split out), the day words, the
         // origin/provenance readers, the patches (restore spelled null) and

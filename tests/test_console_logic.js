@@ -11867,6 +11867,72 @@ test('the agent\'s own chains are drawn in the same vocabulary, and say who owns
   assert.equal(findAll(box, 'is-edit').length, 0, 'read-only, and it does not pretend');
 });
 
+test('each agent queue hands you the exact YAML to paste, quoted so a colon cannot bite', () => {
+  // The console cannot write config.yaml (four measured reasons live in the commit that
+  // added this block), so the most actionable thing it can do is remove the TRANSCRIPTION
+  // step — which is where the mistakes are. Copy, paste, adjust.
+  //
+  // Every scalar is quoted on purpose: `us.anthropic.claude-haiku-4-5-20251001-v1:0` ends
+  // in `v1:0`. A bare colon-bearing plain scalar is legal YAML only because the colon has
+  // no space after it, which is exactly the kind of accident that parses today and breaks
+  // on the next id. Quoting removes the question.
+  const { api, dom } = loadConsole();
+  api.state.capabilities = capModels();
+  api.state.status = {
+    enabled: true,
+    agent_queues: [
+      { key: 'model', where: 'config.yaml: model.default + fallback_providers', editable: false,
+        attempts: [
+          { model: 'us.anthropic.claude-opus-5', provider: 'bedrock' },
+          { model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', provider: 'bedrock' },
+        ] },
+      { key: 'auxiliary.vision', where: 'config.yaml: auxiliary.vision', editable: false,
+        attempts: [
+          { model: 'us.anthropic.claude-opus-5', provider: 'bedrock' },
+          { model: 'glm-4.5v', provider: 'zai' },
+        ] },
+    ],
+  };
+  api.renderAgentQueues();
+
+  // The main chain spans TWO keys, so its fragment emits both.
+  assert.equal(api.agentQueueYaml(api.state.status.agent_queues[0]),
+    'model:\n'
+    + '  default: "us.anthropic.claude-opus-5"\n'
+    + '  provider: "bedrock"\n'
+    + 'fallback_providers:\n'
+    + '- provider: "bedrock"\n'
+    + '  model: "us.anthropic.claude-haiku-4-5-20251001-v1:0"\n');
+
+  assert.equal(api.agentQueueYaml(api.state.status.agent_queues[1]),
+    'auxiliary:\n'
+    + '  vision:\n'
+    + '    provider: "bedrock"\n'
+    + '    model: "us.anthropic.claude-opus-5"\n'
+    + '    fallback_chain:\n'
+    + '    - provider: "zai"\n'
+    + '      model: "glm-4.5v"\n');
+
+  // And a control that hands it over, one per queue.
+  const buttons = findAll(dom.get('agentQueues'), 'btn')
+    .filter((b) => /copiar/i.test(b.textContent || ''));
+  assert.equal(buttons.length, 2, 'one copy control per queue');
+});
+
+test('a one-attempt agent queue emits no empty reserve list', () => {
+  // An `auxiliary.vision` with no fallback_chain must not paste `fallback_chain:` with
+  // nothing under it — that is a key an operator did not ask for, and in YAML it reads as
+  // null rather than as "no reserves".
+  const { api } = loadConsole();
+  const single = { key: 'auxiliary.vision', attempts: [{ model: 'm', provider: 'p' }] };
+  assert.equal(api.agentQueueYaml(single),
+    'auxiliary:\n  vision:\n    provider: "p"\n    model: "m"\n');
+  const mainOnly = { key: 'model', attempts: [{ model: 'm', provider: 'p' }] };
+  assert.equal(api.agentQueueYaml(mainOnly),
+    'model:\n  default: "m"\n  provider: "p"\n',
+    'and a main chain with no reserves emits no fallback_providers key');
+});
+
 test('with no agent chains to show, the block is absent rather than empty', () => {
   // DESIGN.md rule 1. An older sidecar serves no agent_queues, and a heading with a
   // border around nothing is worse than no heading.
