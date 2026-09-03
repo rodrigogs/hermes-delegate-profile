@@ -4967,6 +4967,30 @@ test('the warnings line is sticky, so the fix path cannot scroll out of view', (
     'and paints the plane, so scrolled content never reads through it');
 });
 
+test('with nothing to warn about, the sticky strip takes no space and paints nothing', () => {
+  // Reported from the running app 2026-09-03: "the header has a floating bar that
+  // keeps on top of the content when scrolling down". Measured in the docker install:
+  // #warnings was innerHTML "" and matched :empty, yet offsetHeight was 18px — its own
+  // padding-bottom — and being sticky at z-index 2 with background var(--bg) it painted
+  // over whatever slid under it. Its rect top was 64 while the following section's top
+  // was 50, i.e. it genuinely covered 14px of #panel-tarefas.
+  //
+  // The healthy install is the COMMON case (no read failure, no lint error), so the
+  // pinned strip was there for almost every operator, almost always, saying nothing and
+  // eating a band of content.
+  //
+  // The sticky itself stays — it is right for the case it was built for, and the test
+  // above still pins it. What was missing is that an element with nothing to say must
+  // not reserve space. `.lede-answer:empty` in this same sheet is the existing idiom.
+  const { style } = consoleStyle();
+  assert.match(style, /#warnings:empty\s*\{[^}]*?display: none/,
+    'an empty warnings stack is not a 18px band of painted plane');
+  // Non-vacuity: the rule must be about :empty specifically, or it would hide the
+  // warning in the very state it exists to serve.
+  assert.ok(!/#warnings\s*\{[^}]*?display: none/.test(style),
+    'the un-suffixed selector must NOT hide it — that would kill the actionable case');
+});
+
 // ── THE FIX, STRUCTURED: POSITION AND STATE WITHOUT TOUCHING `when` ───────
 // The amber shadow finding says a later rule can never fire because an earlier
 // one matches everything it matches. The only fixes that class needs are order

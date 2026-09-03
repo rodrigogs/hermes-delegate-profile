@@ -1296,6 +1296,19 @@
       background: var(--bg);
       padding-bottom: 18px;
     }
+    /* ...and NOTHING when there is nothing to say. renderWarnings() fills this box
+       only for a read failure or a lint error — both transient — so the empty box is
+       the normal state of a healthy install. Empty it still stood 18px tall on its own
+       padding-bottom, and being sticky at z-index 2 over var(--bg) it painted that band
+       across whatever scrolled under it: measured in the docker install as rect top 64
+       against the following section's top 50, i.e. 14px of #panel-tarefas covered by an
+       invisible bar that followed the scroll. Reported by the operator as "a floating
+       bar that keeps on top of the content".
+       The padding is what the comment above says it is — a beat of plane below the last
+       line — which is a reason to have it WITH a line and no reason to have it without.
+       Same idiom as `.lede-answer:empty` above; :empty counts text nodes, and clear()
+       leaves none, so the healthy box genuinely matches. */
+    #warnings:empty { display: none; }
     #warnings .warn-line { margin-bottom: 0; }
     #warnings .warn-line + .warn-line { margin-top: 18px; }
 
