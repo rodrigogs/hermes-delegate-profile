@@ -9793,10 +9793,25 @@
       // would have been a sixth thing to learn. Offering a group's floor here would be
       // worse than not offering it — the engine ignores those keys on the classifier, so
       // the field would lint clean and do nothing.
+      // `tierName: null` is safe rather than merely unused: the only reader is the
+      // `tierFix.tier === tierName` test that highlights the row the ladder sent the
+      // operator to, and `tierFix` is only ever set to `{tier: <a tier key from the
+      // ladder>}` — a non-empty string. So null cannot false-match, and a `tierName &&`
+      // guard here would be a condition that can never change an outcome.
+      // The last resort, same editor. Its reserves are in `fallback` like a group's, but it
+      // has none of a group's constraints, and `profile` is its own.
+      function editFailSafeChain(box, f, touched, msg) {
+        return renderTierChainEditor({
+          box, tier: f, touched, msg, tierName: null, state,
+          reserveKey: 'fallback', groupKnobs: false, blockKeys: ['profile'],
+        });
+      }
+
       function editClassifierChain(box, c, touched, msg) {
         return renderTierChainEditor({
           box, tier: c, touched, msg, tierName: null, state,
           reserveKey: 'chain', groupKnobs: false,
+          blockKeys: ['on_total_failure', 'temperature', 'max_tokens', 'timeout_seconds'],
         });
       }
 
@@ -9822,7 +9837,18 @@
         // an attempt moves. Declared ONCE, by name, and shared by the swap
         // and the remove — a second list in either operation would drift, and
         // the next group key added would leak into fallback.
-        const STRATEGY_KEYS = [RESERVE_KEY, 'fallback_strategy', 'pin_primary', 'time_cap', 'time_policy', 'requirements'];
+        // Plus whatever else THIS block owns. The list was the tier's alone, and the moment
+        // a second kind of block reused this editor that became a silent data loss: on the
+        // classifier, `on_total_failure`, `temperature`, `max_tokens` and `timeout_seconds`
+        // are not in the list, so the swap read them as part of the attempt — one press of
+        // ↑ carried them into the reserve object and left explicit nulls behind, and the
+        // patch dutifully saves an explicit null as "the operator removed this key".
+        //
+        // The test is not "is this key in the tier schema" but "is this a property of HOW
+        // the block runs, or of WHICH model answers". `profile` (fail-safe) and the four
+        // classifier knobs are the former, so they can never ride with an attempt.
+        const STRATEGY_KEYS = [RESERVE_KEY, 'fallback_strategy', 'pin_primary', 'time_cap',
+          'time_policy', 'requirements'].concat(context.blockKeys || []);
         // The attempt's own keys inside an object: for the primary that is the
         // tier minus the strategy set; for a reserve the WHOLE object is the
         // attempt. "Move the attempt" means move this set — however many keys
@@ -10394,10 +10420,21 @@
             });
           });
         } else if (node.bind === 'fail_safe') {
-          const f = d[node.bind] = d[node.bind] || {};
-          modelField(box, 'Modelo', () => f.model, (v) => { touched.add('model'); f.model = v; },
-            null, (provider) => { touched.add('provider'); f.provider = provider; });
-          field('Provedor', 'provider', () => f.provider, (v) => { f.provider = v; });
+          const f = d.fail_safe = d.fail_safe || {};
+          // THE LAST RESORT IS A QUEUE TOO, and this is where it stops being JSON-only.
+          // It offered Modelo + Provedor, so `fail_safe.fallback` — the reserve of the
+          // block whose entire job is to answer when everything else has failed — had no
+          // control at all. Measured on the docker stack 2026-09-03: that hop named
+          // glm-5.3-flash/zai on an install with no zai credential, and it was the only
+          // reserve the last resort had.
+          //
+          // Same editor, same two words, same ↑ ↓ Remover as a group's queue. `profile` is
+          // a block key, not an attempt key: it says which ROLE runs the last resort, so
+          // it must not travel when an attempt is promoted.
+          editFailSafeChain(box, f, touched, msg);
+          // Which role runs it — the same select a rule's destination uses, over the roles
+          // this policy already names, rather than a hand-typed string.
+          profileField(box, f, touched, d);
         } else if (node.bind === 'default') {
           const def = d.default = d.default || {};
           // §2.2: the default's destination is the SAME control as a rule's —

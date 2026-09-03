@@ -11714,6 +11714,41 @@ test('moving a classifier reserve up writes the order that will be saved', () =>
     'and the demoted primary is the head of the reserves');
 });
 
+test('promoting a classifier reserve moves the ATTEMPT, and leaves the block\'s own knobs behind', () => {
+  // The swap moves "every key that is not the block's own", so what counts as the block's
+  // own has to be told per caller. It was the tier's list only — `fallback`,
+  // fallback_strategy, pin_primary, time_cap, time_policy, requirements — so on the
+  // classifier the four knobs (on_total_failure, temperature, max_tokens,
+  // timeout_seconds) read as part of the attempt: pressing ↑ once carried them into the
+  // reserve object and left explicit nulls on the classifier, which the patch faithfully
+  // saves as "the operator removed the timeout".
+  //
+  // The knobs are properties of HOW the classifier runs, not of WHICH model answers, so
+  // they can never ride with an attempt.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = classifierPolicy();
+  api.state.capabilities = capModels();
+  api.renderInspector({ id: 'classifier', name: 'classifier', bind: 'classifier' });
+  const box = dom.get('inspector');
+  const before = api.state.draft.classifier;
+  assert.equal(before.timeout_seconds, 15, 'non-vacuity: the knobs are set before the move');
+  assert.equal(before.max_tokens, 128);
+
+  findAll(findAll(box, 'chain-row')[1], 'btn').find((b) => b.textContent === '↑')._listeners.click();
+
+  const draft = api.state.draft.classifier;
+  assert.equal(draft.timeout_seconds, 15, 'the timeout stayed on the classifier');
+  assert.equal(draft.max_tokens, 128, 'so did the token cap');
+  assert.equal(draft.temperature, 0, 'temperature 0 survived — and is not confused with absent');
+  assert.equal(draft.on_total_failure, 'heuristic', 'and what happens when all fail');
+  draft.chain.forEach((hop, i) => {
+    ['on_total_failure', 'temperature', 'max_tokens', 'timeout_seconds'].forEach((k) => {
+      assert.ok(!(k in hop), `reserve ${i} did not acquire ${k} — it is not an attempt's key`);
+    });
+  });
+});
+
 test('a classifier the file does not configure still opens, and offers to configure it', () => {
   // `{}` is served for an unconfigured block; the editor must not blank out.
   const { api, dom } = loadConsole({ csrfToken: 'tok' });
@@ -11726,6 +11761,78 @@ test('a classifier the file does not configure still opens, and offers to config
   const box = dom.get('inspector');
   assert.ok(byLabel(box, 'Modelo'), 'the first attempt is offered even with nothing set');
   assert.equal(findAll(box, 'chain-row').length, 1, 'one row: the primary, with no reserves');
+});
+
+// ── the last resort is a queue too ────────────────────────────────────────────
+// Found the same way the classifier's gap was: by reading the docker stack's file
+// instead of the screen. `fail_safe.fallback[0]` there named glm-5.3-flash/zai on an
+// install with no zai credential — the ONLY reserve the last resort had, on a block
+// whose whole job is to answer when everything else failed. The editor offered Modelo
+// and Provedor, so that hop was reachable only through the JSON editor.
+function failSafePolicy() {
+  return {
+    rules: [{ id: 'ask', when: {}, then: { action: 'classify', profile: 'coder' } }],
+    default: { action: 'classify' },
+    tiers: { T1: { model: 'glm-4.7', provider: 'zai' } },
+    fail_safe: {
+      profile: 'coder', model: 'glm-4.7', provider: 'zai', billing_mode: 'plan',
+      fallback: [{ model: 'deepseek-v4-pro', provider: 'deepseek' }],
+    },
+  };
+}
+
+test('the last resort is a queue like a group is, so its reserve is not JSON-only', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = failSafePolicy();
+  api.state.capabilities = capModels();
+  api.renderInspector({ id: 'fail_safe', name: 'fail_safe', bind: 'fail_safe' });
+  const box = dom.get('inspector');
+
+  assert.deepEqual(findAll(box, 'chain-head').map((n) => n.textContent),
+    ['Primeira tentativa', 'Reserva'], 'the same two words a group uses');
+  const rows = findAll(box, 'chain-row');
+  assert.deepEqual(rows.map((r) => rowField(r, 'Modelo').children.find((c) => c.tagName === 'select').value),
+    ['glm-4.7', 'deepseek-v4-pro'], 'file order is screen order');
+  assert.ok(findAll(box, 'btn').some((b) => b.textContent === 'Adicionar tentativa'),
+    'and a reserve can be added, which is what the file needed and the screen refused');
+  // The role is a choice from the roles this policy already names, not a typed string.
+  const papel = byLabel(box, 'Papel');
+  assert.ok(papel, 'the last resort says which role runs it');
+  assert.equal(papel.children.find((c) => c.tagName === 'select').value, 'coder');
+});
+
+test('the last resort has no group knobs, because the engine reads none there', () => {
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = failSafePolicy();
+  api.state.capabilities = capModels();
+  api.renderInspector({ id: 'fail_safe', name: 'fail_safe', bind: 'fail_safe' });
+  const box = dom.get('inspector');
+  assert.ok(!byLabel(box, 'Exigência de contexto (mínimo de tokens)'),
+    'a context floor here would lint clean and do nothing');
+  assert.ok(!byLabel(box, 'Teto de preço (multiplicador máximo)'),
+    'and so would a price ceiling');
+});
+
+test('promoting a fail-safe reserve moves the attempt and leaves the role on the block', () => {
+  // `profile` is which role runs the last resort, not which model answers it, so it can
+  // never ride with an attempt — the same rule the classifier's four knobs obey.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.policy = failSafePolicy();
+  api.state.capabilities = capModels();
+  api.renderInspector({ id: 'fail_safe', name: 'fail_safe', bind: 'fail_safe' });
+  const box = dom.get('inspector');
+  assert.equal(api.state.draft.fail_safe.profile, 'coder', 'non-vacuity: the role is set first');
+
+  findAll(findAll(box, 'chain-row')[1], 'btn').find((b) => b.textContent === '↑')._listeners.click();
+
+  const draft = api.state.draft.fail_safe;
+  assert.equal(draft.model, 'deepseek-v4-pro', 'the reserve was promoted');
+  assert.deepEqual(draft.fallback.map((h) => h.model), ['glm-4.7'], 'and the primary demoted');
+  assert.equal(draft.profile, 'coder', 'the role stayed with the block');
+  assert.ok(!('profile' in draft.fallback[0]), 'and did not follow the demoted attempt down');
 });
 
 test('the compaction block says when saving records a choice nothing here can enact', () => {
