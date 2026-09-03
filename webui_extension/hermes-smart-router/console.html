@@ -9954,17 +9954,28 @@
             row.classList.add('chain-target');
           }
           row.append(el('div', 'chain-head', heading));
+          // Declared before modelField so the rail callback can write the field the
+          // operator is looking at, not just the draft behind it. Picking a model does
+          // not re-render the row, so without this the Provedor input keeps showing the
+          // OLD rail while the draft — and the file Salvar writes — carries the new one.
+          // Measured live 2026-09-03: the last resort read `zai` on screen and saved
+          // `bedrock`. A field that disagrees with the draft is read as confirmation.
+          let provInput = null;
           const mf = modelField(row, 'Modelo', () => attempt.model,
             (v) => { mark('model'); attempt.model = v; },
             REQUIREMENTS,
-            (provider) => { mark('provider'); attempt.provider = provider; },
+            (provider) => {
+              mark('provider');
+              attempt.provider = provider;
+              if (provInput) provInput.value = provider;
+            },
             // §3.4(d): the zero-count "Baixar a exigência do grupo" points at
             // the panel's floor field (revealFloor); the field itself marks
             // 'requirements' touched on edit. The button never writes.
             revealFloor);
           modelFields.push(mf);
           const provWrap = el('div', 'field');
-          const provInput = document.createElement('input');
+          provInput = document.createElement('input');
           const provId = fieldId();
           provInput.id = provId;
           const provLabel = el('label', '', 'Provedor');
@@ -10699,9 +10710,25 @@
           // would write) — rendered as − / + lines with the count head and
           // the whole-list replacement note. The raw text diff stays as the
           // fallback for the one case it cannot be derived (no policy read).
-          if (state.policy && typeof state.policy === 'object'
+          // The BEFORE side is the server's own `current` when it serves one, and only
+          // then `state.policy`. The two are NOT interchangeable: `state.policy` is the
+          // /policy PROJECTION, which omits `enabled`, `blocklist` and `shadow` and
+          // always carries a `compaction` key (null when the file has none). Diffed
+          // against the merged raw document, those four always showed as changes — three
+          // additions and a removal — so every plan said "5 chaves mudam" when one key
+          // changed. Measured on the docker stack 2026-09-03 while editing the
+          // classifier's chain; the fix is to compare the same shape on both sides.
+          //
+          // An older sidecar serves no `current`, and there the projection is still a
+          // better BEFORE than nothing: the four phantom keys are a miscount, while the
+          // text-diff fallback below cannot say "9 rules replace 8" at all.
+          const before = res.data.current && typeof res.data.current === 'object'
+              && Object.keys(res.data.current).length
+            ? res.data.current
+            : state.policy;
+          if (before && typeof before === 'object'
               && res.data.policy && typeof res.data.policy === 'object') {
-            renderJsonDiff(diffNode, state.policy, res.data.policy);
+            renderJsonDiff(diffNode, before, res.data.policy);
           } else {
             diffNode.textContent = res.data.diff || pretty(res.data.preview || {});
           }

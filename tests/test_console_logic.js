@@ -1354,6 +1354,49 @@ test('preview shows the diff without writing anything', async () => {
   assert.match(msg.className, /ok/);
 });
 
+test('the diff counts what the patch changes, not the difference between two SHAPES', () => {
+  // Measured on the docker stack 2026-09-03 while editing the classifier's chain: one
+  // key changed and the head said "5 chaves mudam", with `enabled`, `blocklist` and
+  // `shadow` shown as additions and `compaction` as a removal.
+  //
+  // The BEFORE side was `state.policy` — the /policy PROJECTION — while the AFTER side
+  // was the plan's merged RAW document. The projection omits enabled/blocklist/shadow
+  // and always carries a compaction key, so those four differ by construction, on every
+  // plan, forever. The server now serves `current` (the file as parsed) and the diff
+  // compares the same shape on both sides.
+  //
+  // This is the control whose whole job is to be believed before a write. An operator
+  // told that a classifier edit touches `blocklist` either stops reading the diff or
+  // refuses a correct write.
+  const projection = {                       // what /policy serves
+    rules: [], default: { action: 'classify' }, tiers: {}, fail_safe: {},
+    classifier: { model: 'a', provider: 'r' }, price_windows: {}, compaction: null,
+  };
+  const fileNow = {                          // what is actually on disk
+    enabled: true, classifier: { model: 'a', provider: 'r' }, fail_safe: {},
+    blocklist: { manual_ban: [] }, shadow: { enabled: false },
+    rules: [], default: { action: 'classify' }, tiers: {}, price_windows: {},
+  };
+  const merged = JSON.parse(JSON.stringify(fileNow));
+  merged.classifier.model = 'b';             // the ONE key the operator changed
+
+  const { api } = loadConsole({ csrfToken: 'tok' });
+
+  const honest = api.jsonDiffLines(fileNow, merged);
+  assert.equal(honest.cabecalho, '1 chave muda · 0 listas substituídas inteiras',
+    'one key changed, so the head says one');
+  ['enabled', 'blocklist', 'shadow', 'compaction'].forEach((k) => {
+    honest.linhas.filter((l) => l.texto.includes(`"${k}"`)).forEach((l) => {
+      assert.equal(l.tipo, 'ctx', `${k} is context, never a change`);
+    });
+  });
+
+  // Non-vacuity: against the projection the same one-key edit really did report five.
+  const dishonest = api.jsonDiffLines(projection, merged);
+  assert.match(dishonest.cabecalho, /^5 chaves mudam/,
+    'this is the miscount the fix removes — kept as the measurement, not deleted');
+});
+
 // This behaviour used to be pinned by tests/test_router_nav_cooldowns.js, which
 // tested a formatCooldowns() in router-nav.js. That file is now a mount and the
 // rendering lives here, so the test moved with the code rather than being
@@ -9689,6 +9732,39 @@ test('the tier editor draws the queue as rows: primary first, then each reserve 
   assert.ok(flat(box).includes(
     "Como você paga por esta opção. Não é etiqueta: 'pelo mais barato agora' ordena por isso, e o teto de preço só tira da fila as opções pagas em dinheiro."),
   'the §2.5 billing support text is literal');
+});
+
+test('picking a model updates the rail ON SCREEN, not only in the draft', () => {
+  // Found live on the docker stack 2026-09-03. Picking a model calls onProvider, which
+  // writes the rail into the draft — but the Provedor input is only filled when the row
+  // RENDERS, and picking a model does not re-render it. So the screen kept saying `zai`
+  // while the draft (and the file that Salvar would write) said `bedrock`.
+  //
+  // On the classifier the discrepancy was invisible because the next click was Remover,
+  // which re-renders; on the last resort nothing re-rendered and the field just lied.
+  // A panel whose whole claim is "what you see is what gets written" cannot have a field
+  // that disagrees with the draft — that is worse than an unfilled field, because the
+  // operator reads it as confirmation.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = tierPolicy();
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const box = dom.get('inspector');
+  const row = findAll(box, 'chain-row')[0];
+  const prov = rowField(row, 'Provedor').children.find((c) => c.tagName === 'input');
+  assert.equal(prov.value, 'zai', 'non-vacuity: it starts on the rail the file names');
+
+  const sel = rowField(row, 'Modelo').children.find((c) => c.tagName === 'select');
+  sel.value = 'deepseek-v4-pro';
+  sel._listeners.change();
+
+  assert.equal(api.state.draft.tiers.T2.provider, 'deepseek',
+    'non-vacuity: the draft did take the new rail — the screen is what was behind');
+  const provAfter = rowField(findAll(dom.get('inspector'), 'chain-row')[0], 'Provedor')
+    .children.find((c) => c.tagName === 'input');
+  assert.equal(provAfter.value, 'deepseek',
+    'the rail the catalogue gives that model is what the screen now says');
 });
 
 test('Adicionar tentativa creates the fallback list with a blank reserve; the primary is not removable from an empty queue', () => {

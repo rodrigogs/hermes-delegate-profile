@@ -2548,6 +2548,10 @@ class RouterService:
         except (OSError, yaml.YAMLError, ValueError) as exc:
             return {"valid": False, "errors": [f"could not read router config: {exc}"],
                     "diff": "", "no_op": False, "preview": {}, "policy": {},
+                    # Empty, like `policy`: the read failed, so there is no BEFORE to
+                    # show. The console falls back to its own read rather than diffing
+                    # against a document this branch would have to invent.
+                    "current": {},
                     "base_hash": ""}
         errors = self._lint_merged(merged)
         before = yaml.safe_dump(current, sort_keys=False)
@@ -2569,6 +2573,25 @@ class RouterService:
             "no_op": not diff,
             "preview": merged,
             "policy": merged,
+            # The document the merge started from, so a client can diff LIKE FOR LIKE.
+            #
+            # The console renders its own structural diff (that is what makes "9 rules
+            # replace 8" sayable, which the YAML text diff above cannot say) and had
+            # nothing to use as the BEFORE side except the `/policy` projection. That
+            # projection is a different shape on purpose: it omits `enabled`, `blocklist`
+            # and `shadow`, and it always carries a `compaction` key (null when the file
+            # has none). So four keys were reported as changing on EVERY plan — three as
+            # additions, one as a removal — and the count said "5 chaves mudam" when one
+            # key changed. Measured on the docker stack 2026-09-03 while editing the
+            # classifier's chain.
+            #
+            # An operator who is told a write touches `blocklist` when it does not either
+            # stops believing the diff or refuses a correct write. Both are worse than no
+            # diff, and this is the control whose entire job is to be believed.
+            #
+            # Nothing new is disclosed: `diff` above is already the full before/after text
+            # of the same document.
+            "current": current,
             "base_hash": self._hash_bytes(current_raw),
         }
 

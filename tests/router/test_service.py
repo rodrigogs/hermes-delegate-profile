@@ -330,6 +330,48 @@ def test_plan_previews_without_writing(config_path):
     assert config_path.read_bytes() == before
 
 
+def test_plan_serves_the_before_document_so_a_client_can_diff_like_for_like(config_path):
+    """``current`` is the file as parsed, not the projection ``/policy`` serves.
+
+    The console renders its own structural diff — that is what lets it say "9 rules
+    replace 8", which the YAML text diff cannot — and it had no BEFORE side except the
+    ``/policy`` projection. That projection omits ``enabled``, ``blocklist`` and
+    ``shadow`` and always carries a ``compaction`` key, so four keys read as changes on
+    EVERY plan and the count said five keys changed when one did. Measured on the docker
+    stack 2026-09-03 while editing the classifier's chain.
+    """
+    service = RouterService(config_path)
+    on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    plan = service.plan({"default": {"action": "T1"}})
+
+    assert plan["current"] == on_disk, "the BEFORE side is the file, verbatim"
+    assert plan["current"] != plan["policy"], (
+        "non-vacuity: this patch really does change something, so before != after"
+    )
+    # Every key the file has is on BOTH sides now, so a structural diff of the two
+    # reports only what the patch actually changed.
+    assert set(plan["current"]) == set(plan["policy"]), (
+        "same key set on both sides — a diff can only report values, never phantom keys"
+    )
+    # And the projection is a genuinely different shape, which is why it was the wrong
+    # BEFORE. `enabled` and `blocklist` are in this file and NOT in the projection, so
+    # each read as an addition on every plan. (`shadow` does the same on installs that
+    # declare it; this fixture does not, so it is not asserted here.)
+    served = service.policy()
+    for key in ("enabled", "blocklist"):
+        assert key in plan["current"], f"non-vacuity: this file declares {key}"
+        assert key not in served, (
+            f"{key} is absent from the projection — diffed against the merged document "
+            f"it read as an addition on every plan"
+        )
+    assert "compaction" in served and served["compaction"] is None
+    assert "compaction" not in plan["current"], (
+        "the projection invents a compaction key the file does not have; that is what "
+        "used to read as a removal"
+    )
+
+
 def test_plan_rejects_unknown_tier_and_ignores_non_allowlisted_keys(config_path):
     service = RouterService(config_path)
 
