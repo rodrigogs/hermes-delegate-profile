@@ -747,7 +747,14 @@ def _as_policy_mapping(parsed: Any, source: Path) -> Dict[str, Any]:
 
 
 def _load_router_config() -> Dict[str, Any]:
-    """Load router.yaml from the plugin directory. Returns {} on failure.
+    """Load the live policy. Returns {} on failure.
+
+    WHICH FILE is decided by :func:`router.paths.resolve_policy_path`, not here. It used
+    to be ``<plugin_dir>/router.yaml`` unconditionally, which is correct on the WSL
+    layout and WRONG in the docker stack: there the plugin directory is a symlink into
+    the image's source clone, so the plugin seeded a policy from the example and routed
+    on it while the sidecar and the console used ``/data/hermes/router.yaml``. Two
+    documents, one product. See that function for the measurement.
 
     router.yaml is the *live* policy and is deliberately not tracked by git, so
     that local tuning does not leave the checkout permanently dirty (and does
@@ -777,8 +784,12 @@ def _load_router_config() -> Dict[str, Any]:
     """
     try:
         import yaml
+        if _LOADED_AS_PACKAGE:
+            from .router.paths import resolve_policy_path
+        else:  # direct source loading used by the development test harness
+            from router.paths import resolve_policy_path
         plugin_dir = Path(__file__).resolve().parent
-        config_path = plugin_dir / "router.yaml"
+        config_path = resolve_policy_path(plugin_dir)
         if not config_path.exists():
             example = plugin_dir / "router.example.yaml"
             if not example.exists():

@@ -746,3 +746,49 @@ class TestTheClassifierFollowsTheLivePolicy:
         # is what served the turn.
         assert answer.get("failure_kind") != "routing_error", answer
         assert reads["n"] >= 2, "the classifier must have re-read the live policy"
+
+
+def test_a_package_loaded_plugin_resolves_the_policy_through_the_shared_resolver(
+    monkeypatch, tmp_path
+):
+    """The relative-import arm of `_load_router_config`, and the resolution it performs.
+
+    `test_package_loader_executes_relative_router_import_paths` stubs
+    `_load_router_config`, so nothing exercised the real body under a PACKAGE load — and
+    the real body is where the policy path is decided. This calls it for real.
+
+    The property under test is the one that broke the docker stack: with a policy at
+    HERMES_HOME the plugin must read THAT file, not the one beside its own module. There
+    the plugin directory is a symlink into the image's source clone, so reading beside the
+    module meant seeding from `router.example.yaml` and routing on the example while the
+    console edited the volume's policy.
+    """
+    namespace = types.ModuleType("hermes_plugins")
+    namespace.__path__ = []
+    monkeypatch.setitem(sys.modules, "hermes_plugins", namespace)
+    spec = importlib.util.spec_from_file_location(
+        "hermes_plugins.smart_router_policy_path",
+        _PLUGIN_INIT,
+        submodule_search_locations=[str(_PLUGIN_INIT.parent)],
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    assert module._LOADED_AS_PACKAGE is True, "non-vacuity: this is the relative-import arm"
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_ROUTER_CONFIG_FILE", raising=False)
+    (home / "router.yaml").write_text(
+        "enabled: true\ndefault:\n  action: classify\ntiers:\n  T1:\n"
+        "    model: rooted-marker\n    provider: rooted-rail\n",
+        encoding="utf-8",
+    )
+
+    config = module._load_router_config()
+
+    assert config.get("tiers", {}).get("T1", {}).get("model") == "rooted-marker", (
+        "the plugin read the policy at HERMES_HOME, not the one beside its module"
+    )

@@ -58,9 +58,11 @@ from urllib.parse import parse_qs, urlsplit
 # satisfies only the relative form; running this file as a bare script satisfies
 # only the absolute one. No None fallback: both are hard requirements.
 try:
+    from .paths import resolve_policy_path
     from .service import RouterService
     from .threshold import apply_dynamic_thresholds, compute_model_thresholds, p_eff
 except ImportError:  # pragma: no cover - bare-script/flat layout
+    from router.paths import resolve_policy_path
     from router.service import RouterService
     from router.threshold import apply_dynamic_thresholds, compute_model_thresholds, p_eff
 
@@ -842,7 +844,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path(__file__).resolve().parent.parent / "router.yaml",
+        # The SAME resolver the plugin uses, so a sidecar started bare cannot serve a
+        # different policy than the one dispatch routes on. This was
+        # `parent.parent / "router.yaml"` — the plugin directory — which is precisely the
+        # assumption that split the two on the docker stack (see
+        # router.paths.resolve_policy_path for the measurement). Both installs pass
+        # --config explicitly, so this default was never what bit; two answers to one
+        # question was.
+        default=resolve_policy_path(Path(__file__).resolve().parent.parent),
     )
     return parser
 

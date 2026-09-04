@@ -51,3 +51,49 @@ def hermes_root() -> Path:
 def state_dir() -> Path:
     """The profile-independent directory holding this plugin's mutable state."""
     return hermes_root() / STATE_DIR_NAME / "state"
+
+
+#: Env override for the POLICY file, mirroring ``HERMES_CORE_CONFIG_FILE`` for the
+#: agent config and ``HERMES_ROUTE_TRACE_FILE`` for the trace. Explicit always wins.
+POLICY_ENV = "HERMES_ROUTER_CONFIG_FILE"
+
+
+def resolve_policy_path(plugin_dir: Path) -> Path:
+    """Which ``router.yaml`` this install routes on — the ONE place that decides.
+
+    THE DEFECT THIS CLOSES, measured on the docker stack 2026-09-04 within minutes of
+    the plugin loading for the first time: the plugin read ``<plugin_dir>/router.yaml``
+    while the sidecar was started with ``--config /data/hermes/router.yaml``. In that
+    stack the plugin directory is a SYMLINK into the image's source clone, where no
+    policy exists, so the plugin seeded one from ``router.example.yaml`` and routed on
+    it. The trace proves it: five decisions naming ``gpt-5.6-terra/openai-codex``,
+    ``glm-5.3-flash/zai`` and ``mimo-v2.5/xiaomi`` — the example's rails, none of them
+    reachable on that install and none of them in the policy the operator was editing.
+
+    So the console showed one document, the write path wrote it, and dispatch obeyed a
+    different one. Nothing detected it because nothing had ever compared them: until the
+    manifest name was fixed, the plugin never loaded at all.
+
+    Precedence, and each rung is load-bearing on a real layout:
+
+    1. ``HERMES_ROUTER_CONFIG_FILE`` — explicit wins, always, existing or not, so a test
+       or a unit can point at a file it is about to create.
+    2. ``hermes_root()/router.yaml`` WHEN IT EXISTS — the docker layout. HERMES_HOME is
+       already the authority every other path here derives from (``state_dir``, the
+       trace, the breaker), and that is exactly the file the stack's sidecar is pointed
+       at.
+    3. ``<plugin_dir>/router.yaml`` — the WSL layout, where this IS the operator's
+       policy and the sidecar unit passes that very path. Measured there: no
+       ``~/.hermes/router.yaml`` exists, so rung 2 misses and this one answers, leaving
+       that install byte-for-byte unaffected.
+
+    Rung 3 is also the SEED TARGET when neither exists, which keeps the documented
+    first-run behaviour (seed from the tracked example, then it belongs to the operator).
+    """
+    explicit = os.environ.get(POLICY_ENV)
+    if explicit:
+        return Path(explicit)
+    rooted = hermes_root() / "router.yaml"
+    if rooted.exists():
+        return rooted
+    return Path(plugin_dir) / "router.yaml"
