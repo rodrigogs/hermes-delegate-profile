@@ -2544,3 +2544,22 @@ def _with_safety_margin(tokens: int) -> int:
     """
     numerator = tokens * _CONTEXT_SAFETY_NUMERATOR
     return -(-numerator // _CONTEXT_SAFETY_DENOMINATOR)
+
+
+def without_safety_margin(tokens: int) -> int:
+    """Return floor(tokens / 1.25) — the inverse of :func:`_with_safety_margin`.
+
+    Same recorded headroom, read the other way round. ``_with_safety_margin`` answers
+    "this turn estimates N tokens, so how much window must a model have"; this answers
+    "a model has N tokens of window, so how much may I actually put in it". One ratio
+    serves both, because a second constant with the same value in another module is a
+    constant free to drift.
+
+    Public because the caller is :mod:`router.classify`, which must size the prompt it
+    sends the classifier against that classifier's own window.
+
+    FLOOR, not ceil: the two directions must err the same way — toward less room — or a
+    value that passed the requirement check could fail the budget check.
+    """
+    numerator = max(0, tokens) * _CONTEXT_SAFETY_DENOMINATOR
+    return numerator // _CONTEXT_SAFETY_NUMERATOR

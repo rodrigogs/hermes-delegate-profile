@@ -53,6 +53,21 @@ _CHARS_PER_TOKEN: float = 3.6
 _TOKENS_PER_REFERENCED_FILE: int = 4000
 _WHOLE_REPO_TOKEN_ALLOWANCE: int = 40000
 
+
+def chars_per_token() -> float:
+    """The working chars-per-token ratio, for the one other module that needs it.
+
+    Exposed rather than duplicated: :mod:`router.classify` has to convert a model's
+    context WINDOW (tokens) into a character budget for the prompt it builds, which is
+    the same conversion this module performs in the opposite direction when estimating
+    ``est_input_tokens``. A second copy of the number would be free to drift, and the
+    two would then disagree about how big the same text is.
+
+    A function, not the bare constant, so a caller cannot rebind it — the same reason
+    :func:`router.classify.classifier_defaults` returns a copy.
+    """
+    return _CHARS_PER_TOKEN
+
 _WHOLE_REPO_MARKERS: frozenset[str] = frozenset({
     "entire repo", "whole codebase", "every file", "all files",
     "across the repo",

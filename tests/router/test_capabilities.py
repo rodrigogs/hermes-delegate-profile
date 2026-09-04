@@ -3488,3 +3488,21 @@ def test_an_anthropic_elo_sorts_inside_the_dollars_bucket():
     assert [hop["model"] for hop in ordered] == [
         "glm-5.3-flash", "tencent/hy3:free", "claude-haiku-4-5",
     ]
+
+
+def test_without_safety_margin_is_the_exact_inverse_direction_of_the_recorded_headroom():
+    """One ratio, two directions. A second constant elsewhere would be free to drift.
+
+    FLOOR here against ceil there, deliberately: both must err toward LESS room, or a
+    token count that satisfied the min_context requirement could fail the prompt budget.
+    """
+    from router.capabilities import without_safety_margin, _with_safety_margin
+
+    assert without_safety_margin(500) == 400          # 500 * 4 // 5
+    assert without_safety_margin(0) == 0
+    assert without_safety_margin(-5) == 0, "a nonsense window is no room, never negative"
+    # Round-tripping can only shrink, never grow — that is what "both err toward less"
+    # means, and it is the property that keeps the two checks consistent.
+    for tokens in (1, 7, 128, 999, 65_536, 1_000_000):
+        assert without_safety_margin(_with_safety_margin(tokens)) >= tokens - 1
+        assert without_safety_margin(tokens) <= tokens

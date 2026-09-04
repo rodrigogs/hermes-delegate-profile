@@ -12,6 +12,37 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from . import capabilities as _caps
+from .signals import chars_per_token
+
+# ---------------------------------------------------------------------------
+# How much of the task text may reach the classifier
+#
+# WHAT WENT IN BEFORE: the whole thing. `build_prompt` ended with
+# f'Task: "{task}"' and nothing anywhere bounded `task`. On the kanban path that
+# is a card body, which is usually short — but "usually short" is not a bound,
+# and a pasted stacktrace or a long chat turn is neither.
+#
+# WHY A SMALL CAP LOSES NOTHING, which is the whole argument: the prompt already
+# carries the SCALE of the job as features — size_lines, num_files,
+# has_stacktrace, num_requirements, and the rule layer's own est_input_tokens.
+# The task TEXT is there for the job's NATURE, not its size. So truncating the
+# text cannot hide a big job from the classifier; the features say how big it is
+# and the anchors say what each tier looks like. A difficulty verdict of
+# T1..T4 does not improve by reading the 40th kilobyte.
+#
+# THE ARITHMETIC, so the number is not a vibe: 4000 chars is ~1111 tokens at the
+# ratio signals.py records (3.6). The SMALLEST context window in the whole
+# capability registry is glm-4.5v at 65,536 tokens — measured, all 43 entries
+# declare one — so this budget is under 2% of the tightest catalogued model and
+# the window can never be the binding constraint for a model the catalogue
+# knows. The fixed rubric-and-features preamble measures 675 chars.
+#
+# It is still clamped by the window below, because an operator may declare a
+# classifier whose window is genuinely small, and that clamp is reachable
+# configuration rather than decoration.
+_TASK_CHAR_BUDGET: int = 4000
+
 
 # ---------------------------------------------------------------------------
 # Classifier rubric — 4 discrete anchored tiers (never a numeric scale)
@@ -66,6 +97,29 @@ def classifier_defaults() -> Dict[str, Any]:
     return dict(CLASSIFIER_DEFAULTS)
 
 
+def _classifier_window(cls_conf: Dict[str, Any]) -> Optional[int]:
+    """The classifier model's context window in tokens, or None if nobody knows.
+
+    ``capabilities_for`` is the one merge: policy's ``declared`` keys beat the registry,
+    the same precedence the capability filter routes on. Passing the whole classifier
+    block is safe — that function merges only recognised registry fields, so ``chain``,
+    ``on_total_failure`` and the rest ride along harmlessly.
+
+    None is a real answer and is returned rather than guessed. The docker install's
+    classifier is ``us.anthropic.claude-haiku-4-5-…``, and the registry deliberately does
+    not carry ``us.anthropic.*`` (same weights, different commercial rail), so None is
+    what an honest lookup gives there. The caller falls back to the absolute budget,
+    which is what makes the feature work on that install at all.
+    """
+    model = cls_conf.get("model") or CLASSIFIER_DEFAULTS["model"]
+    try:
+        caps = _caps.capabilities_for(str(model), cls_conf)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    window = (caps or {}).get("context_window")
+    return window if isinstance(window, int) and window > 0 else None
+
+
 # Upward ratchet: when confidence is low or boundary straddle, bump up
 _UPWARD_RATCHET = {"T1": "T2", "T2": "T3", "T3": "T4", "T4": "T4"}
 
@@ -96,13 +150,60 @@ class Classifier:
         # An absent ``tiers`` table degrades to EMPTY (see the DEFAULT_TIERS
         # removal note above) rather than to a hardcoded stale rail set.
         self._tiers = config.get("tiers") or {}
+        # The classifier's OWN window, for sizing the prompt sent to it. Read
+        # through the same merge every capability decision uses, so `declared`
+        # keys on the classifier block win over the registry exactly as they do
+        # on a tier's elo — and an id the registry has never heard of (every
+        # `us.anthropic.*` is uncatalogued by design) yields None rather than an
+        # invented number.
+        self._context_window: Optional[int] = _classifier_window(cls_conf)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
+    def task_char_budget(self, preamble_chars: int = 0) -> int:
+        """How many characters of task text this prompt may carry.
+
+        ``preamble_chars`` is the length of everything already in the prompt — rubric,
+        anchors, features. Passed in rather than assumed as a constant because the
+        anchors are operator-supplied and can be any length, so a fixed allowance would
+        be wrong exactly when someone configures many of them. Defaults to 0 so the
+        method also answers the plain question "what is the cap for this classifier".
+
+        The smaller of two bounds, so both hold:
+
+        * :data:`_TASK_CHAR_BUDGET` — the purpose bound. A difficulty verdict does not
+          get better with more text (see the module note); this is what keeps the call
+          cheap and fast on every model, catalogued or not.
+        * the classifier's own window, when it is known — the physical bound. Room for
+          the reply (``max_tokens``) comes off first, the recorded 5/4 headroom is
+          applied through :func:`capabilities.without_safety_margin` so the preamble and
+          tool scaffolding are paid for, and the remainder is converted to characters at
+          the ratio :mod:`router.signals` records. Never below zero: a classifier
+          configured with a window smaller than its own reply allowance yields 0, and
+          0 means "send the features and no text", not "send everything".
+
+        Both are floors of the same intent — err toward less room — so a prompt that fits
+        the budget fits the window.
+        """
+        budget = _TASK_CHAR_BUDGET
+        if self._context_window is not None:
+            room_tokens = _caps.without_safety_margin(
+                max(0, self._context_window - self.max_tokens)
+            )
+            room_chars = int(room_tokens * chars_per_token()) - max(0, preamble_chars)
+            budget = min(budget, max(0, room_chars))
+        return budget
+
     def build_prompt(self, task: str, features: Dict[str, Any]) -> str:
-        """Build the one-shot classifier prompt with anchors and context."""
+        """Build the one-shot classifier prompt with anchors and context.
+
+        The task is bounded by :meth:`task_char_budget`, and a bounded task SAYS so —
+        see the disclosure at the bottom. Silently truncating would be the worse bug of
+        the two: the classifier would read a prefix as if it were the whole job and
+        answer confidently about work it never saw.
+        """
         lines = [
             "You are a task difficulty classifier. Respond with a single JSON object.",
             "",
@@ -135,7 +236,23 @@ class Classifier:
             f"  num_requirements: {features.get('num_requirements', 0)}",
             f"  lang: {features.get('lang', '')}",
             "",
-            f"Task: \"{task}\"",
+        ])
+        # The task, bounded — and when it was bounded, the prompt says the number it was
+        # bounded to and the number it came from. That turns a truncation from a lie into
+        # a fact the classifier can weigh: "I am seeing 4000 of 51230 characters" is
+        # itself evidence of a large job, and it stops a hedged answer being read as a
+        # confident one about the whole thing.
+        text = str(task if task is not None else "")
+        budget = self.task_char_budget(len("\n".join(lines)))
+        if len(text) > budget:
+            lines.append(
+                f"Task (first {budget} of {len(text)} characters; the rest was not sent "
+                f"— judge from this excerpt and the size features above):"
+            )
+            lines.append(f"\"{text[:budget]}\"")
+        else:
+            lines.append(f"Task: \"{text}\"")
+        lines.extend([
             "",
             'Respond: {"signals":"1-2 sentences","tier":"T1|T2|T3|T4",'
             '"confidence":"high|med|low","needs_capability":"one clause"}',

@@ -828,3 +828,13 @@ def test_no_stacktrace_marker_depends_on_surrounding_whitespace():
         )
         assert _detect_stacktrace(marker) is True, marker
         assert _detect_stacktrace(f"prefix\n{marker} and more") is True, marker
+
+
+def test_chars_per_token_is_exposed_so_the_ratio_has_one_home():
+    """router.classify converts a context WINDOW into a character budget, which is this
+    module's conversion run backwards. Two copies of the number could disagree about how
+    big the same text is."""
+    from router.signals import chars_per_token, _CHARS_PER_TOKEN
+
+    assert chars_per_token() == _CHARS_PER_TOKEN
+    assert chars_per_token() > 0
