@@ -2417,17 +2417,31 @@ class RouterService:
         return reasons
 
     def lint(self) -> Dict[str, Any]:
-        """Expose the same validation data shown by :meth:`status`.
+        """The BLOCKING gate: what stops a write, and nothing else.
 
         ``error_targets`` rides alongside ``errors``, aligned by index: the
         structured jump target for the error at the same position, or None when
         that error names no rule.
+
+        NO ``warnings`` KEY, DELIBERATELY, and this docstring used to say the opposite —
+        "expose the same validation data shown by :meth:`status`" — which is what made
+        the absence read as an oversight. It is not. Warnings inform, errors block, and
+        the channels are kept strictly apart so a warning can never do an error's job
+        (``test_status_reports_warnings_without_flipping_valid``: "lint() stays the pure
+        error gate — warnings are status()'s job alone").
+
+        The advisories are not hidden from anyone: ``status`` carries them, the console
+        renders them from there, and ``router.cli lint`` prints them. An operator reading
+        a screen sees them; only a script that treats this ONE payload as the whole
+        picture would not, and the remedy for that is to read ``status`` — which is where
+        the four "no independent fallback" advisories on the docker stack were found on
+        2026-09-03, in the same second this route reported ``{valid: true, errors: []}``.
         """
-        _config, errors = self._load()
+        config, errors = self._load()
         return {
             "valid": not errors,
             "errors": errors,
-            "error_targets": self._error_targets(errors, _config),
+            "error_targets": self._error_targets(errors, config),
         }
 
     # ------------------------------------------------------------------

@@ -14579,3 +14579,126 @@ test('a payload with no weight policy at all still renders the kind bare', () =>
   assert.ok(bare.includes('ttfb_stall'), 'the kind is named, with no number');
   assert.ok(!bare.some((n) => /ttfb_stall.*\d/.test(n)));
 });
+
+
+// ── Four defects found by DRIVING the live app, 2026-09-03 ────────────────────
+// All four were invisible to this suite because each is a statement the screen
+// makes about itself, and nothing asserted the statement was true.
+
+test('an empty queue with nothing rejected does not point at refusals that are not there', () => {
+  // Measured live: task "Depurar uma condicao de corrida no cache" returned
+  // chain [] / rejected [] / unknown [] and the panel still said "veja as recusas
+  // abaixo" with nothing below it. §2.1's early return catches the plain no-plan case
+  // but only when there are no requirement CHIPS, so a plan that declares requirements
+  // and resolves no attempt fell through. It is the DEFAULT path of the docker policy
+  // (`default: {action: classify}`).
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.capabilities = capModels();
+  const box = dom.get('chainPlan');
+
+  api.renderChainPlan(
+    { chain: [], rejected: [], unknown: [], strategy: 'sequential',
+      requirements: { min_context: 200000 }, time_agnostic: true },
+    { box, state: api.state });
+  const quiet = flat(box);
+  assert.match(quiet, /não listou nenhuma tentativa e também não recusou nenhuma/,
+    'it says what is true: nothing planned, nothing refused');
+  assert.ok(!/veja as recusas abaixo/.test(quiet),
+    'and does not send the operator to a section that will not render');
+
+  // Non-vacuity: with a real refusal the original sentence is still the right one.
+  // renderChainPlanBody clears its own box, so a second render replaces the first.
+  api.renderChainPlan(
+    { chain: [], rejected: [{ model: 'glm-4.7', provider: 'zai', reason: 'context' }],
+      unknown: [], strategy: 'sequential', requirements: { min_context: 200000 },
+      time_agnostic: true },
+    { box, state: api.state });
+  assert.match(flat(box), /veja as recusas abaixo/,
+    'when there ARE refusals, it still points at them');
+});
+
+test('the model picker groups options by rail instead of making one group per option', () => {
+  // `kid.tagName === 'optgroup'` never matched: DOM tagName is uppercase. Measured on
+  // the live install as 47 options inside 47 optgroups, and 4 options in 4 groups all
+  // labelled "bedrock". The grouping is the reading aid that tells one rail from another.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.policy = tierPolicy();
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  const select = rowField(findAll(dom.get('inspector'), 'chain-row')[0], 'Modelo')
+    .children.find((c) => c.tagName === 'select');
+
+  const groups = select.children.filter((c) => c.tagName === 'optgroup');
+  const options = groups.reduce((n, g) => n + g.children.length, 0)
+    + select.children.filter((c) => c.tagName === 'option').length;
+  assert.ok(options > 1, 'non-vacuity: there is more than one option to group');
+  assert.ok(groups.length < options,
+    `one group per option is the bug: ${groups.length} groups for ${options} options`);
+  const labels = groups.map((g) => g.label);
+  assert.deepEqual(labels, Array.from(new Set(labels)), 'no rail is listed twice');
+});
+
+test('the preset verdict is absent on blocks that can never match a preset', () => {
+  // tierPresetOf returns null whenever tierName is not a key of policy.tiers, and the
+  // classifier and the last resort both pass tierName: null — so the line could only ever
+  // read "não casa com nenhum preset — ele é Personalizado", for any values, forever. That
+  // reads as a finding about the operator's config and is really one about the code path.
+  const { api, dom } = loadConsole({ csrfToken: 'tok' });
+  api.state.loading = false;
+  api.state.capabilities = capModels();
+
+  api.state.policy = classifierPolicy();
+  api.renderInspector({ id: 'classifier', name: 'classifier', bind: 'classifier' });
+  assert.ok(!/preset/i.test(flat(dom.get('inspector'))),
+    'the classifier is not a group and says nothing about presets');
+
+  api.state.policy = failSafePolicy();
+  api.renderInspector({ id: 'fail_safe', name: 'fail_safe', bind: 'fail_safe' });
+  assert.ok(!/preset/i.test(flat(dom.get('inspector'))),
+    'nor is the last resort');
+
+  // Non-vacuity: a real tier still gets its verdict, or this test would pass by deleting
+  // the feature.
+  api.state.policy = tierPolicy();
+  api.renderInspector({ id: 'tier:T2', name: 'T2', bind: 'tier', tier: 'T2' });
+  assert.match(flat(dom.get('inspector')), /preset/i,
+    'a group still says whether it matches one');
+});
+
+test('Ver o que muda on an untouched draft says nothing changes, not "this is what changes"', async () => {
+  // Measured live: pressed on the default bind with no field edited. Every diff line came
+  // back as context with an empty mark — the diff BODY was honest — under a sentence
+  // promising a change. Read off the server's own `no_op`, the same authority /apply
+  // refuses a pointless write with.
+  const policy = { rules: [], default: { action: 'classify' }, tiers: {}, fail_safe: {} };
+  const calls = [];
+  const { api, dom } = loadConsole({
+    csrfToken: 'tok',
+    fetch: (url) => {
+      calls.push(String(url));
+      if (url.endsWith('/lint')) {
+        return Promise.resolve({ ok: true, status: 200,
+          text: () => Promise.resolve(JSON.stringify({ valid: true, errors: [] })) });
+      }
+      if (url.endsWith('/policy')) {
+        return Promise.resolve({ ok: true, status: 200,
+          text: () => Promise.resolve(JSON.stringify(policy)) });
+      }
+      // The server says: valid, and nothing to commit.
+      return Promise.resolve({ ok: true, status: 200,
+        text: () => Promise.resolve(JSON.stringify({
+          valid: true, errors: [], no_op: true, diff: '',
+          current: policy, policy, base_hash: 'h',
+        })) });
+    },
+  });
+  api.state.policy = policy;
+  const msg = { textContent: '', className: '' };
+  await api.doPreview({ default: { action: 'classify' } }, msg, dom.get('jsonDiff'));
+
+  assert.match(msg.textContent, /nada muda/,
+    'the sentence must not promise a change the server says does not exist');
+  assert.ok(!/isto é o que muda/.test(msg.textContent));
+  assert.match(msg.className, /ok/, 'and it is still a success, not a failure');
+});

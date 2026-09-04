@@ -1425,3 +1425,44 @@ def test_the_console_yaml_fragment_parses_to_what_it_claims():
         "    fallback_chain:\\n",
     ):
         assert marker in script, f"the emitter no longer builds {marker!r}"
+
+
+def test_the_plugin_manifest_name_is_the_key_both_installs_enable():
+    """The manifest name is the ENABLE key, and it must match what config.yaml enables.
+
+    `hermes_cli/plugins.py:_parse_manifest` computes `key = name` for a flat user plugin
+    (the directory is never consulted at prefix=""), and that key is what
+    `plugins.enabled` is matched against AND the `<plugin_id>` the LLM trust gate reads
+    `plugins.entries.<plugin_id>.llm` from.
+
+    This said `delegate-profile` from the 2026-08-27 rename until 2026-09-04 while both
+    installs enabled `hermes-smart-router`, so the plugin never loaded on either box:
+    `hermes plugins list` reported `delegate-profile │ not enabled`. Nothing was routed,
+    while /status said `enabled: true` and the console rendered.
+
+    Held to the SAME constant the plugin reads its own settings under, so the two cannot
+    drift apart again.
+    """
+    import yaml
+
+    manifest = yaml.safe_load((ROOT / "plugin.yaml").read_text(encoding="utf-8"))
+    plugin_module = ROOT / "__init__.py"
+    source = plugin_module.read_text(encoding="utf-8")
+
+    assert manifest["name"] == "hermes-smart-router", (
+        "the manifest name is the enable key; a mismatch means the plugin never loads"
+    )
+    assert '_CONFIG_NAMESPACE = "hermes-smart-router"' in source, (
+        "non-vacuity: the config namespace this is held equal to really is that string"
+    )
+    # The tool name is deliberately NOT renamed (runbook §23.2: it appears in toolset
+    # allowlists), and it lives in its own field — so the two must differ.
+    assert manifest["provides_tools"] == ["delegate_profile"]
+    # Every hook register() subscribes must be declared. The field is not enforced by the
+    # loader, which is exactly why nothing caught `pre_kanban_dispatch` missing.
+    subscribed = set(re.findall(r'register_hook\(\s*["\']([a-z_]+)["\']', source))
+    assert subscribed, "non-vacuity: register() really does subscribe hooks"
+    assert set(manifest["provides_hooks"]) == subscribed, (
+        f"manifest declares {sorted(manifest['provides_hooks'])} but register() "
+        f"subscribes {sorted(subscribed)}"
+    )

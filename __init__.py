@@ -72,7 +72,7 @@ falling back to env vars, then to tuned defaults:
 
 Installation:
     hermes plugins install rodrigogs/hermes-smart-router
-    hermes plugins enable delegate-profile
+    hermes plugins enable hermes-smart-router
 """
 
 from __future__ import annotations
@@ -118,10 +118,21 @@ HERMES_BIN = "hermes"
 #: ``test_the_capacity_error_names_the_key_the_reader_reads`` holds the message and
 #: the reader to the same string.
 #:
-#: NOT the same thing as ``plugin.yaml``'s ``name:`` (still ``delegate-profile``)
-#: or the tool name (deliberately still ``delegate_profile`` — renaming it breaks
-#: every toolset allowlist). This is only the config namespace, and it is the
-#: spelling verified live on the box.
+#: NOT the same thing as the tool name, which is deliberately still
+#: ``delegate_profile`` — renaming it breaks every toolset allowlist (runbook §23.2).
+#:
+#: IT *IS* NOW THE SAME AS ``plugin.yaml``'s ``name:``, and this note used to say the
+#: opposite. The correction matters more than the tidiness: that line read "NOT the same
+#: thing as ``plugin.yaml``'s ``name:`` (still ``delegate-profile``)", which was true as
+#: a fact and wrong as a conclusion, because nothing here had established that the
+#: manifest name is ALSO the key ``plugins.enabled`` is matched against and the
+#: ``<plugin_id>`` the LLM trust gate reads ``plugins.entries.<plugin_id>.llm`` from
+#: (agent/plugin_llm.py:216). Both installs enabled ``hermes-smart-router`` while the
+#: manifest still said ``delegate-profile``, so from the 2026-08-27 rename until
+#: 2026-09-04 THE PLUGIN NEVER LOADED on either box — measured as
+#: ``delegate-profile │ not enabled`` in ``hermes plugins list``, beside
+#: ``web-resilient │ enabled`` as the control. Fixed by making the manifest agree; see
+#: the essay in ``plugin.yaml``.
 _CONFIG_NAMESPACE = "hermes-smart-router"
 
 #: Dotted path to the watchdog block, for docstrings and operator-facing messages.

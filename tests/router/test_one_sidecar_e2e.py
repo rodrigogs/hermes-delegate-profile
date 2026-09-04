@@ -33,13 +33,30 @@ from router.service import RouterService
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 
+# Every local HTTP read and thread join in this file waits this long.
+#
+# It was a bare `timeout=5` in thirteen places. These are loopback requests to a
+# ThreadingHTTPServer booted in-process, so five seconds is enormous when the machine is
+# idle and NOT ENOUGH when it is not: runbook §23.3 trap 5 records this file's
+# `test_console_gzip_is_cached_by_file_version` failing a full coverage run and leaving
+# `one_sidecar.py`'s post-/console `return` uncovered, with the guidance "suspect a race in
+# the e2e sidecar test rather than a real gap". Reproduced 2026-09-04 at load average 78
+# and again at 96, always as `TimeoutError: timed out` inside `readline` — never as a
+# wrong answer.
+#
+# Raised rather than retried, because a retry would hide a genuine hang. Thirty seconds
+# still bounds one: nothing here legitimately takes longer than a few milliseconds, so a
+# test that needs 30s has found a real deadlock and should fail. One constant, because
+# thirteen copies of a number are thirteen chances to tune one and miss twelve.
+_LOCAL_HTTP_TIMEOUT = 30
+
 
 def _get(url: str, token: str | None = None, method: str = "GET"):
     req = urllib.request.Request(url, method=method)
     if token is not None:
         req.add_header(TOKEN_HEADER, token)
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=_LOCAL_HTTP_TIMEOUT) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8") or "null")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8")
@@ -93,7 +110,7 @@ def running_sidecar(tmp_path, monkeypatch):
     finally:
         server.shutdown()
         server.server_close()
-        thread.join(timeout=5)
+        thread.join(timeout=_LOCAL_HTTP_TIMEOUT)
 
 
 def test_health_is_tokenless_and_cors_open(running_sidecar):
@@ -135,7 +152,7 @@ def test_health_says_missing_while_gated_routes_answer_503(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
-        thread.join(timeout=5)
+        thread.join(timeout=_LOCAL_HTTP_TIMEOUT)
 
 
 def test_status_requires_valid_token(running_sidecar):
@@ -222,7 +239,7 @@ def test_no_response_is_cacheable(running_sidecar):
         req = urllib.request.Request(f"{base}{path}")
         if token is not None:
             req.add_header(TOKEN_HEADER, token)
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=_LOCAL_HTTP_TIMEOUT) as resp:
             head = {k.lower(): v for k, v in resp.headers.items()}
             # Drenar o corpo antes de fechar. Medido em 2026-08-27: um cliente
             # que fecha no meio do /console (595 KB) faz o write do handler
@@ -268,7 +285,7 @@ def _post(url: str, token: str | None, payload: dict):
     if token is not None:
         req.add_header(TOKEN_HEADER, token)
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=_LOCAL_HTTP_TIMEOUT) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8") or "null")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8")
@@ -289,7 +306,7 @@ def test_console_served_over_http_tokenless(running_sidecar):
     """
     base, _token = running_sidecar
     req = urllib.request.Request(f"{base}/console", method="GET")
-    with urllib.request.urlopen(req, timeout=5) as resp:
+    with urllib.request.urlopen(req, timeout=_LOCAL_HTTP_TIMEOUT) as resp:
         assert resp.status == 200
         assert resp.headers.get("Content-Type", "").startswith("text/html")
         body = resp.read()
@@ -312,7 +329,7 @@ def test_sidecar_negotiates_gzip_for_console_and_json(running_sidecar):
         request = urllib.request.Request(f"{base}{path}")
         for name, value in (headers or {}).items():
             request.add_header(name, value)
-        with urllib.request.urlopen(request, timeout=5) as resp:
+        with urllib.request.urlopen(request, timeout=_LOCAL_HTTP_TIMEOUT) as resp:
             return resp.status, {key.lower(): value for key, value in resp.headers.items()}, resp.read()
 
     status, headers, encoded = response("/console", {"Accept-Encoding": "gzip"})
@@ -363,7 +380,7 @@ def test_console_gzip_is_cached_by_file_version(tmp_path, monkeypatch):
         for _ in range(2):
             request = urllib.request.Request(f"{base}/console")
             request.add_header("Accept-Encoding", "gzip")
-            with urllib.request.urlopen(request, timeout=5) as response:
+            with urllib.request.urlopen(request, timeout=_LOCAL_HTTP_TIMEOUT) as response:
                 assert gzip.decompress(response.read()) == console.read_bytes()
         assert calls == 1
 
@@ -371,13 +388,13 @@ def test_console_gzip_is_cached_by_file_version(tmp_path, monkeypatch):
         os.utime(console, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))
         request = urllib.request.Request(f"{base}/console")
         request.add_header("Accept-Encoding", "gzip")
-        with urllib.request.urlopen(request, timeout=5) as response:
+        with urllib.request.urlopen(request, timeout=_LOCAL_HTTP_TIMEOUT) as response:
             assert gzip.decompress(response.read()) == console.read_bytes()
         assert calls == 2
     finally:
         server.shutdown()
         server.server_close()
-        thread.join(timeout=5)
+        thread.join(timeout=_LOCAL_HTTP_TIMEOUT)
 
 
 def test_plan_route_happy_path_over_http(running_sidecar):
@@ -394,7 +411,7 @@ def test_plan_route_happy_path_over_http(running_sidecar):
     req.add_header(TOKEN_HEADER, "s3cret-token")
     req.add_header("Content-Type", "application/json")
     try:
-        urllib.request.urlopen(req, timeout=5)
+        urllib.request.urlopen(req, timeout=_LOCAL_HTTP_TIMEOUT)
         assert False, "expected HTTPError"
     except urllib.error.HTTPError as exc:
         assert exc.code == 400
@@ -405,7 +422,7 @@ def test_apply_revert_with_empty_body_over_http(running_sidecar):
     base, _token = running_sidecar
     req = urllib.request.Request(f"{base}/apply/revert", data=b"", method="POST")
     req.add_header(TOKEN_HEADER, "s3cret-token")
-    with urllib.request.urlopen(req, timeout=5) as resp:
+    with urllib.request.urlopen(req, timeout=_LOCAL_HTTP_TIMEOUT) as resp:
         # No snapshot yet in a fresh sidecar -> ok:false, but a clean 200 body.
         assert resp.status == 200
         payload = json.loads(resp.read().decode("utf-8"))
@@ -422,7 +439,7 @@ def test_missing_token_file_fails_closed(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
-        thread.join(timeout=5)
+        thread.join(timeout=_LOCAL_HTTP_TIMEOUT)
 
 
 def test_build_server_rejects_non_loopback_host():
@@ -498,3 +515,39 @@ def test_main_returns_zero_when_server_stops_normally(monkeypatch):
     monkeypatch.setattr("router.one_sidecar.build_server", lambda host, port, app: FakeServer())
     assert main(["--config", str(ROOT / "router.yaml")]) == 0
     assert served == {"forever": 1, "closed": 1}
+
+
+def test_console_loads_without_a_token_and_refuses_a_wrong_method(tmp_path):
+    """The two /console facts that only a real server can show.
+
+    The token exemption is deliberate and now stated in the module docstring: the screen
+    has to load in order to EXPLAIN a missing token, so a 401 would take the explanation
+    down with the problem. And a wrong method is a 405 rather than a 404 — /console used
+    to be in neither route set, which made a method error indistinguishable from a typo.
+    """
+    console = tmp_path / "console.html"
+    console.write_bytes(b"<!doctype html><title>shell</title>")
+    token = tmp_path / "token"
+    token.write_text("tok", encoding="utf-8")
+    app = SidecarApp(
+        RouterService(ROOT / "router.yaml"), token_path=lambda: token, console_path=console
+    )
+    server, thread = _boot_test_server(app)
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        # No token at all, and it still serves the shell.
+        with urllib.request.urlopen(f"{base}/console", timeout=_LOCAL_HTTP_TIMEOUT) as resp:
+            assert resp.status == 200
+            assert resp.read() == console.read_bytes()
+        # Wrong method on a known route.
+        req = urllib.request.Request(f"{base}/console", data=b"{}", method="POST")
+        req.add_header("X-Hermes-Sidecar-Token", "tok")
+        try:
+            urllib.request.urlopen(req, timeout=_LOCAL_HTTP_TIMEOUT)
+            raise AssertionError("POST /console must not succeed")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 405, f"got {exc.code}, want 405 (not 404)"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=_LOCAL_HTTP_TIMEOUT)

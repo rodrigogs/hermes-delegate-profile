@@ -2,8 +2,15 @@
 
 A stdlib-only loopback HTTP service consumed through Hermes One's consented
 extension-sidecar proxy.  Its only state-changing credential is WebUI's
-``token-v1`` secret: every route except ``/health`` requires the per-extension
-``X-Hermes-Sidecar-Token`` header.
+``token-v1`` secret: every route except ``/health`` and ``/console`` requires the
+per-extension ``X-Hermes-Sidecar-Token`` header.
+
+``/console`` is named here because this text is the ``--help`` an operator reads and it
+used to say ``/health`` was the only exemption.  Measured 2026-09-03: ``GET /console``
+with no token returns 200 and the full HTML shell.  That is deliberate and is the same
+argument ``/health`` rests on — the screen has to load in order to EXPLAIN a token
+failure — but a DATA route it is not, and the distinction belongs in the sentence rather
+than in a comment further down.
 
 READ AND WRITE, and the split is the important part — this text is also the
 ``--help`` output (``description=__doc__``), so it is what an operator reads.
@@ -114,8 +121,15 @@ _CONSOLE_PATH = (
 # works — and POST is what makes the parameter usable for the case it exists for.
 # Every other route stays single-method, so every historical 405 is unchanged.
 _GET_ROUTES = frozenset(
+    # /console is in here for the METHOD guard, not because it serves JSON. It was in
+    # neither set, so `allowed` came back empty, the guard was skipped, and POST /console
+    # fell through to `404 unknown route` — the one route where a wrong method was
+    # indistinguishable from a typo'd path, against this module's own stated contract that
+    # every single-method route answers 405. Measured 2026-09-03: POST /console -> 404
+    # while POST /status -> 405 and POST /nope -> 404. Nothing shipped POSTs here, so no
+    # client changes; a route table audit stops lying.
     {"/health", "/status", "/policy", "/blocklist", "/liveness",
-     "/compaction", "/lint", "/explain", "/routes", "/capabilities"}
+     "/compaction", "/lint", "/explain", "/routes", "/capabilities", "/console"}
 )
 _POST_ROUTES = frozenset(
     {"/explain", "/plan", "/apply", "/apply/revert"}

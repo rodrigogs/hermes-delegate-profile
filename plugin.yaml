@@ -1,12 +1,49 @@
-name: delegate-profile
-version: "0.3.0"
+# The manifest name is THE PLUGIN'S IDENTITY TO HERMES, and it has three jobs that
+# were only understood as one.
+#
+# `hermes_cli/plugins.py:_parse_manifest` computes
+#     name = data.get("name", plugin_dir.name)
+#     key  = f"{prefix}/{plugin_dir.name}" if prefix else name
+# and a user plugin is scanned flat (prefix=""), so for this plugin KEY == NAME and the
+# directory is never consulted. That key is then matched against `plugins.enabled`, it is
+# the `<plugin_id>` the LLM trust gate reads `plugins.entries.<plugin_id>.llm` from
+# (agent/plugin_llm.py:216), and it is the id the plugin's own settings live under.
+#
+# This said `delegate-profile` until 2026-09-04 while both installs' config.yaml enabled
+# `hermes-smart-router`, so the two never matched and THE PLUGIN NEVER LOADED. Measured on
+# both: `hermes plugins list` reported `delegate-profile │ not enabled`, with
+# `web-resilient │ enabled` beside it as the control that proves the mechanism — its
+# manifest name and config key agree. register() therefore never ran: no dispatch hook, no
+# delegate_profile tool, no trace writer. And every operator-facing signal said otherwise —
+# /status `enabled: true`, a valid policy with 8 rules and 4 tiers, the console rendering —
+# while every card dispatched on config.yaml's `model.default`.
+#
+# The 2026-08-27 rename moved the config namespace and the state dir and recorded, in
+# __init__.py, that the manifest name was "NOT the same thing". That was right about the
+# namespace and wrong about the consequence, because nothing had established that the
+# manifest name is also the ENABLE key. One string now, which is what this repo's
+# "one authority" rule asks for everywhere else.
+#
+# THE TOOL NAME IS DELIBERATELY UNCHANGED. `delegate_profile` appears in toolset
+# allowlists and in agent calls, so renaming it is a breaking change and a separate
+# decision (runbook §23.2). It lives in `provides_tools`, not here.
+name: hermes-smart-router
+version: "0.4.0"
 description: >
-  Subprocess-isolated cross-profile delegation. Spawns a subagent under a
-  different Hermes profile via `hermes -p <profile> chat -q` for a hard
-  process boundary (the built-in delegate_task(profile=...) is in-process).
+  Capability router plus subprocess-isolated cross-profile delegation. Routes a task to a
+  model tier through a first-match rule table over a flat signal vector, with a gated LLM
+  difficulty classifier, an auto-breaker, a durable decision trace and a loopback operator
+  console. Also provides delegate_profile, which spawns a subagent under a different
+  Hermes profile via `hermes -p <profile> chat -q` for a hard process boundary (the
+  built-in delegate_task(profile=...) is in-process).
 author: Rodrigo Gomes da Silva
 provides_tools:
   - delegate_profile
+# Both hooks register() actually subscribes. `pre_kanban_dispatch` was missing, which is
+# the hook the whole router hangs off. The field is declarative — hermes_cli/plugins.py
+# stores it on the manifest (:1061, :4563) and never gates on it — so the omission cost
+# nothing at runtime and everything in describing what this plugin is.
 provides_hooks:
   - post_tool_call
+  - pre_kanban_dispatch
 requires_env: []

@@ -216,7 +216,34 @@ def test_explain_requires_task_and_unknown_route_is_404(tmp_path):
 def test_lint_route(tmp_path):
     status, body = _app(tmp_path).dispatch("GET", "/lint", _auth())
     assert status == 200
+    # THREE keys, and no `warnings` — deliberately. See the parity test below: warnings
+    # inform, errors block, and /lint is only the blocking gate.
     assert body == {"valid": True, "errors": [], "error_targets": []}
+
+
+def test_lint_is_the_blocking_gate_and_status_owns_the_advisories(tmp_path):
+    """The split, pinned from the ROUTE side, because its docstring once denied it.
+
+    /lint's docstring used to promise "the same validation data shown by status" while
+    returning three of status's four keys, which reads as an oversight. It is a decision:
+    warnings inform, errors block, and mixing them lets a warning do an error's job
+    (`test_service.test_status_reports_warnings_without_flipping_valid`).
+
+    Worth pinning at this layer because the confusion was measured, not theoretical: on
+    the docker stack 2026-09-03, /lint answered {valid: true, errors: []} in the same
+    second /status reported four "no independent fallback" advisories on the same file.
+    Nothing is hidden — the console reads them from /status — but the two payloads must
+    stay honestly different rather than accidentally similar.
+    """
+    app = _app(tmp_path)
+    _, lint = app.dispatch("GET", "/lint", _auth())
+    _, status = app.dispatch("GET", "/status", _auth())
+
+    assert status["warnings"], "non-vacuity: this fixture really does earn advisories"
+    assert status["valid"] is True, "and they do not block — that is the whole point"
+    assert "warnings" not in lint, "the blocking gate carries only what blocks"
+    assert lint["valid"] is status["valid"], "the two agree on what DOES block"
+    assert lint["errors"] == status["validation_errors"]
 
 
 def test_lint_and_status_carry_the_shadowed_jump_target(tmp_path):
@@ -1350,3 +1377,30 @@ def test_sidecar_app_without_provenance_leaves_service_blank(tmp_path):
 
     assert service._process_started_at is None
     assert service._code_mtime is None
+
+
+def test_a_wrong_method_on_console_is_405_not_a_404(tmp_path):
+    """/console was the one route where a method error looked like a typo'd URL.
+
+    It sat in neither _GET_ROUTES nor _POST_ROUTES, so `allowed` came back empty, the
+    method guard was skipped, and the request fell through to `404 unknown route` —
+    against this module's own contract that every single-method route answers 405.
+    Measured 2026-09-03: POST /console -> 404 while POST /status -> 405.
+
+    Note the layer: GET /console is intercepted by the request HANDLER before dispatch()
+    is reached, so at THIS level a GET is legitimately "unknown route" and only the POST
+    arrives here. That asymmetry is why the route was missing from the sets at all. The
+    real GET is covered in test_one_sidecar_e2e over a live server.
+    """
+    app = _app(tmp_path)
+    assert app.dispatch("POST", "/console", _auth()) == (
+        405, {"error": "method not allowed"}
+    )
+    # The contrast that makes 405 informative: a GET-only DATA route answers the same way,
+    # so /console is no longer the odd one out.
+    assert app.dispatch("POST", "/status", _auth()) == (
+        405, {"error": "method not allowed"}
+    )
+    # And dispatch still does not SERVE /console — the handler does. Pinned so a future
+    # reader does not "fix" this 404 by adding a body here.
+    assert app.dispatch("GET", "/console", _auth()) == (404, {"error": "unknown route"})

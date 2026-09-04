@@ -8629,7 +8629,7 @@
         renderChainPlanWarnings(box, { plan, strategy, when, cap, impossible, outcome, peak });
         const group = renderChainPlanHeader({ plan, strategy, hourNote, chosenMark, outcome, chips, rejected });
         renderChainPlanHops(group, { chain, unknown, chosenInEffect, chosen, strategy, plan, registry, billing,
-          when, flags, multipliers, live, capMark });
+          when, flags, multipliers, live, capMark, outcome });
         renderChainPlanRejections(group, { outcome, registry, needed: req.min_context, when, cap, flags, multipliers, live });
 
         box.append(group);
@@ -8672,14 +8672,34 @@
       }
 
       function renderChainPlanHops(group, context) {
-        const { chain, unknown, chosenInEffect, chosen, strategy, plan, registry, billing, when, flags, multipliers, live, capMark } = context;
+        const { chain, unknown, chosenInEffect, chosen, strategy, plan, registry, billing, when, flags, multipliers, live, capMark, outcome } = context;
         if (chain.length) {
           const drawnChain = chosenInEffect ? displayOrder(chain, strategy.key, chosen, { pinPrimary: plan.pin_primary, registry, billing }) : chain;
           group.append(chainList(drawnChain, { strategy, registry, billing, when, flags, multipliers, live, cap: capMark, showPrice: true }));
           const rails = independentRails(drawnChain);
           group.append(el('div', `tier-fact rails${rails < 2 ? ' thin' : ''}`, `${rails} provedor${rails === 1 ? '' : 'es'} independente${rails === 1 ? '' : 's'} em ${chain.length} tentativa${chain.length === 1 ? '' : 's'} elegíve${chain.length === 1 ? 'l' : 'is'}`));
           if (rails < 2) group.append(el('div', 'tier-note', `Sem reserva para esta tarefa: toda tentativa elegível cai em ${upstreamGroup(drawnChain[0] && drawnChain[0].provider) || 'um provedor só'}. Uma queda ali e a tarefa não tem para onde ir — a fila declarada é mais larga, mas as exigências desta tarefa descartaram o resto.`));
-        } else group.append(el('p', 'nothing', 'Nenhuma tentativa passou pelo filtro — veja as recusas abaixo.'));
+        } else {
+          // AN EMPTY QUEUE HAS TWO CAUSES, and only one of them has anything below it to
+          // look at. `renderChainPlanRejections` appends a section iff outcome.dropped or
+          // outcome.retained is non-empty, so that is what decides which sentence is true.
+          //
+          // This said "veja as recusas abaixo" unconditionally. §2.1's early return at the
+          // top of renderChainPlanBody already catches the plain no-plan case — but only
+          // when there are no requirement CHIPS either, so a plan that declares
+          // requirements and resolves no attempt fell straight through to a sentence
+          // pointing at refusals that were not there. Measured on the live install: task
+          // "Depurar uma condicao de corrida no cache" returned
+          // chain [] / rejected [] / unknown [] and drew exactly that dead end. It is the
+          // DEFAULT path of the docker policy (`default: {action: classify}`), so it is
+          // the first thing many probes show.
+          const refusalsBelow = !!(outcome && (outcome.dropped.length || outcome.retained.length));
+          group.append(el('p', 'nothing', refusalsBelow
+            ? 'Nenhuma tentativa passou pelo filtro — veja as recusas abaixo.'
+            : 'O roteador não listou nenhuma tentativa e também não recusou nenhuma, '
+              + 'então não há fila para mostrar aqui. Uma rota que só se resolve quando a '
+              + 'tarefa roda — a que pergunta ao classificador — chega assim.'));
+        }
         if (unknown.length) group.append(el('div', 'tier-note', `Sem verificação, então elegíveis por suposição: ${unknown.join(', ')}. Nada publicou as capacidades delas — declare a janela e as marcas da tentativa no router.yaml para que sejam conferidas.`));
       }
 
@@ -9421,7 +9441,15 @@
             let group = null;
             for (let i = 0; i < select.children.length; i += 1) {
               const kid = select.children[i];
-              if (kid.tagName === 'optgroup' && kid.label === groupLabel) { group = kid; break; }
+              // CASE-INSENSITIVE, because the two DOMs this file runs in disagree. A real
+              // browser reports tagName UPPERCASE, so the original `=== 'optgroup'` never
+              // matched and a fresh group was built for EVERY option — measured on the live
+              // install as 47 options in 47 optgroups, and 4 options in 4 groups all labelled
+              // 'bedrock'. The test harness's DOM reports it lowercase, so pinning the other
+              // spelling would have been just as wrong, in the other environment. Comparing
+              // case-folded is correct in both, which is the only version of this line that
+              // cannot be right on one machine and wrong on the other.
+              if (String(kid.tagName).toUpperCase() === 'OPTGROUP' && kid.label === groupLabel) { group = kid; break; }
             }
             if (!group) {
               group = document.createElement('optgroup');
@@ -10157,15 +10185,28 @@
         // §2.4: the panel says what the operator's edit did to the preset
         // match — on the spot, next to the fields — so "this group is now
         // Personalizado" is never a post-save discovery.
+        // Presets are a TIER concept, so this line only exists for a tier.
+        //
+        // `tierPresetOf` returns null the moment `tierName` is not a key of `policy.tiers`
+        // (console.html:4791), and the classifier and the last resort pass tierName: null.
+        // So on those two the note could only ever read "não casa com nenhum preset — ele é
+        // Personalizado", for any values, forever — a verdict that sounds like a finding
+        // about the operator's configuration and is really a statement about the code path.
+        //
+        // Mine, from earlier the same day: the comment at the editClassifierChain call
+        // asserted tierName's "only reader is the tierFix.tier === tierName test". This
+        // function is a second reader, and I missed it. Gated on the same flag the group
+        // knobs use, because it is the same question — is this block a group?
         const presetNote = el('p', 'field-note');
         const renderPresetNote = () => {
+          if (!GROUP_KNOBS) return;
           const preset = tierPresetOf(t, tierName, editorState.draft);
           presetNote.textContent = preset
             ? `Este grupo casa com o preset ${preset.label}.`
             : 'Com esses valores, este grupo não casa com nenhum preset — ele é Personalizado.';
         };
         renderPresetNote();
-        box.append(presetNote);
+        if (GROUP_KNOBS) box.append(presetNote);
 
         // §3.4(d): "Baixar a exigência do grupo" lands the operator on the
         // floor field — the button names the remedy, the field is the remedy.
@@ -10787,7 +10828,21 @@
           return;
         }
         if (await plan(policy, msg, diffNode)) {
-          setMsg(msg, 'Nenhum problema encontrado — isto é o que muda.', 'ok');
+          // "isto é o que muda" was said even when NOTHING changed. Pressing Ver o que
+          // muda on an untouched bind rendered the whole policy as context lines with no
+          // −/+ mark anywhere and no count head, under a sentence promising a change:
+          // measured on the live install pressing it on the default bind with no field
+          // edited. The diff BODY was honest; the sentence above it was not.
+          //
+          // Read off the server's own `no_op` rather than re-deriving it here. The server
+          // sets it from the before/after YAML text (service.py: `"no_op": not diff`), so
+          // it is the same authority /apply refuses a pointless write with — and the empty
+          // head is a DELIBERATE, tested property of jsonDiffLines ("dois documentos
+          // iguais: nenhum cabeçalho"), so the fix belongs in the wording, not the diff.
+          const nothingChanges = !!(state.plan && state.plan.no_op);
+          setMsg(msg, nothingChanges
+            ? 'Nenhum problema encontrado — e nada muda: o rascunho é igual ao arquivo.'
+            : 'Nenhum problema encontrado — isto é o que muda.', 'ok');
         }
       }
 
