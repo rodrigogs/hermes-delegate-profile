@@ -1687,3 +1687,156 @@ class TestTheAntiRecursionGuaranteeIsEnforced:
         assert ctx.tools == [], (
             "the value _attempt writes must be the value register withholds on"
         )
+
+
+# ── `smart-router` as a selectable model: the plugin-side adapter ─────────────
+
+def test_register_offers_the_pseudo_model_through_llm_request_middleware(monkeypatch):
+    """MIDDLEWARE, not a hook — because no hook can change a chat turn's model.
+
+    `VALID_HOOKS` is a closed set with nothing for it, and `pre_llm_call` fires every
+    turn but its return value is read for `{"context": str}` only, so a returned
+    `{"model": ...}` is discarded. `llm_request` middleware replaces the outgoing
+    provider kwargs wholesale, and needs no change to hermes-agent.
+    """
+    class Ctx:
+        def __init__(self):
+            self.middleware = []
+
+        def register_tool(self, **kwargs):
+            pass
+
+        def register_hook(self, *args, **kwargs):
+            pass
+
+        def register_middleware(self, kind, callback):
+            self.middleware.append((kind, callback))
+
+    monkeypatch.setattr(_dp, "_get_active_profile_name", lambda: "parent")
+    ctx = Ctx()
+    _dp.register(ctx)
+
+    kinds = [kind for kind, _cb in ctx.middleware]
+    assert kinds == ["llm_request"], kinds
+    assert ctx.middleware[0][1] is _dp._on_llm_request
+
+
+def test_a_host_without_register_middleware_still_registers_everything_else(monkeypatch):
+    """The plugin is deployed BY COPY onto hosts whose hermes-agent version varies.
+
+    `register_middleware` is newer than `register_hook`. Raising on a host that lacks it
+    would take the tool, both hooks, the console and the sidecar down for a feature
+    nobody on that host selected.
+    """
+    class OldCtx:
+        def __init__(self):
+            self.tools = []
+            self.hooks = []
+
+        def register_tool(self, **kwargs):
+            self.tools.append(kwargs)
+
+        def register_hook(self, *args, **kwargs):
+            self.hooks.append(args)
+
+    monkeypatch.setattr(_dp, "_get_active_profile_name", lambda: "parent")
+    ctx = OldCtx()
+    _dp.register(ctx)  # must not raise
+
+    assert ctx.tools and ctx.tools[0]["name"] == "delegate_profile"
+    assert [a[0] for a in ctx.hooks] == ["post_tool_call", "pre_kanban_dispatch"]
+
+
+def test_the_middleware_leaves_a_normal_model_untouched(monkeypatch):
+    """The common case pays one dict lookup and returns None."""
+    calls = []
+    monkeypatch.setattr(_dp, "_route_task", lambda *a, **k: calls.append(a) or None)
+    result = _dp._on_llm_request(
+        request={"model": "us.anthropic.claude-opus-5", "messages": []},
+        provider="bedrock", turn_id="t1",
+    )
+    assert result is None
+    assert calls == [], "and never consults the router"
+
+
+def test_the_middleware_rewrites_the_sentinel_to_the_routers_choice(monkeypatch):
+    monkeypatch.setattr(
+        _dp, "_load_router_config",
+        lambda: {"fail_safe": {"model": "last-resort", "provider": "bedrock"}},
+    )
+    monkeypatch.setattr(_dp, "_make_classify_fn", lambda _ctx: None)
+    monkeypatch.setattr(
+        _dp, "_route_task",
+        lambda goal, requested, classify, prompt_text="": {
+            "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "provider": "bedrock"},
+    )
+    _dp._PSEUDO_DECISIONS.clear()
+
+    result = _dp._on_llm_request(
+        request={"model": "smart-router",
+                 "messages": [{"role": "user", "content": "rename a variable"}]},
+        provider="bedrock", turn_id="turn-a",
+    )
+    assert result is not None
+    assert result["request"]["model"] == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    assert result["request"]["messages"][0]["content"] == "rename a variable"
+
+
+def test_the_middleware_never_raises_no_matter_what_the_router_does(monkeypatch):
+    """A middleware that throws is swallowed by the caller and the ORIGINAL kwargs go
+    out — which for a sentinel model means a fake id on the wire. So this guarding is
+    not politeness; it is what stops a routing bug becoming a provider error."""
+    def boom(*_a, **_k):
+        raise RuntimeError("router exploded")
+
+    monkeypatch.setattr(_dp, "_load_router_config", boom)
+    assert _dp._on_llm_request(request={"model": "smart-router", "messages": []},
+                               provider="bedrock", turn_id="t") is None
+
+
+def test_the_decision_cache_is_bounded(monkeypatch):
+    """A gateway process is long-lived and this dict grows once per prompt forever."""
+    monkeypatch.setattr(_dp, "_load_router_config", lambda: {})
+    monkeypatch.setattr(_dp, "_make_classify_fn", lambda _ctx: None)
+    monkeypatch.setattr(
+        _dp, "_route_task",
+        lambda *a, **k: {"model": "m", "provider": "bedrock"},
+    )
+    _dp._PSEUDO_DECISIONS.clear()
+    for i in range(_dp._PSEUDO_DECISIONS_MAX + 40):
+        _dp._on_llm_request(
+            request={"model": "smart-router",
+                     "messages": [{"role": "user", "content": "hi"}]},
+            provider="bedrock", turn_id=f"turn-{i}",
+        )
+    assert len(_dp._PSEUDO_DECISIONS) <= _dp._PSEUDO_DECISIONS_MAX
+    # Oldest evicted, newest kept — a turn's calls are consecutive, so only recent
+    # entries are ever read.
+    assert "turn-0" not in _dp._PSEUDO_DECISIONS
+    assert f"turn-{_dp._PSEUDO_DECISIONS_MAX + 39}" in _dp._PSEUDO_DECISIONS
+
+
+def test_a_selected_pseudo_model_that_cannot_be_applied_says_so(monkeypatch):
+    """The one case where the sentinel goes out unchanged, and it must be LOUD.
+
+    With no usable last resort, this refuses to rewrite — inventing a model would be the
+    plugin choosing routing policy. The request then carries `smart-router` to a provider
+    that will answer model-not-found, so the log line is the only thing standing between
+    that and a mystery.
+    """
+    monkeypatch.setattr(_dp, "_load_router_config", lambda: {})  # no fail_safe at all
+    monkeypatch.setattr(_dp, "_make_classify_fn", lambda _ctx: None)
+    monkeypatch.setattr(_dp, "_route_task", lambda *a, **k: None)  # declines
+    _dp._PSEUDO_DECISIONS.clear()
+    _dp._WARNED_ONCE.clear() if hasattr(_dp, "_WARNED_ONCE") else None
+    warned = []
+    monkeypatch.setattr(_dp, "_warn_once", lambda msg: warned.append(msg))
+
+    result = _dp._on_llm_request(
+        request={"model": "smart-router",
+                 "messages": [{"role": "user", "content": "do a thing"}]},
+        provider="bedrock", turn_id="t-unapplied",
+    )
+    assert result is None, "nothing rewritten"
+    assert warned, "and the operator is told, because the fake id is now on the wire"
+    assert "smart-router" in warned[0] and "not applied" in warned[0]

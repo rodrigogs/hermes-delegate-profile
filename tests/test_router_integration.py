@@ -792,3 +792,38 @@ def test_a_package_loaded_plugin_resolves_the_policy_through_the_shared_resolver
     assert config.get("tiers", {}).get("T1", {}).get("model") == "rooted-marker", (
         "the plugin read the policy at HERMES_HOME, not the one beside its module"
     )
+
+
+def test_a_package_loaded_plugin_resolves_the_pseudo_model_through_relative_imports(
+    monkeypatch, tmp_path
+):
+    """The relative-import arms of the pseudo-model adapter.
+
+    An installed plugin imports `.router.pseudo_model`; only direct source loading uses
+    the absolute form. Both arms have to work, and the installed one is the arm that runs
+    in production — so it is the one this suite would otherwise never execute.
+    """
+    namespace = types.ModuleType("hermes_plugins")
+    namespace.__path__ = []
+    monkeypatch.setitem(sys.modules, "hermes_plugins", namespace)
+    spec = importlib.util.spec_from_file_location(
+        "hermes_plugins.smart_router_pseudo",
+        _PLUGIN_INIT,
+        submodule_search_locations=[str(_PLUGIN_INIT.parent)],
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    assert module._LOADED_AS_PACKAGE is True, "non-vacuity: this is the relative arm"
+
+    # The sentinel accessor: named once, in the module that owns it.
+    assert module._pseudo_model_sentinel() == "smart-router"
+
+    # And the middleware body, through the relative `plan_rewrite` import. A non-sentinel
+    # model is the cheapest path that still executes the import.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert module._on_llm_request(
+        request={"model": "us.anthropic.claude-opus-5", "messages": []},
+        provider="bedrock", turn_id="t1",
+    ) is None

@@ -90,6 +90,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
 
@@ -2050,6 +2051,88 @@ def _on_post_tool_call(
 _REGISTERED_CTX: Dict[int, Any] = {}
 
 
+#: Per-turn routing decisions for the ``smart-router`` pseudo-model, keyed by turn id.
+#:
+#: BOUNDED, because a gateway process is long-lived and a dict keyed by turn id grows
+#: once per prompt forever. The cap is generous — a turn's calls are consecutive, so only
+#: the newest entries are ever read — and the eviction is oldest-first insertion order,
+#: which for this key IS chronological.
+_PSEUDO_DECISIONS: "OrderedDict[Any, Dict[str, Any]]" = OrderedDict()
+_PSEUDO_DECISIONS_MAX = 256
+
+#: The ctx register() was called with, for the middleware to reach the host's gated LLM.
+#: The middleware signature has no ctx, and the classifier call needs one.
+_MIDDLEWARE_CTX: Any = None
+
+
+def _pseudo_model_sentinel() -> str:
+    """The selectable id, read from the module that owns it — never retyped here."""
+    if _LOADED_AS_PACKAGE:
+        from .router.pseudo_model import SENTINEL
+    else:  # direct source loading used by the development test harness
+        from router.pseudo_model import SENTINEL
+    return SENTINEL
+
+
+def _on_llm_request(**context: Any) -> Optional[Dict[str, Any]]:
+    """``llm_request`` middleware: resolve the ``smart-router`` pseudo-model.
+
+    Returns ``{"request": {...}}`` to replace the outgoing provider kwargs, or None to
+    leave them alone — which is the answer for every call whose model is not the
+    sentinel, i.e. almost all of them.
+
+    Never raises. A middleware that throws is caught by the caller's bare ``except``
+    (conversation_loop.py) and the turn proceeds with the ORIGINAL kwargs, which for a
+    sentinel model means a fake id on the wire. So the guarding here is not politeness;
+    it is what keeps a routing bug from becoming a provider error.
+    """
+    try:
+        if _LOADED_AS_PACKAGE:
+            from .router.pseudo_model import NOT_SENTINEL, plan_rewrite
+        else:  # direct source loading used by the development test harness
+            from router.pseudo_model import NOT_SENTINEL, plan_rewrite
+
+        request = context.get("request")
+        config = _load_router_config()
+
+        def _route(text: str) -> Optional[Dict[str, Any]]:
+            # The classifier is available here on purpose: a chat turn carries almost
+            # none of the size signals the rule table matches on, so the classifier is
+            # the path that can actually judge a conversational prompt.
+            # The ctx captured at register() time: the middleware signature carries no
+            # ctx, and _make_classify_fn needs one to reach the host's gated LLM. None is
+            # a fine argument — _make_classify_fn then yields no classifier and Stage 0
+            # decides alone, which is degraded but never broken.
+            return _route_task(text, "", _make_classify_fn(_MIDDLEWARE_CTX), prompt_text=text)
+
+        plan = plan_rewrite(
+            request,
+            provider=context.get("provider"),
+            turn_id=context.get("turn_id"),
+            route=_route,
+            decided=_PSEUDO_DECISIONS,
+            fail_safe=config.get("fail_safe") if isinstance(config, dict) else None,
+        )
+        while len(_PSEUDO_DECISIONS) > _PSEUDO_DECISIONS_MAX:
+            _PSEUDO_DECISIONS.popitem(last=False)
+
+        outcome = plan.get("outcome")
+        if plan.get("request") is None:
+            if outcome not in (None, NOT_SENTINEL):
+                _warn_once(
+                    f"hermes-smart-router: smart-router selected but not applied "
+                    f"({outcome}); the request goes out unchanged"
+                )
+            return None
+        logger.info(
+            "hermes-smart-router: smart-router -> %s (%s)", plan.get("model"), outcome
+        )
+        return {"request": plan["request"]}
+    except Exception as exc:  # noqa: BLE001 - must never break a turn
+        _warn_once(f"hermes-smart-router: llm_request middleware failed: {exc}")
+        return None
+
+
 def register(ctx):
     """Register the delegate_profile tool and post_tool_call hook.
 
@@ -2190,6 +2273,37 @@ def register(ctx):
         )
 
     ctx.register_hook("post_tool_call", _on_post_tool_call)
+
+    # ``smart-router`` AS A SELECTABLE MODEL. Picking that id — with `/model
+    # smart-router`, or in a picker that offers it — means "let the router choose this
+    # prompt's model" instead of naming one.
+    #
+    # This is MIDDLEWARE, not a hook, and that is the whole reason it works: no hook in
+    # hermes-agent can change the model of a chat turn (the closed VALID_HOOKS set has
+    # nothing for it, and pre_llm_call's return value is read for {"context": str} only,
+    # so a returned {"model": ...} is dropped). ``llm_request`` middleware replaces the
+    # outgoing provider kwargs wholesale, which is exactly the seam this needs, and it
+    # needs no change to hermes-agent.
+    #
+    # Registered unconditionally: the middleware is inert unless the model id IS the
+    # sentinel, so an operator who never selects it pays one dict lookup per API call.
+    global _MIDDLEWARE_CTX
+    _MIDDLEWARE_CTX = ctx
+    # GUARDED, because the host's age is not this plugin's to assume. This file is
+    # deployed BY COPY onto installs whose hermes-agent version varies, and
+    # `register_middleware` is newer than `register_hook`/`register_tool`. On a host
+    # without it the pseudo-model is simply unavailable and everything else — the tool,
+    # both hooks, the console, the sidecar — registers exactly as before. Raising here
+    # would take the whole plugin down for a feature nobody on that host selected.
+    register_middleware = getattr(ctx, "register_middleware", None)
+    if callable(register_middleware):
+        register_middleware("llm_request", _on_llm_request)
+    else:
+        logger.info(
+            "hermes-smart-router: this host has no register_middleware, so the "
+            "'%s' pseudo-model is unavailable; routing by rule and hook is unaffected",
+            _pseudo_model_sentinel(),
+        )
 
     # Kanban dispatch routing: shadow mode by default — records what the
     # capability router WOULD choose for each dispatched card, without writing
